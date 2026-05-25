@@ -1,0 +1,19 @@
+{
+  "title": "Get help from Libriant",
+  "subtitle": "Need someone from our team to take a look at your library? Give us temporary, one-time access.",
+  "grant.intro": "If you click the button below, we'll create a one-time code. Send it to Libriant support (over the phone or email) and our team will be able to see and fix things in your library for the next 4 hours. You can end our access whenever you want.",
+  "grant.cta": "Allow Libriant support to help us",
+  "grant.codeLabel": "Your one-time code",
+  "grant.codeShownOnce": "This code is shown only once. Copy it now and send it to Libriant support.",
+  "grant.copy": "Copy code",
+  "grant.copied": "Copied to clipboard",
+  "grant.expiresIn": "Expires in {minutes} min",
+  "activeSession.title": "Libriant support has access right now",
+  "activeSession.endsAt": "Access ends at {time}",
+  "activeSession.endNow": "End support access",
+  "log.title": "What Libriant did in your library",
+  "log.empty": "No support activity yet.",
+  "notifications.generated": "A support access code was created in your library.",
+  "notifications.redeemed": "A Libriant team member just entered your library to help.",
+  "notifications.ended": "Libriant's support access to your library has ended."
+}

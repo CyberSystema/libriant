@@ -1,0 +1,19 @@
+{
+  "title": "Δανεισμοί",
+  "subtitle": "Βιβλία που έχουν δοθεί προς δανεισμό.",
+  "newLoan": "Νέος δανεισμός",
+  "return": "Επιστροφή",
+  "columns.book": "Βιβλίο",
+  "columns.member": "Μέλος",
+  "columns.checkedOut": "Ημερομηνία δανεισμού",
+  "columns.dueDate": "Ημερομηνία επιστροφής",
+  "columns.status": "Κατάσταση",
+  "status.active": "Σε δανεισμό",
+  "status.overdue": "Σε καθυστέρηση",
+  "status.returned": "Επιστράφηκε",
+  "empty.title": "Δεν υπάρχουν ενεργοί δανεισμοί",
+  "empty.description": "Όταν δανείσετε ένα βιβλίο σε ένα μέλος, θα εμφανιστεί εδώ.",
+  "empty.cta": "Δανεισμός βιβλίου",
+  "dueIn": "{days, plural, one {Επιστροφή σε # ημέρα} other {Επιστροφή σε # ημέρες}}",
+  "overdueBy": "{days, plural, one {Καθυστερεί # ημέρα} other {Καθυστερεί # ημέρες}}"
+}

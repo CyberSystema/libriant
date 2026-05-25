@@ -1,0 +1,15 @@
+{
+  "title": "Catalog",
+  "subtitle": "Books and copies in your library.",
+  "addBook": "Add book",
+  "search": "Search by title, author or ISBN",
+  "columns.title": "Title",
+  "columns.author": "Author",
+  "columns.isbn": "ISBN",
+  "columns.copies": "Copies",
+  "columns.available": "Available",
+  "empty.title": "No books yet",
+  "empty.description": "Start by adding your first book — type its ISBN and we'll look it up for you, or fill in the details by hand.",
+  "empty.cta": "Add your first book",
+  "count": "{count, plural, one {# book} other {# books}}"
+}

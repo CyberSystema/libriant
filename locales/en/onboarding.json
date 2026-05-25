@@ -1,0 +1,18 @@
+{
+  "welcome.title": "Welcome to Libriant",
+  "welcome.subtitle": "Let's set up your library together. This takes about 3 minutes — and you can come back to finish later.",
+  "welcome.start": "Let's start",
+  "steps.libraryDetails.title": "Tell us about your library",
+  "steps.libraryDetails.description": "Just the basics. You can change anything later.",
+  "steps.firstStaff.title": "Add another staff member?",
+  "steps.firstStaff.description": "Working alone? Skip this step — you can invite people any time.",
+  "steps.firstStaff.skip": "I'm the only one for now",
+  "steps.firstBook.title": "Add your first book",
+  "steps.firstBook.description": "Type an ISBN and we'll look up the details for you, or fill them in by hand.",
+  "steps.firstBook.skip": "I'll do this later",
+  "steps.done.title": "You're all set",
+  "steps.done.description": "Your library is ready. Add more books, members, and start lending.",
+  "steps.done.cta": "Open my library",
+  "progress": "Step {current} of {total}",
+  "saveAndContinueLater": "Save and continue later"
+}

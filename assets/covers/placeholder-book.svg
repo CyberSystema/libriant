@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 180" role="img" aria-label="Book cover">
+  <rect width="120" height="180" rx="6" fill="#eaeef2"/>
+  <g transform="translate(36 60)" stroke="#57606a" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M2 56 L2 8 A4 4 0 0 1 6 4 L46 4 L46 60 L6 60 A4 4 0 0 1 2 56 Z"/>
+    <line x1="10" y1="16" x2="38" y2="16"/>
+    <line x1="10" y1="26" x2="38" y2="26"/>
+    <line x1="10" y1="36" x2="28" y2="36"/>
+  </g>
+</svg>

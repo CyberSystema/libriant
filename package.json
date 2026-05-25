@@ -1,0 +1,29 @@
+{
+  "name": "libriant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Libriant — multi-tenant SaaS for library management",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "check:translations": "tsx scripts/check-translations.ts",
+    "check:assets": "tsx scripts/check-assets.ts",
+    "check:all": "pnpm check:translations && pnpm check:assets && pnpm typecheck && pnpm lint",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "prettier": "^3.3.3",
+    "tsx": "^4.19.0",
+    "turbo": "^2.1.0",
+    "typescript": "^5.5.4"
+  }
+}

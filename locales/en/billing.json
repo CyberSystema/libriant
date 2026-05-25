@@ -1,0 +1,15 @@
+{
+  "title": "Plan & billing",
+  "subtitle": "Manage your library's subscription.",
+  "currentPlan": "Current plan",
+  "usage": "Usage",
+  "usage.books": "{used} of {limit} books used",
+  "usage.members": "{used} of {limit} members used",
+  "usage.storage": "{used} of {limit} of storage used",
+  "actions.upgrade": "Upgrade",
+  "actions.changePlan": "Change plan",
+  "actions.viewInvoices": "View invoices",
+  "paymentMethod": "Payment method",
+  "nextInvoice": "Next invoice on {date} for {amount}.",
+  "errors.paymentFailed": "Your last payment didn't go through. Please update your payment details to keep your access."
+}

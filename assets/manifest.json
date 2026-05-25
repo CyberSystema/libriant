@@ -1,0 +1,34 @@
+{
+  "$schema": "./manifest.schema.json",
+  "version": "0.1.0",
+  "description": "Source of truth for every visual asset slot the application knows about. Edit a file in this folder and the running app picks it up — no rebuild required. CI verifies that every slot below maps to an existing file, and that every <Asset name=\"...\"> referenced in code is listed here.",
+  "slots": {
+    "brand/logo": { "file": "brand/logo.svg", "alt": "Libriant logo" },
+    "brand/logo-dark": { "file": "brand/logo-dark.svg", "alt": "Libriant logo (dark)" },
+    "brand/logo-square": { "file": "brand/logo-square.svg", "alt": "Libriant" },
+    "brand/wordmark": { "file": "brand/wordmark.svg", "alt": "Libriant" },
+    "brand/favicon": { "file": "brand/favicon.svg", "alt": "Libriant" },
+
+    "icons/book": { "file": "icons/book.svg", "alt": "Book" },
+    "icons/member": { "file": "icons/member.svg", "alt": "Member" },
+    "icons/loan": { "file": "icons/loan.svg", "alt": "Loan" },
+    "icons/reservation": { "file": "icons/reservation.svg", "alt": "Reservation" },
+    "icons/settings": { "file": "icons/settings.svg", "alt": "Settings" },
+    "icons/help": { "file": "icons/help.svg", "alt": "Help" },
+    "icons/search": { "file": "icons/search.svg", "alt": "Search" },
+    "icons/plus": { "file": "icons/plus.svg", "alt": "Add" },
+    "icons/close": { "file": "icons/close.svg", "alt": "Close" },
+    "icons/check": { "file": "icons/check.svg", "alt": "Done" },
+    "icons/globe": { "file": "icons/globe.svg", "alt": "Language" },
+
+    "illustrations/welcome": { "file": "illustrations/welcome.svg", "alt": "Welcome" },
+    "illustrations/empty-catalog": { "file": "illustrations/empty-catalog.svg", "alt": "No books yet" },
+    "illustrations/empty-members": { "file": "illustrations/empty-members.svg", "alt": "No members yet" },
+    "illustrations/maintenance": { "file": "illustrations/maintenance.svg", "alt": "Maintenance" },
+    "illustrations/outage": { "file": "illustrations/outage.svg", "alt": "Outage" },
+    "illustrations/under-construction": { "file": "illustrations/under-construction.svg", "alt": "Under construction" },
+
+    "covers/placeholder-book": { "file": "covers/placeholder-book.svg", "alt": "Book cover" },
+    "photos/placeholder-member": { "file": "photos/placeholder-member.svg", "alt": "Member photo" }
+  }
+}

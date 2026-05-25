@@ -1,0 +1,130 @@
+/*
+ * Libriant design system styles.
+ *
+ * Every value references a CSS custom property set from /assets/theme/tokens.json
+ * at runtime. To change the look of the app, edit that file — not this one.
+ */
+
+/* --- base reset --- */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--color-info); }
+
+/* visible focus ring everywhere — a11y baseline */
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* --- button --- */
+.lbr-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms, border-color 120ms, color 120ms;
+}
+.lbr-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.lbr-btn--sm { font-size: var(--fs-sm); padding: var(--sp-1) var(--sp-3); }
+.lbr-btn--md { font-size: var(--fs-base); padding: var(--sp-2) var(--sp-4); }
+.lbr-btn--lg { font-size: var(--fs-lg); padding: var(--sp-3) var(--sp-5); }
+.lbr-btn--primary {
+  background: var(--color-primary);
+  color: var(--color-primary-fg);
+  border-color: var(--color-primary);
+}
+.lbr-btn--primary:hover:not(:disabled) { background: var(--color-primary-hover); border-color: var(--color-primary-hover); }
+.lbr-btn--secondary {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+.lbr-btn--secondary:hover:not(:disabled) { background: var(--color-surface-muted); }
+.lbr-btn--ghost {
+  background: transparent;
+  color: var(--color-text);
+  border-color: transparent;
+}
+.lbr-btn--ghost:hover:not(:disabled) { background: var(--color-surface-muted); }
+.lbr-btn--danger {
+  background: var(--color-danger);
+  color: #ffffff;
+  border-color: var(--color-danger);
+}
+.lbr-btn--danger:hover:not(:disabled) { background: var(--color-danger-hover); border-color: var(--color-danger-hover); }
+
+/* --- banner --- */
+.lbr-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  font-size: var(--fs-sm);
+}
+.lbr-banner__content { flex: 1; }
+.lbr-banner__title { display: block; font-weight: 600; margin-bottom: var(--sp-1); }
+.lbr-banner__dismiss {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 1.25rem;
+  line-height: 1;
+  color: currentColor;
+  padding: 0 var(--sp-1);
+}
+.lbr-banner--info { background: #ddf4ff; color: #0a3069; border-color: #54aeff; }
+.lbr-banner--warning { background: #fff8c5; color: #7c5e00; border-color: #e0c200; }
+.lbr-banner--critical { background: #ffebe9; color: #82071e; border-color: #ff8182; }
+.lbr-banner--success { background: #dafbe1; color: #04420d; border-color: #4ac26b; }
+
+/* --- empty state --- */
+.lbr-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: var(--sp-12) var(--sp-6);
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-muted);
+}
+.lbr-empty__illustration { width: 240px; height: auto; margin-bottom: var(--sp-4); }
+.lbr-empty__title { font-size: var(--fs-xl); margin: 0 0 var(--sp-2) 0; }
+.lbr-empty__description { color: var(--color-text-muted); margin: 0 0 var(--sp-4) 0; max-width: 38ch; }
+.lbr-empty__action { margin-top: var(--sp-2); }
+
+/* --- skeleton --- */
+.lbr-skeleton {
+  background: linear-gradient(90deg, var(--color-surface-sunken) 0%, var(--color-surface-muted) 50%, var(--color-surface-sunken) 100%);
+  background-size: 200% 100%;
+  animation: lbr-skeleton-pulse 1.4s ease-in-out infinite;
+}
+.lbr-skeleton--r-sm { border-radius: var(--radius-sm); }
+.lbr-skeleton--r-md { border-radius: var(--radius-md); }
+.lbr-skeleton--r-lg { border-radius: var(--radius-lg); }
+.lbr-skeleton--r-full { border-radius: var(--radius-full); }
+@keyframes lbr-skeleton-pulse {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+/* respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .lbr-skeleton { animation: none; }
+}

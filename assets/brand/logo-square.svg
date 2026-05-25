@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Libriant">
+  <rect width="64" height="64" rx="12" fill="#1f6feb"/>
+  <path d="M16 20 L48 20 M16 32 L48 32 M16 44 L40 44" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+</svg>

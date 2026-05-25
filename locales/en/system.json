@@ -1,0 +1,9 @@
+{
+  "maintenance.title": "We'll be right back",
+  "maintenance.description": "Libriant is briefly down for maintenance so we can make things better for you. We expect to be back by {time}.",
+  "maintenance.notifyMe": "Notify me when it's back",
+  "outage.title": "Sorry — something's broken on our side",
+  "outage.description": "Our team is already working on it. Please try again in a few minutes.",
+  "underConstruction.title": "This part of Libriant is coming soon",
+  "underConstruction.description": "We're still putting the finishing touches on this section. It should be ready very soon."
+}

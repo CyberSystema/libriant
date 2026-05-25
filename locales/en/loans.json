@@ -1,0 +1,19 @@
+{
+  "title": "Loans",
+  "subtitle": "Books currently borrowed.",
+  "newLoan": "New loan",
+  "return": "Return",
+  "columns.book": "Book",
+  "columns.member": "Member",
+  "columns.checkedOut": "Checked out",
+  "columns.dueDate": "Due date",
+  "columns.status": "Status",
+  "status.active": "On loan",
+  "status.overdue": "Overdue",
+  "status.returned": "Returned",
+  "empty.title": "No active loans",
+  "empty.description": "When you check out a book to a member, it will show up here.",
+  "empty.cta": "Check out a book",
+  "dueIn": "{days, plural, one {Due in # day} other {Due in # days}}",
+  "overdueBy": "{days, plural, one {Overdue by # day} other {Overdue by # days}}"
+}

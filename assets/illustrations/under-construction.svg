@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200" role="img" aria-label="Under construction">
+  <rect width="320" height="200" rx="12" fill="#ddf4ff"/>
+  <g transform="translate(120 50)" stroke="#0969da" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="0" y="40" width="80" height="50" rx="4"/>
+    <path d="M0 40 L40 10 L80 40"/>
+    <line x1="40" y1="60" x2="40" y2="90"/>
+    <line x1="0" y1="70" x2="80" y2="70"/>
+  </g>
+  <text x="160" y="160" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="600" fill="#0a3069" text-anchor="middle">Under construction</text>
+</svg>

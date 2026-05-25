@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200" role="img" aria-label="Service unavailable">
+  <rect width="320" height="200" rx="12" fill="#ffebe9"/>
+  <g transform="translate(135 55)" stroke="#cf222e" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M25 0 L50 50 L0 50 Z"/>
+    <line x1="25" y1="18" x2="25" y2="34"/>
+    <circle cx="25" cy="42" r="1.5" fill="#cf222e"/>
+  </g>
+  <text x="160" y="160" font-family="Inter, system-ui, sans-serif" font-size="14" font-weight="600" fill="#82071e" text-anchor="middle">Service temporarily unavailable</text>
+</svg>

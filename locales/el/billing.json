@@ -1,0 +1,15 @@
+{
+  "title": "Πλάνο & χρεώσεις",
+  "subtitle": "Διαχείριση της συνδρομής της βιβλιοθήκης σας.",
+  "currentPlan": "Τρέχον πλάνο",
+  "usage": "Χρήση",
+  "usage.books": "{used} από {limit} βιβλία σε χρήση",
+  "usage.members": "{used} από {limit} μέλη σε χρήση",
+  "usage.storage": "{used} από {limit} χώρου σε χρήση",
+  "actions.upgrade": "Αναβάθμιση",
+  "actions.changePlan": "Αλλαγή πλάνου",
+  "actions.viewInvoices": "Προβολή τιμολογίων",
+  "paymentMethod": "Τρόπος πληρωμής",
+  "nextInvoice": "Επόμενο τιμολόγιο στις {date} για {amount}.",
+  "errors.paymentFailed": "Η τελευταία πληρωμή σας δεν ολοκληρώθηκε. Παρακαλούμε ενημερώστε τα στοιχεία πληρωμής για να διατηρήσετε την πρόσβασή σας."
+}

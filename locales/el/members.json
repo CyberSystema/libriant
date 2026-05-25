@@ -1,0 +1,18 @@
+{
+  "title": "Μέλη",
+  "subtitle": "Άνθρωποι που δανείζονται από τη βιβλιοθήκη σας.",
+  "addMember": "Προσθήκη μέλους",
+  "search": "Αναζήτηση με όνομα, email ή αριθμό κάρτας",
+  "columns.name": "Όνομα",
+  "columns.email": "Email",
+  "columns.cardNumber": "Αριθμός κάρτας",
+  "columns.status": "Κατάσταση",
+  "columns.activeLoans": "Ενεργοί δανεισμοί",
+  "status.active": "Ενεργό",
+  "status.blocked": "Σε αναστολή",
+  "status.archived": "Αρχειοθετημένο",
+  "empty.title": "Δεν υπάρχουν μέλη ακόμη",
+  "empty.description": "Προσθέστε το πρώτο σας μέλος για να αρχίσετε να δανείζετε βιβλία. Μπορείτε επίσης να εισαγάγετε μέλη από αρχείο αργότερα.",
+  "empty.cta": "Προσθέστε το πρώτο σας μέλος",
+  "count": "{count, plural, one {# μέλος} other {# μέλη}}"
+}

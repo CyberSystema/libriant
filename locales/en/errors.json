@@ -1,0 +1,15 @@
+{
+  "generic.title": "Sorry — that didn't work",
+  "generic.description": "We couldn't complete that just now. Please try again. If the problem keeps happening, copy this code and send it to Libriant support: {code}.",
+  "validation.required": "This field is required.",
+  "validation.email": "Please enter a valid email address.",
+  "validation.tooShort": "Please use at least {min} characters.",
+  "validation.tooLong": "Please use no more than {max} characters.",
+  "validation.number": "Please enter a number.",
+  "validation.date": "Please enter a valid date.",
+  "permission.denied": "You don't have permission to do that.",
+  "notFound.title": "We couldn't find that",
+  "notFound.description": "The thing you were looking for isn't here. It may have been removed.",
+  "quotaExceeded.title": "You've reached your plan's limit",
+  "quotaExceeded.description": "Your plan allows up to {limit} {resource}. Upgrade your plan to add more."
+}

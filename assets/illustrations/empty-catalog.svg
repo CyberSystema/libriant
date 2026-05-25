@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 160" role="img" aria-label="Empty catalog">
+  <rect width="240" height="160" rx="8" fill="#f6f8fa"/>
+  <g transform="translate(90 40)" stroke="#57606a" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 70 L4 12 A6 6 0 0 1 10 6 L56 6 L56 76 L10 76 A6 6 0 0 1 4 70 Z"/>
+    <line x1="14" y1="22" x2="46" y2="22"/>
+    <line x1="14" y1="34" x2="46" y2="34"/>
+    <line x1="14" y1="46" x2="36" y2="46"/>
+  </g>
+  <text x="120" y="135" font-family="Inter, system-ui, sans-serif" font-size="12" fill="#57606a" text-anchor="middle">No books yet</text>
+</svg>

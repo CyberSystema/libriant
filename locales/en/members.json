@@ -1,0 +1,18 @@
+{
+  "title": "Members",
+  "subtitle": "People who borrow from your library.",
+  "addMember": "Add member",
+  "search": "Search by name, email or card number",
+  "columns.name": "Name",
+  "columns.email": "Email",
+  "columns.cardNumber": "Card number",
+  "columns.status": "Status",
+  "columns.activeLoans": "Active loans",
+  "status.active": "Active",
+  "status.blocked": "Blocked",
+  "status.archived": "Archived",
+  "empty.title": "No members yet",
+  "empty.description": "Add your first member to start lending books. You can also import members from a spreadsheet later.",
+  "empty.cta": "Add your first member",
+  "count": "{count, plural, one {# member} other {# members}}"
+}

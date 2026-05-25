@@ -1,0 +1,69 @@
+# Libriant — local development stack.
+#
+# Brings up the data services only. App + worker run on the host via `pnpm dev`
+# so TypeScript rebuilds are fast. Production compose will add caddy + app +
+# worker as services here.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: libriant-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: libriant
+      POSTGRES_PASSWORD: libriant
+      POSTGRES_DB: libriant_control
+      # Greek collation so user-facing sorts behave correctly for Greek titles.
+      LANG: el_GR.UTF-8
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+    ports:
+      - '5432:5432'
+    volumes:
+      - libriant_pg_data:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U libriant -d libriant_control']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgbouncer:
+    image: edoburu/pgbouncer:1.23.0
+    container_name: libriant-pgbouncer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_USER: libriant
+      DB_PASSWORD: libriant
+      DB_HOST: postgres
+      DB_NAME: libriant_control
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: '500'
+      DEFAULT_POOL_SIZE: '20'
+    ports:
+      - '6432:5432'
+
+  redis:
+    image: redis:7-alpine
+    container_name: libriant-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - libriant_redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  libriant_pg_data:
+  libriant_redis_data:

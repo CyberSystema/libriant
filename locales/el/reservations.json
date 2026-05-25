@@ -1,0 +1,17 @@
+{
+  "title": "Κρατήσεις",
+  "subtitle": "Μέλη που περιμένουν βιβλία τα οποία είναι δανεισμένα.",
+  "newReservation": "Νέα κράτηση",
+  "columns.book": "Βιβλίο",
+  "columns.member": "Μέλος",
+  "columns.requested": "Ημερομηνία αιτήματος",
+  "columns.position": "Σειρά αναμονής",
+  "columns.status": "Κατάσταση",
+  "status.queued": "Σε αναμονή",
+  "status.readyForPickup": "Έτοιμο προς παραλαβή",
+  "status.fulfilled": "Παραλήφθηκε",
+  "status.expired": "Έληξε",
+  "empty.title": "Δεν υπάρχουν κρατήσεις ακόμη",
+  "empty.description": "Τα μέλη μπορούν να κάνουν κράτηση για δανεισμένα βιβλία και θα ειδοποιείστε εδώ όταν κάθε ένα είναι έτοιμο για παράδοση.",
+  "empty.cta": "Νέα κράτηση"
+}

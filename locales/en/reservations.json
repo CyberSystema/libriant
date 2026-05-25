@@ -1,0 +1,17 @@
+{
+  "title": "Reservations",
+  "subtitle": "Members waiting for books that are currently checked out.",
+  "newReservation": "New reservation",
+  "columns.book": "Book",
+  "columns.member": "Member",
+  "columns.requested": "Requested",
+  "columns.position": "Position in queue",
+  "columns.status": "Status",
+  "status.queued": "Waiting",
+  "status.readyForPickup": "Ready for pickup",
+  "status.fulfilled": "Picked up",
+  "status.expired": "Expired",
+  "empty.title": "No reservations yet",
+  "empty.description": "Members can reserve books that are checked out, and you'll be notified here when each one is ready to hand over.",
+  "empty.cta": "Place a reservation"
+}
