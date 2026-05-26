@@ -16,9 +16,7 @@ type EmptyStateProps = {
 export function EmptyState({ illustration, title, description, action }: EmptyStateProps) {
   return (
     <div className="lbr-empty">
-      {illustration ? (
-        <Asset name={illustration} className="lbr-empty__illustration" />
-      ) : null}
+      {illustration ? <Asset name={illustration} className="lbr-empty__illustration" /> : null}
       <h2 className="lbr-empty__title">{title}</h2>
       {description ? <p className="lbr-empty__description">{description}</p> : null}
       {action ? <div className="lbr-empty__action">{action}</div> : null}

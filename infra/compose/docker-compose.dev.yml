@@ -31,7 +31,7 @@ services:
       retries: 10
 
   pgbouncer:
-    image: edoburu/pgbouncer:1.23.0
+    image: edoburu/pgbouncer:v1.24.1-p1
     container_name: libriant-pgbouncer
     restart: unless-stopped
     depends_on:

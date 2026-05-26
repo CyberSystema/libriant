@@ -6,6 +6,8 @@
 CREATE EXTENSION IF NOT EXISTS unaccent;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS citext;
 
 -- A demo tenant DB so onboarding work has something to point at during Step 0.
 -- Real tenants will be provisioned via scripts/tenant-create.ts later.

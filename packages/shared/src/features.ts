@@ -45,7 +45,8 @@ export const FEATURES = {
     key: 'max_storage_mb',
     type: 'int',
     label: 'Maximum storage (MB)',
-    description: 'Total file storage available to the library for covers, photos, attachments, etc.',
+    description:
+      'Total file storage available to the library for covers, photos, attachments, etc.',
     default: 100,
     unit: 'mb',
   },
@@ -128,7 +129,8 @@ export const FEATURES = {
     key: 'custom_subdomain_enabled',
     type: 'bool',
     label: 'Custom subdomain',
-    description: 'Allow the library to be reached at its own subdomain in addition to the path URL.',
+    description:
+      'Allow the library to be reached at its own subdomain in addition to the path URL.',
     default: false,
   },
   priority_support: {

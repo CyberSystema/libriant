@@ -1,0 +1,36 @@
+import { PrismaClient } from '@prisma/client';
+
+/**
+ * Control-plane Prisma client.
+ *
+ * The control-plane DB is small and queried from many places (every request
+ * resolves a tenant against it via Redis-cached lookups; webhooks, audit
+ * writes, admin UI, etc.). We share ONE client across the API process. The
+ * `globalThis` guard prevents Next.js / dev hot-reload from spawning a new
+ * client on every reload, which would exhaust the connection budget.
+ */
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __libriantControlPrisma: PrismaClient | undefined;
+}
+
+function makeClient() {
+  return new PrismaClient({
+    log: process.env.NODE_ENV === 'production' ? ['warn', 'error'] : ['warn', 'error'],
+    errorFormat: 'minimal',
+  });
+}
+
+export const controlDb: PrismaClient = globalThis.__libriantControlPrisma ?? makeClient();
+
+if (process.env.NODE_ENV !== 'production') {
+  globalThis.__libriantControlPrisma = controlDb;
+}
+
+/**
+ * Gracefully disconnect on process shutdown. Wire from main.ts and seed scripts.
+ */
+export async function disconnectControlDb(): Promise<void> {
+  await controlDb.$disconnect();
+}

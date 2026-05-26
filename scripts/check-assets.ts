@@ -40,7 +40,13 @@ async function walk(dir: string, suffixes: string[]): Promise<string[]> {
     for (const e of entries) {
       const full = path.join(cur, e.name);
       if (e.isDirectory()) {
-        if (e.name === 'node_modules' || e.name === '.next' || e.name === 'dist' || e.name.startsWith('.')) continue;
+        if (
+          e.name === 'node_modules' ||
+          e.name === '.next' ||
+          e.name === 'dist' ||
+          e.name.startsWith('.')
+        )
+          continue;
         stack.push(full);
       } else if (suffixes.some((s) => e.name.endsWith(s))) {
         out.push(full);

@@ -19,7 +19,14 @@ export default async function LocaleHome({ params }: { params: { locale: string 
           marginBottom: '2rem',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: 'var(--color-primary)' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.75rem',
+            color: 'var(--color-primary)',
+          }}
+        >
           <Asset name="brand/logo" width={160} height={40} />
         </div>
         <nav aria-label={t('common.nav.language')} style={{ display: 'flex', gap: '0.5rem' }}>
@@ -41,14 +48,16 @@ export default async function LocaleHome({ params }: { params: { locale: string 
         </nav>
       </header>
 
-      <h1 style={{ fontSize: 'var(--fs-3xl)', margin: '0 0 0.5rem 0' }}>
-        {t('common.app.name')}
-      </h1>
+      <h1 style={{ fontSize: 'var(--fs-3xl)', margin: '0 0 0.5rem 0' }}>{t('common.app.name')}</h1>
       <p style={{ color: 'var(--color-text-muted)', marginBottom: '2rem' }}>
         {t('common.app.tagline')}
       </p>
 
-      <Banner severity="info" title={t('onboarding.welcome.title')} style={{ marginBottom: '2rem' }}>
+      <Banner
+        severity="info"
+        title={t('onboarding.welcome.title')}
+        style={{ marginBottom: '2rem' }}
+      >
         {t('onboarding.welcome.subtitle')}
       </Banner>
 
@@ -59,12 +68,14 @@ export default async function LocaleHome({ params }: { params: { locale: string 
         action={<Button variant="primary">{t('catalog.empty.cta')}</Button>}
       />
 
-      <footer style={{ marginTop: '3rem', fontSize: 'var(--fs-sm)', color: 'var(--color-text-subtle)' }}>
+      <footer
+        style={{ marginTop: '3rem', fontSize: 'var(--fs-sm)', color: 'var(--color-text-subtle)' }}
+      >
         <p>
           This page exercises the Step 0 foundation: design tokens from{' '}
-          <code>assets/theme/tokens.json</code>, icons + illustrations from{' '}
-          <code>assets/</code>, strings from <code>locales/{params.locale}/</code>.
-          Edit any of those files and reload to see the change.
+          <code>assets/theme/tokens.json</code>, icons + illustrations from <code>assets/</code>,
+          strings from <code>locales/{params.locale}/</code>. Edit any of those files and reload to
+          see the change.
         </p>
       </footer>
     </main>

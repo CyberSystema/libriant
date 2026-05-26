@@ -1,0 +1,153 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: Static checks (typecheck + translations + assets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma clients (control-plane + tenant)
+        run: pnpm db:generate
+        env:
+          # Generation doesn't actually connect; placeholder URLs silence the warnings.
+          CONTROL_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_control
+          TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
+
+      - name: Translation parity (en + el catalogs in lock-step)
+        run: pnpm check:translations
+
+      - name: Asset manifest integrity (every slot exists; every code ref listed)
+        run: pnpm check:assets
+
+      - name: TypeScript typecheck (all packages)
+        run: pnpm typecheck
+
+      - name: Prettier formatting
+        run: pnpm format:check
+
+  db-migration:
+    name: Apply control-plane + tenant migrations against real Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: libriant
+          POSTGRES_PASSWORD: libriant
+          POSTGRES_DB: libriant_control
+          LANG: el_GR.UTF-8
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U libriant -d libriant_control"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Create + extend both DBs (control + demo tenant)
+        run: |
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "
+            CREATE EXTENSION IF NOT EXISTS unaccent;
+            CREATE EXTENSION IF NOT EXISTS pg_trgm;
+            CREATE EXTENSION IF NOT EXISTS pgcrypto;
+            CREATE EXTENSION IF NOT EXISTS citext;
+          "
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "
+            SELECT 'CREATE DATABASE libriant_demo'
+            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'libriant_demo')\gexec
+          "
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_demo -c "
+            CREATE EXTENSION IF NOT EXISTS unaccent;
+            CREATE EXTENSION IF NOT EXISTS pg_trgm;
+            CREATE EXTENSION IF NOT EXISTS pgcrypto;
+            CREATE EXTENSION IF NOT EXISTS citext;
+          "
+
+      - name: Apply migration
+        run: pnpm db:migrate:deploy
+        env:
+          CONTROL_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_control
+
+      - name: Seed control-plane DB
+        run: pnpm db:seed
+        env:
+          CONTROL_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_control
+
+      - name: Verify expected row counts
+        run: |
+          COUNTS=$(PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -t -c "
+            SELECT
+              (SELECT count(*) FROM cells)              || ',' ||
+              (SELECT count(*) FROM plan_features)      || ',' ||
+              (SELECT count(*) FROM plans)              || ',' ||
+              (SELECT count(*) FROM plan_feature_values);
+          " | tr -d ' ')
+          echo "Counts: $COUNTS"
+          [ "$COUNTS" = "1,15,5,75" ] || { echo "Expected 1,15,5,75 — seed drifted"; exit 1; }
+
+      - name: Re-run seed (must remain idempotent)
+        run: pnpm db:seed
+        env:
+          CONTROL_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_control
+
+      - name: Verify row counts unchanged after re-seed
+        run: |
+          COUNTS=$(PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -t -c "
+            SELECT
+              (SELECT count(*) FROM cells)              || ',' ||
+              (SELECT count(*) FROM plan_features)      || ',' ||
+              (SELECT count(*) FROM plans)              || ',' ||
+              (SELECT count(*) FROM plan_feature_values);
+          " | tr -d ' ')
+          echo "Counts: $COUNTS"
+          [ "$COUNTS" = "1,15,5,75" ] || { echo "Seed is not idempotent"; exit 1; }
+
+      - name: Apply tenant migration to libriant_demo
+        run: pnpm tenant:migrate:deploy
+        env:
+          TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
+
+      - name: Seed tenant defaults
+        run: pnpm tenant:seed:defaults
+        env:
+          TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
+
+      - name: Run tenant smoke test (catalog → loan → reservation → custom collection)
+        run: pnpm tenant:smoke
+        env:
+          TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo

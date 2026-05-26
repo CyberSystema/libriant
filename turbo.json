@@ -14,8 +14,20 @@
       "outputs": []
     },
     "typecheck": {
-      "dependsOn": ["^build"],
+      "dependsOn": [
+        "^build",
+        "@libriant/db-control#prisma:generate",
+        "@libriant/db-tenant#prisma:generate"
+      ],
       "outputs": []
+    },
+    "@libriant/db-control#prisma:generate": {
+      "inputs": ["prisma/schema.prisma"],
+      "outputs": ["node_modules/.prisma/**"]
+    },
+    "@libriant/db-tenant#prisma:generate": {
+      "inputs": ["prisma/schema.prisma"],
+      "outputs": ["node_modules/.prisma/**"]
     },
     "test": {
       "dependsOn": ["^build"],

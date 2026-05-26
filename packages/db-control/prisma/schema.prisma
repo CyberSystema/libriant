@@ -1,0 +1,685 @@
+// Libriant — Control-Plane schema.
+//
+// This database holds platform-level data that is never tenant-specific:
+// who the tenants are, where each tenant's DB and storage live, plans &
+// pricing, Libriant staff (admin) identities, support sessions, audit logs,
+// announcements, and system mode. Tenant business data (books, members,
+// loans) lives in per-tenant databases under a separate schema package
+// (packages/db-tenant, added in a later step).
+//
+// Design principles enforced here:
+//   - Per-tenant `db_url` and `storage_url` are first-class columns so that
+//     moving a tenant between cells later is a row update, not a code change.
+//   - Plans live in the DB; source code holds only the *catalog of feature
+//     keys* (see @libriant/shared). Owners reshape plans via admin UI.
+//   - Admins have zero default access to tenant data: support flow is
+//     modeled as `support_keys` → `support_sessions` → `support_action_log`,
+//     and authorization checks lean on `support_sessions.tenant_id`.
+//   - Every FK has an index. Every soft-delete column lives next to a
+//     `status` enum so queries can filter cleanly.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("CONTROL_DATABASE_URL")
+  extensions = [pgcrypto, citext, pg_trgm, unaccent]
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum TenantStatus {
+  active
+  suspended
+  archived
+}
+
+enum UserRole {
+  owner // tenant owner — full library admin
+  admin // library admin — almost everything except billing
+  librarian // day-to-day staff
+  volunteer // limited rights
+}
+
+enum UserStatus {
+  invited
+  active
+  disabled
+}
+
+enum AdminRole {
+  owner // Libriant founders / leadership
+  support // Libriant support staff
+}
+
+enum AdminStatus {
+  active
+  locked // temporarily locked due to too many failed redemptions
+  disabled
+}
+
+enum FeatureType {
+  integer @map("int")
+  boolean @map("bool")
+  text    @map("text")
+}
+
+enum BillingMode {
+  stripe
+  manual
+}
+
+enum SubscriptionStatus {
+  trialing
+  active
+  past_due
+  canceled
+  paused
+}
+
+enum SupportKeyStatus {
+  pending
+  redeemed
+  expired
+  revoked
+}
+
+enum SupportSessionEndReason {
+  expired
+  admin_ended
+  library_revoked
+}
+
+enum AnnouncementSeverity {
+  info
+  warning
+  critical
+}
+
+enum SystemModeKind {
+  normal
+  maintenance
+  read_only
+  out_of_order
+  under_construction
+}
+
+enum SystemModeScope {
+  global
+  tenant
+}
+
+enum AuditActorType {
+  user
+  admin
+  system
+}
+
+// ---------------------------------------------------------------------------
+// Topology: cells, tenants, per-tenant DB credentials
+// ---------------------------------------------------------------------------
+
+/// A logical group of (DB host + app cluster + storage). The pilot ships
+/// with a single cell. Tenant sharding later is just adding more rows here
+/// and pointing tenants at them.
+model Cell {
+  id         String   @id @default(cuid())
+  slug       String   @unique
+  name       String
+  region     String   @default("eu-central")
+  /// Base address for tenant DBs in this cell — used as a template only.
+  /// Each tenant's actual URL is stored on `tenants.db_url`.
+  dbHostUrl  String?
+  /// Whether this cell is open for new tenant placement.
+  acceptsNew Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  tenants    Tenant[]
+
+  @@map("cells")
+}
+
+/// One row per library that uses Libriant. `db_url` and `storage_url` are
+/// what every tenant-scoped operation in the app reads to find the right
+/// database and storage backend — keeping them on the tenant row means
+/// moving a tenant between hosts is a row update.
+model Tenant {
+  id               String       @id @default(cuid())
+  /// URL-safe identifier used in `/t/<slug>/...`.
+  slug             String       @unique
+  /// Display name (e.g. "Δημοτική Βιβλιοθήκη Καλαμάτας").
+  name             String
+  /// Default locale for this library — individual users can override.
+  defaultLocale    String       @default("el")
+  status           TenantStatus @default(active)
+  cellId           String
+  /// Canonical Postgres URL for THIS tenant's database. May share host with
+  /// others (one Postgres, many DBs) or be on its own host post-sharding.
+  dbUrl            String
+  /// Canonical storage URL for THIS tenant's files. Scheme dictates driver:
+  /// `file://...` (LocalDriver), `s3://...` (S3Driver), `smb://...`.
+  storageUrl       String
+  /// Opt-in custom subdomain (Pro/Enterprise feature). When NULL the tenant
+  /// is reachable only via `/t/<slug>/`. When set, also reachable at
+  /// `<custom_subdomain>.<root domain>` after wildcard DNS is wired.
+  customSubdomain  String?
+  /// Free-form tags for audience targeting (announcements, system mode).
+  tags             String[]     @default([])
+  /// Cached file-size total (bytes), refreshed by a nightly job. Used by
+  /// QuotaInterceptor to fail uploads before they touch disk.
+  storageUsedBytes BigInt       @default(0)
+  /// Contact email for billing / urgent platform notices.
+  primaryEmail     String       @db.Citext
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  archivedAt DateTime?
+
+  cell                   Cell                   @relation(fields: [cellId], references: [id], onDelete: Restrict)
+  dbCredentials          TenantDbCredential?
+  users                  User[]
+  subscription           Subscription?
+  billingAccount         BillingAccount?
+  planOverrides          TenantPlanOverride[]
+  auditEvents            AuditEvent[]
+  supportKeys            SupportKey[]
+  supportSessions        SupportSession[]
+  announcementDeliveries AnnouncementDelivery[]
+  systemModeEvents       SystemModeEvent[]
+
+  @@index([cellId])
+  @@index([status])
+  // partial unique index on custom_subdomain WHERE NOT NULL is added in
+  // the migration SQL (Prisma can't express partial uniques natively).
+  @@map("tenants")
+}
+
+/// Sensitive per-tenant DB role secret, separated from the URL so we can
+/// rotate / re-encrypt independently. Stored as ciphertext + key id.
+model TenantDbCredential {
+  tenantId        String   @id
+  /// Postgres role name owning this tenant's DB.
+  roleName        String
+  /// AES-GCM ciphertext of the role password.
+  encryptedPwd    Bytes
+  /// Identifier of the key used to encrypt — supports rotation.
+  encryptionKeyId String
+  /// Nonce/IV for the encryption.
+  encryptionNonce Bytes
+  rotatedAt       DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_db_credentials")
+}
+
+// ---------------------------------------------------------------------------
+// Library users (tenant staff): identity lives here so login can resolve a
+// user before we open the tenant DB. Tenant-specific user *preferences*
+// will live in the tenant DB later.
+// ---------------------------------------------------------------------------
+
+model User {
+  id              String     @id @default(cuid())
+  tenantId        String
+  /// CITEXT-backed unique email per tenant — same human can have accounts
+  /// at multiple libraries, but each library treats emails case-insensitively.
+  email           String     @db.Citext
+  fullName        String
+  role            UserRole   @default(librarian)
+  status          UserStatus @default(invited)
+  /// Per-user override for the tenant's default locale.
+  locale          String?
+  passwordHash    String?
+  /// AES-GCM ciphertext of the TOTP secret (when enabled).
+  mfaSecretCipher Bytes?
+  mfaNonce        Bytes?
+  mfaKeyId        String?
+  mfaEnabled      Boolean    @default(false)
+  /// One-shot token consumed during onboarding to set password.
+  inviteToken     String?
+  inviteExpires   DateTime?
+  lastLoginAt     DateTime?
+  failedLogins    Int        @default(0)
+  lockedUntil     DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  archivedAt      DateTime?
+
+  tenant                 Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  supportKeysCreated     SupportKey[]
+  announcementDeliveries AnnouncementDelivery[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId, status])
+  @@index([email])
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Plans, features, overrides, subscriptions, billing
+// ---------------------------------------------------------------------------
+
+/// The MENU of feature keys the system understands. Seeded from
+/// @libriant/shared/features.ts. Values for a specific plan live in
+/// `plan_feature_values`; per-tenant overrides in `tenant_plan_overrides`.
+model PlanFeature {
+  key         String      @id
+  type        FeatureType
+  label       String
+  description String
+  /// Default value used when no plan nor override covers this feature.
+  defaultInt  Int?
+  defaultBool Boolean?
+  defaultText String?
+  /// Optional unit hint (e.g. `count`, `mb`, `days`, `seats`).
+  unit        String?
+  /// Display order in the admin UI.
+  sortOrder   Int         @default(0)
+
+  values    PlanFeatureValue[]
+  overrides TenantPlanOverride[]
+
+  @@map("plan_features")
+}
+
+/// A subscription plan the owner has defined. Plans are fully managed in
+/// the admin UI — code never assumes specific plan names exist.
+model Plan {
+  id                String      @id @default(cuid())
+  slug              String      @unique
+  name              String
+  description       String?
+  billingMode       BillingMode @default(stripe)
+  /// Stripe Price ID — required when billingMode = stripe.
+  stripePriceId     String?     @unique
+  monthlyPriceCents Int         @default(0)
+  currency          String      @default("EUR")
+  /// Hide from new-customer self-serve picker (still usable via admin).
+  isActive          Boolean     @default(true)
+  /// Hide from public plan list entirely (legacy / experimental plans).
+  isPublic          Boolean     @default(true)
+  sortOrder         Int         @default(0)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  archivedAt        DateTime?
+
+  values        PlanFeatureValue[]
+  subscriptions Subscription[]
+
+  @@index([isActive])
+  @@map("plans")
+}
+
+/// One row per (plan, feature) pair. Typed cells let us index/query
+/// without JSON gymnastics. Exactly one of value_* should be non-null,
+/// matching the feature's type (enforced by a CHECK constraint in SQL).
+model PlanFeatureValue {
+  planId     String
+  featureKey String
+  valueInt   Int?
+  valueBool  Boolean?
+  valueText  String?
+
+  plan    Plan        @relation(fields: [planId], references: [id], onDelete: Cascade)
+  feature PlanFeature @relation(fields: [featureKey], references: [key], onDelete: Cascade)
+
+  @@id([planId, featureKey])
+  @@index([featureKey])
+  @@map("plan_feature_values")
+}
+
+/// Per-tenant override: wins over the plan value. Used for negotiated
+/// deals ("Acme gets +1000 books on Community") and break-glass tweaks.
+model TenantPlanOverride {
+  id               String    @id @default(cuid())
+  tenantId         String
+  featureKey       String
+  valueInt         Int?
+  valueBool        Boolean?
+  valueText        String?
+  /// When the override stops applying (NULL = forever).
+  expiresAt        DateTime?
+  note             String?
+  createdByAdminId String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  tenant         Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  feature        PlanFeature @relation(fields: [featureKey], references: [key], onDelete: Cascade)
+  createdByAdmin AdminUser?  @relation(fields: [createdByAdminId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, featureKey])
+  @@index([featureKey])
+  @@map("tenant_plan_overrides")
+}
+
+/// The current subscription state for a tenant. Stripe webhooks + manual
+/// billing both write here; downstream code reads only this table.
+model Subscription {
+  tenantId             String             @id
+  planId               String
+  /// Denormalized from the plan so subscription queries don't always need
+  /// a join, and we can record what was billed even if the plan changes.
+  billingMode          BillingMode
+  status               SubscriptionStatus @default(active)
+  stripeSubscriptionId String?            @unique
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  /// For manual-billed plans: until when the tenant is considered paid.
+  paidUntil            DateTime?
+  /// Grace period after a failed payment before features get gated.
+  graceUntil           DateTime?
+  canceledAt           DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan   Plan   @relation(fields: [planId], references: [id], onDelete: Restrict)
+
+  @@index([planId])
+  @@index([status])
+  @@map("subscriptions")
+}
+
+/// Stripe customer + EU VAT details. One row per tenant.
+model BillingAccount {
+  tenantId               String   @id
+  stripeCustomerId       String?  @unique
+  defaultPaymentMethodId String?
+  billingEmail           String   @db.Citext
+  billingName            String
+  /// EU VAT or other tax identifier (libraries are often VAT-exempt; column
+  /// is optional).
+  taxId                  String?
+  taxCountry             String?
+  addressLine1           String?
+  addressLine2           String?
+  city                   String?
+  postalCode             String?
+  country                String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("billing_accounts")
+}
+
+/// Idempotency log for Stripe webhooks. Insert-once-per-event; the unique
+/// constraint on the event id means re-deliveries are no-ops.
+model StripeWebhookEvent {
+  id          String    @id // Stripe event id (`evt_…`)
+  type        String
+  /// Raw event body for replay / debug. Pruned after 30 days.
+  payloadJson Json
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  /// If processing errored — readable message; the job retries until success.
+  error       String?
+
+  @@index([type, receivedAt])
+  @@map("stripe_webhook_events")
+}
+
+// ---------------------------------------------------------------------------
+// Libriant admins: separate identity table from tenant `users`, so the auth
+// surfaces are independent and an admin can never accidentally be granted
+// tenant-level access without going through the support flow.
+// ---------------------------------------------------------------------------
+
+model AdminUser {
+  id              String      @id @default(cuid())
+  email           String      @unique @db.Citext
+  fullName        String
+  role            AdminRole   @default(support)
+  status          AdminStatus @default(active)
+  passwordHash    String
+  mfaSecretCipher Bytes
+  mfaNonce        Bytes
+  mfaKeyId        String
+  /// MFA must be enabled before this admin can redeem support keys.
+  mfaEnabled      Boolean     @default(false)
+  lastLoginAt     DateTime?
+  failedAttempts  Int         @default(0)
+  lockedUntil     DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  disabledAt      DateTime?
+
+  supportSessions         SupportSession[]
+  supportKeysRedeemed     SupportKey[]               @relation("RedeemedByAdmin")
+  announcementsCreated    Announcement[]
+  systemModeEventsCreated SystemModeEvent[]
+  tenantOverridesCreated  TenantPlanOverride[]
+  redemptionAttempts      SupportRedemptionAttempt[]
+
+  @@index([status])
+  @@map("admin_users")
+}
+
+// ---------------------------------------------------------------------------
+// Support access — admin "break-glass" into a tenant.
+// Flow: library admin generates SupportKey → admin redeems it (with MFA) →
+// SupportSession opens → every action is logged in SupportActionLog →
+// session ends by expiry, admin choice, or library revocation.
+// ---------------------------------------------------------------------------
+
+model SupportKey {
+  id                String           @id @default(cuid())
+  tenantId          String
+  createdByUserId   String
+  /// bcrypt hash of the random body of the code (the part after "SUPPORT-").
+  codeHash          String
+  /// First 4 chars of the random body, used to narrow the bcrypt lookup at
+  /// redemption time to a small candidate set.
+  codePrefix        String
+  generatedAt       DateTime         @default(now())
+  expiresAt         DateTime
+  redeemedAt        DateTime?
+  redeemedByAdminId String?
+  redeemedFromIp    String?
+  status            SupportKeyStatus @default(pending)
+  /// Set when redemption succeeds.
+  sessionId         String?          @unique
+  revokedAt         DateTime?
+  revokedReason     String?
+
+  tenant     Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy  User            @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  redeemedBy AdminUser?      @relation("RedeemedByAdmin", fields: [redeemedByAdminId], references: [id], onDelete: SetNull)
+  session    SupportSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  // partial unique index `tenantId WHERE status = 'pending'` is added in
+  // the migration SQL to enforce "at most one pending key per tenant".
+  @@index([tenantId, status])
+  @@index([codePrefix, status])
+  @@index([expiresAt])
+  @@map("support_keys")
+}
+
+model SupportSession {
+  id           String                   @id @default(cuid())
+  tenantId     String
+  adminId      String
+  supportKeyId String                   @unique
+  startedAt    DateTime                 @default(now())
+  expiresAt    DateTime
+  endedAt      DateTime?
+  endedReason  SupportSessionEndReason?
+  ipAddress    String?
+  userAgent    String?
+
+  tenant  Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  admin   AdminUser          @relation(fields: [adminId], references: [id], onDelete: Restrict)
+  actions SupportActionLog[]
+  key     SupportKey?
+
+  @@index([tenantId])
+  @@index([adminId])
+  @@index([endedAt])
+  @@map("support_sessions")
+}
+
+model SupportActionLog {
+  id         String   @id @default(cuid())
+  sessionId  String
+  ts         DateTime @default(now())
+  method     String
+  path       String
+  status     Int
+  /// What was touched: e.g. `book`, `member`. NULL for read-only / list endpoints.
+  targetType String?
+  targetId   String?
+  /// Pre-mutation state captured by Prisma middleware.
+  beforeJson Json?
+  /// Post-mutation state.
+  afterJson  Json?
+
+  session SupportSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, ts])
+  @@index([ts])
+  @@map("support_action_log")
+}
+
+/// Rate-limit + brute-force defenses for the redemption endpoint.
+model SupportRedemptionAttempt {
+  id         String   @id @default(cuid())
+  adminId    String?
+  ipAddress  String?
+  ts         DateTime @default(now())
+  success    Boolean
+  /// If we recognized the prefix but the bcrypt compare failed → record so
+  /// we can spot scanning behavior.
+  codePrefix String?
+
+  admin AdminUser? @relation(fields: [adminId], references: [id], onDelete: SetNull)
+
+  @@index([adminId, ts])
+  @@index([ipAddress, ts])
+  @@map("support_redemption_attempts")
+}
+
+// ---------------------------------------------------------------------------
+// Audit log — platform-wide events. Tenant-side audit (book added, etc.)
+// lives in the tenant DB and is a separate concern.
+// ---------------------------------------------------------------------------
+
+model AuditEvent {
+  id         String         @id @default(cuid())
+  /// NULL = platform-wide event (e.g. global maintenance toggle).
+  tenantId   String?
+  actorType  AuditActorType
+  actorId    String?
+  /// e.g. `tenant.created`, `subscription.changed`, `support.key.redeemed`.
+  action     String
+  targetType String?
+  targetId   String?
+  beforeJson Json?
+  afterJson  Json?
+  ip         String?
+  userAgent  String?
+  occurredAt DateTime       @default(now())
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, occurredAt])
+  @@index([actorType, actorId, occurredAt])
+  @@index([targetType, targetId])
+  @@index([action, occurredAt])
+  @@map("audit_log")
+}
+
+// ---------------------------------------------------------------------------
+// Announcements — admin → libraries, in-app + email, audience-targeted.
+// ---------------------------------------------------------------------------
+
+model Announcement {
+  id               String               @id @default(cuid())
+  title            String
+  bodyMarkdown     String
+  severity         AnnouncementSeverity @default(info)
+  /// JSON shape: `{ all: true } | { tenant_ids: [...] } | { plan_slugs: [...] } | { tags: [...] }`
+  audienceFilter   Json
+  deliverInApp     Boolean              @default(true)
+  deliverEmail     Boolean              @default(false)
+  /// When the banner becomes visible / email goes out. NULL = immediately.
+  publishAt        DateTime?
+  /// After this, the banner disappears even if not dismissed.
+  expiresAt        DateTime?
+  dismissible      Boolean              @default(true)
+  /// If true, library users must click acknowledge before continuing.
+  requiresAck      Boolean              @default(false)
+  createdByAdminId String
+  createdAt        DateTime             @default(now())
+  publishedAt      DateTime?
+  archivedAt       DateTime?
+
+  createdByAdmin AdminUser              @relation(fields: [createdByAdminId], references: [id], onDelete: Restrict)
+  deliveries     AnnouncementDelivery[]
+
+  @@index([publishAt])
+  @@index([expiresAt])
+  @@map("announcements")
+}
+
+model AnnouncementDelivery {
+  id               String    @id @default(cuid())
+  announcementId   String
+  /// Whose copy of the announcement this is. NULL on tenant_id means a
+  /// preview/test delivery; NULL on user_id means tenant-wide (not user-specific).
+  tenantId         String?
+  userId           String?
+  deliveredInAppAt DateTime?
+  deliveredEmailAt DateTime?
+  dismissedAt      DateTime?
+  acknowledgedAt   DateTime?
+
+  announcement Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  tenant       Tenant?      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([announcementId, tenantId, userId])
+  @@index([tenantId, announcementId])
+  @@index([userId, announcementId])
+  @@map("announcement_deliveries")
+}
+
+// ---------------------------------------------------------------------------
+// System mode — maintenance / read_only / out_of_order / under_construction
+// across the whole platform or for a single tenant, scheduled or immediate.
+// The effective state at any moment is the most-recent applicable event whose
+// [starts_at, ends_at] window covers now.
+// ---------------------------------------------------------------------------
+
+model SystemModeEvent {
+  id               String          @id @default(cuid())
+  scope            SystemModeScope
+  /// Required when scope = tenant; must be NULL when scope = global.
+  tenantId         String?
+  mode             SystemModeKind
+  messageMarkdown  String?
+  startsAt         DateTime        @default(now())
+  endsAt           DateTime?
+  /// If false, /admin/* paths are also blocked during the mode (rare).
+  allowAdminBypass Boolean         @default(true)
+  createdByAdminId String
+  createdAt        DateTime        @default(now())
+  /// Set when the admin manually exits the mode early.
+  endedAt          DateTime?
+
+  tenant         Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdByAdmin AdminUser @relation(fields: [createdByAdminId], references: [id], onDelete: Restrict)
+
+  @@index([scope, startsAt])
+  @@index([tenantId, startsAt])
+  @@index([endsAt])
+  @@map("system_mode_events")
+}

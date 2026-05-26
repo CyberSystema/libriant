@@ -22,11 +22,20 @@
     "icons/globe": { "file": "icons/globe.svg", "alt": "Language" },
 
     "illustrations/welcome": { "file": "illustrations/welcome.svg", "alt": "Welcome" },
-    "illustrations/empty-catalog": { "file": "illustrations/empty-catalog.svg", "alt": "No books yet" },
-    "illustrations/empty-members": { "file": "illustrations/empty-members.svg", "alt": "No members yet" },
+    "illustrations/empty-catalog": {
+      "file": "illustrations/empty-catalog.svg",
+      "alt": "No books yet"
+    },
+    "illustrations/empty-members": {
+      "file": "illustrations/empty-members.svg",
+      "alt": "No members yet"
+    },
     "illustrations/maintenance": { "file": "illustrations/maintenance.svg", "alt": "Maintenance" },
     "illustrations/outage": { "file": "illustrations/outage.svg", "alt": "Outage" },
-    "illustrations/under-construction": { "file": "illustrations/under-construction.svg", "alt": "Under construction" },
+    "illustrations/under-construction": {
+      "file": "illustrations/under-construction.svg",
+      "alt": "Under construction"
+    },
 
     "covers/placeholder-book": { "file": "covers/placeholder-book.svg", "alt": "Book cover" },
     "photos/placeholder-member": { "file": "photos/placeholder-member.svg", "alt": "Member photo" }

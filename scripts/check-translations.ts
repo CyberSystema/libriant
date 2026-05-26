@@ -21,13 +21,19 @@ async function readJson(file: string): Promise<Catalog> {
 
 async function listLocales(): Promise<string[]> {
   const entries = await fs.readdir(LOCALES_DIR, { withFileTypes: true });
-  return entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
+  return entries
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort();
 }
 
 async function listNamespaces(locale: string): Promise<string[]> {
   const dir = path.join(LOCALES_DIR, locale);
   const entries = await fs.readdir(dir);
-  return entries.filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, '')).sort();
+  return entries
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => f.replace(/\.json$/, ''))
+    .sort();
 }
 
 async function main() {

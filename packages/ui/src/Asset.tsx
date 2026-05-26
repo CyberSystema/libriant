@@ -19,9 +19,7 @@ export function AssetProvider({
   baseUrl: string;
   children: React.ReactNode;
 }) {
-  return (
-    <AssetContext.Provider value={{ manifest, baseUrl }}>{children}</AssetContext.Provider>
-  );
+  return <AssetContext.Provider value={{ manifest, baseUrl }}>{children}</AssetContext.Provider>;
 }
 
 function useAssetContext(): AssetContextValue {

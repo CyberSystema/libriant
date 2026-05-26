@@ -13,15 +13,18 @@ export type Catalog = Record<string, string>;
  * plus a {count, plural, ...} fallback that picks `one` or `other`.
  */
 export function format(template: string, values: Record<string, string | number> = {}): string {
-  return template.replace(/\{(\w+)(?:,\s*plural,\s*one\s*\{([^}]*)\}\s*other\s*\{([^}]*)\})?\}/g, (_, name, one, other) => {
-    const v = values[name];
-    if (one !== undefined && other !== undefined) {
-      const n = typeof v === 'number' ? v : Number(v ?? 0);
-      const branch = n === 1 ? one : other;
-      return branch.replace(/#/g, String(n));
-    }
-    return v === undefined || v === null ? '' : String(v);
-  });
+  return template.replace(
+    /\{(\w+)(?:,\s*plural,\s*one\s*\{([^}]*)\}\s*other\s*\{([^}]*)\})?\}/g,
+    (_, name, one, other) => {
+      const v = values[name];
+      if (one !== undefined && other !== undefined) {
+        const n = typeof v === 'number' ? v : Number(v ?? 0);
+        const branch = n === 1 ? one : other;
+        return branch.replace(/#/g, String(n));
+      }
+      return v === undefined || v === null ? '' : String(v);
+    },
+  );
 }
 
 export type Translator = (
