@@ -108,6 +108,35 @@ While the app is running:
 - Edit `locales/el/common.json`: change `app.tagline` to anything, reload `/el`, see it appear.
   No restart, no rebuild.
 
+### Verify the tenancy layer
+
+With both the API up and the demo `acme` tenant seeded into the control plane:
+
+```sh
+# 1. Resolved tenant context via path
+curl -s http://localhost:3001/t/acme/info | jq
+
+# 2. Same tenant, this time per-tenant DB query through TenantPrismaService
+curl -s http://localhost:3001/t/acme/db-ping | jq
+
+# 3. Subdomain resolution
+curl -s -H "Host: acme.localhost" http://localhost:3001/t/acme/info | jq
+
+# 4. Negative paths
+curl -i http://localhost:3001/t/nope/info          # 404
+curl -i http://localhost:3001/t/paused-lib/info    # 403
+curl -i http://localhost:3001/t/archived-lib/info  # 410
+curl -i http://localhost:3001/t/INVALID-SLUG/info  # 400 (slug shape rejected)
+```
+
+### Seed the demo tenants used by `/t/acme/...` probes
+
+```sh
+docker cp infra/seed/demo-tenants.sql libriant-postgres:/tmp/demo-tenants.sql
+PGPASSWORD=libriant docker exec libriant-postgres \
+  psql -U libriant -d libriant_control -f /tmp/demo-tenants.sql
+```
+
 ## Where we are in the plan
 
 | Step  | Description                                                          | Status                         |
@@ -118,7 +147,7 @@ While the app is running:
 | 3     | Feature key catalog                                                  | ✅ done (in `packages/shared`) |
 | 4     | **Tenant Prisma schema (catalog/members/loans/customization/audit)** | ✅ done                        |
 | 5     | NestJS API skeleton (health endpoints)                               | ✅ done                        |
-| 6     | Tenancy middleware (path → tenant; per-tenant Prisma)                | ⏳                             |
+| 6     | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**       | ✅ done                        |
 | 7     | Auth (passport-local + sessions)                                     | ⏳                             |
 | 8     | Plan/quota system + EffectivePlanService                             | ⏳                             |
 | 9     | Schema customization (field defs + collections)                      | ⏳                             |

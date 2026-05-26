@@ -1,4 +1,4 @@
-export { controlDb, disconnectControlDb } from './client';
+export { controlDb, disconnectControlDb } from './client.js';
 
 // Re-export the generated Prisma types so consumers can import everything
 // from `@libriant/db-control` without dipping into @prisma/client directly.

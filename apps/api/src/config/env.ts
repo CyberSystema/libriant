@@ -10,6 +10,16 @@ export type AppEnv = {
   redisUrl: string;
   storageRoot: string;
   assetsRoot: string;
+  /** Apex domain used to detect a tenant from the Host header subdomain. */
+  publicApexDomain: string;
+  /** Path prefix that signals a tenant-scoped request, e.g. `/t/<slug>/...`. */
+  tenantPathPrefix: string;
+  /** TTL for the slug → tenant context Redis cache, in seconds. */
+  tenantCacheTtlSec: number;
+  /** Max number of per-tenant Prisma clients kept hot in memory. */
+  tenantClientCacheSize: number;
+  /** Idle TTL (ms) before an unused tenant client is evicted + disconnected. */
+  tenantClientIdleMs: number;
 };
 
 function required(key: string): string {
@@ -38,5 +48,10 @@ export function loadEnv(): AppEnv {
     redisUrl: optional('REDIS_URL', 'redis://localhost:6379'),
     storageRoot: optional('STORAGE_ROOT', '/srv/libriant/storage'),
     assetsRoot: optional('ASSETS_ROOT', new URL('../../../../assets', import.meta.url).pathname),
+    publicApexDomain: optional('PUBLIC_APEX_DOMAIN', 'localhost'),
+    tenantPathPrefix: optional('TENANT_PATH_PREFIX', '/t/'),
+    tenantCacheTtlSec: Number(optional('TENANT_CACHE_TTL_SEC', '300')),
+    tenantClientCacheSize: Number(optional('TENANT_CLIENT_CACHE_SIZE', '50')),
+    tenantClientIdleMs: Number(optional('TENANT_CLIENT_IDLE_MS', String(30 * 60 * 1000))),
   };
 }

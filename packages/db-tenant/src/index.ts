@@ -1,5 +1,5 @@
-export { makeTenantPrismaClient, disconnectTenantClient } from './client';
-export type { TenantPrismaClient, MakeTenantClientOptions } from './client';
+export { makeTenantPrismaClient, disconnectTenantClient } from './client.js';
+export type { TenantPrismaClient, MakeTenantClientOptions } from './client.js';
 
 // Re-export generated types so consumers import everything from
 // `@libriant/db-tenant`.
