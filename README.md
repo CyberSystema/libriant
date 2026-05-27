@@ -560,28 +560,117 @@ curl -s -b $JAR "http://localhost:3001/t/my-library/reservations?includeResolved
 #    POST /reservations/:id/fulfill return 402.
 ```
 
+### Verify the custom collections module
+
+A library admin defines their own entity types (DVDs, BoardGames, Events)
+with their own field schemas (`/data-model/collections/...`), then records
+of those collections are CRUD'd through generic endpoints
+(`/collections/:cslug/records/...`).
+
+Records validate against the collection's _active_ field definitions at
+request time — so archiving a field instantly stops accepting it on
+writes, while existing records remain readable.
+
+Plan-gated: Starter has `max_custom_collections=0`, so it returns 402
+until the tenant moves to Community (1) or higher.
+
+```sh
+JAR=/tmp/jar.txt  # cookie jar from auth section
+
+# 1) Starter is gated — POST returns 402. Upgrade to Community:
+TID=$(docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "SELECT id FROM tenants WHERE slug='my-library';")
+COMMUNITY=$(docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "SELECT id FROM plans WHERE slug='community';")
+docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "UPDATE subscriptions SET \"planId\" = '$COMMUNITY', \"updatedAt\" = NOW() WHERE \"tenantId\" = '$TID';"
+docker exec libriant-redis redis-cli --no-raw EVAL \
+  "for _,k in ipairs(redis.call('keys','lbr:plan:*')) do redis.call('del',k) end return 'ok'" 0
+
+# 2) Create the `dvds` collection
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/data-model/collections \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"dvds","singularLabelJson":{"en":"DVD","el":"DVD"},"pluralLabelJson":{"en":"DVDs","el":"DVDs"},"iconAssetRef":"icons/book"}'
+
+# 3) Add fields of every important type
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/data-model/collections/dvds/fields \
+  -H "Content-Type: application/json" \
+  -d '{"fieldKey":"title","labelJson":{"en":"Title","el":"Τίτλος"},"type":"short_text","required":true}'
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/data-model/collections/dvds/fields \
+  -H "Content-Type: application/json" \
+  -d '{"fieldKey":"runtime_minutes","labelJson":{"en":"Runtime","el":"Διάρκεια"},"type":"number"}'
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/data-model/collections/dvds/fields \
+  -H "Content-Type: application/json" \
+  -d '{"fieldKey":"region","labelJson":{"en":"Region","el":"Περιοχή"},"type":"select_one","required":true,
+       "optionsJson":{"options":[{"value":"r1","label":{"en":"R1","el":"R1"}},{"value":"r2","label":{"en":"R2","el":"R2"}}]}}'
+
+# 4) Validation refusals — missing required, wrong type, invalid option, unknown field
+curl -i -b $JAR -X POST http://localhost:3001/t/my-library/collections/dvds/records \
+  -H "Content-Type: application/json" -d '{"runtime_minutes":120,"region":"r1"}'        # 400 missing title
+curl -i -b $JAR -X POST http://localhost:3001/t/my-library/collections/dvds/records \
+  -H "Content-Type: application/json" -d '{"title":"x","runtime_minutes":"long","region":"r1"}'  # 400 type
+curl -i -b $JAR -X POST http://localhost:3001/t/my-library/collections/dvds/records \
+  -H "Content-Type: application/json" -d '{"title":"x","region":"r9"}'                  # 400 option
+curl -i -b $JAR -X POST http://localhost:3001/t/my-library/collections/dvds/records \
+  -H "Content-Type: application/json" -d '{"title":"x","region":"r1","director":"x"}'   # 400 unknown
+
+# 5) Happy path + Greek-aware search (writer + reader both normalize)
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/collections/dvds/records \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Πολίτης Κέιν","runtime_minutes":119,"region":"r1"}'
+curl -s -b $JAR -G "http://localhost:3001/t/my-library/collections/dvds/records" \
+  --data-urlencode "q=πολιτη" | jq '.items[].data.title'
+# → "Πολίτης Κέιν"   (accent-folded match)
+
+# 6) Partial PATCH merges into existing JSON — title + region survive
+curl -s -b $JAR -X PATCH "http://localhost:3001/t/my-library/collections/dvds/records/$REC_ID" \
+  -H "Content-Type: application/json" -d '{"runtime_minutes":120}' | jq .data
+
+# 7) Archive collection → reads/writes 404. Restore via PATCH archived:false.
+curl -s -b $JAR -X DELETE http://localhost:3001/t/my-library/data-model/collections/dvds
+curl -s -b $JAR -X PATCH http://localhost:3001/t/my-library/data-model/collections/dvds \
+  -H "Content-Type: application/json" -d '{"archived":false}' | jq '{slug, archivedAt}'
+
+# 8) Field-level archive — writes that include the archived key 400 (unknown field);
+#    records keep their pre-archive values readable. Re-POSTing the same key restores it.
+curl -s -b $JAR -X DELETE http://localhost:3001/t/my-library/data-model/collections/dvds/fields/genres
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/data-model/collections/dvds/fields \
+  -H "Content-Type: application/json" \
+  -d '{"fieldKey":"genres","labelJson":{"en":"Genres","el":"Είδη"},"type":"select_many",
+       "optionsJson":{"options":[{"value":"drama","label":{"en":"Drama","el":"Δράμα"}}]}}'
+
+# 9) Quotas — `max_custom_collections`, `max_custom_fields_per_entity`,
+#    `max_records_per_collection` all return 402 with the friendly upgrade payload
+#    when hit. (Use a per-tenant override on `max_records_per_collection` to test
+#    quickly: INSERT INTO tenant_plan_overrides ...).
+
+# 10) Pagination via cursor + includeArchived filter
+curl -s -b $JAR "http://localhost:3001/t/my-library/collections/dvds/records?limit=2"           | jq '{items: .items[].data.title, nextCursor}'
+curl -s -b $JAR "http://localhost:3001/t/my-library/collections/dvds/records?includeArchived=1" | jq '.items | length'
+```
+
 ## Where we are in the plan
 
-| Step | Description                                                                 | Status                         |
-| ---- | --------------------------------------------------------------------------- | ------------------------------ |
-| 0    | Design system + i18n + assets foundation                                    | ✅ done                        |
-| 1    | Repo scaffold (pnpm/turbo/tsconfig/prettier)                                | ✅ done                        |
-| 2    | **Control-plane Prisma schema + idempotent seed**                           | ✅ done                        |
-| 3    | Feature key catalog                                                         | ✅ done (in `packages/shared`) |
-| 4    | **Tenant Prisma schema (catalog/members/loans/customization/audit)**        | ✅ done                        |
-| 5    | NestJS API skeleton (health endpoints)                                      | ✅ done                        |
-| 6    | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**              | ✅ done                        |
-| 7    | **Auth (signup with tenant provisioning + login + sessions + reset)**       | ✅ done                        |
-| 8    | **Plan/quota system (EffectivePlan + PlanGuard + QuotaInterceptor)**        | ✅ done                        |
-| 9    | **Schema customization (per-entity fields + custom collections + records)** | ✅ done                        |
-| 10   | **Storage layer (driver pattern + signed URLs + quota + recompute)**        | ✅ done                        |
-| 11   | **Catalog (authors + books + copies + ISBN lookup + covers)**               | ✅ done                        |
-| 12   | **Members (CRUD + auto member-number + status + archive + photos)**         | ✅ done                        |
-| 13   | **Loans (checkout / return / renew / mark-lost + overdue fines)**           | ✅ done                        |
-| 14   | **Reservations (holds queue + auto-promote + ready-pickup + fulfill)**      | ✅ done                        |
-| 15   | Collections                                                                 | ⏳                             |
-| 16   | Billing (Stripe + manual)                                                   | ⏳                             |
-| 17   | Staff UI (onboarding, help center, billing)                                 | ⏳                             |
-| 18   | Internal admin (plans, support, system mode, announcements)                 | ⏳                             |
-| 19   | Infra (Caddy, prod compose, GH Actions deploy)                              | ⏳                             |
-| 20   | Tenant provisioning + relocation scripts                                    | ⏳                             |
+| Step | Description                                                                   | Status                         |
+| ---- | ----------------------------------------------------------------------------- | ------------------------------ |
+| 0    | Design system + i18n + assets foundation                                      | ✅ done                        |
+| 1    | Repo scaffold (pnpm/turbo/tsconfig/prettier)                                  | ✅ done                        |
+| 2    | **Control-plane Prisma schema + idempotent seed**                             | ✅ done                        |
+| 3    | Feature key catalog                                                           | ✅ done (in `packages/shared`) |
+| 4    | **Tenant Prisma schema (catalog/members/loans/customization/audit)**          | ✅ done                        |
+| 5    | NestJS API skeleton (health endpoints)                                        | ✅ done                        |
+| 6    | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**                | ✅ done                        |
+| 7    | **Auth (signup with tenant provisioning + login + sessions + reset)**         | ✅ done                        |
+| 8    | **Plan/quota system (EffectivePlan + PlanGuard + QuotaInterceptor)**          | ✅ done                        |
+| 9    | **Schema customization (per-entity fields + custom collections + records)**   | ✅ done                        |
+| 10   | **Storage layer (driver pattern + signed URLs + quota + recompute)**          | ✅ done                        |
+| 11   | **Catalog (authors + books + copies + ISBN lookup + covers)**                 | ✅ done                        |
+| 12   | **Members (CRUD + auto member-number + status + archive + photos)**           | ✅ done                        |
+| 13   | **Loans (checkout / return / renew / mark-lost + overdue fines)**             | ✅ done                        |
+| 14   | **Reservations (holds queue + auto-promote + ready-pickup + fulfill)**        | ✅ done                        |
+| 15   | **Custom collections (records CRUD + dynamic validation + restore + search)** | ✅ done                        |
+| 16   | Billing (Stripe + manual)                                                     | ⏳                             |
+| 17   | Staff UI (onboarding, help center, billing)                                   | ⏳                             |
+| 18   | Internal admin (plans, support, system mode, announcements)                   | ⏳                             |
+| 19   | Infra (Caddy, prod compose, GH Actions deploy)                                | ⏳                             |
+| 20   | Tenant provisioning + relocation scripts                                      | ⏳                             |

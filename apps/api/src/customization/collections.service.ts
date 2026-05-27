@@ -69,13 +69,24 @@ export class CollectionsService {
     return this.toCollectionDto(row);
   }
 
-  /** Resolve a collection id from its slug. Throws 404 if archived/missing. */
-  private async resolveCollectionId(tenant: TenantContext, slug: string): Promise<string> {
+  /**
+   * Resolve a collection id from its slug.
+   *
+   * Default behavior is to ignore archived collections (matches the public
+   * routes — a librarian shouldn't be able to add fields or write records
+   * to an archived collection). Pass `{ includeArchived: true }` for the
+   * restore path, where we need to find the archived row by slug so we
+   * can flip its `archivedAt` back to null.
+   */
+  private async resolveCollectionId(
+    tenant: TenantContext,
+    slug: string,
+    opts: { includeArchived?: boolean } = {},
+  ): Promise<string> {
     const client = this.tenantPrisma.getClient(tenant);
-    const row = await client.collection.findFirst({
-      where: { slug, archivedAt: null },
-      select: { id: true },
-    });
+    const where: { slug: string; archivedAt?: null } = { slug };
+    if (!opts.includeArchived) where.archivedAt = null;
+    const row = await client.collection.findFirst({ where, select: { id: true } });
     if (!row) throw new NotFoundException(`No collection "${slug}".`);
     return row.id;
   }
@@ -133,7 +144,27 @@ export class CollectionsService {
     },
   ): Promise<CollectionDto> {
     const client = this.tenantPrisma.getClient(tenant);
-    const id = await this.resolveCollectionId(tenant, slug);
+    // Restoring (archived: false) needs to find the archived row — every
+    // other path is scoped to active rows only.
+    const isRestore = input.archived === false;
+    const id = await this.resolveCollectionId(tenant, slug, { includeArchived: isRestore });
+
+    if (isRestore) {
+      // The partial unique index `collections_slug_unique_active` is keyed
+      // on `slug WHERE archivedAt IS NULL`. If another active collection
+      // already claimed the slug while this one was archived, the unique
+      // index would 23505 — surface a friendly error first.
+      const clash = await client.collection.findFirst({
+        where: { slug, archivedAt: null, NOT: { id } },
+        select: { id: true },
+      });
+      if (clash) {
+        throw new ConflictException(
+          `Can't restore "${slug}" — another active collection already uses that URL. Rename or archive it first.`,
+        );
+      }
+    }
+
     const data: Record<string, unknown> = {};
     if (input.singularLabelJson !== undefined) data.singularLabelJson = input.singularLabelJson;
     if (input.pluralLabelJson !== undefined) data.pluralLabelJson = input.pluralLabelJson;

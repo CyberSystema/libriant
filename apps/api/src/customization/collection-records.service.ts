@@ -1,5 +1,6 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@libriant/db-tenant';
+import { normalizeText } from '../catalog/normalize.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { CollectionsService } from './collections.service.js';
@@ -49,9 +50,11 @@ export class CollectionRecordsService {
     const where: Prisma.CollectionRecordWhereInput = { collectionId };
     if (!opts.includeArchived) where.archivedAt = null;
     if (opts.q) {
-      // Cheap prefix/contains via Prisma; the actual GIN trigram index
-      // accelerates this for non-trivial corpora.
-      where.searchText = { contains: opts.q.toLowerCase() };
+      // The writer normalizes to lowercase + NFD + diacritic-strip; the
+      // reader has to do the same fold or Greek queries like "πατα" miss
+      // records containing "πάτα". The GIN trigram index on the column
+      // accelerates the contains lookup.
+      where.searchText = { contains: normalizeText(opts.q) };
     }
     const rows = await client.collectionRecord.findMany({
       where,
@@ -167,8 +170,8 @@ export class CollectionRecordsService {
   /**
    * Lowercased + accent-folded composite of all string-ish field values.
    * Used by the GIN trigram index for fuzzy search. The accent fold runs
-   * on the JS side because Postgres `unaccent` isn't IMMUTABLE — we keep
-   * the side that touches the data simple.
+   * on the JS side via the shared `normalizeText` helper so the reader
+   * and writer always agree on the canonical form.
    */
   private buildSearchText(data: Record<string, unknown>): string {
     const parts: string[] = [];
@@ -177,7 +180,7 @@ export class CollectionRecordsService {
       else if (typeof v === 'number') parts.push(String(v));
       else if (Array.isArray(v)) parts.push(v.filter((x) => typeof x === 'string').join(' '));
     }
-    return parts.join(' ').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+    return normalizeText(parts.join(' '));
   }
 
   private toDto(row: {
