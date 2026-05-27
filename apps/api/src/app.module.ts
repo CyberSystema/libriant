@@ -2,6 +2,7 @@ import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { LoggerModule } from 'nestjs-pino';
 import { AuthModule } from './auth/auth.module.js';
 import { SessionMiddleware } from './auth/session.middleware.js';
+import { PlansModule } from './plans/plans.module.js';
 import { PlatformModule } from './platform/platform.module.js';
 import { RedisModule } from './platform/redis.module.js';
 import { TenantModule } from './tenancy/tenant.module.js';
@@ -22,6 +23,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     PlatformModule,
     TenantModule,
     AuthModule,
+    PlansModule,
   ],
 })
 export class AppModule implements NestModule {

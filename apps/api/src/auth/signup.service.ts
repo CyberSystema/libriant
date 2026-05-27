@@ -93,8 +93,21 @@ export class SignupService {
       );
     }
 
-    // 4. Insert Tenant + first User in a single TX. On failure we tear
-    //    down the provisioned DB.
+    // 4. Insert Tenant + first User + Subscription in a single TX. On
+    //    failure we tear down the provisioned DB. Every fresh tenant is
+    //    auto-subscribed to the Starter plan so EffectivePlanService has
+    //    something concrete to resolve against from minute one. Real
+    //    billing (upgrades, Stripe webhooks) lands in Step 16.
+    const starterPlan = await controlDb.plan.findUnique({
+      where: { slug: 'starter' },
+      select: { id: true, billingMode: true },
+    });
+    if (!starterPlan) {
+      await this.provisioner.teardown(tenantId).catch(() => undefined);
+      throw new InternalServerErrorException(
+        'No "starter" plan configured. Run the control-plane seed first.',
+      );
+    }
     const passwordHash = await this.passwords.hash(input.password);
     try {
       const created = await controlDb.$transaction(async (tx) => {
@@ -119,6 +132,15 @@ export class SignupService {
             role: 'owner',
             status: 'active',
             passwordHash,
+          },
+        });
+        await tx.subscription.create({
+          data: {
+            tenantId: tenant.id,
+            planId: starterPlan.id,
+            billingMode: starterPlan.billingMode,
+            status: 'active',
+            // Starter is free — no Stripe period, no paid_until.
           },
         });
         return { tenant, user };

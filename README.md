@@ -178,6 +178,42 @@ curl -s -X POST -H "Content-Type: application/json" \
   http://localhost:3001/auth/password-reset/complete
 ```
 
+### Verify the plan / quota system
+
+With a signed-in tenant (use the cookie jar from auth above):
+
+```sh
+# 1. Effective plan — every feature with `source` attribution
+curl -s -b $JAR http://localhost:3001/t/my-library/plan | jq
+
+# 2. Usage report — counts vs. limits side-by-side
+curl -s -b $JAR http://localhost:3001/t/my-library/plan/usage | jq
+
+# 3. Feature gate — Starter doesn't include reservations → 402
+curl -i -b $JAR http://localhost:3001/t/my-library/demo/reservations   # 402
+
+# 4. Override the gate; invalidate cache; retry
+TENANT_ID=$(PGPASSWORD=libriant docker exec libriant-postgres psql -U libriant -d libriant_control -tAc \
+  "SELECT id FROM tenants WHERE slug='my-library';")
+PGPASSWORD=libriant docker exec libriant-postgres psql -U libriant -d libriant_control -c "
+  INSERT INTO tenant_plan_overrides (id, \"tenantId\", \"featureKey\", \"valueBool\", note, \"updatedAt\")
+  VALUES ('tpo-r', '$TENANT_ID', 'reservations_enabled', true, 'Pilot trial', NOW());
+"
+docker exec libriant-redis redis-cli DEL "lbr:plan:effective:$TENANT_ID"
+curl -i -b $JAR http://localhost:3001/t/my-library/demo/reservations   # 200
+
+# 5. Integer quota — cap max_books to 2, then post 3 books; 3rd → 402
+PGPASSWORD=libriant docker exec libriant-postgres psql -U libriant -d libriant_control -c "
+  INSERT INTO tenant_plan_overrides (id, \"tenantId\", \"featureKey\", \"valueInt\", note, \"updatedAt\")
+  VALUES ('tpo-b', '$TENANT_ID', 'max_books', 2, 'Quota demo', NOW());
+"
+docker exec libriant-redis redis-cli DEL "lbr:plan:effective:$TENANT_ID"
+for n in 1 2 3; do
+  curl -s -b $JAR -w "\n  HTTP %{http_code}\n" -H "Content-Type: application/json" \
+    -d "{\"title\":\"Book $n\"}" http://localhost:3001/t/my-library/demo/books
+done
+```
+
 ## Where we are in the plan
 
 | Step  | Description                                                           | Status                         |
@@ -190,7 +226,7 @@ curl -s -X POST -H "Content-Type: application/json" \
 | 5     | NestJS API skeleton (health endpoints)                                | ✅ done                        |
 | 6     | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**        | ✅ done                        |
 | 7     | **Auth (signup with tenant provisioning + login + sessions + reset)** | ✅ done                        |
-| 8     | Plan/quota system + EffectivePlanService                              | ⏳                             |
+| 8     | **Plan/quota system (EffectivePlan + PlanGuard + QuotaInterceptor)**  | ✅ done                        |
 | 9     | Schema customization (field defs + collections)                       | ⏳                             |
 | 10    | Storage driver layer                                                  | ⏳                             |
 | 11–15 | Catalog / Members / Loans / Reservations / Collections                | ⏳                             |
