@@ -20,6 +20,7 @@ import { validateRecordOrThrow } from '../customization/dynamic-validator.js';
 import type { ReturnCondition } from './loans.dto.js';
 
 const MS_PER_DAY = 86_400_000;
+const MS_PER_HOUR = 3_600_000;
 
 /** Statuses the user can filter loans by via the list endpoint. */
 export const LOAN_STATUSES = ['active', 'returned', 'lost'] as const;
@@ -71,6 +72,17 @@ export type ReturnResult = {
     currency: string;
     daysOverdue: number;
   } | null;
+  /**
+   * Populated when a queued hold on the same book was auto-promoted to
+   * `ready` because this copy came back. The librarian's UI shows this so
+   * they can shelve the book in the holds area instead of general stacks.
+   */
+  promotedHold: {
+    reservationId: string;
+    memberId: string;
+    memberFullName: string;
+    expiresAt: Date;
+  } | null;
 };
 
 export type MarkLostResult = {
@@ -109,6 +121,13 @@ export class LoansService {
       loanedAt?: string;
       notes?: string;
       customFields?: Record<string, unknown>;
+      /**
+       * When set, this is a *fulfillment* of a ready hold (rather than a
+       * plain checkout). The copy is expected to be in `reserved` state,
+       * the reservation is marked `fulfilled` inside the same transaction,
+       * and the usual `available`-only check is bypassed.
+       */
+      reservationId?: string;
     },
     actingUserId: string,
   ): Promise<CheckoutResult> {
@@ -160,7 +179,9 @@ export class LoansService {
       }
     }
 
-    // 5. Validate copy.
+    // 5. Validate copy. Fulfillment path accepts `reserved`; everything
+    //    else requires `available`.
+    const expectedCopyStatus: BookCopyStatus = input.reservationId ? 'reserved' : 'available';
     const copy = await client.bookCopy.findUnique({
       where: { id: input.copyId },
       select: {
@@ -183,16 +204,68 @@ export class LoansService {
         `${copy.book.title} is archived. Restore the book before checking out.`,
       );
     }
-    if (copy.status !== 'available') {
+    if (copy.status !== expectedCopyStatus) {
+      if (input.reservationId) {
+        throw new BadRequestException(
+          `Copy ${copy.barcode} is not the one held for this reservation (current status: ${copy.status}).`,
+        );
+      }
       throw new BadRequestException(this.copyUnavailableMessage(copy.status, copy.barcode));
     }
 
-    // 6. Atomic state change: create Loan + flip copy to on_loan. Both must
-    //    succeed together or neither does — a half-applied checkout leaves
-    //    the copy unreachable.
+    // 6. Atomic state change: create Loan + flip copy to on_loan (also mark
+    //    the reservation fulfilled when in fulfillment mode). All three must
+    //    succeed together or none do.
     let createdId: string;
     try {
       createdId = await client.$transaction(async (tx) => {
+        // Fulfillment path: validate the reservation is in a state we can
+        // close (status='ready', member match, copy match, not expired).
+        if (input.reservationId) {
+          const reservation = await tx.reservation.findUnique({
+            where: { id: input.reservationId },
+            select: {
+              id: true,
+              status: true,
+              memberId: true,
+              fulfilledByCopyId: true,
+              expiresAt: true,
+            },
+          });
+          if (!reservation) throw new NotFoundException('Reservation not found.');
+          if (reservation.status !== 'ready') {
+            throw new BadRequestException(
+              reservation.status === 'queued'
+                ? "This hold isn't ready yet — wait for it to reach the front of the queue."
+                : `This hold is ${reservation.status} and can't be picked up.`,
+            );
+          }
+          if (reservation.memberId !== input.memberId) {
+            throw new BadRequestException(
+              'This hold belongs to a different member. Check the reservation card.',
+            );
+          }
+          if (reservation.fulfilledByCopyId !== input.copyId) {
+            throw new BadRequestException(
+              "The copy you're handing over isn't the one held for this reservation.",
+            );
+          }
+          if (reservation.expiresAt && reservation.expiresAt.getTime() < Date.now()) {
+            throw new BadRequestException(
+              "This hold's pickup window has expired. Cancel or re-place it before checking out.",
+            );
+          }
+          const closed = await tx.reservation.updateMany({
+            where: { id: input.reservationId, status: 'ready' },
+            data: { status: 'fulfilled', fulfilledAt: new Date() },
+          });
+          if (closed.count === 0) {
+            throw new ConflictException(
+              'Another librarian just resolved this hold. Please refresh.',
+            );
+          }
+        }
+
         const created = await tx.loan.create({
           data: {
             copyId: input.copyId,
@@ -207,9 +280,11 @@ export class LoansService {
         });
         // Conditional update — guards against the race where two staff
         // members try to lend the same copy concurrently. If the copy was
-        // grabbed first, the row count is 0 and we abort.
+        // grabbed first, the row count is 0 and we abort. We pin to the
+        // expected status so a fulfillment doesn't accidentally lend a
+        // copy that's available (and vice versa).
         const flipped = await tx.bookCopy.updateMany({
-          where: { id: input.copyId, status: 'available' },
+          where: { id: input.copyId, status: expectedCopyStatus },
           data: { status: 'on_loan' },
         });
         if (flipped.count === 0) {
@@ -248,6 +323,7 @@ export class LoansService {
         returnedAt: true,
         status: true,
         notes: true,
+        copy: { select: { bookId: true } },
       },
     });
     if (!loan) throw new NotFoundException('Loan not found.');
@@ -265,7 +341,7 @@ export class LoansService {
       throw new BadRequestException('Return time cannot be earlier than the checkout time.');
     }
     const condition: ReturnCondition = input.condition ?? 'ok';
-    const nextCopyStatus: BookCopyStatus = condition === 'damaged' ? 'damaged' : 'available';
+    const candidateNextStatus: BookCopyStatus = condition === 'damaged' ? 'damaged' : 'available';
 
     const overdueMs = Math.max(0, returnedAt.getTime() - loan.dueAt.getTime());
     const daysOverdue = Math.floor(overdueMs / MS_PER_DAY);
@@ -274,9 +350,65 @@ export class LoansService {
       settings.fineCapCents > 0 ? Math.min(rawFine, settings.fineCapCents) : rawFine;
     const shouldCreateFine = daysOverdue > 0 && fineAmountCents > 0;
 
-    let fineId: string | null = null;
+    type ReturnTxResult = {
+      fineId: string | null;
+      promotedHold: {
+        reservationId: string;
+        memberId: string;
+        memberFullName: string;
+        expiresAt: Date;
+      } | null;
+    };
+    let txResult: ReturnTxResult;
     try {
-      const result = await client.$transaction(async (tx) => {
+      txResult = await client.$transaction(async (tx): Promise<ReturnTxResult> => {
+        // Decide whether the freed copy goes straight back to the shelf or
+        // gets handed to the next person in line. We only promote when the
+        // copy is undamaged (a damaged copy needs repair before it's lent
+        // again).
+        let nextCopyStatus: BookCopyStatus = candidateNextStatus;
+        let promoted: ReturnTxResult['promotedHold'] = null;
+        if (candidateNextStatus === 'available') {
+          const head = await tx.reservation.findFirst({
+            where: { bookId: loan.copy.bookId, status: 'queued' },
+            orderBy: { queuePosition: 'asc' },
+            select: {
+              id: true,
+              memberId: true,
+              member: { select: { fullName: true } },
+            },
+          });
+          if (head) {
+            const now = new Date();
+            const expiresAt = new Date(now.getTime() + settings.holdPickupHours * MS_PER_HOUR);
+            await tx.reservation.update({
+              where: { id: head.id },
+              data: {
+                status: 'ready',
+                readyAt: now,
+                expiresAt,
+                fulfilledByCopyId: loan.copyId,
+                queuePosition: null,
+              },
+            });
+            // Everyone behind the head bumps up a slot.
+            await tx.$executeRaw`
+              UPDATE reservations
+              SET "queuePosition" = "queuePosition" - 1, "updatedAt" = NOW()
+              WHERE "bookId" = ${loan.copy.bookId}
+                AND status = 'queued'
+                AND "queuePosition" > 0
+            `;
+            nextCopyStatus = 'reserved';
+            promoted = {
+              reservationId: head.id,
+              memberId: head.memberId,
+              memberFullName: head.member.fullName,
+              expiresAt,
+            };
+          }
+        }
+
         // Close the loan.
         const updated = await tx.loan.updateMany({
           where: { id: loanId, status: 'active' },
@@ -308,6 +440,7 @@ export class LoansService {
           );
         }
         // Issue the overdue fine if any.
+        let fineId: string | null = null;
         if (shouldCreateFine) {
           const fine = await tx.fine.create({
             data: {
@@ -319,11 +452,10 @@ export class LoansService {
             },
             select: { id: true },
           });
-          return fine.id;
+          fineId = fine.id;
         }
-        return null;
+        return { fineId, promotedHold: promoted };
       });
-      fineId = result;
     } catch (err) {
       throw this.translate(err);
     }
@@ -332,14 +464,15 @@ export class LoansService {
     return {
       loan: fullLoan,
       fine:
-        fineId !== null
+        txResult.fineId !== null
           ? {
-              id: fineId,
+              id: txResult.fineId,
               amountCents: fineAmountCents,
               currency: settings.currency,
               daysOverdue,
             }
           : null,
+      promotedHold: txResult.promotedHold,
     };
   }
 
@@ -598,6 +731,7 @@ export class LoansService {
     finePerDayCents: number;
     fineCapCents: number;
     maxActiveLoans: number;
+    holdPickupHours: number;
     currency: string;
   }> {
     const settings = await client.tenantSetting.findUnique({ where: { id: 1 } });

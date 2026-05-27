@@ -489,27 +489,99 @@ curl -s -b $JAR "http://localhost:3001/t/my-library/members/$MID" | jq .circulat
 curl -i -b $JAR -X DELETE "http://localhost:3001/t/my-library/members/$MID"  # 400
 ```
 
+### Verify the reservations module
+
+Hold queue, auto-promotion on return, ready-window expiry, and fulfillment
+through the same Loans transaction (copy `reserved` → `on_loan` and
+reservation `ready` → `fulfilled` atomically).
+
+Requires a plan with `reservations_enabled` (Community or higher). On
+Starter you'll see a 402 — that's the gate; upgrade via the admin UI
+or directly:
+
+```sh
+# Promote tenant to Community (skip if already there)
+TID=$(docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "SELECT id FROM tenants WHERE slug='my-library';")
+COMMUNITY=$(docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "SELECT id FROM plans WHERE slug='community';")
+docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "UPDATE subscriptions SET \"planId\" = '$COMMUNITY', \"updatedAt\" = NOW() WHERE \"tenantId\" = '$TID';"
+docker exec libriant-redis redis-cli --no-raw EVAL \
+  "for _,k in ipairs(redis.call('keys','lbr:plan:*')) do redis.call('del',k) end return 'ok'" 0
+```
+
+```sh
+JAR=/tmp/jar.txt  # cookie jar from auth section
+# Assumes BOOK_ID + a copy + two members from earlier sections.
+
+# 1) Place hold with no copies available → joins the queue
+H1=$(curl -s -b $JAR -X POST http://localhost:3001/t/my-library/reservations \
+  -H "Content-Type: application/json" \
+  -d "{\"bookId\":\"$BOOK_ID\",\"memberId\":\"$M1\"}" | jq -r .reservation.id)
+
+# 2) Place hold with a copy AVAILABLE + no queue → auto-promotes to ready,
+#    the chosen copy flips available → reserved
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/reservations \
+  -H "Content-Type: application/json" \
+  -d "{\"bookId\":\"$BOOK_ID2\",\"memberId\":\"$M2\"}" | jq '{outcome, status: .reservation.status, copy: .reservation.fulfilledByCopy.barcode}'
+# → { "outcome": "ready", "status": "ready", "copy": "..." }
+
+# 3) Duplicate hold by same member is refused with a friendly Greek-aware msg
+curl -i -b $JAR -X POST http://localhost:3001/t/my-library/reservations \
+  -H "Content-Type: application/json" \
+  -d "{\"bookId\":\"$BOOK_ID2\",\"memberId\":\"$M2\"}"  # 409
+
+# 4) Return triggers auto-promotion. The response includes `promotedHold`
+#    so the librarian's UI can route the book to the holds shelf instead
+#    of general stacks.
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/loans/$LOAN_ID/return \
+  -H "Content-Type: application/json" -d '{}' | jq .promotedHold
+# → { reservationId, memberId, memberFullName, expiresAt }
+
+# 5) Pick up a ready hold — copy reserved → on_loan, reservation ready → fulfilled
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/reservations/$H1/fulfill \
+  -H "Content-Type: application/json" -d '{}' | jq .loan.id
+
+# 6) Cancel a ready hold → frees the copy AND tries to promote next in queue
+curl -s -b $JAR -X DELETE http://localhost:3001/t/my-library/reservations/$H2 | jq .status
+
+# 7) Force-expire a ready hold (cron + admin path). Same promotion behavior
+#    as cancel. Queued holds refuse expire — only ready ones expire.
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/reservations/$H3/expire | jq .status
+
+# 8) List filters
+curl -s -b $JAR "http://localhost:3001/t/my-library/reservations"                | jq .items
+curl -s -b $JAR "http://localhost:3001/t/my-library/reservations?status=ready"   | jq .items
+curl -s -b $JAR "http://localhost:3001/t/my-library/reservations?includeResolved=1" | jq .items
+
+# 9) Plan downgrade is graceful — list/get/cancel still work even after
+#    `reservations_enabled` flips off; only POST /reservations and
+#    POST /reservations/:id/fulfill return 402.
+```
+
 ## Where we are in the plan
 
-| Step  | Description                                                                 | Status                         |
-| ----- | --------------------------------------------------------------------------- | ------------------------------ |
-| 0     | Design system + i18n + assets foundation                                    | ✅ done                        |
-| 1     | Repo scaffold (pnpm/turbo/tsconfig/prettier)                                | ✅ done                        |
-| 2     | **Control-plane Prisma schema + idempotent seed**                           | ✅ done                        |
-| 3     | Feature key catalog                                                         | ✅ done (in `packages/shared`) |
-| 4     | **Tenant Prisma schema (catalog/members/loans/customization/audit)**        | ✅ done                        |
-| 5     | NestJS API skeleton (health endpoints)                                      | ✅ done                        |
-| 6     | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**              | ✅ done                        |
-| 7     | **Auth (signup with tenant provisioning + login + sessions + reset)**       | ✅ done                        |
-| 8     | **Plan/quota system (EffectivePlan + PlanGuard + QuotaInterceptor)**        | ✅ done                        |
-| 9     | **Schema customization (per-entity fields + custom collections + records)** | ✅ done                        |
-| 10    | **Storage layer (driver pattern + signed URLs + quota + recompute)**        | ✅ done                        |
-| 11    | **Catalog (authors + books + copies + ISBN lookup + covers)**               | ✅ done                        |
-| 12    | **Members (CRUD + auto member-number + status + archive + photos)**         | ✅ done                        |
-| 13    | **Loans (checkout / return / renew / mark-lost + overdue fines)**           | ✅ done                        |
-| 14–15 | Reservations / Collections                                                  | ⏳                             |
-| 16    | Billing (Stripe + manual)                                                   | ⏳                             |
-| 17    | Staff UI (onboarding, help center, billing)                                 | ⏳                             |
-| 18    | Internal admin (plans, support, system mode, announcements)                 | ⏳                             |
-| 19    | Infra (Caddy, prod compose, GH Actions deploy)                              | ⏳                             |
-| 20    | Tenant provisioning + relocation scripts                                    | ⏳                             |
+| Step | Description                                                                 | Status                         |
+| ---- | --------------------------------------------------------------------------- | ------------------------------ |
+| 0    | Design system + i18n + assets foundation                                    | ✅ done                        |
+| 1    | Repo scaffold (pnpm/turbo/tsconfig/prettier)                                | ✅ done                        |
+| 2    | **Control-plane Prisma schema + idempotent seed**                           | ✅ done                        |
+| 3    | Feature key catalog                                                         | ✅ done (in `packages/shared`) |
+| 4    | **Tenant Prisma schema (catalog/members/loans/customization/audit)**        | ✅ done                        |
+| 5    | NestJS API skeleton (health endpoints)                                      | ✅ done                        |
+| 6    | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**              | ✅ done                        |
+| 7    | **Auth (signup with tenant provisioning + login + sessions + reset)**       | ✅ done                        |
+| 8    | **Plan/quota system (EffectivePlan + PlanGuard + QuotaInterceptor)**        | ✅ done                        |
+| 9    | **Schema customization (per-entity fields + custom collections + records)** | ✅ done                        |
+| 10   | **Storage layer (driver pattern + signed URLs + quota + recompute)**        | ✅ done                        |
+| 11   | **Catalog (authors + books + copies + ISBN lookup + covers)**               | ✅ done                        |
+| 12   | **Members (CRUD + auto member-number + status + archive + photos)**         | ✅ done                        |
+| 13   | **Loans (checkout / return / renew / mark-lost + overdue fines)**           | ✅ done                        |
+| 14   | **Reservations (holds queue + auto-promote + ready-pickup + fulfill)**      | ✅ done                        |
+| 15   | Collections                                                                 | ⏳                             |
+| 16   | Billing (Stripe + manual)                                                   | ⏳                             |
+| 17   | Staff UI (onboarding, help center, billing)                                 | ⏳                             |
+| 18   | Internal admin (plans, support, system mode, announcements)                 | ⏳                             |
+| 19   | Infra (Caddy, prod compose, GH Actions deploy)                              | ⏳                             |
+| 20   | Tenant provisioning + relocation scripts                                    | ⏳                             |

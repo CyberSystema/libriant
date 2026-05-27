@@ -6,6 +6,7 @@ import { CatalogModule } from './catalog/catalog.module.js';
 import { CustomizationModule } from './customization/customization.module.js';
 import { LoansModule } from './loans/loans.module.js';
 import { MembersModule } from './members/members.module.js';
+import { ReservationsModule } from './reservations/reservations.module.js';
 import { PlansModule } from './plans/plans.module.js';
 import { PlatformModule } from './platform/platform.module.js';
 import { RedisModule } from './platform/redis.module.js';
@@ -34,6 +35,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     CatalogModule,
     MembersModule,
     LoansModule,
+    ReservationsModule,
   ],
 })
 export class AppModule implements NestModule {
