@@ -89,7 +89,11 @@ export class MembersService {
     const row = await client.member.findUnique({ where: { id } });
     if (!row) throw new NotFoundException('Member not found.');
     const [activeLoans, activeReservations, outstanding] = await Promise.all([
-      client.loan.count({ where: { memberId: id, returnedAt: null } }),
+      // "Active" = the copy is physically still with the member. Lost loans
+      // also have `returnedAt IS NULL` but they're closed business — the
+      // copy is gone, the fine is tracked separately, and they shouldn't
+      // block archive.
+      client.loan.count({ where: { memberId: id, status: 'active' } }),
       client.reservation.count({
         where: { memberId: id, status: { in: ['queued', 'ready'] } },
       }),
@@ -338,7 +342,7 @@ export class MembersService {
     }
 
     const [activeLoans, activeReservations] = await Promise.all([
-      client.loan.count({ where: { memberId: id, returnedAt: null } }),
+      client.loan.count({ where: { memberId: id, status: 'active' } }),
       client.reservation.count({
         where: { memberId: id, status: { in: ['queued', 'ready'] } },
       }),

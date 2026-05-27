@@ -431,6 +431,64 @@ curl -s -b $JAR -X DELETE http://localhost:3001/t/my-library/members/$MID/photo 
 # (Set tenant_plan_overrides.max_members to a small N to test 402 quickly.)
 ```
 
+### Verify the loans module
+
+Lend / return / renew / mark-lost. State transitions run inside a Prisma
+`$transaction` so a half-applied checkout (loan created but copy not flipped,
+or vice versa) is impossible. Overdue fines are calculated from
+`tenant_settings` (finePerDayCents × days, capped at fineCapCents).
+
+```sh
+JAR=/tmp/jar.txt  # cookie jar from auth section
+
+# (Use the BOOK_ID + COPY_ID + MID from the catalog/members sections above.)
+
+# 1) Checkout — copy flips to `on_loan`, dueAt = loanedAt + loanPeriodDays
+LOAN_ID=$(curl -s -b $JAR -X POST http://localhost:3001/t/my-library/loans \
+  -H "Content-Type: application/json" \
+  -d "{\"copyId\":\"$COPY_ID\",\"memberId\":\"$MID\"}" | jq -r .loan.id)
+curl -s -b $JAR "http://localhost:3001/t/my-library/catalog/books/$BOOK_ID" \
+  | jq '.copies[].status'      # → "on_loan"
+
+# 2) Refusals: double-checkout, suspended/archived member, transition shortcuts
+curl -i -b $JAR -X POST http://localhost:3001/t/my-library/loans \
+  -H "Content-Type: application/json" \
+  -d "{\"copyId\":\"$COPY_ID\",\"memberId\":\"$MID\"}"             # 400
+curl -i -b $JAR -X PATCH http://localhost:3001/t/my-library/catalog/copies/$COPY_ID \
+  -H "Content-Type: application/json" -d '{"status":"available"}' # 400 (use return)
+
+# 3) Renew — refused when there's a queued reservation on the same book,
+#    or once renewedCount hits tenant_settings.maxRenewals
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/loans/$LOAN_ID/renew \
+  -H "Content-Type: application/json" -d '{"periods":1}' | jq '{dueAt, renewedCount}'
+
+# 4) Return — overdue fine is auto-created. To force overdue, backdate both
+#    `loanedAt` AND `dueAt` together so the `loans_due_after_loaned` CHECK
+#    still holds:
+#    UPDATE loans SET "loanedAt" = NOW() - INTERVAL '20 days',
+#                     "dueAt"    = NOW() - INTERVAL  '5 days' WHERE id = '<LOAN_ID>';
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/loans/$LOAN_ID/return \
+  -H "Content-Type: application/json" -d '{}' | jq '{loan_status: .loan.status, fine}'
+# → fine: { amountCents: 50, currency: "EUR", daysOverdue: 5 }   (5 × 10c)
+
+# 5) Mark-lost — copy → `lost`, optional replacement fine
+LOAN2=$(curl -s -b $JAR -X POST http://localhost:3001/t/my-library/loans \
+  -H "Content-Type: application/json" \
+  -d "{\"copyId\":\"$COPY_ID2\",\"memberId\":\"$MID\"}" | jq -r .loan.id)
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/loans/$LOAN2/mark-lost \
+  -H "Content-Type: application/json" -d '{"replacementCostCents":1500}' \
+  | jq '{copy_status: .loan.copy.status, fine}'
+
+# 6) List filters
+curl -s -b $JAR "http://localhost:3001/t/my-library/loans?status=active"   | jq .items
+curl -s -b $JAR "http://localhost:3001/t/my-library/loans?overdue=1"        | jq .items
+curl -s -b $JAR "http://localhost:3001/t/my-library/loans?memberId=$MID"    | jq .items
+
+# 7) Member circulation now reflects the active loan; archive refuses
+curl -s -b $JAR "http://localhost:3001/t/my-library/members/$MID" | jq .circulation
+curl -i -b $JAR -X DELETE "http://localhost:3001/t/my-library/members/$MID"  # 400
+```
+
 ## Where we are in the plan
 
 | Step  | Description                                                                 | Status                         |
@@ -448,7 +506,8 @@ curl -s -b $JAR -X DELETE http://localhost:3001/t/my-library/members/$MID/photo 
 | 10    | **Storage layer (driver pattern + signed URLs + quota + recompute)**        | ✅ done                        |
 | 11    | **Catalog (authors + books + copies + ISBN lookup + covers)**               | ✅ done                        |
 | 12    | **Members (CRUD + auto member-number + status + archive + photos)**         | ✅ done                        |
-| 13–15 | Loans / Reservations / Collections                                          | ⏳                             |
+| 13    | **Loans (checkout / return / renew / mark-lost + overdue fines)**           | ✅ done                        |
+| 14–15 | Reservations / Collections                                                  | ⏳                             |
 | 16    | Billing (Stripe + manual)                                                   | ⏳                             |
 | 17    | Staff UI (onboarding, help center, billing)                                 | ⏳                             |
 | 18    | Internal admin (plans, support, system mode, announcements)                 | ⏳                             |
