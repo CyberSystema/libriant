@@ -114,7 +114,20 @@ export class EffectivePlanService {
       FROM plan_features pf
       LEFT JOIN subscriptions s
         ON s."tenantId" = $1
-       AND s.status IN ('active', 'trialing')
+       AND (
+         -- Fully active: paid up, in trial, or grandfathered.
+         s.status IN ('active', 'trialing')
+         -- Past-due during the grace window keeps full feature access so a
+         -- transient card decline does not immediately yank features. Once
+         -- graceUntil passes, the join falls off and resolution drops to
+         -- the conservative plan_features default row (effectively Starter)
+         -- until payment recovers.
+         OR (s.status = 'past_due' AND s."graceUntil" IS NOT NULL AND s."graceUntil" > NOW())
+       )
+       -- Manual subscriptions are active only while paidUntil has not
+       -- expired. If a manual library has not paid the next invoice yet,
+       -- they fall through to defaults the moment paidUntil < NOW().
+       AND (s."billingMode" <> 'manual' OR s."paidUntil" IS NULL OR s."paidUntil" > NOW())
       LEFT JOIN plans p ON p.id = s."planId"
       LEFT JOIN plan_feature_values pfv
         ON pfv."planId" = s."planId"

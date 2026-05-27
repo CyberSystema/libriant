@@ -2,6 +2,7 @@ import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { LoggerModule } from 'nestjs-pino';
 import { AuthModule } from './auth/auth.module.js';
 import { SessionMiddleware } from './auth/session.middleware.js';
+import { BillingModule } from './billing/billing.module.js';
 import { CatalogModule } from './catalog/catalog.module.js';
 import { CustomizationModule } from './customization/customization.module.js';
 import { LoansModule } from './loans/loans.module.js';
@@ -36,6 +37,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     MembersModule,
     LoansModule,
     ReservationsModule,
+    BillingModule,
   ],
 })
 export class AppModule implements NestModule {

@@ -42,6 +42,23 @@ export type AppEnv = {
   storageSignedTtlSec: number;
   /** Hard upload ceiling per request (bytes); the actual quota is per plan. */
   storageMaxUploadBytes: number;
+  /**
+   * `real` → calls the Stripe API. `fake` → in-memory driver that records
+   * calls and returns canned IDs. Default is `fake` in development so the
+   * quickstart works without Stripe credentials; production must opt in.
+   */
+  stripeDriver: 'real' | 'fake';
+  /** Stripe secret key (`sk_test_…` / `sk_live_…`). Required for `real`. */
+  stripeApiKey: string | null;
+  /** Webhook signing secret (`whsec_…`). Required for `real`. */
+  stripeWebhookSecret: string | null;
+  /**
+   * Where Stripe Checkout / Customer Portal return the user. The library
+   * slug is appended at request time.
+   */
+  billingReturnUrl: string;
+  /** Days a tenant keeps full feature access after a failed payment. */
+  billingGracePeriodDays: number;
 };
 
 function required(key: string): string {
@@ -108,5 +125,22 @@ export function loadEnv(): AppEnv {
     storageSigningSecret: optional('STORAGE_SIGNING_SECRET', sessionSecret),
     storageSignedTtlSec: Number(optional('STORAGE_SIGNED_TTL_SEC', '3600')),
     storageMaxUploadBytes: Number(optional('STORAGE_MAX_UPLOAD_BYTES', String(25 * 1024 * 1024))),
+    stripeDriver: (() => {
+      const raw = (process.env.STRIPE_DRIVER ?? '').toLowerCase().trim();
+      if (raw === 'real' || raw === 'fake') return raw;
+      // Default: fake in development, real in any other environment. Hard
+      // failure if the operator misconfigured prod with no Stripe creds
+      // happens in the real driver constructor (see stripe-real.driver.ts).
+      return nodeEnv === 'development' ? 'fake' : 'real';
+    })(),
+    stripeApiKey: process.env.STRIPE_API_KEY?.length ? process.env.STRIPE_API_KEY : null,
+    stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET?.length
+      ? process.env.STRIPE_WEBHOOK_SECRET
+      : null,
+    billingReturnUrl: optional(
+      'BILLING_RETURN_URL',
+      optional('PUBLIC_APP_URL', 'http://localhost:3000'),
+    ),
+    billingGracePeriodDays: Number(optional('BILLING_GRACE_PERIOD_DAYS', '7')),
   };
 }

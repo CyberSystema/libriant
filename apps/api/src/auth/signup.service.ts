@@ -143,6 +143,17 @@ export class SignupService {
             // Starter is free — no Stripe period, no paid_until.
           },
         });
+        // Bootstrap an empty billing account so the billing flow has a row
+        // to update later. The Stripe customer id is created lazily on the
+        // first checkout/portal request — no point opening a Stripe handle
+        // for a tenant who never upgrades past Starter.
+        await tx.billingAccount.create({
+          data: {
+            tenantId: tenant.id,
+            billingEmail: input.email,
+            billingName: input.libraryName,
+          },
+        });
         return { tenant, user };
       });
 

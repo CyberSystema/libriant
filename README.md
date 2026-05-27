@@ -649,6 +649,95 @@ curl -s -b $JAR "http://localhost:3001/t/my-library/collections/dvds/records?lim
 curl -s -b $JAR "http://localhost:3001/t/my-library/collections/dvds/records?includeArchived=1" | jq '.items | length'
 ```
 
+### Verify billing (Stripe + manual)
+
+The billing layer routes through a `StripeDriver` interface. In development
+the `fake` driver runs entirely in-memory (no network, no credentials);
+in production set `STRIPE_DRIVER=real` plus `STRIPE_API_KEY` and
+`STRIPE_WEBHOOK_SECRET`. Webhook signature verification, Redis SETNX
+dedupe, and the durable `stripe_webhook_events` audit log all run under
+either driver — the only difference is who signs the events.
+
+```sh
+JAR=/tmp/jar.txt           # cookie jar from auth section
+SLUG=my-library
+TID=$(docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "SELECT id FROM tenants WHERE slug='$SLUG';")
+SECRET='fake-webhook-secret-for-dev'  # FakeStripeDriver default
+
+# 1) Snapshot — Starter, status=active, driver=fake, no Stripe customer yet
+curl -s -b $JAR "http://localhost:3001/t/$SLUG/billing" | jq
+
+# 2) Start checkout for Community — creates Stripe customer + returns a URL
+curl -s -b $JAR -X POST "http://localhost:3001/t/$SLUG/billing/checkout" \
+  -H "Content-Type: application/json" -d '{"planSlug":"community"}' | jq
+
+# 3) Simulate Stripe webhook for customer.subscription.created (signed)
+node <<'NODE' > /tmp/stripe-sub.json
+const { createHmac } = require("crypto");
+const secret = "fake-webhook-secret-for-dev";
+const cust = `cus_fake_${process.env.TID}`;
+const now = Math.floor(Date.now()/1000);
+const ev = {
+  id: "evt_test_"+now, type: "customer.subscription.created",
+  data: { object: { id: "sub_test_"+now, customer: cust, status: "active",
+    current_period_start: now, current_period_end: now + 30*86400,
+    cancel_at_period_end: false, canceled_at: null,
+    items: { data: [{ price: { id: "price_seed_community" } }] } } },
+};
+const body = JSON.stringify(ev);
+const sig = createHmac("sha256", secret).update(now + "." + body).digest("hex");
+console.log(JSON.stringify({ header: `t=${now},v1=${sig}`, body }));
+NODE
+HEADER=$(jq -r .header /tmp/stripe-sub.json)
+BODY=$(jq -r .body /tmp/stripe-sub.json)
+curl -s -X POST http://localhost:3001/webhooks/stripe \
+  -H "stripe-signature: $HEADER" -H "Content-Type: application/json" \
+  --data-binary "$BODY"
+# → {"received":true}
+
+# Tenant is now on Community. Re-delivering the same event returns deduped:true.
+
+# 4) Adversarial: bad signature → 400
+curl -i -X POST http://localhost:3001/webhooks/stripe \
+  -H "stripe-signature: t=1000000000,v1=deadbeef" \
+  -H "Content-Type: application/json" --data-binary '{"id":"x","type":"x","data":{}}'
+
+# 5) Grace flow — fire invoice.payment_failed, observe past_due + graceUntil,
+#    confirm effective plan is still Community within grace, drops to defaults
+#    once graceUntil < NOW().
+#    (Build the signed event with the same Node snippet, replacing the event
+#    shape with `invoice.payment_failed` and `data.object` of the invoice form.)
+
+# 6) Cancel at period end (Stripe-mode only)
+curl -s -b $JAR -X POST "http://localhost:3001/t/$SLUG/billing/cancel" | jq '{status, cancelAtPeriodEnd}'
+curl -s -b $JAR -X POST "http://localhost:3001/t/$SLUG/billing/resume" | jq '{status, cancelAtPeriodEnd}'
+
+# 7) Customer portal — returns the fake driver's URL with a #fake_portal fragment;
+#    real Stripe returns a portal session URL with a single-use token.
+curl -s -b $JAR -X POST "http://localhost:3001/t/$SLUG/billing/portal" \
+  -H "Content-Type: application/json" -d '{}' | jq .url
+
+# 8) Admin: force-set a plan + manual paid-until. Step 18 will gate this
+#    controller under real admin auth; for now anyone with the URL can hit
+#    it (intentional, temporary seam for the drill).
+curl -s -X POST "http://localhost:3001/admin/billing/tenants/$TID/set-plan" \
+  -H "Content-Type: application/json" -d '{"planSlug":"on-prem-enterprise"}' | jq '.plan.slug,.status'
+FUTURE=$(node -e 'console.log(new Date(Date.now()+30*86400000).toISOString())')
+curl -s -X POST "http://localhost:3001/admin/billing/tenants/$TID/set-paid-until" \
+  -H "Content-Type: application/json" -d "{\"paidUntil\":\"$FUTURE\"}" | jq '.paidUntil,.status'
+
+# 9) Cross-tenant defense: a cookie from one library cannot read another
+#    library's billing snapshot.
+curl -i -b $JAR "http://localhost:3001/t/acme/billing"   # 403
+```
+
+**Production wiring.** Set `STRIPE_DRIVER=real`, `STRIPE_API_KEY=sk_…`,
+and `STRIPE_WEBHOOK_SECRET=whsec_…` (copy from the Stripe Dashboard or
+`stripe listen`). Point Stripe webhook delivery at `POST /webhooks/stripe`.
+Subscribe to: `customer.subscription.{created,updated,deleted}`,
+`invoice.payment_{succeeded,failed}`, and `checkout.session.completed`.
+
 ## Where we are in the plan
 
 | Step | Description                                                                   | Status                         |
@@ -669,7 +758,7 @@ curl -s -b $JAR "http://localhost:3001/t/my-library/collections/dvds/records?inc
 | 13   | **Loans (checkout / return / renew / mark-lost + overdue fines)**             | ✅ done                        |
 | 14   | **Reservations (holds queue + auto-promote + ready-pickup + fulfill)**        | ✅ done                        |
 | 15   | **Custom collections (records CRUD + dynamic validation + restore + search)** | ✅ done                        |
-| 16   | Billing (Stripe + manual)                                                     | ⏳                             |
+| 16   | **Billing (Stripe + manual + grace + webhooks + idempotency)**                | ✅ done                        |
 | 17   | Staff UI (onboarding, help center, billing)                                   | ⏳                             |
 | 18   | Internal admin (plans, support, system mode, announcements)                   | ⏳                             |
 | 19   | Infra (Caddy, prod compose, GH Actions deploy)                                | ⏳                             |

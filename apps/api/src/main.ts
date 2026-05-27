@@ -8,7 +8,14 @@ import { loadEnv } from './config/env.js';
 
 async function bootstrap() {
   const env = loadEnv();
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
+  // `rawBody: true` keeps the original request bytes around as `req.rawBody`
+  // so the Stripe webhook handler can verify the signature against the
+  // exact bytes Stripe signed. JSON parsing still happens for everything
+  // else.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+    rawBody: true,
+  });
   app.useLogger(app.get(Logger));
 
   // Parse Cookie header into req.cookies — required by SessionMiddleware.
