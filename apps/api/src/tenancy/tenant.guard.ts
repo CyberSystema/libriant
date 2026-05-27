@@ -1,11 +1,23 @@
-import { CanActivate, ExecutionContext, Injectable, BadRequestException } from '@nestjs/common';
+import {
+  BadRequestException,
+  CanActivate,
+  ExecutionContext,
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import type { Request } from 'express';
 
 /**
- * Marker guard for tenant-scoped routes. Ensures `req.tenant` has been
- * set by TenantMiddleware. Once authentication lands (Step 7) this guard
- * will also enforce `session.tenantId === req.tenant.id` — the central
- * cross-tenant defense in our path-based URL world.
+ * Tenant-scoped route guard. Composes THREE checks:
+ *
+ *   1. The URL resolved to a tenant (TenantMiddleware ran and attached
+ *      `req.tenant`). Otherwise → 400.
+ *   2. The caller is signed in (`req.session` set by SessionMiddleware).
+ *      Otherwise → 401.
+ *   3. The signed-in user's tenant matches the URL's tenant. Otherwise
+ *      → 403 — this is the central cross-tenant defense in our path-based
+ *      URL world (where cookies are shared across paths).
  */
 @Injectable()
 export class TenantGuard implements CanActivate {
@@ -16,7 +28,14 @@ export class TenantGuard implements CanActivate {
         'No tenant in this request. Did you mean to hit a /t/<slug>/... route?',
       );
     }
-    // Auth check (session.tenantId vs req.tenant.id) added in Step 7.
+    if (!req.session) {
+      throw new UnauthorizedException('Please sign in to access this library.');
+    }
+    if (req.session.tid !== req.tenant.id) {
+      throw new ForbiddenException(
+        "You're signed in to a different library. Sign out and sign in to this one to continue.",
+      );
+    }
     return true;
   }
 }

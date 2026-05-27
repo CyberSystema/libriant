@@ -1,17 +1,21 @@
 import { Controller, Get, Inject, UseGuards } from '@nestjs/common';
+import { Sess } from '../auth/session-context.js';
+import type { SessionPayload } from '../auth/jwt-session.service.js';
 import { TenantGuard } from './tenant.guard.js';
 import { TenantCtx, type TenantContext } from './tenant-context.js';
 import { TenantPrismaService } from './tenant-prisma.service.js';
 
 /**
  * Demo endpoints used to verify the whole tenancy stack end-to-end.
+ * All three are gated by TenantGuard, which now requires a session AND
+ * `session.tid === req.tenant.id`.
  *
- *   GET /t/<slug>/info     → resolved tenant context (proves middleware)
- *   GET /t/<slug>/db-ping  → counts a table in the tenant DB (proves the
- *                            per-tenant Prisma client + LRU pool)
+ *   GET /t/<slug>/info       → resolved tenant context (proves middleware)
+ *   GET /t/<slug>/who-am-i   → confirms session + tenant alignment
+ *   GET /t/<slug>/db-ping    → counts a table in the tenant DB (proves the
+ *                              per-tenant Prisma client + LRU pool)
  *
- * These get removed once feature controllers (catalog, members, …) take
- * over the same URL space.
+ * Replaced by feature controllers (catalog, members, …) in later steps.
  */
 @Controller('t/:slug')
 @UseGuards(TenantGuard)
@@ -30,6 +34,14 @@ export class TenantDemoController {
         resolvedFrom: tenant.resolvedFrom,
         customSubdomain: tenant.customSubdomain,
       },
+    };
+  }
+
+  @Get('who-am-i')
+  whoAmI(@TenantCtx() tenant: TenantContext, @Sess() session: SessionPayload) {
+    return {
+      tenant: { id: tenant.id, slug: tenant.slug, name: tenant.name },
+      session: { userId: session.sub, role: session.role, expiresAt: new Date(session.exp * 1000) },
     };
   }
 

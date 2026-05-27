@@ -137,24 +137,65 @@ PGPASSWORD=libriant docker exec libriant-postgres \
   psql -U libriant -d libriant_control -f /tmp/demo-tenants.sql
 ```
 
+### Verify auth (signup + login + cross-tenant defense)
+
+```sh
+JAR=/tmp/jar.txt && rm -f $JAR
+
+# 1. Signup — creates the library DB + first owner user + session cookie
+curl -s -c $JAR -H "Content-Type: application/json" \
+  -d '{"libraryName":"My Library","slug":"my-library","fullName":"Me","email":"me@example.test","password":"a-very-long-secret-passphrase-123"}' \
+  http://localhost:3001/auth/signup | jq
+
+# 2. /me — returns current user + tenant snapshot
+curl -s -b $JAR http://localhost:3001/auth/me | jq
+
+# 3. Same tenant access works
+curl -s -b $JAR http://localhost:3001/t/my-library/who-am-i | jq
+
+# 4. Cross-tenant: accessing a *different* tenant with this cookie → 403
+curl -i -b $JAR http://localhost:3001/t/acme/info     # 403
+
+# 5. Logout + login + lockout drills
+curl -X POST -b $JAR -c $JAR http://localhost:3001/auth/logout
+curl -s -c $JAR -H "Content-Type: application/json" \
+  -d '{"slug":"my-library","email":"me@example.test","password":"a-very-long-secret-passphrase-123"}' \
+  http://localhost:3001/auth/login
+# Five wrong attempts will lock the user out for 15 minutes:
+for i in 1 2 3 4 5; do
+  curl -s -X POST -H "Content-Type: application/json" \
+    -d '{"slug":"my-library","email":"me@example.test","password":"WRONG-PASSWORD-but-long-enough"}' \
+    http://localhost:3001/auth/login
+done
+
+# 6. Password reset stub — the link is logged to the API stdout; copy the token
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"slug":"my-library","email":"me@example.test"}' \
+  http://localhost:3001/auth/password-reset/request
+# Then look for "[PASSWORD RESET]" in the API log, copy the token, and:
+curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"token":"<paste-token-here>","newPassword":"new-passphrase-after-reset"}' \
+  http://localhost:3001/auth/password-reset/complete
+```
+
 ## Where we are in the plan
 
-| Step  | Description                                                          | Status                         |
-| ----- | -------------------------------------------------------------------- | ------------------------------ |
-| 0     | Design system + i18n + assets foundation                             | ✅ done                        |
-| 1     | Repo scaffold (pnpm/turbo/tsconfig/prettier)                         | ✅ done                        |
-| 2     | **Control-plane Prisma schema + idempotent seed**                    | ✅ done                        |
-| 3     | Feature key catalog                                                  | ✅ done (in `packages/shared`) |
-| 4     | **Tenant Prisma schema (catalog/members/loans/customization/audit)** | ✅ done                        |
-| 5     | NestJS API skeleton (health endpoints)                               | ✅ done                        |
-| 6     | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**       | ✅ done                        |
-| 7     | Auth (passport-local + sessions)                                     | ⏳                             |
-| 8     | Plan/quota system + EffectivePlanService                             | ⏳                             |
-| 9     | Schema customization (field defs + collections)                      | ⏳                             |
-| 10    | Storage driver layer                                                 | ⏳                             |
-| 11–15 | Catalog / Members / Loans / Reservations / Collections               | ⏳                             |
-| 16    | Billing (Stripe + manual)                                            | ⏳                             |
-| 17    | Staff UI (onboarding, help center, billing)                          | ⏳                             |
-| 18    | Internal admin (plans, support, system mode, announcements)          | ⏳                             |
-| 19    | Infra (Caddy, prod compose, GH Actions deploy)                       | ⏳                             |
-| 20    | Tenant provisioning + relocation scripts                             | ⏳                             |
+| Step  | Description                                                           | Status                         |
+| ----- | --------------------------------------------------------------------- | ------------------------------ |
+| 0     | Design system + i18n + assets foundation                              | ✅ done                        |
+| 1     | Repo scaffold (pnpm/turbo/tsconfig/prettier)                          | ✅ done                        |
+| 2     | **Control-plane Prisma schema + idempotent seed**                     | ✅ done                        |
+| 3     | Feature key catalog                                                   | ✅ done (in `packages/shared`) |
+| 4     | **Tenant Prisma schema (catalog/members/loans/customization/audit)**  | ✅ done                        |
+| 5     | NestJS API skeleton (health endpoints)                                | ✅ done                        |
+| 6     | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**        | ✅ done                        |
+| 7     | **Auth (signup with tenant provisioning + login + sessions + reset)** | ✅ done                        |
+| 8     | Plan/quota system + EffectivePlanService                              | ⏳                             |
+| 9     | Schema customization (field defs + collections)                       | ⏳                             |
+| 10    | Storage driver layer                                                  | ⏳                             |
+| 11–15 | Catalog / Members / Loans / Reservations / Collections                | ⏳                             |
+| 16    | Billing (Stripe + manual)                                             | ⏳                             |
+| 17    | Staff UI (onboarding, help center, billing)                           | ⏳                             |
+| 18    | Internal admin (plans, support, system mode, announcements)           | ⏳                             |
+| 19    | Infra (Caddy, prod compose, GH Actions deploy)                        | ⏳                             |
+| 20    | Tenant provisioning + relocation scripts                              | ⏳                             |
