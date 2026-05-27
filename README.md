@@ -214,24 +214,243 @@ for n in 1 2 3; do
 done
 ```
 
+### Verify schema customization
+
+```sh
+JAR=/tmp/jar.txt  # cookie jar from auth section
+
+# Layer 1 — per-entity custom fields
+# 1. Define a short_text field on book
+curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"fieldKey":"shelf_section","labelJson":{"en":"Shelf section","el":"Τομέας ραφιού"},"type":"short_text"}' \
+  http://localhost:3001/t/my-library/data-model/fields/book | jq
+
+# 2. Define a select_one with options
+curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"fieldKey":"genre","labelJson":{"en":"Genre","el":"Είδος"},"type":"select_one","required":true,
+       "optionsJson":{"options":[{"value":"fiction","label":{"en":"Fiction"}},{"value":"poetry","label":{"en":"Poetry"}}]}}' \
+  http://localhost:3001/t/my-library/data-model/fields/book | jq
+
+# 3. List, archive, restore — DELETE soft-archives; POST with same key restores
+curl -s -b $JAR http://localhost:3001/t/my-library/data-model/fields/book | jq
+curl -s -b $JAR -X DELETE http://localhost:3001/t/my-library/data-model/fields/book/shelf_section
+
+# Layer 2 — custom collections (override the Starter limit first)
+TENANT_ID=$(PGPASSWORD=libriant docker exec libriant-postgres psql -U libriant -d libriant_control -tAc \
+  "SELECT id FROM tenants WHERE slug='my-library';")
+PGPASSWORD=libriant docker exec libriant-postgres psql -U libriant -d libriant_control -c "
+  INSERT INTO tenant_plan_overrides (id, \"tenantId\", \"featureKey\", \"valueInt\", note, \"updatedAt\")
+  VALUES ('cust-c', '$TENANT_ID', 'max_custom_collections', 2, 'demo', NOW()),
+         ('cust-r', '$TENANT_ID', 'max_records_per_collection', 100, 'demo', NOW());
+"
+docker exec libriant-redis redis-cli DEL "lbr:plan:effective:$TENANT_ID"
+
+# Create a DVDs collection with two fields
+curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"slug":"dvds","singularLabelJson":{"en":"DVD"},"pluralLabelJson":{"en":"DVDs"},"iconAssetRef":"icons/book"}' \
+  http://localhost:3001/t/my-library/data-model/collections | jq
+
+curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"fieldKey":"title","labelJson":{"en":"Title"},"type":"short_text","required":true}' \
+  http://localhost:3001/t/my-library/data-model/collections/dvds/fields
+curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"fieldKey":"runtime_minutes","labelJson":{"en":"Runtime"},"type":"number","validationJson":{"min":1,"max":600}}' \
+  http://localhost:3001/t/my-library/data-model/collections/dvds/fields
+
+# Insert records — dynamic validation against the field schema
+curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"title":"Casablanca","runtime_minutes":102}' \
+  http://localhost:3001/t/my-library/collections/dvds/records | jq
+
+# Validation errors come back as a structured list
+curl -i -b $JAR -H "Content-Type: application/json" \
+  -d '{"runtime_minutes":9999}' \
+  http://localhost:3001/t/my-library/collections/dvds/records
+
+# Search records (accent-folded, so "καπετα" finds "Καπετάν")
+curl -s -b $JAR -G --data-urlencode "q=καπετα" \
+  http://localhost:3001/t/my-library/collections/dvds/records | jq
+```
+
+### Verify the storage layer
+
+Per-tenant filesystem driver, MIME whitelist per resource type, signed-URL
+downloads, quota enforcement against `max_storage_mb`, and a recompute
+endpoint that walks the disk and overwrites the counter.
+
+```sh
+JAR=/tmp/jar.txt  # cookie jar from auth section
+STORAGE_ROOT=/tmp/libriant-storage   # see .env.example
+
+# 1. Make a tiny PNG, upload it as a book cover
+python3 -c "import base64; open('/tmp/cover.png','wb').write(
+  base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=='))"
+curl -s -b $JAR -F "file=@/tmp/cover.png;type=image/png" \
+  http://localhost:3001/t/my-library/storage/covers | jq
+
+# 2. Authenticated download (uses the cookie + tenant URL)
+REF=$(ls $STORAGE_ROOT/<tenantId>/covers/ | head -1)   # find the generated cuid
+curl -s -b $JAR -o /tmp/dl.png \
+  http://localhost:3001/t/my-library/storage/covers/$REF
+
+# 3. Signed URL — no cookie required to follow
+SIGNED=$(curl -s -b $JAR \
+  "http://localhost:3001/t/my-library/storage/covers/$REF/signed-url?ttlSec=300" | jq -r .url)
+curl -s -o /tmp/dl-signed.png "http://localhost:3001$SIGNED"
+
+# 4. Reject disallowed MIME for the resource → 415
+echo hi > /tmp/x.txt
+curl -i -b $JAR -F "file=@/tmp/x.txt;type=text/plain" \
+  http://localhost:3001/t/my-library/storage/covers      # 415
+
+# 5. Quota: override max_storage_mb=1, upload ~1.5 MB → 402
+PGPASSWORD=libriant docker exec libriant-postgres psql -U libriant -d libriant_control -c "
+  INSERT INTO tenant_plan_overrides (id, \"tenantId\", \"featureKey\", \"valueInt\", note, \"updatedAt\")
+  VALUES ('s', '<tenantId>', 'max_storage_mb', 1, 'demo', NOW());
+"
+docker exec libriant-redis redis-cli DEL "lbr:plan:effective:<tenantId>"
+python3 -c "import os; open('/tmp/big.png','wb').write(b'\x89PNG\r\n\x1a\n'+os.urandom(1_600_000))"
+curl -i -b $JAR -F "file=@/tmp/big.png;type=image/png" \
+  http://localhost:3001/t/my-library/storage/covers      # 402
+
+# 6. Path traversal is refused at the driver
+curl -i --path-as-is -b $JAR \
+  "http://localhost:3001/t/my-library/storage/covers/..%2F..%2Fetc%2Fpasswd"   # 404
+
+# 7. Recompute usage counter from disk
+curl -s -b $JAR -X POST http://localhost:3001/t/my-library/storage-admin/recompute | jq
+```
+
+### Verify the catalog
+
+Full CRUD for authors, books, copies, plus ISBN pre-fill via OpenLibrary
+and cover uploads through the StorageService.
+
+```sh
+JAR=/tmp/jar.txt  # cookie jar from auth section
+
+# Create two authors
+A1=$(curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"fullName":"Νίκος Καζαντζάκης","birthYear":1883,"deathYear":1957}' \
+  http://localhost:3001/t/my-library/catalog/authors | jq -r .id)
+A2=$(curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"fullName":"Philip Sherrard"}' \
+  http://localhost:3001/t/my-library/catalog/authors | jq -r .id)
+
+# Define a custom field on book first (so we can attach it on create)
+curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"fieldKey":"shelf_section","labelJson":{"en":"Shelf","el":"Τομέας"},"type":"short_text"}' \
+  http://localhost:3001/t/my-library/data-model/fields/book
+
+# Create a book with two authors + a custom field
+BOOK=$(curl -s -b $JAR -H "Content-Type: application/json" \
+  -d "{\"title\":\"Ο Καπετάν Μιχάλης\",\"isbn13\":\"978-960-04-2929-7\",
+       \"publicationYear\":1953,\"language\":\"el\",
+       \"authors\":[{\"authorId\":\"$A1\"},{\"authorId\":\"$A2\",\"role\":\"translator\"}],
+       \"customFields\":{\"shelf_section\":\"A-3\"}}" \
+  http://localhost:3001/t/my-library/catalog/books)
+BOOK_ID=$(echo "$BOOK" | jq -r .id)
+
+# Add two copies + search
+curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"barcode":"KAL-0001","shelfLocation":"Section A · Shelf 3"}' \
+  http://localhost:3001/t/my-library/catalog/books/$BOOK_ID/copies
+curl -s -b $JAR -G --data-urlencode "q=καπετα" \
+  http://localhost:3001/t/my-library/catalog/books | jq .items[].title
+
+# ISBN lookup — Redis-cached for 30 days
+curl -s -b $JAR http://localhost:3001/t/my-library/catalog/isbn-lookup/9780140447934 | jq
+
+# Cover upload — book.coverAssetRef is set; old file is replaced atomically
+python3 -c "import base64; open('/tmp/cover.png','wb').write(
+  base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=='))"
+curl -s -b $JAR -F "file=@/tmp/cover.png;type=image/png" \
+  http://localhost:3001/t/my-library/catalog/books/$BOOK_ID/cover | jq
+
+# Status transitions on a copy — forbid `on_loan` (managed by Loans)
+COPY_ID=$(curl -s -b $JAR "http://localhost:3001/t/my-library/catalog/books/$BOOK_ID" | jq -r '.copies[0].id')
+curl -i -b $JAR -H "Content-Type: application/json" -X PATCH \
+  -d '{"status":"on_loan"}' \
+  http://localhost:3001/t/my-library/catalog/copies/$COPY_ID   # 400
+```
+
+### Verify the members module
+
+CRUD for library members, auto-generated `M-YYYY-NNNN` numbers, status
+transitions, archive (refuses if there are open loans/reservations), and
+photo upload through the StorageService.
+
+```sh
+JAR=/tmp/jar.txt  # cookie jar from auth section
+
+# Create a member — number auto-generated; Greek-folded sortName + searchText
+M=$(curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"fullName":"Μαρία Καπετανάκη","email":"maria.k@example.gr","city":"Αθήνα"}' \
+  http://localhost:3001/t/my-library/members)
+MID=$(echo "$M" | jq -r .id)
+echo "$M" | jq '{memberNumber, sortName}'   # → "M-2026-0001" / "μαρια καπετανακη"
+
+# Greek-folded search — "καπετα" matches "Καπετανάκη"
+curl -s -b $JAR -G --data-urlencode "q=καπετα" \
+  http://localhost:3001/t/my-library/members | jq '.items[].fullName'
+
+# Custom field validation — type=select_one with an invalid value
+curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"fieldKey":"membership_tier","labelJson":{"en":"Tier","el":"Επίπεδο"},
+       "type":"select_one",
+       "optionsJson":{"options":[{"value":"bronze","label":{"en":"Bronze","el":"Χάλκινο"}},
+                                  {"value":"gold","label":{"en":"Gold","el":"Χρυσό"}}]}}' \
+  http://localhost:3001/t/my-library/data-model/fields/member
+curl -s -b $JAR -H "Content-Type: application/json" \
+  -d '{"fullName":"Bad","customFields":{"membership_tier":"platinum"}}' \
+  http://localhost:3001/t/my-library/members   # 400 — "Pick one of: bronze, gold."
+
+# Status transitions — append reason to staffNotes
+curl -s -b $JAR -H "Content-Type: application/json" -X PUT \
+  -d '{"status":"suspended","reason":"Lost card pending replacement"}' \
+  http://localhost:3001/t/my-library/members/$MID/status
+curl -i -b $JAR -H "Content-Type: application/json" -X PUT \
+  -d '{"status":"archived"}' \
+  http://localhost:3001/t/my-library/members/$MID/status   # 400 — DELETE only
+
+# GET surfaces circulation counts
+curl -s -b $JAR http://localhost:3001/t/my-library/members/$MID | jq .circulation
+
+# Archive — refuses with open business; DELETE clears it; restore via PATCH
+curl -i -b $JAR -X DELETE http://localhost:3001/t/my-library/members/$MID
+curl -s -b $JAR -H "Content-Type: application/json" -X PATCH \
+  -d '{"archived":false}' \
+  http://localhost:3001/t/my-library/members/$MID | jq '{status, archivedAt}'
+
+# Photo upload — atomic swap, deletes the prior file
+curl -s -b $JAR -F "file=@/tmp/cover.png;type=image/png" \
+  http://localhost:3001/t/my-library/members/$MID/photo | jq
+curl -s -b $JAR -X DELETE http://localhost:3001/t/my-library/members/$MID/photo | jq
+
+# Quota — `max_members` enforced via @RequiresQuota on POST /members
+# (Set tenant_plan_overrides.max_members to a small N to test 402 quickly.)
+```
+
 ## Where we are in the plan
 
-| Step  | Description                                                           | Status                         |
-| ----- | --------------------------------------------------------------------- | ------------------------------ |
-| 0     | Design system + i18n + assets foundation                              | ✅ done                        |
-| 1     | Repo scaffold (pnpm/turbo/tsconfig/prettier)                          | ✅ done                        |
-| 2     | **Control-plane Prisma schema + idempotent seed**                     | ✅ done                        |
-| 3     | Feature key catalog                                                   | ✅ done (in `packages/shared`) |
-| 4     | **Tenant Prisma schema (catalog/members/loans/customization/audit)**  | ✅ done                        |
-| 5     | NestJS API skeleton (health endpoints)                                | ✅ done                        |
-| 6     | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**        | ✅ done                        |
-| 7     | **Auth (signup with tenant provisioning + login + sessions + reset)** | ✅ done                        |
-| 8     | **Plan/quota system (EffectivePlan + PlanGuard + QuotaInterceptor)**  | ✅ done                        |
-| 9     | Schema customization (field defs + collections)                       | ⏳                             |
-| 10    | Storage driver layer                                                  | ⏳                             |
-| 11–15 | Catalog / Members / Loans / Reservations / Collections                | ⏳                             |
-| 16    | Billing (Stripe + manual)                                             | ⏳                             |
-| 17    | Staff UI (onboarding, help center, billing)                           | ⏳                             |
-| 18    | Internal admin (plans, support, system mode, announcements)           | ⏳                             |
-| 19    | Infra (Caddy, prod compose, GH Actions deploy)                        | ⏳                             |
-| 20    | Tenant provisioning + relocation scripts                              | ⏳                             |
+| Step  | Description                                                                 | Status                         |
+| ----- | --------------------------------------------------------------------------- | ------------------------------ |
+| 0     | Design system + i18n + assets foundation                                    | ✅ done                        |
+| 1     | Repo scaffold (pnpm/turbo/tsconfig/prettier)                                | ✅ done                        |
+| 2     | **Control-plane Prisma schema + idempotent seed**                           | ✅ done                        |
+| 3     | Feature key catalog                                                         | ✅ done (in `packages/shared`) |
+| 4     | **Tenant Prisma schema (catalog/members/loans/customization/audit)**        | ✅ done                        |
+| 5     | NestJS API skeleton (health endpoints)                                      | ✅ done                        |
+| 6     | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**              | ✅ done                        |
+| 7     | **Auth (signup with tenant provisioning + login + sessions + reset)**       | ✅ done                        |
+| 8     | **Plan/quota system (EffectivePlan + PlanGuard + QuotaInterceptor)**        | ✅ done                        |
+| 9     | **Schema customization (per-entity fields + custom collections + records)** | ✅ done                        |
+| 10    | **Storage layer (driver pattern + signed URLs + quota + recompute)**        | ✅ done                        |
+| 11    | **Catalog (authors + books + copies + ISBN lookup + covers)**               | ✅ done                        |
+| 12    | **Members (CRUD + auto member-number + status + archive + photos)**         | ✅ done                        |
+| 13–15 | Loans / Reservations / Collections                                          | ⏳                             |
+| 16    | Billing (Stripe + manual)                                                   | ⏳                             |
+| 17    | Staff UI (onboarding, help center, billing)                                 | ⏳                             |
+| 18    | Internal admin (plans, support, system mode, announcements)                 | ⏳                             |
+| 19    | Infra (Caddy, prod compose, GH Actions deploy)                              | ⏳                             |
+| 20    | Tenant provisioning + relocation scripts                                    | ⏳                             |

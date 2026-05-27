@@ -40,10 +40,18 @@ export const QUOTA_COUNTERS: Partial<Record<FeatureKey, QuotaCounter>> = {
   staff_seats: async ({ tenant }) =>
     controlDb.user.count({ where: { tenantId: tenant.id, status: 'active' } }),
 
-  // max_storage_mb lives in the storage layer (Step 10). Currently null
-  // → reported as "—" in the usage UI; the interceptor refuses to gate
-  // a feature with no counter (it would always pass otherwise, which is
-  // surprising).
+  // Read the cached counter on `tenants.storageUsedBytes` (the StorageService
+  // maintains it on every put/delete; `recomputeUsage` reconciles drift).
+  // We round UP to the nearest MB so a 1.2 MB tenant reports `2 MB` — matches
+  // how `max_storage_mb` limits are stated.
+  max_storage_mb: async ({ tenant }) => {
+    const row = await controlDb.tenant.findUnique({
+      where: { id: tenant.id },
+      select: { storageUsedBytes: true },
+    });
+    const bytes = row?.storageUsedBytes ?? 0n;
+    return Number((bytes + 1024n * 1024n - 1n) / (1024n * 1024n));
+  },
 };
 
 /**

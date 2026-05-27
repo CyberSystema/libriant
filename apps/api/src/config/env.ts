@@ -36,6 +36,12 @@ export type AppEnv = {
   loginLockoutMs: number;
   /** Where to write the per-tenant DB+storage URLs during signup provisioning. */
   pgSuperuserUrl: string;
+  /** HMAC secret for signed-download URLs. Defaults to sessionSecret in dev. */
+  storageSigningSecret: string;
+  /** Default TTL (seconds) for signed download URLs. */
+  storageSignedTtlSec: number;
+  /** Hard upload ceiling per request (bytes); the actual quota is per plan. */
+  storageMaxUploadBytes: number;
 };
 
 function required(key: string): string {
@@ -96,5 +102,11 @@ export function loadEnv(): AppEnv {
       'PG_SUPERUSER_URL',
       'postgresql://libriant:libriant@localhost:5432/libriant_control',
     ),
+    // Storage signing — separate secret so we can rotate it independently
+    // of session JWTs. In dev we fall back to the session secret to keep
+    // quickstart painless.
+    storageSigningSecret: optional('STORAGE_SIGNING_SECRET', sessionSecret),
+    storageSignedTtlSec: Number(optional('STORAGE_SIGNED_TTL_SEC', '3600')),
+    storageMaxUploadBytes: Number(optional('STORAGE_MAX_UPLOAD_BYTES', String(25 * 1024 * 1024))),
   };
 }
