@@ -1260,6 +1260,663 @@ curl -s "http://localhost:3001/help/articles/reservations?locale=el" | jq '{loca
   server-rendered page re-fetches against the FTS endpoint — same
   pattern as the catalog / members search inputs.
 
+### Verify the internal admin (Step 18 core)
+
+Step 18 ships the **admin core** the plan called for: admin auth (separate
+from tenant auth), a tenant list (metadata-only — actual library data
+requires a redeemed support key, that's 18a), a plan editor, and a
+per-tenant override editor. Support sessions, announcements, and
+system-mode subsystems are 18a/18b/18c.
+
+```sh
+# 1) Bootstrap an admin (idempotent — re-running just updates fields)
+CONTROL_DATABASE_URL=postgresql://libriant:libriant@localhost:5432/libriant_control \
+ADMIN_BOOTSTRAP_EMAIL=owner@libriant.app \
+ADMIN_BOOTSTRAP_PASSWORD=AdminBootstrapPw2026! \
+ADMIN_BOOTSTRAP_NAME="Libriant Owner" \
+ADMIN_BOOTSTRAP_ROLE=owner \
+pnpm admin:bootstrap
+
+# 2) API smoke — admin login, tenant list, plan + override editing
+JAR=/tmp/admin-jar.txt && rm -f $JAR
+curl -i http://localhost:3001/admin/tenants                                  # 401 anonymous
+curl -s -c $JAR -X POST http://localhost:3001/admin/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"owner@libriant.app","password":"AdminBootstrapPw2026!"}'
+curl -s -b $JAR http://localhost:3001/admin/auth/me                           # admin profile
+curl -s -b $JAR http://localhost:3001/admin/tenants | jq '.tenants | length'
+curl -s -b $JAR http://localhost:3001/admin/plans | jq '.plans[].slug'
+
+# Bump a plan feature value — cache invalidated for every tenant on the plan
+curl -s -b $JAR -X PUT http://localhost:3001/admin/plans/community/features \
+  -H "Content-Type: application/json" \
+  -d '{"featureKey":"max_books","valueInt":6000}'
+
+# Set a per-tenant override
+TID=$(docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "SELECT id FROM tenants WHERE slug='my-library';")
+curl -s -b $JAR -X PUT "http://localhost:3001/admin/tenants/$TID/overrides" \
+  -H "Content-Type: application/json" \
+  -d '{"featureKey":"max_books","valueInt":999,"note":"Beta libraries get extras"}'
+
+# 3) BillingAdminController is now gated — anonymous 401, with cookie 200.
+curl -i http://localhost:3001/admin/billing/tenants/$TID                      # 401
+curl -i -b $JAR http://localhost:3001/admin/billing/tenants/$TID              # 200
+
+# 4) UI
+open http://localhost:3000/en/admin/login          # admin sign-in
+open http://localhost:3000/en/admin/tenants        # tenant list (filterable)
+open http://localhost:3000/en/admin/tenants/<id>   # subscription + overrides + billing actions
+open http://localhost:3000/en/admin/plans          # plan list
+open http://localhost:3000/en/admin/plans/community # feature value editor
+```
+
+**Architecture notes.**
+
+- **Auth surface is fully disjoint from the tenant flow.** A dedicated
+  `AdminSessionService` signs JWTs with its own secret
+  (`ADMIN_SESSION_SECRET`); the cookie is `__Host-libriant_admin` with
+  `SameSite=Strict` (vs `Lax` for tenants); session TTL is 1h (vs 7d).
+  A leaked tenant cookie cannot be turned into an admin cookie even if
+  both secrets shared a code path.
+- **AdminAuthGuard re-validates against `admin_users` on every request**
+  so a disabled / locked admin is logged out instantly, not at next
+  sign-in. Failed logins increment a counter and lock the account once
+  it hits `MAX_FAILED_LOGINS` (15-min lockout).
+- **Plan + override edits invalidate the EffectivePlan cache** for every
+  affected tenant — otherwise existing tenants would keep seeing the
+  old values until their cache row expires. Plan edits walk
+  `subscriptions` to find every tenant on the plan; override edits hit
+  the single tenant directly.
+- **BillingAdminController** (the Step 16 "light-touch" admin surface)
+  is now gated behind `AdminAuthGuard`. Anonymous calls 401 instead of
+  mutating tenant state.
+- **The admin UI lives at `/[locale]/admin/*`** with its own shell — no
+  tenant sidebar, no tenant cookie. The `(authed)` route group enforces
+  the auth gate so paths stay clean (`/admin/tenants` rather than
+  `/admin/(authed)/tenants`). The login page is the only admin URL
+  reachable without a session; it redirects authed users straight to
+  `/admin/tenants`.
+
+**Deferred (18b, 18c).**
+
+- **18b — Announcements.** Composer + audience filters (all / by plan /
+  by tag / by tenant) + in-app banners + email delivery + scheduling +
+  dismissal/ack tracking.
+- **18c — System mode.** Maintenance / read-only / out-of-order /
+  under-construction takeover pages, scheduled windows, Caddy static
+  fallback.
+
+### Verify support access (Step 18a)
+
+Step 18a ships the **only** path by which a Libriant admin can see a
+tenant's data: the library issues a one-time `SUPPORT-XXXXXX` code with a
+1h TTL; the admin redeems it with code + TOTP MFA; a 4h `SupportSession`
+opens; every request during the session is audit-logged; the library can
+revoke at any time and the admin's next request 401s.
+
+```sh
+# 1) Bootstrap an admin (idempotent)
+CONTROL_DATABASE_URL=postgresql://libriant:libriant@localhost:5432/libriant_control \
+ADMIN_BOOTSTRAP_EMAIL=owner@libriant.app \
+ADMIN_BOOTSTRAP_PASSWORD=AdminBootstrapPw2026! \
+pnpm admin:bootstrap
+
+# 2) Sign the admin in and enroll MFA
+JAR=/tmp/admin.txt
+curl -s -c $JAR -X POST http://localhost:3001/admin/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"owner@libriant.app","password":"AdminBootstrapPw2026!"}'
+
+SECRET=$(curl -s -b $JAR -X POST http://localhost:3001/admin/mfa/setup \
+  -H "Content-Type: application/json" -d '{}' | jq -r .secret)
+# Compute a TOTP using otplib (or paste $SECRET into any authenticator app)
+TOTP=$(cd apps/api && node -e "
+import('otplib').then(({generateSync})=>console.log(generateSync({secret:'$SECRET'})))")
+curl -s -b $JAR -X POST http://localhost:3001/admin/mfa/verify \
+  -H "Content-Type: application/json" -d "{\"code\":\"$TOTP\"}"
+# → { mfaEnabled: true }
+
+# 3) As a librarian, generate a one-time support code
+LIB=/tmp/lib.txt
+curl -s -c $LIB -X POST http://localhost:3001/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"lib@step18a.test","password":"librarian-pass-1234"}'
+CODE=$(curl -s -b $LIB -X POST http://localhost:3001/t/step18a/support/keys \
+  -H "Content-Type: application/json" -d '{}' | jq -r .code)
+# Code looks like SUPPORT-7HX29P — share with the admin out-of-band.
+
+# 4) Admin redeems with the code + a fresh TOTP
+IMP=/tmp/imp.txt
+TOTP=$(cd apps/api && node -e "
+import('otplib').then(({generateSync})=>console.log(generateSync({secret:'$SECRET'})))")
+curl -s -b $JAR -c $IMP -X POST http://localhost:3001/admin/support/redeem \
+  -H "Content-Type: application/json" \
+  -d "{\"code\":\"$CODE\",\"totp\":\"$TOTP\"}"
+# → { session: {...}, tenant: { slug: "step18a", name: "..." } }
+
+# 5) The impersonation cookie now grants admin access to that one tenant.
+# Strip the libriant_admin cookie to prove the impersonation cookie alone
+# is the credential downstream:
+grep -v libriant_admin $IMP > /tmp/imp-only.txt
+curl -s -b /tmp/imp-only.txt http://localhost:3001/t/step18a/catalog/books  # 200
+curl -s -b /tmp/imp-only.txt http://localhost:3001/t/acme/catalog/books     # 403 — wrong tenant
+curl -s http://localhost:3001/t/step18a/catalog/books                       # 401 — no cookie
+
+# 6) Plan + quota are bypassed under impersonation. Confirm by forcing a
+# tenant override of max_books=0 then creating one under each identity.
+docker exec libriant-postgres psql -U libriant -d libriant_control -c "
+INSERT INTO tenant_plan_overrides (id, \"tenantId\", \"featureKey\", \"valueInt\",
+  note, \"createdAt\", \"updatedAt\")
+VALUES (gen_random_uuid()::text,
+  (SELECT id FROM tenants WHERE slug='step18a'),
+  'max_books', 0, 'Drill', now(), now())
+ON CONFLICT (\"tenantId\", \"featureKey\") DO UPDATE
+  SET \"valueInt\"=EXCLUDED.\"valueInt\", \"updatedAt\"=now();"
+docker exec libriant-redis redis-cli FLUSHDB  # bust EffectivePlan cache
+
+curl -s -b $LIB           -X POST http://localhost:3001/t/step18a/catalog/books \
+  -H "Content-Type: application/json" -d '{"title":"Blocked"}'      # 402
+curl -s -b /tmp/imp-only.txt -X POST http://localhost:3001/t/step18a/catalog/books \
+  -H "Content-Type: application/json" -d '{"title":"Bypassed"}'     # 201
+
+# 7) Library revokes the active session → admin is kicked.
+curl -s -b $LIB -X DELETE http://localhost:3001/t/step18a/support/sessions/active
+curl -s -b /tmp/imp-only.txt http://localhost:3001/t/step18a/catalog/books  # 401
+
+# 8) Audit log lists every action during the session, with reason on end.
+curl -s -b $LIB http://localhost:3001/t/step18a/support/sessions/log | jq '.sessions[0] | {endedReason, actions: .actions[:3]}'
+```
+
+**Architecture notes.**
+
+- **Three separate cookies, three separate secrets, three separate
+  `SameSite` policies.** `__Host-libriant_session` (tenant, `Lax`, 7d),
+  `__Host-libriant_admin` (admin, `Strict`, 1h), and
+  `__Host-libriant_imp` (impersonation, `Strict`, 4h). The impersonation
+  JWT carries an `imp: true` sentinel claim that distinguishes it from
+  the admin JWT, and it's signed with `IMPERSONATION_SECRET` — distinct
+  from both tenant and admin secrets — so a leaked admin cookie cannot
+  be turned into an impersonation cookie.
+- **MFA is mandatory for redemption.** Each admin's TOTP secret is
+  AES-256-GCM-encrypted with a 32-byte master key (`MFA_MASTER_KEY`,
+  64 hex chars); the DB columns are `mfaSecretCipher` (ciphertext + 16-byte
+  auth tag), `mfaNonce` (12-byte GCM nonce per row, never reused), and
+  `mfaKeyId` (label for future key rotation). Enroll is a two-step
+  setup→verify dance; we only persist + flip `mfaEnabled=true` once the
+  admin's authenticator has typed back a correct code.
+- **Support codes are bcrypt-hashed.** Format `SUPPORT-XXXXXX` (4-char
+  prefix + 6-char body) from a 32-char alphabet that excludes
+  visually-ambiguous chars (no `O`, `0`, `I`, `1`). The prefix is stored
+  in plaintext to narrow the bcrypt search to a tiny candidate set; the
+  body is bcrypt(cost 12). Plaintext is returned **once** on generate,
+  never persisted, never logged, never echoed in audit entries.
+- **One pending key, one active session per tenant.** Generating a new
+  key revokes the previous pending one in the same transaction; opening
+  a new session ends any existing active one for the tenant.
+- **Library revoke is instant.** `ImpersonationMiddleware` doesn't trust
+  the JWT alone — it loads the `SupportSession` row on every impersonated
+  request and only attaches `req.impersonation` when `endedAt IS NULL`,
+  `expiresAt > now()`, and the cookie's `(adminId, tenantId, sessionId)`
+  matches the row. So `DELETE /t/:slug/support/sessions/active` flips
+  the row and the admin's next request 401s — no token revocation list,
+  no race window.
+- **TenantGuard + PlanGuard + QuotaInterceptor all short-circuit when
+  `req.impersonation` is set.** `TenantGuard` checks the URL slug
+  matches the impersonation's tenant (else 403); `PlanGuard` returns
+  `true`; `QuotaInterceptor` skips the usage check. The `Customization`
+  module's `QuotaService` (called directly from collection/custom-field
+  services) is **not** bypassed at MVP — the per-tenant override editor
+  is the documented escape hatch there.
+- **SupportAuditInterceptor is a global APP_INTERCEPTOR.** It only writes
+  a `supportActionLog` row when `req.impersonation` is set, so normal
+  requests pay no audit cost. Writes are non-blocking — a failed audit
+  row never fails the request ("prefer 'request completed but no audit
+  row' over 'request failed because audit row failed'").
+- **Out of MVP, hooks in place.** Email notifications, before/after
+  diffs (needs Prisma middleware), redemption rate limiting (schema
+  `SupportRedemptionAttempt` already records every attempt), and an
+  auto-expiry sweeper job are all deferred with TODOs in code.
+
+### Verify announcements (Step 18b)
+
+Step 18b ships the platform-wide announcements subsystem: admin composes
+
+- targets a message, libraries receive it as in-app banners (and email
+  through an outbox stub), users dismiss or acknowledge, admin sees live
+  delivery stats. Audience filter supports four shapes: **all**, specific
+  **tenant_ids**, **plan_slugs**, and tenant **tags** (a `tags TEXT[]`
+  column on tenants, editable from the admin tenant detail page).
+
+```sh
+# 1) Admin login (re-using the 18a admin)
+JAR=/tmp/admin.txt
+curl -s -c $JAR -X POST http://localhost:3001/admin/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"owner@libriant.app","password":"AdminBootstrapPw2026!"}'
+
+# 2) Librarian login (any signed-in user under a tenant works)
+LIB=/tmp/lib.txt
+curl -s -c $LIB -X POST http://localhost:3001/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"step18a","email":"lib@step18a.test","password":"librarian-pass-1234"}'
+
+# 3) Empty by default
+curl -s -b $LIB http://localhost:3001/t/step18a/announcements/active
+# → {"announcements":[]}
+
+# 4) Create an info announcement targeting all active libraries
+ID=$(curl -s -b $JAR -X POST http://localhost:3001/admin/announcements \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title":"Welcome", "bodyMarkdown":"Click dismiss when done.",
+    "severity":"info", "audience":{"all":true},
+    "deliverInApp":true, "deliverEmail":false,
+    "dismissible":true, "requiresAck":false
+  }' | jq -r .announcement.id)
+
+# 5) Librarian now sees it; the delivery row gets materialized on first fetch
+curl -s -b $LIB http://localhost:3001/t/step18a/announcements/active | jq '.announcements[0] | {title, severity, deliveryScope}'
+# → { "title": "Welcome", "severity": "info", "deliveryScope": "tenant" }
+
+# 6) Stats are computed live: targetTenantCount is the audience-match count
+#    against current tenant rows; deliveryCount is the historical materialized rows.
+curl -s -b $JAR http://localhost:3001/admin/announcements/$ID/stats | jq .stats
+
+# 7) Tag a tenant from the admin side + target by tag.
+TID=$(docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "SELECT id FROM tenants WHERE slug='step18a';")
+curl -s -b $JAR -X PUT http://localhost:3001/admin/tenants/$TID/tags \
+  -H "Content-Type: application/json" -d '{"tags":["beta"]}'
+# → tags saved AND TenantResolver cache invalidated so the next request
+#   sees the new tags array (otherwise the 5-min tenant context cache
+#   would mask the update).
+
+curl -s -b $JAR -X POST http://localhost:3001/admin/announcements \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title":"Beta cohort note", "bodyMarkdown":"Beta-only message.",
+    "severity":"warning", "audience":{"tags":["beta"]},
+    "deliverInApp":true, "deliverEmail":false,
+    "dismissible":true, "requiresAck":false
+  }'
+
+# 8) Critical announcement that requires ack — per-user delivery row, modal-blocked UI.
+ACK=$(curl -s -b $JAR -X POST http://localhost:3001/admin/announcements \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"title\":\"Action required\", \"bodyMarkdown\":\"Please review.\",
+    \"severity\":\"critical\", \"audience\":{\"tenant_ids\":[\"$TID\"]},
+    \"deliverInApp\":true, \"deliverEmail\":true,
+    \"dismissible\":false, \"requiresAck\":true
+  }" | jq -r .announcement.id)
+
+# Library can't dismiss it — must acknowledge.
+curl -s -b $LIB -X POST http://localhost:3001/t/step18a/announcements/$ACK/dismiss \
+  -H "Content-Type: application/json" -d '{}'
+# → {"message":"This announcement cannot be dismissed.","statusCode":404}
+curl -s -b $LIB -X POST http://localhost:3001/t/step18a/announcements/$ACK/ack \
+  -H "Content-Type: application/json" -d '{}'
+# → {"acknowledgedAt":"..."}
+
+# 9) Adversarial — empty audience and unknown shape are rejected at the API.
+curl -s -b $JAR -X POST http://localhost:3001/admin/announcements \
+  -H "Content-Type: application/json" \
+  -d '{"title":"x","bodyMarkdown":"x","severity":"info",
+       "audience":{"tags":[]},"deliverInApp":true,"deliverEmail":false,
+       "dismissible":true,"requiresAck":false}'
+# → 400 "Pick at least one tag when targeting by tag."
+
+# 10) Lifecycle — expire, archive, list each tab.
+curl -s -b $JAR -X POST http://localhost:3001/admin/announcements/$ID/expire \
+  -H "Content-Type: application/json" -d '{}'
+curl -s -b $JAR -X DELETE http://localhost:3001/admin/announcements/$ID
+curl -s -b $JAR 'http://localhost:3001/admin/announcements?status=archived' | jq '.announcements | length'
+
+# 11) UI
+open http://localhost:3000/en/admin/announcements           # list, severity-filtered
+open http://localhost:3000/en/admin/announcements/new       # composer (audience picker)
+open http://localhost:3000/en/admin/announcements/$ACK      # detail + stats + actions
+open http://localhost:3000/en/admin/tenants/$TID            # tag editor card
+open http://localhost:3000/en/t/step18a                     # banner + critical-ack modal
+```
+
+**Architecture notes.**
+
+- **Audience is a typed discriminated union** stored in the DB as
+  `audience_filter JSONB`. Four shapes — `{ all: true }`, `{ tenant_ids
+}`, `{ plan_slugs }`, `{ tags }` — match the plan verbatim. Adding a
+  fifth (e.g. `{ regions }`) is a switch-arm change in
+  `audience.ts:audienceFromJson` plus a corresponding case in the
+  service's resolver / matcher.
+- **Lazy delivery materialization** rather than an upfront scheduled
+  worker. The first time a user on a matching tenant fetches the active
+  set, we INSERT the `announcement_deliveries` row with
+  `deliveredInAppAt` (and `deliveredEmailAt` if `deliverEmail`). That
+  gives accurate "delivered to N" stats without standing up a BullMQ
+  job; the trade-off is the stats lag until the first paint per tenant.
+  An upfront materializer can be bolted on later with no API changes.
+- **`(announcementId, tenantId) WHERE userId IS NULL` partial unique
+  index** added in a follow-up migration. The base
+  `(announcementId, tenantId, userId)` constraint doesn't prevent
+  duplicate tenant-wide rows because Postgres BTREE treats NULL userIds
+  as distinct. Without the partial unique, two concurrent first-fetches
+  by different users on the same tenant could race-create duplicate
+  rows. The service additionally race-tolerates via lookup-then-insert
+  with re-read on conflict.
+- **Per-(tenant, user) Redis cache for the active set**, 60 s TTL — as
+  the plan called for. Cache key:
+  `lbr:announcements:active:<tenantId>:<userId>`. The admin endpoints
+  (create / update / expire / archive) resolve the live audience and
+  bust each matched tenant's keys via SCAN; the tag editor also busts
+  the TenantResolver cache so a freshly-tagged tenant sees newly-matching
+  announcements without waiting for the 5-min tenant context TTL.
+- **Severity → behavior is enforced server-side AND client-side.**
+  Server: dismiss endpoint 404s when the announcement is not
+  `dismissible`; ack endpoint 404s when it doesn't require ack. Client:
+  `info` / `warning` render as dismissible banners; `critical` without
+  ack is sticky no-dismiss; `critical + requiresAck` renders as a
+  full-screen modal blocking the rest of the UI until the current user
+  acknowledges. Per-user delivery rows for ack so each user sees + acks
+  their own copy.
+- **Banner is gated on `session && !impersonation`.** Admins viewing a
+  tenant via support session don't fetch or render announcements — they
+  hold the impersonation cookie, not a librarian session, and the
+  delivery model is keyed on `users.id` which doesn't exist for
+  `admin_users`.
+- **Email delivery is a stub** (`EmailOutboxService.enqueue`) — logs
+  what _would_ go out but never opens a connection. Drop in a real
+  Postmark / SES / SMTP driver later by replacing one file. The
+  `deliveredEmailAt` column is set regardless when the stub returns
+  success, so stats look correct end-to-end.
+- **Tag changes invalidate two caches.** The PUT /tags endpoint busts
+  (a) the TenantResolver cache, since `tags` is baked into the
+  `TenantContext` attached by `TenantMiddleware`; and (b) the
+  per-tenant announcement active set, since the new tag set can pull
+  the tenant into or out of an audience. Single endpoint, both buckets.
+- **Out of MVP, hooks in place.** Upfront delivery materialization
+  worker (BullMQ + cron at `publishAt`), real email driver, per-user
+  notification-panel "previously dismissed" view, and a pre-window
+  announcement auto-suggester linked from 18c are deferred with TODOs
+  in code.
+
+### Verify system mode (Step 18c)
+
+Step 18c ships a first-class **system-mode** state controlled from the
+admin UI: `maintenance` (full takeover), `read_only` (mutations 503),
+`out_of_order` (emergency outage takeover), and `under_construction`
+(banner only). Scope is **global** or **per-tenant**; per-tenant wins
+when stricter. Scheduling resolves at read-time — no BullMQ worker
+needed, no flapping. Caddy ships with a static `maintenance.html`
+fallback so the edge can serve a polished page even when the API is
+fully down.
+
+```sh
+# 1) Admin login (re-using the 18a admin)
+JAR=/tmp/admin.txt
+curl -s -c $JAR -X POST http://localhost:3001/admin/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"owner@libriant.app","password":"AdminBootstrapPw2026!"}'
+
+# 2) Librarian login
+LIB=/tmp/lib.txt
+curl -s -c $LIB -X POST http://localhost:3001/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"step18a","email":"lib@step18a.test","password":"librarian-pass-1234"}'
+
+# 3) Public + always-allowed routes
+curl -i http://localhost:3001/system-mode/current   # 200 — always allowed
+curl -i http://localhost:3001/healthz               # 200 — always allowed
+# Every response carries x-system-mode + x-system-mode-source headers
+# (and x-system-mode-ends-at when set) — useful for SSR layouts that
+# want to render banners without a second fetch.
+
+# 4) read_only — GETs pass, mutations 503
+EID=$(curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/global \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"read_only","messageMarkdown":"DB migration."}' | jq -r .event.id)
+curl -i -b $LIB http://localhost:3001/t/step18a/catalog/books   # 200
+curl -i -b $LIB -X POST http://localhost:3001/t/step18a/catalog/books \
+  -H "Content-Type: application/json" -d '{"title":"Blocked"}'
+# → 503 { reason: "read_only", message: "...", expectedEndsAt: null, mode, source }
+curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/events/$EID/end -d '{}'
+
+# 5) maintenance — full block, admin paths still work, healthz still works
+EID=$(curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/global \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"maintenance"}' | jq -r .event.id)
+curl -i -b $LIB http://localhost:3001/t/step18a/catalog/books         # 503
+curl -i -b $LIB http://localhost:3001/auth/me                         # 503
+curl -i      http://localhost:3001/healthz                            # 200
+curl -i      http://localhost:3001/system-mode/current                # 200
+curl -i -b $JAR http://localhost:3001/admin/tenants                   # 200 (bypass on)
+curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/events/$EID/end -d '{}'
+
+# 6) out_of_order WITH allowAdminBypass=false — lockout test.
+# Normal admin endpoints are blocked, but /admin/system-mode/* is in
+# ALWAYS_PASS so the operator can never lock themselves out of the lever
+# they need to recover.
+EID=$(curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/global \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"out_of_order","allowAdminBypass":false}' | jq -r .event.id)
+curl -i -b $JAR http://localhost:3001/admin/tenants            # 503 — blocked
+curl -i -b $JAR http://localhost:3001/admin/system-mode/current # 200 — escape hatch
+curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/events/$EID/end -d '{}'
+
+# 7) Per-tenant — isolate one library without touching global state.
+TID=$(docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "SELECT id FROM tenants WHERE slug='step18a';")
+EID=$(curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/tenants/$TID \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"read_only","messageMarkdown":"Migrating cells."}' | jq -r .event.id)
+curl -s 'http://localhost:3001/system-mode/current?slug=step18a' | jq '.mode.mode,.mode.source'
+# → "read_only", "tenant"
+curl -s 'http://localhost:3001/system-mode/current?slug=acme'    | jq '.mode.mode,.mode.source'
+# → "normal", "default"
+curl -i -b $LIB -X POST http://localhost:3001/t/step18a/catalog/books \
+  -H "Content-Type: application/json" -d '{"title":"Blocked per-tenant"}'   # 503
+curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/events/$EID/end -d '{}'
+
+# 8) Stricter-wins — global read_only + tenant maintenance → tenant wins.
+GID=$(curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/global \
+  -H "Content-Type: application/json" -d '{"mode":"read_only"}' | jq -r .event.id)
+TENT=$(curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/tenants/$TID \
+  -H "Content-Type: application/json" -d '{"mode":"maintenance"}' | jq -r .event.id)
+curl -s 'http://localhost:3001/system-mode/current?slug=step18a' | jq '.mode'
+# → mode: maintenance, source: tenant
+curl -s 'http://localhost:3001/system-mode/current?slug=acme' | jq '.mode'
+# → mode: read_only, source: global
+curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/events/$GID/end -d '{}'
+curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/events/$TENT/end -d '{}'
+
+# 9) Active support session bypasses maintenance (admin debugging the outage).
+# (see Step 18a verification for the full key/redeem flow)
+
+# 10) Scheduling — future window, list scheduled, cancel
+FUTURE=$(date -u -v +2H +"%Y-%m-%dT%H:%M:%SZ")  # macOS
+EID=$(curl -s -b $JAR -X POST http://localhost:3001/admin/system-mode/global \
+  -H "Content-Type: application/json" \
+  -d "{\"mode\":\"maintenance\",\"startsAt\":\"$FUTURE\"}" | jq -r .event.id)
+curl -s 'http://localhost:3001/system-mode/current' | jq '.mode.mode'  # → "normal"
+curl -s -b $JAR 'http://localhost:3001/admin/system-mode/scheduled' | jq '.scheduled | length'
+curl -s -b $JAR -X DELETE http://localhost:3001/admin/system-mode/events/$EID   # 204
+
+# 11) Adversarial — mode=normal rejected, unknown mode rejected
+curl -i -b $JAR -X POST http://localhost:3001/admin/system-mode/global \
+  -H "Content-Type: application/json" -d '{"mode":"normal"}'              # 400
+curl -i -b $JAR -X POST http://localhost:3001/admin/system-mode/global \
+  -H "Content-Type: application/json" -d '{"mode":"super-broken"}'        # 400
+
+# 12) UI
+open http://localhost:3000/en/admin/system-mode            # admin panel
+open http://localhost:3000/en/admin/tenants/$TID           # tenant mode panel
+# Then open a global maintenance window from the panel above and visit:
+open http://localhost:3000/en/t/step18a                    # branded takeover page
+```
+
+**Architecture notes.**
+
+- **Resolution is read-time, not scheduled.** The active query is
+  `endedAt IS NULL AND startsAt <= now() AND (endsAt IS NULL OR endsAt > now())`.
+  Scheduled windows automatically become active when the clock rolls
+  past their `startsAt`. No worker means no race (worker dies → mode
+  never flips), no flapping at the boundary, and windows can be planned
+  hours / days / weeks in advance with zero standing infrastructure.
+- **Severity ordering for "stricter wins":** `normal (0) < under_construction (1) < read_only (2) < out_of_order (3) = maintenance (3)`.
+  When both a global and a per-tenant event are active, the higher
+  severity wins; equal severities tie-break to the per-tenant event
+  (more specific). `out_of_order` and `maintenance` share enforcement
+  but ship different branded copy.
+- **Middleware order matters.** `SystemModeMiddleware` runs **after**
+  Session / Admin / Impersonation (so it can trust `req.impersonation`)
+  but **before** TenantMiddleware (so a maintenance event stops the
+  request before any tenant DB pool warms up). `forRoutes('*')` rewrites
+  Express's `req.path` to `/`, so the middleware reads `req.originalUrl`
+  for path matching — this is exactly the kind of NestJS detail that
+  silently misroutes a wildcard middleware if you don't know about it.
+- **Two layers of always-allowed paths.** `ALWAYS_PASS` (no gate at all)
+  covers `/healthz`, `/readyz`, `/metrics`, `/system-mode/*`,
+  **`/admin/system-mode/*`**, and `/admin/auth/*` — the operator can
+  never lock themselves out of the lever they need to recover, even if
+  they set `allowAdminBypass=false`. `ADMIN_BYPASS` (gated by the
+  event's flag) covers the rest of `/admin/*` and `/auth/admin/*` for
+  the normal case.
+- **Active support sessions bypass.** A Libriant admin holding a live
+  impersonation cookie (validated against the DB by
+  `ImpersonationMiddleware`) gets through maintenance / read_only /
+  out_of_order — they're the person debugging the outage and need the
+  library reachable. Cutting them off would be hostile.
+- **Redis cache per scope, 30 s TTL, busted on admin writes.** Cache
+  keys: `lbr:system_mode:global` and `lbr:system_mode:tenant:<id>`.
+  Every admin mutation (open / end / cancel) busts the relevant key
+  immediately; the short TTL is belt-and-braces if the bust call ever
+  drops a key. Reads survive a control-plane DB blip for up to 30 s.
+- **Per-request response headers** (`x-system-mode`, `x-system-mode-source`,
+  optionally `x-system-mode-ends-at`) on every API response. SSR layouts
+  that already fetched something can read the header without a second
+  round-trip; the dedicated `GET /system-mode/current` endpoint stays
+  for cold loads and the public takeover-page case.
+- **Caddy static fallback.** [`infra/caddy/maintenance.html`](infra/caddy/maintenance.html)
+  is the brand-aware page Caddy can serve directly when the NestJS app
+  is fully down (envvar toggle in the Caddyfile, to land with Step 19).
+  Inline CSS, no external assets, dark-mode aware — works as a 502
+  fallback even without ACME running.
+- **Out of MVP, hooks in place.** BullMQ window-boundary worker for
+  side effects (e.g. announce-on-start), pre-window auto-suggestion of
+  an 18b announcement at scheduling time, "Notify me when it's back"
+  email capture on the takeover page, and i18n of the takeover copy
+  are all deferred with TODOs.
+
+### Verify the production infra (Step 19)
+
+Step 19 ships the production topology: Caddy at the edge (TLS via ACME),
+api + web + worker behind it on a private docker network, Postgres +
+PgBouncer + Redis on the same network, the hot-swap `/assets/` bind
+mount, and a static `maintenance.html` fallback that survives a full
+app outage. GitHub Actions builds + pushes images to GHCR and rolls them
+to every host in [`infra/deploy/fleet.yml`](infra/deploy/fleet.yml); a
+nightly [`scripts/backup.sh`](scripts/backup.sh) captures Postgres +
+storage to disk and optionally rclone-syncs them off-host.
+
+```sh
+# 1) Build images locally to validate the Dockerfiles end-to-end.
+docker build -f apps/api/Dockerfile -t libriant-api:test .
+docker build -f apps/web/Dockerfile -t libriant-web:test .
+
+# 2) Boot the prod stack against an isolated env file. Compose's variable
+# interpolation refuses to start if any required secret is missing, so
+# `:?` errors here mean the .env.prod is incomplete — that's by design.
+cp .env.prod.example /srv/libriant/.env.prod    # then fill in the blanks
+( set -a; source /srv/libriant/.env.prod; set +a; \
+  docker compose -f infra/compose/docker-compose.prod.yml up -d )
+
+# 3) Health probes (every service has the same contract):
+curl -fs https://libriant.app/healthz              # Caddy → web
+curl -fs https://libriant.app/lbr-api/healthz      # Caddy → api
+docker compose -f infra/compose/docker-compose.prod.yml \
+  exec worker wget -qO- http://localhost:3002/healthz
+# Readiness fans out: web /api/readyz round-trips to api /readyz, which
+# pings Redis + the control DB. Either dependency down → 503.
+curl -is https://libriant.app/api/readyz
+curl -is https://libriant.app/lbr-api/readyz
+
+# 4) Prometheus metrics (text exposition; same contract on all three).
+curl -s https://libriant.app/api/metrics      | head -6
+curl -s https://libriant.app/lbr-api/metrics  | head -6
+docker compose -f infra/compose/docker-compose.prod.yml \
+  exec worker wget -qO- http://localhost:3002/metrics | head -6
+
+# 5) Static-page fallback. Flip MAINTENANCE_HARD=true and reload caddy;
+# even with api + web killed, Caddy serves the brand-aware page.
+MAINTENANCE_HARD=true docker compose -f infra/compose/docker-compose.prod.yml \
+  up -d --force-recreate caddy
+curl -is https://libriant.app/ | head -8     # 200 with X-Maintenance: hard
+# /healthz still passes through so the load balancer doesn't pull the host.
+curl -is https://libriant.app/healthz | head -4
+
+# 6) Asset hot-swap (still works under prod compose — the assets/ folder
+# is bind-mounted into Caddy + web + api as a single read-only volume).
+echo "<svg ...>...</svg>" > assets/brand/logo.svg
+curl -I https://libriant.app/_assets/brand/logo.svg     # ETag updates
+
+# 7) Backup drill. Runs against the live compose project; idempotent on
+# the same day.
+COMPOSE_PROJECT_NAME=libriant ./scripts/backup.sh
+ls /srv/libriant/backups/$(date +%Y%m%d)/
+# → postgres.sql.gz storage.tar.gz caddy-logs.tar.gz manifest.txt
+
+# 8) Deploy drill — push to GHCR + roll the fleet. The workflow runs
+# from CI, but you can dry-run locally with `act`:
+act push -W .github/workflows/deploy.yml --container-architecture linux/amd64
+```
+
+**Architecture notes.**
+
+- **Caddy is the only service with host ports.** 80 + 443 + UDP 443
+  (HTTP/3). Everything else lives on the internal `app` docker network;
+  Postgres / Redis / API / worker are unreachable from outside the host.
+  When this graduates to multi-host (Stage 2), the LB takes over the
+  edge role and Caddy moves to per-node.
+- **`tsx` in production.** The API runs under `tsx` instead of compiled
+  JavaScript because pnpm workspace packages export their TypeScript
+  source directly (`main: ./src/index.ts`). The trade-off is a ~30 MB
+  larger image; the win is a build pipeline that mirrors `pnpm dev`
+  exactly, and zero per-request compile cost after warm-up.
+- **Worker is the same image as api, different command.** Adding
+  background jobs is a code change, not an ops change. The current
+  worker is intentionally minimal — its `/healthz`, `/readyz`, and
+  Prometheus `/metrics` endpoints exist so the contract is stable while
+  the BullMQ queues (18a sweeper, 18b email outbox, 18c window-boundary
+  effects) land over the next steps.
+- **Same health contract across all three.** `/healthz` (liveness),
+  `/readyz` (dependency check; for api → DB + Redis, for web →
+  round-trip to api, for worker → liveness), `/metrics` (Prometheus
+  text exposition). One probe shape no matter which service or which
+  orchestrator picks it up.
+- **`assets/` and `locales/` are bind-mounted read-only into multiple
+  services.** Designers can replace `assets/brand/logo.svg` on the host
+  and every container sees the change instantly — same hot-swap drill
+  as the Step 0 release gate, just inside the prod stack now.
+- **Belt-and-braces static maintenance.** [`infra/caddy/maintenance.html`](infra/caddy/maintenance.html)
+  ships in the Caddyfile via a host bind-mount, gated by
+  `$MAINTENANCE_HARD`. Even if the entire NestJS app is down, browsers
+  get a polished page (and Caddy's 502 templates never surface to
+  users).
+- **Deploy targets a "fleet," not a host.** [`infra/deploy/fleet.yml`](infra/deploy/fleet.yml)
+  lists hosts; the workflow fans out across them with `fail-fast: false`
+  so one cell failing doesn't roll back others — the cells are
+  independent by design. Today the list has one entry; growth = append.
+- **Backups are atomic per-day.** [`scripts/backup.sh`](scripts/backup.sh)
+  writes everything under `$BACKUP_ROOT/YYYYMMDD/`, prunes anything
+  older than `$BACKUP_KEEP_DAYS` (default 14), and optionally
+  rclone-mirrors off-host. Re-running on the same day is a no-op
+  (idempotent overwrite), so a missed cron + manual catch-up is safe.
+- **Out of MVP, hooks in place.** Wildcard TLS for `*.libriant.app`
+  (commented Caddyfile block with a DNS-01 challenge — needs a provider
+  plugin), multi-region cell routing, OpenTelemetry traces, and a real
+  Prometheus + Grafana stack are all deferred. The metrics endpoints
+  already exist so a scraper can attach to today's deployment.
+
 ## Where we are in the plan
 
 | Step | Description                                                                                               | Status                         |
@@ -1288,6 +1945,9 @@ curl -s "http://localhost:3001/help/articles/reservations?locale=el" | jq '{loca
 | 17e  | **Data-model editor (drag-drop fields + live form preview + plain-language types)**                       | ✅ done                        |
 | 17f  | **Member + book detail pages (view + edit + status actions + photo/cover upload + add-copy)**             | ✅ done                        |
 | 17g  | **In-product help center (markdown KB + Postgres FTS + accent-insensitive search + sidebar link)**        | ✅ done                        |
-| 18   | Internal admin (plans, support, system mode, announcements)                                               | ⏳                             |
-| 19   | Infra (Caddy, prod compose, GH Actions deploy)                                                            | ⏳                             |
+| 18   | **Internal admin core (auth + tenant list + plan editor + per-tenant override editor + gated billing)**   | ✅ done                        |
+| 18a  | **Support sessions (MFA + one-time keys + impersonation + audit log + library revoke)**                   | ✅ done                        |
+| 18b  | **Announcements (composer + audience filters + in-app banners + outbox email + tag editor)**              | ✅ done                        |
+| 18c  | **System mode (maintenance / read-only / out-of-order / under-construction + per-tenant + scheduling)**   | ✅ done                        |
+| 19   | **Infra (Caddy + prod compose + GH Actions deploy + worker + health/metrics + backups)**                  | ✅ done                        |
 | 20   | Tenant provisioning + relocation scripts                                                                  | ⏳                             |

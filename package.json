@@ -24,6 +24,7 @@
     "db:migrate:deploy": "pnpm --filter @libriant/db-control prisma:migrate:deploy",
     "db:seed": "pnpm --filter @libriant/db-control seed",
     "ingest:help": "tsx scripts/ingest-help-articles.ts",
+    "admin:bootstrap": "tsx scripts/bootstrap-admin.ts",
     "db:studio": "pnpm --filter @libriant/db-control prisma:studio",
     "db:reset": "pnpm --filter @libriant/db-control prisma:migrate:reset",
     "tenant:migrate:deploy": "pnpm --filter @libriant/db-tenant prisma:migrate:deploy",

@@ -1,0 +1,177 @@
+name: deploy
+
+# Build images on push to main, then deploy them to every host in
+# `infra/deploy/fleet.yml`. The deploy job is intentionally per-host with
+# `fail-fast: false` so one cell failing doesn't roll back others — the
+# topology assumes hosts are independent (different DB host per cell,
+# eventually). Workflow can also be triggered manually from the Actions
+# tab for hotfixes.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'packages/**'
+      - 'infra/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Override the tag to deploy (default: short SHA).'
+        required: false
+        default: ''
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_OWNER: ${{ github.repository_owner }}
+
+jobs:
+  # ---------------------------------------------------------------------
+  # build — produce api + web images, push to GHCR
+  # ---------------------------------------------------------------------
+  build:
+    name: Build & push images
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        run: |
+          TAG="${{ github.event.inputs.image_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_SHA::12}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push API image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/libriant-api:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/libriant-api:latest
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+
+      - name: Build & push web image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/libriant-web:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/libriant-web:latest
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+
+  # ---------------------------------------------------------------------
+  # plan — read fleet.yml and emit a matrix of hosts.
+  # ---------------------------------------------------------------------
+  plan:
+    name: Resolve fleet
+    runs-on: ubuntu-latest
+    needs: build
+    outputs:
+      hosts: ${{ steps.read.outputs.hosts }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: |
+          # Parse the YAML host list into a JSON matrix the deploy job
+          # can fan out across.
+          python3 -c "
+          import json, sys, yaml
+          fleet = yaml.safe_load(open('infra/deploy/fleet.yml'))
+          print('hosts=' + json.dumps([h for h in fleet.get('hosts', [])]))
+          " >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------
+  # deploy — fan out: one job per host. Failures don't cancel others.
+  # ---------------------------------------------------------------------
+  deploy:
+    name: Deploy ${{ matrix.host.name }}
+    needs: [build, plan]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        host: ${{ fromJson(needs.plan.outputs.hosts) }}
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Add host to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ matrix.host.ssh }}" >> ~/.ssh/known_hosts
+
+      - name: Sync deploy bundle
+        run: |
+          # Only ship the bits the host needs at runtime: compose file,
+          # Caddy assets, the static maintenance page, and the docs
+          # subfolder that holds the .env.prod.example.
+          rsync -az --delete \
+            infra/ \
+            assets/ \
+            locales/ \
+            "${{ matrix.host.user }}@${{ matrix.host.ssh }}:/srv/libriant/deploy/"
+
+      - name: Compose pull + up
+        env:
+          IMAGE_TAG: ${{ needs.build.outputs.tag }}
+          COMPOSE_PROJECT_NAME: ${{ matrix.host.project }}
+        run: |
+          ssh "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<'EOF'
+            set -euo pipefail
+            cd /srv/libriant/deploy
+            # The .env.prod file lives outside this folder so secrets are
+            # never overwritten by the rsync above.
+            export $(grep -v '^#' /srv/libriant/.env.prod | xargs)
+            export IMAGE_TAG="$IMAGE_TAG"
+            docker compose -f compose/docker-compose.prod.yml pull
+            docker compose -f compose/docker-compose.prod.yml up -d --remove-orphans
+          EOF
+
+      - name: Wait for health
+        run: |
+          # Poll the public host's /healthz endpoint until Caddy + web +
+          # api are all reporting up. 3 minutes max — beyond that something
+          # is wrong and rolling back is preferable to silent breakage.
+          deadline=$(( $(date +%s) + 180 ))
+          while [ $(date +%s) -lt $deadline ]; do
+            if curl -fs --max-time 5 \
+              "https://${{ matrix.host.ssh }}/healthz" >/dev/null; then
+              echo "healthy"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "host did not become healthy within 3 minutes" >&2
+          exit 1

@@ -65,6 +65,9 @@ export class QuotaInterceptor implements NestInterceptor {
     }
 
     const req = ctx.switchToHttp().getRequest<Request>();
+    // Impersonation short-circuits quotas — admin can clean up records
+    // that exceed the plan ceiling without first downgrading the tenant.
+    if (req.impersonation) return next.handle();
     if (!req.tenant) {
       throw new HttpException('No tenant on this request.', HttpStatus.BAD_REQUEST);
     }

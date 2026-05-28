@@ -1,5 +1,9 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
+import { AdminMiddleware } from './admin/admin.middleware.js';
+import { AdminModule } from './admin/admin.module.js';
+import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { SessionMiddleware } from './auth/session.middleware.js';
 import { BillingModule } from './billing/billing.module.js';
@@ -13,6 +17,11 @@ import { PlansModule } from './plans/plans.module.js';
 import { PlatformModule } from './platform/platform.module.js';
 import { RedisModule } from './platform/redis.module.js';
 import { StorageModule } from './storage/storage.module.js';
+import { ImpersonationMiddleware } from './support/impersonation.middleware.js';
+import { SupportAuditInterceptor } from './support/support-audit.interceptor.js';
+import { SupportModule } from './support/support.module.js';
+import { SystemModeMiddleware } from './system-mode/system-mode.middleware.js';
+import { SystemModeModule } from './system-mode/system-mode.module.js';
 import { TenantModule } from './tenancy/tenant.module.js';
 import { TenantMiddleware } from './tenancy/tenant.middleware.js';
 
@@ -40,21 +49,56 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     ReservationsModule,
     BillingModule,
     HelpModule,
+    AdminModule,
+    SupportModule,
+    AnnouncementsModule,
+    SystemModeModule,
+  ],
+  providers: [
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: SupportAuditInterceptor,
+    },
   ],
 })
 export class AppModule implements NestModule {
   /**
    * Middleware order matters:
    *   1. SessionMiddleware reads the cookie and attaches req.session.
-   *   2. TenantMiddleware resolves the tenant from path/Host and attaches
+   *   2. AdminMiddleware reads the admin cookie and attaches req.admin.
+   *   3. ImpersonationMiddleware reads the impersonation cookie and attaches
+   *      req.impersonation. Distinct from req.admin so a leaked admin cookie
+   *      cannot impersonate without also passing key + MFA.
+   *   4. SystemModeMiddleware resolves the effective system mode (global
+   *      OR per-tenant, stricter wins). For maintenance / out_of_order it
+   *      short-circuits with a 503 unless the request is on an admin-bypass
+   *      path or carries an active support session. For read_only it lets
+   *      GETs through but 503s mutations. Must run BEFORE TenantMiddleware
+   *      so a maintenance event can stop the request before any tenant DB
+   *      pool gets warmed up.
+   *   5. TenantMiddleware resolves the tenant from path/Host and attaches
    *      req.tenant.
    *
-   * Both run on every route; both are no-ops when their respective signals
-   * are absent (so /healthz, /auth/* etc. flow through unchanged). Guards
-   * downstream compose the two — AuthGuard wants session, TenantGuard wants
-   * both session and tenant + that they match.
+   * All run on every route; each is a no-op when its respective signal is
+   * absent (so /healthz, /auth/* etc. flow through unchanged). Guards
+   * downstream compose them — AuthGuard wants session, TenantGuard wants
+   * tenant + a matching session OR impersonation, PlanGuard short-circuits
+   * under impersonation, etc.
+   *
+   * SupportAuditInterceptor is registered as a global interceptor above; it
+   * inspects req.impersonation and writes a supportActionLog row only when
+   * the request was made under an active support session. Other requests
+   * pass through untouched.
    */
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(SessionMiddleware, TenantMiddleware).forRoutes('*');
+    consumer
+      .apply(
+        SessionMiddleware,
+        AdminMiddleware,
+        ImpersonationMiddleware,
+        SystemModeMiddleware,
+        TenantMiddleware,
+      )
+      .forRoutes('*');
   }
 }

@@ -46,6 +46,21 @@ export default async function SettingsPage({
 
         <Card>
           <CardHeader
+            title="Get help from Libriant"
+            subtitle="Give our team time-limited access to your library so we can help you fix something."
+          />
+          <CardBody>
+            <Link
+              href={`/${params.locale}/t/${params.slug}/settings/support-access`}
+              className="lbr-btn lbr-btn--primary lbr-btn--md"
+            >
+              Manage support access
+            </Link>
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader
             title={t('settings.sections.comingSoon.title')}
             subtitle={t('settings.sections.comingSoon.description')}
           />

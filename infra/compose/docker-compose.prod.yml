@@ -1,0 +1,260 @@
+# Libriant — production / staging stack (single host).
+#
+# Topology (from the plan):
+#
+#     Internet → caddy (80/443) → web (3000) + api (3001)
+#                                          ↓
+#                            postgres + pgbouncer + redis  (internal only)
+#                                          ↓
+#                                   worker (3002)
+#
+# All app traffic terminates at Caddy; the app + data services are on a
+# private docker network and never bind to host ports. The single bind
+# mount is the storage box at /srv/libriant/storage; volumes hold the
+# Postgres + Redis data + Caddy ACME state.
+#
+# Bring up:   docker compose -f infra/compose/docker-compose.prod.yml up -d
+# Tear down:  docker compose -f infra/compose/docker-compose.prod.yml down
+#
+# Required env (load via `--env-file` or shell):
+#   PUBLIC_HOST                 — apex domain (libriant.app)
+#   ADMIN_HOST                  — admin host (admin.libriant.app)
+#   ACME_EMAIL                  — contact for Let's Encrypt
+#   IMAGE_TAG                   — image tag to pull (default: latest)
+#   POSTGRES_PASSWORD           — superuser password
+#   SESSION_SECRET / ADMIN_SESSION_SECRET / IMPERSONATION_SECRET — JWT secrets
+#   MFA_MASTER_KEY              — 64-hex (32-byte) AES key
+#   STRIPE_API_KEY / STRIPE_WEBHOOK_SECRET — billing
+#
+# See `.env.prod.example` in the repo root for the full list.
+
+x-app-env: &app-env
+  NODE_ENV: production
+  CONTROL_DATABASE_URL: postgresql://libriant:${POSTGRES_PASSWORD}@pgbouncer:5432/libriant_control
+  REDIS_URL: redis://redis:6379
+  PUBLIC_APP_URL: https://${PUBLIC_HOST:-libriant.app}
+  PUBLIC_APEX_DOMAIN: ${PUBLIC_HOST:-libriant.app}
+  TENANT_PATH_PREFIX: /t/
+  SESSION_COOKIE_SECURE: 'true'
+  SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required in production}
+  ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:?ADMIN_SESSION_SECRET is required}
+  IMPERSONATION_SECRET: ${IMPERSONATION_SECRET:?IMPERSONATION_SECRET is required}
+  MFA_MASTER_KEY: ${MFA_MASTER_KEY:?MFA_MASTER_KEY is required}
+  STORAGE_ROOT: /srv/libriant/storage
+  STORAGE_SIGNING_SECRET: ${STORAGE_SIGNING_SECRET:-}
+  ASSETS_ROOT: /srv/libriant/assets
+  LOCALES_ROOT: /srv/libriant/locales
+  STRIPE_DRIVER: ${STRIPE_DRIVER:-real}
+  STRIPE_API_KEY: ${STRIPE_API_KEY:-}
+  STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+  BILLING_RETURN_URL: https://${PUBLIC_HOST:-libriant.app}
+  BCRYPT_COST: '12'
+  PG_SUPERUSER_URL: postgresql://libriant:${POSTGRES_PASSWORD}@postgres:5432/libriant_control
+
+x-restart: &restart
+  restart: unless-stopped
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: '50m'
+      max-file: '5'
+
+services:
+  # ----- edge -----------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    <<: [*restart, *logging]
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp' # HTTP/3
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-libriant.app}
+      ADMIN_HOST: ${ADMIN_HOST:-admin.libriant.app}
+      ACME_EMAIL: ${ACME_EMAIL:-ops@libriant.app}
+      MAINTENANCE_HARD: ${MAINTENANCE_HARD:-false}
+    volumes:
+      - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../caddy/maintenance.html:/srv/libriant/caddy/maintenance.html:ro
+      - ../../assets:/srv/libriant/assets:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    networks: [edge, app]
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:80/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  # ----- app processes --------------------------------------------------
+  api:
+    image: ghcr.io/libriant/api:${IMAGE_TAG:-latest}
+    <<: [*restart, *logging]
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    environment:
+      <<: *app-env
+      PORT: '3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    volumes:
+      - storage:/srv/libriant/storage
+      - ../../assets:/srv/libriant/assets:ro
+      - ../../locales:/srv/libriant/locales:ro
+    networks: [app]
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3001/readyz']
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+
+  web:
+    image: ghcr.io/libriant/web:${IMAGE_TAG:-latest}
+    <<: [*restart, *logging]
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: '3000'
+      NEXT_TELEMETRY_DISABLED: '1'
+      # Server-side fetches from the web container go to api directly over
+      # the docker network. Browser-side fetches still go through Caddy at
+      # /lbr-api/* (see lib/api.ts).
+      API_INTERNAL_URL: http://api:3001
+      NEXT_PUBLIC_API_URL: https://${PUBLIC_HOST:-libriant.app}
+      PUBLIC_APP_URL: https://${PUBLIC_HOST:-libriant.app}
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ../../assets:/srv/libriant/assets:ro
+      - ../../locales:/srv/libriant/locales:ro
+    networks: [app]
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/api/healthz']
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+
+  worker:
+    image: ghcr.io/libriant/api:${IMAGE_TAG:-latest}
+    <<: [*restart, *logging]
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    command: ['./apps/api/node_modules/.bin/tsx', 'apps/api/src/worker.ts']
+    environment:
+      <<: *app-env
+      PORT: '3002'
+      WORKER_PORT: '3002'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - storage:/srv/libriant/storage
+      - ../../assets:/srv/libriant/assets:ro
+      - ../../locales:/srv/libriant/locales:ro
+    networks: [app]
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3002/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ----- data ----------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    <<: [*restart, *logging]
+    environment:
+      POSTGRES_USER: libriant
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: libriant_control
+      LANG: el_GR.UTF-8
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - max_connections=200
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ../compose/postgres-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    networks: [app]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U libriant -d libriant_control']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p1
+    <<: [*restart, *logging]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_USER: libriant
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      DB_HOST: postgres
+      DB_NAME: libriant_control
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: '500'
+      DEFAULT_POOL_SIZE: '20'
+    networks: [app]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -p 5432 -U libriant']
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    <<: [*restart, *logging]
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'allkeys-lru']
+    volumes:
+      - redis_data:/data
+    networks: [app]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+# `edge` carries 80/443; `app` is the private inter-service network.
+# Caddy is the only service on both. Postgres / Redis / API never bind
+# to a host port.
+networks:
+  edge:
+    driver: bridge
+  app:
+    driver: bridge
+    internal: false # set to `true` post-MVP if egress through caddy only
+
+volumes:
+  pg_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
+  storage:

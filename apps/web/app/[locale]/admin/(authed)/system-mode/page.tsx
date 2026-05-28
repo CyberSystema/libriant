@@ -1,0 +1,135 @@
+import { notFound } from 'next/navigation';
+import { Banner, Card, CardBody, CardHeader, PageHeader } from '@libriant/ui';
+import { isLocale } from '@libriant/i18n';
+import { ApiError, api } from '@/lib/api';
+import { requestCookieHeader } from '@/lib/admin-session';
+import { type AdminEventRow, type ResolvedSystemMode, MODE_LABEL } from './types';
+import { OpenGlobalModeForm } from './OpenGlobalModeForm';
+import { EventTable } from './EventTable';
+
+export const dynamic = 'force-dynamic';
+
+export default async function SystemModePage({ params }: { params: { locale: string } }) {
+  if (!isLocale(params.locale)) notFound();
+  const cookie = await requestCookieHeader();
+
+  let current: ResolvedSystemMode | null = null;
+  let active: AdminEventRow[] = [];
+  let scheduled: AdminEventRow[] = [];
+  let history: AdminEventRow[] = [];
+  let error: string | null = null;
+  try {
+    const [cur, sched, hist] = await Promise.all([
+      api<{ global: ResolvedSystemMode; active: AdminEventRow[] }>('/admin/system-mode/current', {
+        cookie,
+      }),
+      api<{ scheduled: AdminEventRow[] }>('/admin/system-mode/scheduled', { cookie }),
+      api<{ history: AdminEventRow[] }>('/admin/system-mode/history?limit=25', { cookie }),
+    ]);
+    current = cur.global;
+    active = cur.active;
+    scheduled = sched.scheduled;
+    history = hist.history;
+  } catch (err) {
+    error = err instanceof ApiError ? err.message : 'Something went wrong.';
+  }
+
+  return (
+    <>
+      <PageHeader
+        title="System mode"
+        subtitle="Take the whole platform — or a single library — into maintenance, read-only, outage, or under-construction state."
+      />
+
+      {error ? (
+        <Banner severity="critical" style={{ marginBottom: 'var(--sp-4)' }}>
+          {error}
+        </Banner>
+      ) : null}
+
+      <Card style={{ marginBottom: 'var(--sp-4)' }}>
+        <CardHeader title="Current global mode" />
+        <CardBody>
+          {current ? (
+            current.mode === 'normal' ? (
+              <Banner severity="success">All systems normal.</Banner>
+            ) : (
+              <Banner
+                severity={
+                  current.mode === 'maintenance' || current.mode === 'out_of_order'
+                    ? 'critical'
+                    : 'warning'
+                }
+              >
+                <div>
+                  <strong>{MODE_LABEL[current.mode]}</strong>
+                  {current.endsAt
+                    ? ` — ends ${new Date(current.endsAt).toLocaleString()}`
+                    : ' — open-ended'}
+                  {current.allowAdminBypass ? ' (admin bypass on)' : ' (admin bypass OFF)'}
+                </div>
+                {current.messageMarkdown ? (
+                  <pre style={{ whiteSpace: 'pre-wrap', marginTop: 'var(--sp-2)' }}>
+                    {current.messageMarkdown}
+                  </pre>
+                ) : null}
+              </Banner>
+            )
+          ) : (
+            <p>Loading…</p>
+          )}
+        </CardBody>
+      </Card>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)',
+          gap: 'var(--sp-4)',
+          marginBottom: 'var(--sp-4)',
+        }}
+      >
+        <Card>
+          <CardHeader
+            title="Active windows"
+            subtitle="Anything currently in effect — global or per-tenant."
+          />
+          <CardBody>
+            <EventTable
+              rows={active}
+              emptyMessage="No active windows."
+              showEndAction
+              locale={params.locale}
+            />
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader title="Open a global window" />
+          <CardBody>
+            <OpenGlobalModeForm locale={params.locale} />
+          </CardBody>
+        </Card>
+      </div>
+
+      <Card style={{ marginBottom: 'var(--sp-4)' }}>
+        <CardHeader title="Scheduled" subtitle="Windows that haven't started yet." />
+        <CardBody>
+          <EventTable
+            rows={scheduled}
+            emptyMessage="Nothing scheduled."
+            showCancelAction
+            locale={params.locale}
+          />
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader title="History" subtitle="Last 25 ended or expired events." />
+        <CardBody>
+          <EventTable rows={history} emptyMessage="No history yet." locale={params.locale} />
+        </CardBody>
+      </Card>
+    </>
+  );
+}

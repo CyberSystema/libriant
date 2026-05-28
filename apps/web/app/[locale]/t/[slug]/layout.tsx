@@ -1,9 +1,15 @@
 import { notFound, redirect } from 'next/navigation';
-import { ToastProvider } from '@libriant/ui';
+import { Banner, ToastProvider } from '@libriant/ui';
 import { isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
+import { currentAnnouncements } from '@/lib/announcements';
+import { currentImpersonation } from '@/lib/impersonation';
 import { currentSession } from '@/lib/session';
+import { currentSystemMode, isTakeoverMode } from '@/lib/system-mode';
+import { AnnouncementsTopBanners } from './AnnouncementsTopBanners';
+import { ImpersonationBanner } from './ImpersonationBanner';
 import { SidebarNav } from './SidebarNav';
+import { SystemModeTakeover } from './SystemModeTakeover';
 
 /**
  * Every tenant-scoped page goes through here. Three jobs:
@@ -24,17 +30,48 @@ export default async function TenantLayout({
 }) {
   if (!isLocale(params.locale)) notFound();
 
+  // System mode resolves first. A maintenance / out_of_order takeover
+  // renders before any auth fetch (the API blocks those anyway, but we
+  // also don't want to bounce the user to /login during an outage).
+  // Impersonating admins bypass — they're the people debugging the
+  // outage and need the library reachable.
+  const [systemMode, impersonation] = await Promise.all([
+    currentSystemMode(params.slug),
+    currentImpersonation(),
+  ]);
+  if (isTakeoverMode(systemMode.mode) && !impersonation) {
+    return <SystemModeTakeover mode={systemMode} />;
+  }
+
   const session = await currentSession();
-  if (!session) {
+
+  // Either a real session OR an active impersonation cookie grants entry.
+  // The impersonating admin doesn't have a tenant session — they hold the
+  // separate __Host-libriant_imp cookie validated server-side.
+  if (!session && !impersonation) {
     redirect(`/${params.locale}/login`);
   }
-  if (session.tenant.slug !== params.slug) {
+  if (session && session.tenant.slug !== params.slug) {
     // The signed-in user belongs to a different library. Don't show them
     // a 403 — quietly send them to their own home.
     redirect(`/${params.locale}/t/${session.tenant.slug}`);
   }
+  if (impersonation && impersonation.tenant.slug !== params.slug) {
+    // The admin's impersonation cookie covers a different tenant. Send
+    // them back to their support home to redeem the right key.
+    redirect(`/${params.locale}/admin/support`);
+  }
 
   const catalog = await loadCatalog(params.locale);
+  const libraryName = session?.tenant.name ?? impersonation?.tenant.name ?? params.slug;
+  const userFullName =
+    session?.user.fullName ?? impersonation?.admin.fullName ?? 'Libriant support';
+
+  // Announcement banners only render for real librarian sessions — admins
+  // under impersonation neither own nor need to act on the tenant's
+  // announcements. The endpoint also keys deliveries on `users.id`, which
+  // doesn't exist for AdminUsers.
+  const announcements = session && !impersonation ? await currentAnnouncements(params.slug) : [];
 
   return (
     <ToastProvider>
@@ -43,10 +80,36 @@ export default async function TenantLayout({
           catalog={catalog}
           locale={params.locale}
           slug={params.slug}
-          libraryName={session.tenant.name}
-          userFullName={session.user.fullName}
+          libraryName={libraryName}
+          userFullName={userFullName}
         />
-        <main className="lbr-shell__main">{children}</main>
+        <main className="lbr-shell__main">
+          {impersonation ? (
+            <ImpersonationBanner
+              locale={params.locale}
+              tenantName={impersonation.tenant.name}
+              expiresAt={impersonation.expiresAt}
+            />
+          ) : null}
+          {systemMode.mode === 'under_construction' ? (
+            <Banner severity="info" style={{ marginBottom: 'var(--sp-3)' }}>
+              <strong>Heads-up:</strong>{' '}
+              {systemMode.messageMarkdown ??
+                'Some Libriant features are still rolling out. If you hit something odd, refresh and try again.'}
+            </Banner>
+          ) : null}
+          {systemMode.mode === 'read_only' ? (
+            <Banner severity="warning" style={{ marginBottom: 'var(--sp-3)' }}>
+              <strong>Read-only mode.</strong>{' '}
+              {systemMode.messageMarkdown ??
+                "We're not accepting changes right now. You can still browse, but saves will fail until we're back."}
+            </Banner>
+          ) : null}
+          {announcements.length > 0 ? (
+            <AnnouncementsTopBanners slug={params.slug} initial={announcements} />
+          ) : null}
+          {children}
+        </main>
       </div>
     </ToastProvider>
   );

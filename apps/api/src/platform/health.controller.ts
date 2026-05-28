@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Inject,
@@ -44,11 +45,23 @@ export class HealthController {
     return body;
   }
 
+  /**
+   * Prometheus text exposition. Today: uptime + a build-info gauge. Adding
+   * counters later (request totals, support session count, etc.) is just
+   * lines in the body — the scraper contract stays the same.
+   */
   @Get('metrics')
-  metrics() {
-    // Placeholder for Prometheus exposition format; structured for upgrade later.
-    return {
-      uptime_seconds: Math.round((Date.now() - this.bootedAt.getTime()) / 1000),
-    };
+  @Header('Content-Type', 'text/plain; version=0.0.4')
+  metrics(): string {
+    const upSec = Math.round((Date.now() - this.bootedAt.getTime()) / 1000);
+    return [
+      '# HELP libriant_api_uptime_seconds Process uptime in seconds.',
+      '# TYPE libriant_api_uptime_seconds counter',
+      `libriant_api_uptime_seconds ${upSec}`,
+      '# HELP libriant_api_build_info Build information.',
+      '# TYPE libriant_api_build_info gauge',
+      `libriant_api_build_info{node_env="${process.env.NODE_ENV ?? 'development'}"} 1`,
+      '',
+    ].join('\n');
   }
 }

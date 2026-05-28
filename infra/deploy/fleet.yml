@@ -1,0 +1,29 @@
+# Libriant — deploy fleet.
+#
+# The deploy workflow iterates this list. Each host is one cell today;
+# adding capacity is "append a host" — no code change. Tenants are pinned
+# to a cell via `tenants.cell_id` (control-plane DB), so existing tenants
+# keep landing on their original cell until `scripts/tenant-relocate.ts`
+# moves them.
+
+hosts:
+  - name: cell-01
+    user: deploy
+    ssh: cell-01.libriant.app
+    # Compose project name on the remote host. The workflow exports this
+    # as `COMPOSE_PROJECT_NAME` before running compose commands.
+    project: libriant
+    # Cell id this host serves. Used for cell-aware health checks in CI.
+    cell_id: cell-01
+    # Optional: tag this host with the region (informational; the
+    # multi-region story lands at Stage 6).
+    region: eu-central
+
+  # Add more cells like this when the pilot graduates:
+  #
+  # - name: cell-02
+  #   user: deploy
+  #   ssh: cell-02.libriant.app
+  #   project: libriant
+  #   cell_id: cell-02
+  #   region: eu-central

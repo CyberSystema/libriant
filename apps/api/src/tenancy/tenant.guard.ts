@@ -28,6 +28,21 @@ export class TenantGuard implements CanActivate {
         'No tenant in this request. Did you mean to hit a /t/<slug>/... route?',
       );
     }
+
+    // Impersonation mode (Step 18a): a Libriant admin has redeemed a
+    // tenant-issued support key. The impersonation payload binds them
+    // to ONE specific tenant for the lifetime of the session — anything
+    // else would 403. `SupportSessionGuard` (run by the support
+    // interceptor) validates the session row separately.
+    if (req.impersonation) {
+      if (req.impersonation.tenantId !== req.tenant.id) {
+        throw new ForbiddenException(
+          'This support session covers a different library. Redeem a new key for this one.',
+        );
+      }
+      return true;
+    }
+
     if (!req.session) {
       throw new UnauthorizedException('Please sign in to access this library.');
     }

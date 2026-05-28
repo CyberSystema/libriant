@@ -42,6 +42,9 @@ export class PlanGuard implements CanActivate {
       // Shouldn't happen if TenantGuard ran first — defense in depth.
       throw new HttpException('No tenant on this request.', HttpStatus.BAD_REQUEST);
     }
+    // Impersonation short-circuits all plan gates — admins can fix data
+    // even when the tenant has technically exceeded their plan ceiling.
+    if (req.impersonation) return true;
 
     const plan = await this.effective.getEffectivePlan(req.tenant.id);
     const v = plan.features[feature];

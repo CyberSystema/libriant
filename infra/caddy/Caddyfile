@@ -1,0 +1,186 @@
+# Libriant — Caddy edge config.
+#
+# Two hosts (today): the public apex and the admin host. Both terminate TLS
+# via Caddy's built-in ACME. Custom-subdomain tenants (a Pro/Enterprise
+# feature) need a wildcard certificate; see the commented block at the
+# bottom for the switch.
+#
+# Routing model:
+#   /lbr-api/*  →  api:3001            (strip prefix; same-origin to web)
+#   /_assets/*  →  /srv/libriant/assets/  (static; immutable + ETag)
+#   /*          →  web:3000             (Next.js)
+#
+# The `MAINTENANCE_HARD` env var is the belt-and-braces edge fallback. When
+# set to "true", Caddy serves the static page from disk *without* touching
+# upstream — even if api + web are down. SystemModeMiddleware on the API
+# also surfaces a takeover, but this one survives a full app outage.
+{
+	# Defaults applied to every site block below. ACME issuance uses
+	# Caddy's built-in HTTP-01 / TLS-ALPN-01 challenges; for the wildcard
+	# block, override to a DNS provider plugin.
+	email {$ACME_EMAIL:ops@libriant.app}
+
+	# Structured access log. Compose mounts this to a host volume so the
+	# nightly job can rotate it.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 100mb
+			roll_keep 14
+		}
+		format json
+	}
+
+	# Disable the admin endpoint in prod — we don't shell into Caddy.
+	admin off
+}
+
+# ---- Common snippet: security headers + the maintenance-takeover fallback ----
+
+(security_headers) {
+	header {
+		# Force HTTPS for a year, opt subdomains in so the wildcard works
+		# once it's enabled.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		# Generic hardening — these match the defaults Next.js wants.
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		# Caddy adds its own Server header; strip it.
+		-Server
+	}
+}
+
+(maintenance_check) {
+	# When the orchestrator flips $MAINTENANCE_HARD=true on the host, every
+	# request below returns the static page directly. We use a `try_files`
+	# style match so /healthz still passes through (load balancer checks
+	# need this to keep working).
+	@maint_off vars {$MAINTENANCE_HARD:false} "false"
+	@is_probe path /healthz /readyz /metrics
+	handle @is_probe {
+		respond "ok" 200
+	}
+}
+
+(static_assets) {
+	# Themable assets live in the shared bind-mount. Caddy serves them
+	# without touching upstream, with ETag + Last-Modified handled
+	# automatically by file_server.
+	handle_path /_assets/* {
+		root * /srv/libriant/assets
+		file_server {
+			precompressed gzip
+		}
+		header Cache-Control "public, max-age=300"
+	}
+}
+
+(maintenance_takeover) {
+	# Mode-of-last-resort: $MAINTENANCE_HARD=true ⇒ serve the static page
+	# for every browser request, regardless of upstream health.
+	@hard_maint vars {$MAINTENANCE_HARD:false} "true"
+	handle @hard_maint {
+		root * /srv/libriant/caddy
+		rewrite * /maintenance.html
+		file_server
+		header Cache-Control "no-store"
+		header X-Maintenance "hard"
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Public apex — libriant.app
+# ---------------------------------------------------------------------------
+
+{$PUBLIC_HOST:libriant.app} {
+	import security_headers
+	import maintenance_check
+	import maintenance_takeover
+	import static_assets
+
+	# API requests routed by the browser go through /lbr-api/* (same-origin)
+	# to avoid SameSite + CORS pain on the session cookie. Strip the prefix
+	# before forwarding so the API sees its native routes (/auth/me etc).
+	handle_path /lbr-api/* {
+		reverse_proxy api:3001 {
+			# Pass real client info through so audit logs + rate limits
+			# can key off the right IP. Caddy auto-adds X-Forwarded-For,
+			# X-Forwarded-Proto, and Host — we only need to override
+			# X-Real-IP explicitly because Caddy doesn't set that one.
+			header_up X-Real-IP {remote_host}
+			# A failed upstream should look like a 503, not a 502.
+			fail_duration 10s
+			max_fails 3
+		}
+	}
+
+	# Webhook surface — Stripe + future providers. Same upstream as the
+	# API, no prefix stripping needed (the controller lives at the same
+	# /webhooks path on the API).
+	handle /webhooks/* {
+		reverse_proxy api:3001
+	}
+
+	# Everything else → Next.js.
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Admin host — admin.libriant.app
+#
+# Same backend; we just want a different cookie scope + a host an operator
+# can bookmark. Admin login lives at /admin/login on the web app.
+# ---------------------------------------------------------------------------
+
+{$ADMIN_HOST:admin.libriant.app} {
+	import security_headers
+	import maintenance_check
+	import maintenance_takeover
+	import static_assets
+
+	handle_path /lbr-api/* {
+		reverse_proxy api:3001
+	}
+
+	# Redirect bare visits straight into the admin login if the user isn't
+	# already authenticated — Next.js handles the actual gate, but this
+	# saves them a click when they land on the host root.
+	@bare path /
+	handle @bare {
+		redir /en/admin/login 302
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+# ---------------------------------------------------------------------------
+# Wildcard — *.libriant.app (custom subdomains, Pro/Enterprise feature)
+#
+# When this ships we need a DNS-01 challenge so ACME can prove control of
+# *.libriant.app rather than each subdomain. Uncomment + fill in the DNS
+# provider when ready. The host header carries the tenant slug; the API's
+# TenantMiddleware already supports subdomain resolution.
+# ---------------------------------------------------------------------------
+
+# *.{$PUBLIC_HOST:libriant.app} {
+# 	import security_headers
+# 	import maintenance_check
+# 	import maintenance_takeover
+# 	import static_assets
+#
+# 	tls {
+# 		dns hetzner {env.HETZNER_DNS_TOKEN}
+# 	}
+#
+# 	handle_path /lbr-api/* {
+# 		reverse_proxy api:3001
+# 	}
+# 	handle {
+# 		reverse_proxy web:3000
+# 	}
+# }

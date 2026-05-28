@@ -28,6 +28,36 @@ export type AppEnv = {
   sessionCookieName: string;
   /** Whether to set Secure on the session cookie (HTTPS only). */
   sessionCookieSecure: boolean;
+  /**
+   * Admin session JWT secret. Deliberately distinct from `sessionSecret`
+   * so a leaked tenant cookie can't be turned into an admin cookie even
+   * if both secrets happened to share a code path. Falls back to a dev
+   * default; production must override.
+   */
+  adminSessionSecret: string;
+  /** Admin session lifetime in seconds (shorter than tenant: 1h default). */
+  adminSessionTtlSec: number;
+  /** Cookie name for the admin session. */
+  adminCookieName: string;
+  /**
+   * Hex-encoded 32-byte master key used to AES-256-GCM-encrypt admin
+   * TOTP secrets at rest. The DB column stores ciphertext + nonce; this
+   * env value is the only thing that can decrypt them. Rotation is
+   * out of MVP scope; for now keep this stable.
+   */
+  mfaMasterKey: string;
+  /**
+   * Impersonation session secret. Distinct from `adminSessionSecret` so
+   * even a leaked admin cookie cannot impersonate a tenant. JWT TTL
+   * mirrors `SupportSession.expiresAt` (4h after redemption).
+   */
+  impersonationSecret: string;
+  /** Default support-session lifetime in seconds. Plan: 4h. */
+  supportSessionTtlSec: number;
+  /** Support-key lifetime in seconds (from generation). Plan: 1h. */
+  supportKeyTtlSec: number;
+  /** Cookie name for the impersonation session. */
+  impersonationCookieName: string;
   /** bcrypt rounds for password hashing (12 ≈ 250ms; tuneable). */
   bcryptCost: number;
   /** After this many failed logins, the user is locked out for `loginLockoutMs`. */
@@ -105,6 +135,34 @@ export function loadEnv(): AppEnv {
     tenantClientIdleMs: Number(optional('TENANT_CLIENT_IDLE_MS', String(30 * 60 * 1000))),
     sessionSecret,
     sessionTtlSec: Number(optional('SESSION_TTL_SEC', String(7 * 24 * 60 * 60))),
+    adminSessionSecret:
+      nodeEnv === 'development'
+        ? optional('ADMIN_SESSION_SECRET', 'dev-only-admin-session-secret-CHANGE-IN-PROD')
+        : required('ADMIN_SESSION_SECRET'),
+    adminSessionTtlSec: Number(optional('ADMIN_SESSION_TTL_SEC', String(60 * 60))),
+    adminCookieName: optional(
+      'ADMIN_COOKIE_NAME',
+      isSecure ? '__Host-libriant_admin' : 'libriant_admin',
+    ),
+    mfaMasterKey:
+      nodeEnv === 'development'
+        ? optional(
+            'MFA_MASTER_KEY',
+            // Fixed 32-byte dev key — predictable on purpose so the
+            // quickstart doesn't need ceremony. PROD must override.
+            '0011223344556677889900112233445566778899001122334455667788990011',
+          )
+        : required('MFA_MASTER_KEY'),
+    impersonationSecret:
+      nodeEnv === 'development'
+        ? optional('IMPERSONATION_SECRET', 'dev-only-impersonation-secret-CHANGE-IN-PROD')
+        : required('IMPERSONATION_SECRET'),
+    supportSessionTtlSec: Number(optional('SUPPORT_SESSION_TTL_SEC', String(4 * 60 * 60))),
+    supportKeyTtlSec: Number(optional('SUPPORT_KEY_TTL_SEC', String(60 * 60))),
+    impersonationCookieName: optional(
+      'IMPERSONATION_COOKIE_NAME',
+      isSecure ? '__Host-libriant_imp' : 'libriant_imp',
+    ),
     sessionCookieName: optional(
       'SESSION_COOKIE_NAME',
       isSecure ? '__Host-libriant_session' : 'libriant_session',

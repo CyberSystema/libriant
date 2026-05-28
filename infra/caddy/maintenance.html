@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Libriant — scheduled maintenance</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --fg: #0f172a;
+        --muted: #475569;
+        --accent: #0ea5e9;
+        --card: #f8fafc;
+        --border: #e2e8f0;
+        --radius: 12px;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+          Arial, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b1220;
+          --fg: #e2e8f0;
+          --muted: #94a3b8;
+          --accent: #38bdf8;
+          --card: #111827;
+          --border: #1f2937;
+        }
+      }
+      html,
+      body {
+        background: var(--bg);
+        color: var(--fg);
+        margin: 0;
+        padding: 0;
+        min-height: 100%;
+      }
+      main {
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 32px;
+        box-sizing: border-box;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        max-width: 560px;
+        padding: 40px;
+        text-align: center;
+      }
+      h1 {
+        font-size: 24px;
+        margin: 16px 0 8px;
+      }
+      p {
+        color: var(--muted);
+        line-height: 1.55;
+        margin: 8px 0;
+      }
+      .badge {
+        display: inline-block;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--accent);
+        margin-bottom: 8px;
+      }
+      .icon {
+        width: 96px;
+        height: 96px;
+      }
+      footer {
+        margin-top: 24px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="card">
+        <svg
+          class="icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M12 8v4l2 2" />
+          <circle cx="12" cy="12" r="9" />
+        </svg>
+        <div class="badge">Scheduled maintenance</div>
+        <h1>We&rsquo;re upgrading Libriant</h1>
+        <p>
+          We&rsquo;re making things better behind the scenes. Your library will be back shortly.
+        </p>
+        <p>If this page is still here in an hour, our system thinks something is off — please
+          email
+          <a href="mailto:support@libriant.app">support@libriant.app</a>.</p>
+        <footer>This page is served by the edge — even if Libriant itself is down.</footer>
+      </div>
+    </main>
+  </body>
+</html>

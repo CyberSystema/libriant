@@ -1,22 +1,21 @@
-import { Body, Controller, Get, Inject, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Param, Post, UseGuards } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import { validateDto } from '../auth/validate-dto.js';
+import { AdminAuthGuard } from '../admin/admin-auth.guard.js';
 import { BillingService } from './billing.service.js';
 import { AdminSetPaidUntilDto, AdminSetPlanDto } from './billing.dto.js';
 
 /**
- * Light-touch admin endpoints for the billing flow. Full Libriant-staff
- * authentication ships in Step 18 — for Step 16 these routes are mounted
- * at `/admin/billing/*` and not wired behind an admin guard. That's a
- * **temporary** seam to let the verification drills exercise the manual-
- * billing path and force-set tenant plans without the support-session
- * dance. Step 18 will gate this controller under the real admin auth.
+ * Admin endpoints for the billing flow. Gated behind `AdminAuthGuard`
+ * since Step 18 — anonymous calls now return 401 instead of mutating
+ * tenant state.
  *
  *   GET  /admin/billing/tenants/:tenantId
  *   POST /admin/billing/tenants/:tenantId/set-plan
  *   POST /admin/billing/tenants/:tenantId/set-paid-until    (manual mode only)
  */
 @Controller('admin/billing/tenants/:tenantId')
+@UseGuards(AdminAuthGuard)
 export class BillingAdminController {
   constructor(@Inject(BillingService) private readonly svc: BillingService) {}
 
