@@ -5,6 +5,7 @@ import { SessionMiddleware } from './auth/session.middleware.js';
 import { BillingModule } from './billing/billing.module.js';
 import { CatalogModule } from './catalog/catalog.module.js';
 import { CustomizationModule } from './customization/customization.module.js';
+import { HelpModule } from './help/help.module.js';
 import { LoansModule } from './loans/loans.module.js';
 import { MembersModule } from './members/members.module.js';
 import { ReservationsModule } from './reservations/reservations.module.js';
@@ -38,6 +39,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     LoansModule,
     ReservationsModule,
     BillingModule,
+    HelpModule,
   ],
 })
 export class AppModule implements NestModule {

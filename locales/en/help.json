@@ -1,0 +1,10 @@
+{
+  "title": "Help",
+  "subtitle": "Quick answers to the things librarians ask us most.",
+  "searchPlaceholder": "Search the help center…",
+  "searchAria": "Search help articles",
+  "empty": "We haven't written any articles yet — but they're on their way.",
+  "noMatches.title": "Nothing matches",
+  "noMatches.description": "We couldn't find anything for \"{query}\". Try a different word, or browse the list below.",
+  "fallbackNotice": "We haven't translated this article yet, so we're showing the {locale} version. Let us know if you'd like to see it in your language."
+}

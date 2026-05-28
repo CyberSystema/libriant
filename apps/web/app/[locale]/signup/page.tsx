@@ -1,0 +1,40 @@
+import Link from 'next/link';
+import { notFound, redirect } from 'next/navigation';
+import { Asset } from '@libriant/ui';
+import { isLocale, createTranslator } from '@libriant/i18n';
+import { loadCatalog } from '@/lib/locale-loader';
+import { currentSession } from '@/lib/session';
+import { SignupForm } from './SignupForm';
+
+export const metadata = {
+  title: 'Create your library · Libriant',
+};
+
+export default async function SignupPage({ params }: { params: { locale: string } }) {
+  if (!isLocale(params.locale)) notFound();
+
+  const session = await currentSession();
+  if (session) redirect(`/${params.locale}/t/${session.tenant.slug}`);
+
+  const catalog = await loadCatalog(params.locale);
+  const t = createTranslator(catalog, params.locale);
+
+  return (
+    <main className="lbr-auth-shell">
+      <div className="lbr-auth-card">
+        <div className="lbr-auth-card__brand">
+          <Asset name="brand/logo" width={160} height={40} />
+        </div>
+        <h1 className="lbr-auth-card__heading">{t('auth.signUp.title')}</h1>
+        <p className="lbr-auth-card__subtitle">{t('auth.signUp.subtitle')}</p>
+
+        <SignupForm catalog={catalog} locale={params.locale} />
+
+        <p className="lbr-auth-card__footer">
+          {t('auth.signUp.alreadyHaveAccount')}{' '}
+          <Link href={`/${params.locale}/login`}>{t('common.actions.signIn')}</Link>
+        </p>
+      </div>
+    </main>
+  );
+}

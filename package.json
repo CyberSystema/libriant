@@ -23,6 +23,7 @@
     "db:generate": "pnpm --filter @libriant/db-control prisma:generate && pnpm --filter @libriant/db-tenant prisma:generate",
     "db:migrate:deploy": "pnpm --filter @libriant/db-control prisma:migrate:deploy",
     "db:seed": "pnpm --filter @libriant/db-control seed",
+    "ingest:help": "tsx scripts/ingest-help-articles.ts",
     "db:studio": "pnpm --filter @libriant/db-control prisma:studio",
     "db:reset": "pnpm --filter @libriant/db-control prisma:migrate:reset",
     "tenant:migrate:deploy": "pnpm --filter @libriant/db-tenant prisma:migrate:deploy",
@@ -33,6 +34,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "marked": "^18.0.4",
     "prettier": "^3.3.3",
     "tsx": "^4.19.0",
     "turbo": "^2.1.0",

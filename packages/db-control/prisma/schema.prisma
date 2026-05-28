@@ -683,3 +683,46 @@ model SystemModeEvent {
   @@index([endsAt])
   @@map("system_mode_events")
 }
+
+// ---------------------------------------------------------------------------
+// Help center — in-product knowledge base. Articles are authored as
+// Markdown files in /locales/<lang>/help/ and ingested into this table via
+// `scripts/ingest-help-articles.ts`. Postgres FTS lives in a tsvector
+// column populated by trigger; Prisma doesn't see the column directly, we
+// query through it with `$queryRawUnsafe` from the help service.
+// ---------------------------------------------------------------------------
+
+model HelpArticle {
+  id           String    @id @default(cuid())
+  /// URL-safe per-locale identifier ("adding-members"). Same article in
+  /// en/el shares the slug but is two distinct rows so search results
+  /// match the user's language without cross-language fallthrough.
+  slug         String
+  /// BCP-47 locale tag the article body is written in.
+  locale       String
+  title        String
+  /// Plain-text summary shown in list views (one sentence).
+  summary      String
+  /// Comma-separated keywords surfaced as chips. Optional.
+  tags         String?
+  /// Sort key within a locale. The ingest script reads the leading digits
+  /// from the filename ("01-getting-started.md" → 10) so editors stay in
+  /// charge of ordering without an admin UI.
+  sortOrder    Int       @default(100)
+  /// Source Markdown — kept so re-ingest is round-trippable + human-readable.
+  bodyMarkdown String
+  /// Rendered HTML, sanitized at ingest. The UI uses this for fast SSR.
+  bodyHtml     String
+  /// SHA-256 of the source file at ingest time; skips no-op upserts.
+  sourceHash   String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  /// Set when the source file disappears between ingest runs. Records
+  /// stay archived rather than vanishing so a librarian's bookmark still
+  /// gives them a friendly "this article was retired" page.
+  archivedAt   DateTime?
+
+  @@unique([slug, locale])
+  @@index([locale, sortOrder])
+  @@map("help_articles")
+}

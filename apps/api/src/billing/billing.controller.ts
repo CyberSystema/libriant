@@ -29,6 +29,11 @@ export class BillingController {
     return this.svc.getSnapshot(tenant.id);
   }
 
+  @Get('plans')
+  async availablePlans(@TenantCtx() tenant: TenantContext) {
+    return { plans: await this.svc.listAvailablePlans(tenant.id) };
+  }
+
   @Post('checkout')
   async checkout(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const dto = await validateDto(StartCheckoutDto, raw);

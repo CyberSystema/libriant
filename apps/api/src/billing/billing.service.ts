@@ -51,6 +51,52 @@ export class BillingService {
   // Read
   // -------------------------------------------------------------------------
 
+  /**
+   * Plans the tenant can switch to. Hides admin-only and archived plans
+   * but always includes the tenant's *current* plan (even if it's now
+   * private/archived) so the UI can label "you are here".
+   */
+  async listAvailablePlans(tenantId: string): Promise<
+    Array<{
+      id: string;
+      slug: string;
+      name: string;
+      description: string | null;
+      billingMode: BillingMode;
+      monthlyPriceCents: number;
+      currency: string;
+      hasStripePrice: boolean;
+      isCurrent: boolean;
+      sortOrder: number;
+    }>
+  > {
+    const sub = await controlDb.subscription.findUnique({
+      where: { tenantId },
+      select: { planId: true },
+    });
+    const plans = await controlDb.plan.findMany({
+      where: { archivedAt: null, isActive: true, isPublic: true },
+      orderBy: { sortOrder: 'asc' },
+    });
+    // Make sure the current plan shows up even if it's been made private.
+    if (sub && !plans.some((p) => p.id === sub.planId)) {
+      const current = await controlDb.plan.findUnique({ where: { id: sub.planId } });
+      if (current) plans.unshift(current);
+    }
+    return plans.map((p) => ({
+      id: p.id,
+      slug: p.slug,
+      name: p.name,
+      description: p.description,
+      billingMode: p.billingMode,
+      monthlyPriceCents: p.monthlyPriceCents,
+      currency: p.currency,
+      hasStripePrice: !!p.stripePriceId,
+      isCurrent: p.id === sub?.planId,
+      sortOrder: p.sortOrder,
+    }));
+  }
+
   /** Plain-shape snapshot of where this tenant stands billing-wise. */
   async getSnapshot(tenantId: string): Promise<BillingSnapshot> {
     const sub = await controlDb.subscription.findUnique({

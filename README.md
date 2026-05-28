@@ -738,28 +738,556 @@ and `STRIPE_WEBHOOK_SECRET=whsec_…` (copy from the Stripe Dashboard or
 Subscribe to: `customer.subscription.{created,updated,deleted}`,
 `invoice.payment_{succeeded,failed}`, and `checkout.session.completed`.
 
+### Verify the staff UI (auth + tenant shell + dashboard)
+
+Step 17 ships the **foundation** of the staff UI — UI primitives package,
+auth pages (login + signup), tenant shell layout with sidebar nav, and a
+live-data dashboard. The data-screen UIs (catalog, members, loans,
+reservations, collections, billing self-serve, schema editor, help
+center) are deferred to a follow-up 17b.
+
+```sh
+# Start both services
+pnpm --filter @libriant/api dev  # :3001
+pnpm --filter @libriant/web dev  # :3000
+
+# 1) Locale demo still works
+open http://localhost:3000/en
+open http://localhost:3000/el
+
+# 2) Sign up — fills slug from library name, server-side validation maps
+#    back onto specific fields ("email already taken" → email field).
+open http://localhost:3000/en/signup
+# Submit lands on /en/t/<slug> with the session cookie set same-origin.
+
+# 3) Tenant shell layout — sidebar nav, library name, sign-out button.
+#    Cross-tenant URL is bounced back to the user's home.
+open http://localhost:3000/en/t/<your-slug>
+open http://localhost:3000/en/t/acme       # → redirects to own home
+
+# 4) Dashboard pulls counts in parallel from /catalog/books, /members,
+#    /loans?status=active, /loans?overdue=1, /reservations?status=queued,
+#    /billing. Any single endpoint that fails renders "—" in its tile
+#    without breaking the page.
+
+# 5) Sign out — POST to /lbr-api/auth/logout via Next's same-origin
+#    rewrite. Cookie is cleared; subsequent tenant URL → /login.
+
+# 6) Empty-state path: brand-new tenants see an illustration + "Add your
+#    first book" CTA instead of the stat grid.
+```
+
+**Same-origin proxy.** Next's `rewrites()` maps `/lbr-api/*` to the API
+host so the browser never crosses an origin. Session cookies are issued
+by the API but stored against the web app's origin via this proxy —
+that's what makes login + tenant-redirect flows work in dev without TLS
+or Caddy gymnastics. In production, the same wiring lives behind Caddy.
+
+**Deferred (17b).** Catalog table, members table, loans checkout flow,
+reservations queue UI, billing self-serve (checkout + portal buttons),
+data-model editor at `/settings/data-model`, in-product help center,
+onboarding wizard. All API endpoints are already live — the work is
+purely UI.
+
+### Verify the staff data screens (Step 17b)
+
+Step 17b ships the read-only data screens — catalog, members, loans —
+each backed by a shared `<DataTable>` component (server-rendered first
+page + client-side load-more + search box that pushes to the URL).
+Plus the **billing self-serve** page with current-plan card,
+plan-comparison grid, and Stripe checkout / customer-portal / cancel
+action buttons.
+
+```sh
+# Start both services (API is :3001, web is :3000)
+pnpm --filter @libriant/api dev &
+pnpm --filter @libriant/web dev &
+
+# 1) Sign up via the UI proxy + seed a couple of books/members
+JAR=/tmp/jar.txt && rm -f $JAR
+curl -s -c $JAR -X POST http://localhost:3000/lbr-api/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"my-library","libraryName":"My Library","email":"me@x.test","password":"PrivatePass2026!","fullName":"Me","defaultLocale":"en"}'
+
+AID=$(curl -s -b $JAR -X POST http://localhost:3000/lbr-api/t/my-library/catalog/authors \
+  -H "Content-Type: application/json" -d '{"fullName":"Νίκος Καζαντζάκης"}' | jq -r .id)
+curl -s -b $JAR -X POST http://localhost:3000/lbr-api/t/my-library/catalog/books \
+  -H "Content-Type: application/json" \
+  -d "{\"title\":\"Ζορμπάς\",\"publicationYear\":1946,\"language\":\"el\",\"authors\":[{\"authorId\":\"$AID\"}]}"
+curl -s -b $JAR -X POST http://localhost:3000/lbr-api/t/my-library/members \
+  -H "Content-Type: application/json" -d '{"fullName":"Μαρία Παπαδοπούλου","email":"m@x.test"}'
+
+# 2) Pages
+open http://localhost:3000/en/t/my-library/catalog
+open http://localhost:3000/en/t/my-library/members
+open http://localhost:3000/en/t/my-library/loans
+open http://localhost:3000/en/t/my-library/billing
+
+# 3) Greek-aware search — typing "καπεταν" (no accent) matches "Καπετάν Μιχάλης".
+#    Loan filter pills + "Overdue only" toggle push state into the URL so it's
+#    bookmark-able. Status filter on members likewise.
+
+# 4) Billing — see Starter card with "You are here", then "Switch to Community"
+#    triggers POST /lbr-api/t/.../billing/checkout. With STRIPE_DRIVER=fake the
+#    response URL is a fake — the verification probe just confirms the request
+#    fires; real Stripe would redirect the user to Checkout.
+#    "Open payment portal" + "Cancel subscription" / "Resume subscription"
+#    actions are wired the same way and update via router.refresh().
+```
+
+**Architecture notes.**
+
+- The shared [`<DataTable>`](apps/web/components/DataTable.tsx) takes a
+  generic row type + a `columns` array (with optional `render` functions).
+  Each table's column definitions live in their own client-component
+  wrapper (`CatalogTable.tsx`, `MembersTable.tsx`, `LoansTable.tsx`,
+  `PlanGrid.tsx`) because Next.js refuses to ship functions across the
+  server→client boundary. The server page only passes the **plain data**
+  - the slug + the catalog.
+- The API gained one new endpoint:
+  `GET /t/:slug/billing/plans` returns active+public plans plus the
+  current-plan flag so the UI can render "You are here" without a
+  second round-trip.
+- The Greek-aware fuzzy search is already wired end-to-end: the server
+  page reads `?q=` from the URL, forwards it to the API which normalizes
+  to lowercase + NFD + diacritic-strip and runs against the GIN trigram
+  index. The DataTable's search input pushes back into the URL so
+  pagination + filtering compose naturally.
+
+**Shipped in 17c.** Loans checkout flow, loan detail with return / renew
+/ mark-lost actions, reservations list, place-hold form, and inline
+cancel / fulfill row actions — see the verification block below.
+
+**Deferred (17d).** Data-model editor at `/settings/data-model` (drag-drop
+field editor + live form preview), in-product help center at `/help` with
+Postgres FTS, onboarding wizard (multi-step welcome flow), add-book +
+add-member forms with custom-field rendering. All API endpoints are
+already live.
+
+### Verify the staff circulation flows (Step 17c)
+
+Step 17c wires the **action surface** for circulation — the librarian
+can now run the whole "lend a book → return it → place a hold for the
+next person → hand it over" cycle from the UI without touching the API
+directly. Builds on top of the read tables shipped in 17b.
+
+```sh
+# Both services running (API :3001, web :3000)
+# Reuse the cookie jar from Step 17b's signup, or sign in fresh.
+JAR=/tmp/jar.txt
+SLUG=my-library
+
+# Make sure the tenant is on Community (or higher) — reservations are
+# plan-gated and Starter has reservations_enabled=false.
+TID=$(docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "SELECT id FROM tenants WHERE slug='$SLUG';")
+COMMUNITY=$(docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "SELECT id FROM plans WHERE slug='community';")
+docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "UPDATE subscriptions SET \"planId\" = '$COMMUNITY' WHERE \"tenantId\" = '$TID';"
+docker exec libriant-redis redis-cli --no-raw EVAL \
+  "for _,k in ipairs(redis.call('keys','lbr:plan:*')) do redis.call('del',k) end return 'ok'" 0
+
+# 1) Checkout — open the form
+open http://localhost:3000/en/t/$SLUG/loans/new
+# Type a name in the Member picker → debounced search hits /members?q=…
+# Type a title in the Book picker → /catalog/books?q=…
+# After picking the book we fetch /catalog/books/:id and show the
+# available copies as a dropdown (any non-`available` status is hidden).
+# Pick due date (defaults to today+14 from tenant_settings), optional
+# notes, submit → POSTs to /loans → router.push to the loan detail page.
+
+# 2) Loan detail — three action modals
+open http://localhost:3000/en/t/$SLUG/loans/<LOAN_ID>
+# "Mark returned" modal: condition (Good / Damaged) + notes.
+# "Renew" modal: how many periods (each = loanPeriodDays). API enforces
+# the maxRenewals cap + refuses when a hold is queued.
+# "Mark lost" modal (red alertdialog): optional replacement cost in
+# the tenant's currency. Creates a Fine row tied to the loan.
+# All three show a success toast and refresh the page on completion.
+
+# 3) Reservations list
+open http://localhost:3000/en/t/$SLUG/reservations
+# Filter pills: All active, queued, ready, fulfilled, expired, canceled,
+# plus "Show / Hide resolved". Each row shows queue position (★ when ready)
+# + "Hand over" (for ready) and "Cancel hold" (for queued / ready).
+
+# 4) Place a hold
+open http://localhost:3000/en/t/$SLUG/reservations/new
+# Book picker + Member picker (both via the shared <Combobox>). On submit,
+# toast surfaces the outcome ("Held at position N" vs "A copy was
+# available — this hold is ready to pick up").
+
+# 5) Full lifecycle drill via the UI proxy
+# (a) place hold on a book that's currently on loan → outcome: queued
+# (b) return that loan → API auto-promotes the hold to `ready` and the
+#     row's status flips in the list (router.refresh() re-fetches)
+# (c) click "Hand over" → API creates the loan from the held copy + marks
+#     the reservation fulfilled — the row disappears from the default
+#     (active-only) view; visible again with ?includeResolved=1.
+```
+
+**Architecture notes.**
+
+- The shared [`<Combobox>`](apps/web/components/Combobox.tsx) is the
+  workhorse: debounced API search + keyboard nav (↑/↓/Enter/Esc) + ARIA
+  combobox/listbox/option roles. Both pickers in the checkout form and
+  the place-hold form use it, plus any future "find an X" UI.
+- All action endpoints use `router.refresh()` after success so the
+  server-rendered detail / list pages re-fetch with the new state. No
+  client-side cache to invalidate.
+- Modals are accessible via the native `<dialog>` element — Esc handling,
+  backdrop click, and focus trap are all platform-provided. The mark-lost
+  modal uses `role="alertdialog"` because it's a destructive action.
+
+### Verify add-book + add-member + onboarding (Step 17d)
+
+Step 17d ships the **creation forms** that close the loop on the read +
+action flows from 17b/17c, plus a 3-step welcome wizard that hand-holds
+a fresh library through their first member and first book.
+
+```sh
+# Both services running (API :3001, web :3000)
+
+# 1) Fresh signup — onboarding starts empty
+rm -f /tmp/jar.txt
+curl -s -c /tmp/jar.txt -X POST http://localhost:3000/lbr-api/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"my-library","libraryName":"My Library","email":"me@x.test","password":"PrivatePass2026!","fullName":"Me","defaultLocale":"en"}'
+
+# 2) Page sanity check
+open http://localhost:3000/en/t/my-library                              # empty-state w/ onboarding CTA
+open http://localhost:3000/en/t/my-library/onboarding                   # step=welcome
+open http://localhost:3000/en/t/my-library/onboarding?step=member       # step=member with MemberForm
+open http://localhost:3000/en/t/my-library/onboarding?step=book         # step=book with BookForm
+open http://localhost:3000/en/t/my-library/onboarding?step=done         # step=done recap
+open http://localhost:3000/en/t/my-library/members/new                  # standalone add-member
+open http://localhost:3000/en/t/my-library/catalog/new                  # standalone add-book
+
+# 3) Standalone forms (the wizard reuses these)
+# Member form: identity / contact / custom fields blocks. Server-side
+# validation errors map back onto specific inputs (email → email field).
+curl -s -b /tmp/jar.txt -X POST http://localhost:3000/lbr-api/t/my-library/members \
+  -H "Content-Type: application/json" \
+  -d '{"fullName":"Άννα Δημητρίου","email":"anna@example.test"}' | jq '{id,memberNumber}'
+
+# Book form: ISBN lookup pre-fills title/authors/year/publisher from
+# OpenLibrary; missing authors are auto-created via the AuthorPicker
+# (it also exposes inline "+ Add new author" when nothing matches).
+AID=$(curl -s -b /tmp/jar.txt -X POST http://localhost:3000/lbr-api/t/my-library/catalog/authors \
+  -H "Content-Type: application/json" -d '{"fullName":"Νίκος Καζαντζάκης"}' | jq -r .id)
+curl -s -b /tmp/jar.txt -X POST http://localhost:3000/lbr-api/t/my-library/catalog/books \
+  -H "Content-Type: application/json" \
+  -d "{\"title\":\"Ζορμπάς\",\"publicationYear\":1946,\"language\":\"el\",\"authors\":[{\"authorId\":\"$AID\",\"order\":0}]}" \
+  | jq '{id,title}'
+
+# 4) Onboarding nudge banner on dashboard
+# - 0 books + 0 members → EmptyState with "Let's start" CTA
+# - 0 books + ≥1 member OR ≥1 book + 0 members → blue nudge banner
+# - ≥1 book + ≥1 member → no banner; stat grid renders normally
+# Verified via grep on the rendered HTML — 0 lbr-banner instances when
+# both present; 1 instance with the memberMissing copy when only book
+# present.
+
+# 5) Custom fields render dynamically
+# Define a custom select_one field on `member` first:
+curl -s -b /tmp/jar.txt -X POST http://localhost:3000/lbr-api/t/my-library/data-model/fields/member \
+  -H "Content-Type: application/json" \
+  -d '{"fieldKey":"membership_tier","labelJson":{"en":"Membership tier","el":"Επίπεδο μέλους"},
+       "type":"select_one","required":false,
+       "optionsJson":{"options":[{"value":"gold","label":{"en":"Gold","el":"Χρυσό"}},
+                                   {"value":"silver","label":{"en":"Silver","el":"Ασημί"}}]}}'
+# /members/new now shows that field below the standard inputs, with the
+# Greek option label visible when the locale is el.
+```
+
+**Architecture notes.**
+
+- [`<DynamicFields>`](apps/web/components/DynamicFields.tsx) is the
+  workhorse that renders any custom field from the `FieldDefinitions`
+  the library has set up. Each of the 10 supported types maps to an
+  appropriate native input (Input, Textarea, checkbox, select, date,
+  datetime-local, etc.). Labels use the locale-matched string from
+  `labelJson` with sensible fallbacks. The renderer doesn't coerce
+  values — it surfaces whatever the user typed so the server-side
+  `validateRecordOrThrow` is the single source of truth.
+- The same `<MemberForm>` and `<BookForm>` components power both the
+  standalone `/members/new` + `/catalog/new` pages AND the onboarding
+  wizard's individual steps. The wizard passes `returnTo` so success
+  redirects back into the next wizard step instead of the entity's
+  detail page.
+- [`<AuthorPicker>`](apps/web/components/AuthorPicker.tsx) wraps the
+  shared `<Combobox>` to deliver a "find or create author" affordance:
+  the inline "+ Add `Foo`" button appears whenever the typed text doesn't
+  match an existing author, POSTs to `/catalog/authors`, and immediately
+  adds the new row to the selection.
+- The wizard is **server-rendered with URL state** — `?step=welcome`,
+  `?step=member`, `?step=book`, `?step=done`. Refresh / back-button work
+  naturally, and the wizard's "done" check is computed from API counts
+  rather than tracked per-user, so re-running the wizard after the fact
+  shows the correct ✓ ticks.
+
+**Shipped in 17e.** The data-model editor — see the next section.
+
+**Deferred (17f+).** In-product help center at `/help` with Postgres FTS,
+member/book detail pages with edit affordances. All API endpoints are
+live; the work is purely UI.
+
+### Verify the data-model editor (Step 17e)
+
+Step 17e ships the **schema editor** at `/settings/data-model` — the
+headline "customize your library" feature that lets a non-technical
+admin add custom fields to any built-in entity (book, copy, member,
+loan, reservation, fine) without ever touching the API. Two-pane layout:
+the field list with drag-drop reorder + edit/archive controls on the
+left, and a live `<DynamicFields>` preview of the form a librarian
+would fill in on the right.
+
+```sh
+# Both services running (API :3001, web :3000)
+JAR=/tmp/jar.txt
+SLUG=my-library
+
+# 1) Pages
+open http://localhost:3000/en/t/$SLUG/settings                          # settings index
+open http://localhost:3000/en/t/$SLUG/settings/data-model               # default tab: book
+open http://localhost:3000/en/t/$SLUG/settings/data-model?entity=member # ?entity= picks the tab
+open http://localhost:3000/el/t/$SLUG/settings/data-model               # full Greek translation
+
+# 2) Add a select_one field (the typical CTA path)
+# Click "+ Add a field" → label in English + Greek → type = Pick one →
+# OptionsEditor adds rows {gold, silver, …} with localized labels.
+# Live preview re-renders the moment you tab out of the label input.
+
+# 3) Reorder
+# Drag a row by its ⋮⋮ handle to swap with another row, OR use the
+# ↑/↓ arrow buttons (keyboard-accessible alternative). Each move
+# pushes a sortOrder PATCH per affected row.
+
+# 4) Edit — fieldKey + type are intentionally read-only (safety rail
+# from the plan: changing the type would invalidate existing records).
+# You can still rename labels, toggle required, edit options.
+
+# 5) Archive / restore
+# DELETE archives. Archived fields hide by default; toggle the footer
+# button to reveal them and click "Restore" to bring one back.
+# Existing records keep their old values either way — the dynamic
+# validator only enforces ACTIVE fields on writes.
+
+# 6) End-to-end via the same proxy the UI uses
+curl -s -b $JAR -X POST "http://localhost:3000/lbr-api/t/$SLUG/data-model/fields/member" \
+  -H "Content-Type: application/json" \
+  -d '{"fieldKey":"membership_tier",
+       "labelJson":{"en":"Membership tier","el":"Επίπεδο μέλους"},
+       "type":"select_one","required":false,"sortOrder":10,
+       "optionsJson":{"options":[
+         {"value":"gold","label":{"en":"Gold","el":"Χρυσό"}},
+         {"value":"silver","label":{"en":"Silver","el":"Ασημί"}}]}}'
+
+# Now /members/new (and the onboarding wizard's member step) shows this
+# field below the standard inputs. POST a member with the new field
+# populated — it round-trips through the dynamic validator and lands
+# in `members.customFields`.
+```
+
+**Architecture notes.**
+
+- The editor is a server-rendered page with a single client component
+  ([`FieldEditor.tsx`](apps/web/app/[locale]/t/[slug]/settings/data-model/FieldEditor.tsx))
+  that holds the field-list state. Modals (Add / Edit) live in sibling
+  files and call back through `onCreated` / `onUpdated` so the parent
+  list stays in sync without a full page refresh.
+- Field type uses **plain-language labels** everywhere the user sees it:
+  `short_text` → "Short text", `select_one` → "Pick one", `boolean` →
+  "Yes / No", etc. The internal SQL/JS type only shows up in the URL
+  payloads.
+- The right-hand preview reuses the exact `<DynamicFields>` component
+  that powers the real member/book forms. Whatever the librarian sees
+  here is, byte-for-byte, what their staff sees when adding a record.
+- Drag-drop uses native HTML5 events with up/down arrow buttons as the
+  accessibility fallback. Reorder is optimistic — the local list moves
+  instantly, then a `sortOrder` PATCH per row hits the API. On failure,
+  the page refreshes to roll back.
+- The fieldKey is auto-slugified from the English label until the user
+  edits it manually (same pattern as the signup form's library slug).
+  Server-side validation rejects collisions and bad shapes; we map
+  field-specific errors back onto the right input.
+
+### Verify member + book detail pages (Step 17f)
+
+Step 17f closes the read+edit gap. Clicking a row in the members or
+catalog tables (Step 17b) now lands on a detail page with the full
+record, an "Edit" button that re-uses the existing forms in edit mode,
+and per-entity action panels (status changes, archive/restore, photo
+or cover upload, add-copy).
+
+```sh
+# Both services running (API :3001, web :3000)
+JAR=/tmp/jar.txt
+SLUG=my-library
+
+# 1) Pages — rows on the list tables route to these
+open http://localhost:3000/en/t/$SLUG/members/<MEMBER_ID>
+open http://localhost:3000/en/t/$SLUG/catalog/<BOOK_ID>
+open http://localhost:3000/el/t/$SLUG/members/<MEMBER_ID>   # Greek
+
+# 2) Member detail — left pane is summary + custom fields. Right pane is
+# photo, circulation (active loans / reservations / outstanding fines)
+# and the actions card (Suspend / Reactivate / Archive). Each link in
+# Circulation deep-links to the filtered list page.
+
+# 3) Member edit — "Edit" swaps the page into the existing MemberForm
+# pre-filled with the row's values. Empty strings round-trip as null
+# (so the librarian can clear a field). Cancel link returns here.
+
+# 4) Status actions via the same UI proxy
+curl -s -b $JAR -X PUT "http://localhost:3000/lbr-api/t/$SLUG/members/$MID/status" \
+  -H "Content-Type: application/json" -d '{"status":"suspended","reason":"Test"}'
+curl -s -b $JAR -X PUT "http://localhost:3000/lbr-api/t/$SLUG/members/$MID/status" \
+  -H "Content-Type: application/json" -d '{"status":"active"}'
+
+# 5) Archive + restore (member)
+curl -s -b $JAR -X DELETE "http://localhost:3000/lbr-api/t/$SLUG/members/$MID"        # archive
+curl -s -b $JAR -X PATCH "http://localhost:3000/lbr-api/t/$SLUG/members/$MID" \
+  -H "Content-Type: application/json" -d '{"archived":false}'                          # restore
+
+# 6) Photo upload (multipart through the same-origin proxy)
+curl -s -b $JAR -X POST "http://localhost:3000/lbr-api/t/$SLUG/members/$MID/photo" \
+  -F "file=@/tmp/test.png;type=image/png"
+# Returns { photoAssetRef: 'members/<file>.png' }. The UI renders it from
+# /lbr-api/t/<slug>/storage/<ref> through the storage controller.
+
+# 7) Book detail — bibliographic summary, custom fields, **copies table**,
+# right-side cover upload + archive actions. "+ Add a copy" opens a modal
+# (barcode + shelf location) that POSTs to /catalog/books/:id/copies.
+
+# 8) Book edit — full BookForm reused in edit mode, including ISBN lookup,
+# AuthorPicker and the same custom-fields renderer.
+
+# 9) Cover upload (same shape as photo) → POST + DELETE multipart paths.
+
+# 10) Archive + restore (book) — same DELETE → archive, PATCH archived:false
+# → restore. Archive shows a friendly modal warning.
+```
+
+**Architecture notes.**
+
+- Both `MemberForm` and `BookForm` from 17d now take an optional
+  `initial` prop. When set, the form flips to **edit mode**: state inits
+  from the row, submit PATCHes instead of POSTs, and cleared fields
+  round-trip as `null` so the API knows to wipe them. A new `onSaved`
+  callback lets the detail page swap back to view mode without a
+  full page navigation. `cancelHref` overrides the default cancel link.
+- Detail pages are server-rendered for the initial fetch; a single
+  client component (`MemberDetail` / `BookDetail`) owns the view↔edit
+  state machine and the action handlers (suspend, archive, restore,
+  add-copy). Optimistic local updates plus `router.refresh()` keep the
+  server-rendered shell in sync.
+- Photo + cover upload bypass the typed `api()` helper because multipart
+  needs the browser to set the Content-Type with its own boundary; we
+  hand off `FormData` to `fetch()` with `credentials: 'include'` so the
+  same-origin proxy carries the session cookie. Errors are wrapped in
+  the same `ApiError` class for consistent toast handling.
+- Asset URLs go through `/lbr-api/t/:slug/storage/:resourceType/:filename`
+  — the existing storage controller. The same-origin proxy keeps the
+  cookie travelling so a librarian without a public photo URL still
+  sees the file in their browser.
+- Friendly archive refusal: when DELETE on a member returns 400 with
+  `{ activeLoans, activeReservations }` (Step 12's safety check), the
+  toast surfaces the count rather than the raw message. Suspended /
+  archived states each show their own info-banner at the top of the
+  detail page so the librarian knows why they can't lend.
+
+### Verify the in-product help center (Step 17g)
+
+Step 17g ships the help center the plan called for: a bundled markdown
+knowledge base indexed via Postgres FTS, with accent-insensitive search
+for Greek and a clean reader view inside the tenant shell.
+
+```sh
+# Authors write Markdown files with YAML frontmatter:
+#   locales/<lang>/help/01-getting-started.md
+# Leading digits in the filename become the sortOrder (×10).
+
+# 1) Ingest — idempotent, hashes file bytes to skip no-ops, archives the
+#    DB row when the source file is removed.
+pnpm ingest:help
+# [help:en] upserted=4 archived=0
+# [help:el] upserted=4 archived=0
+
+# 2) API smoke
+curl -s "http://localhost:3001/help/articles?locale=en" | jq '.items[].slug'
+curl -s -G "http://localhost:3001/help/articles" \
+  --data-urlencode "locale=el" --data-urlencode "q=κρατησεις" | jq '.items[].title'
+# → "Κρατήσεις και αναμονή" first, etc. — accents not required.
+curl -s "http://localhost:3001/help/articles/lending-books?locale=en" | jq '{title, locale}'
+
+# 3) UI — sidebar gains a "Help" link; pages live under the tenant shell
+open http://localhost:3000/en/t/my-library/help
+open http://localhost:3000/el/t/my-library/help?q=κρατησεις
+open http://localhost:3000/en/t/my-library/help/lending-books
+
+# 4) Locale fallback: when an article is missing in your locale, the UI
+#    surfaces the English version with a "we haven't translated this yet"
+#    banner. Try by archiving an el row and re-fetching it as el.
+docker exec libriant-postgres psql -U libriant -d libriant_control -c \
+  "UPDATE help_articles SET \"archivedAt\" = NOW() WHERE slug='reservations' AND locale='el';"
+curl -s "http://localhost:3001/help/articles/reservations?locale=el" | jq '{locale, title}'
+# → { locale: "en", title: "Holds and reservations" }
+```
+
+**Architecture notes.**
+
+- Articles are stored in the control-plane `help_articles` table, one row
+  per (slug × locale). Markdown is converted to sanitized HTML at ingest
+  time (`marked`, no user input involved), so SSR is fast and there's
+  zero markdown JS in the browser bundle.
+- Full-text search runs through a generated `tsvector` column populated
+  by an expression on `title`/`summary`/`bodyMarkdown`/`tags`. The
+  search config is **`english` for `en` rows, `simple` for everything
+  else** (Postgres has no Greek dictionary), wrapped through an
+  `immutable_unaccent` helper so accent-stripped queries (`κρατησεις`)
+  match accented content (`Κρατήσεις`). A GIN index on the column makes
+  it instant for thousands of articles.
+- The `setweight` calls in the generated column put `title` at weight A,
+  `summary` and `tags` at B, body at C — so a title hit ranks ahead of
+  a body hit when both contain the term.
+- Ingest is **idempotent**: hashes the source bytes, only upserts changed
+  rows. Files that disappear between runs stamp `archivedAt = now()` so
+  a librarian's bookmark gets a friendly "this article was retired"
+  page rather than a 404. Re-adding the file un-archives the row.
+- The UI's article search-bar pushes `?q=…` into the URL so the
+  server-rendered page re-fetches against the FTS endpoint — same
+  pattern as the catalog / members search inputs.
+
 ## Where we are in the plan
 
-| Step | Description                                                                   | Status                         |
-| ---- | ----------------------------------------------------------------------------- | ------------------------------ |
-| 0    | Design system + i18n + assets foundation                                      | ✅ done                        |
-| 1    | Repo scaffold (pnpm/turbo/tsconfig/prettier)                                  | ✅ done                        |
-| 2    | **Control-plane Prisma schema + idempotent seed**                             | ✅ done                        |
-| 3    | Feature key catalog                                                           | ✅ done (in `packages/shared`) |
-| 4    | **Tenant Prisma schema (catalog/members/loans/customization/audit)**          | ✅ done                        |
-| 5    | NestJS API skeleton (health endpoints)                                        | ✅ done                        |
-| 6    | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**                | ✅ done                        |
-| 7    | **Auth (signup with tenant provisioning + login + sessions + reset)**         | ✅ done                        |
-| 8    | **Plan/quota system (EffectivePlan + PlanGuard + QuotaInterceptor)**          | ✅ done                        |
-| 9    | **Schema customization (per-entity fields + custom collections + records)**   | ✅ done                        |
-| 10   | **Storage layer (driver pattern + signed URLs + quota + recompute)**          | ✅ done                        |
-| 11   | **Catalog (authors + books + copies + ISBN lookup + covers)**                 | ✅ done                        |
-| 12   | **Members (CRUD + auto member-number + status + archive + photos)**           | ✅ done                        |
-| 13   | **Loans (checkout / return / renew / mark-lost + overdue fines)**             | ✅ done                        |
-| 14   | **Reservations (holds queue + auto-promote + ready-pickup + fulfill)**        | ✅ done                        |
-| 15   | **Custom collections (records CRUD + dynamic validation + restore + search)** | ✅ done                        |
-| 16   | **Billing (Stripe + manual + grace + webhooks + idempotency)**                | ✅ done                        |
-| 17   | Staff UI (onboarding, help center, billing)                                   | ⏳                             |
-| 18   | Internal admin (plans, support, system mode, announcements)                   | ⏳                             |
-| 19   | Infra (Caddy, prod compose, GH Actions deploy)                                | ⏳                             |
-| 20   | Tenant provisioning + relocation scripts                                      | ⏳                             |
+| Step | Description                                                                                               | Status                         |
+| ---- | --------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| 0    | Design system + i18n + assets foundation                                                                  | ✅ done                        |
+| 1    | Repo scaffold (pnpm/turbo/tsconfig/prettier)                                                              | ✅ done                        |
+| 2    | **Control-plane Prisma schema + idempotent seed**                                                         | ✅ done                        |
+| 3    | Feature key catalog                                                                                       | ✅ done (in `packages/shared`) |
+| 4    | **Tenant Prisma schema (catalog/members/loans/customization/audit)**                                      | ✅ done                        |
+| 5    | NestJS API skeleton (health endpoints)                                                                    | ✅ done                        |
+| 6    | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**                                            | ✅ done                        |
+| 7    | **Auth (signup with tenant provisioning + login + sessions + reset)**                                     | ✅ done                        |
+| 8    | **Plan/quota system (EffectivePlan + PlanGuard + QuotaInterceptor)**                                      | ✅ done                        |
+| 9    | **Schema customization (per-entity fields + custom collections + records)**                               | ✅ done                        |
+| 10   | **Storage layer (driver pattern + signed URLs + quota + recompute)**                                      | ✅ done                        |
+| 11   | **Catalog (authors + books + copies + ISBN lookup + covers)**                                             | ✅ done                        |
+| 12   | **Members (CRUD + auto member-number + status + archive + photos)**                                       | ✅ done                        |
+| 13   | **Loans (checkout / return / renew / mark-lost + overdue fines)**                                         | ✅ done                        |
+| 14   | **Reservations (holds queue + auto-promote + ready-pickup + fulfill)**                                    | ✅ done                        |
+| 15   | **Custom collections (records CRUD + dynamic validation + restore + search)**                             | ✅ done                        |
+| 16   | **Billing (Stripe + manual + grace + webhooks + idempotency)**                                            | ✅ done                        |
+| 17   | **Staff UI foundation (UI primitives + auth + tenant shell + dashboard)**                                 | ✅ done                        |
+| 17b  | **Staff data screens (catalog / members / loans tables + billing self-serve)**                            | ✅ done                        |
+| 17c  | **Staff circulation flows (loans checkout + return/renew/mark-lost + reservations place/cancel/fulfill)** | ✅ done                        |
+| 17d  | **Add-book + add-member forms (custom-field rendering) + 3-step onboarding wizard**                       | ✅ done                        |
+| 17e  | **Data-model editor (drag-drop fields + live form preview + plain-language types)**                       | ✅ done                        |
+| 17f  | **Member + book detail pages (view + edit + status actions + photo/cover upload + add-copy)**             | ✅ done                        |
+| 17g  | **In-product help center (markdown KB + Postgres FTS + accent-insensitive search + sidebar link)**        | ✅ done                        |
+| 18   | Internal admin (plans, support, system mode, announcements)                                               | ⏳                             |
+| 19   | Infra (Caddy, prod compose, GH Actions deploy)                                                            | ⏳                             |
+| 20   | Tenant provisioning + relocation scripts                                                                  | ⏳                             |
