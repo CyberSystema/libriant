@@ -1917,6 +1917,139 @@ act push -W .github/workflows/deploy.yml --container-architecture linux/amd64
   Prometheus + Grafana stack are all deferred. The metrics endpoints
   already exist so a scraper can attach to today's deployment.
 
+### Verify provisioning + relocation (Step 20)
+
+Step 20 ships the operator tooling for the tenant lifecycle: provision a
+brand-new library outside the self-serve signup, fan migrations out
+across every existing tenant DB, move a tenant's DB between cells with
+read-only-mode + cache bust, and move a tenant's files between storage
+backends. All four scripts live under [`scripts/`](scripts/) and shell
+in via pnpm.
+
+```sh
+# 1) Admin provisioning — full control over plan, billing mode, cell,
+# initial owner. Idempotent on slug; rolls back the physical DB if the
+# control-plane TX fails after CREATE DATABASE.
+CONTROL_DATABASE_URL=postgresql://libriant:libriant@localhost:5432/libriant_control \
+PG_SUPERUSER_URL=postgresql://libriant:libriant@localhost:5432/libriant_control \
+STORAGE_ROOT=/srv/libriant/storage \
+  pnpm tenant:create \
+    --slug=step20test \
+    --name='Step 20 Test Lib' \
+    --owner-email=ops@step20.test \
+    --owner-name='Step 20 Owner' \
+    --owner-password='change-me-please-12' \
+    --plan=starter \
+    --billing-mode=manual \
+    --dry-run                       # validate inputs without provisioning
+# → [tenant-create] plan="starter" billingMode=manual cell=cell-eu-1 dryRun=true
+# → [tenant-create] dry run: validation passed; not provisioning.
+
+# Drop --dry-run to actually create. Output ends with:
+#   [tenant-create] done. tenant.id=… slug=step20test
+#   [tenant-create]   dbUrl=postgresql://libriant:***@localhost:5432/tenant_…
+#   [tenant-create]   storageUrl=file:///srv/libriant/storage/…
+#   [tenant-create]   ⚠  generated owner password (record it now): …   (if --owner-password omitted)
+
+# Adversarial — every refusal exits non-zero:
+pnpm tenant:create --slug=step20test ...   # slug already used → 1
+pnpm tenant:create --slug='Bad-Slug-!' ... # slug regex fails → 1
+pnpm tenant:create --plan=nonexistent ...  # unknown plan → 1
+pnpm tenant:create --owner-password=short  # < 12 chars → 1
+
+# 2) Fan-out migrations across every tenant. Default --concurrency=1, but
+# go higher when you have lots of tenants — local 15-tenant drill drops
+# from ~10s @ 1 to ~3s @ 4.
+pnpm tenant:migrate                          # all active tenants
+pnpm tenant:migrate -- --only=acme,step18a   # specific slugs
+pnpm tenant:migrate -- --include-archived    # also migrate archived
+pnpm tenant:migrate -- --dry-run             # list, don't migrate
+pnpm tenant:migrate -- --concurrency=4
+# Per-row outcomes printed at the end:
+#   [tenant-migrate]   acme         ✓ up to date
+#   [tenant-migrate]   step18a      ✓ 1 applied
+#   [tenant-migrate]   broken       ✗ P3009 — database not reachable
+#   [tenant-migrate] done. 14 ok, 1 failed.    (exit 2 when any failed)
+
+# 3) Cell-to-cell DB relocation. Dry-run prints the plan; the real run
+# opens a per-tenant `read_only` window, pg_dumps the source, pg_restores
+# to the destination, verifies, updates tenants.db_url + cell_id, busts
+# the TenantResolver Redis cache, and closes the window. Failures leave
+# the tenant on the source DB and the read_only window open for inspection.
+REDIS_URL=redis://localhost:6379 \
+  pnpm tenant:relocate -- \
+    --tenant=acme \
+    --to-db-url='postgresql://libriant:pw@cell-02.lan:5432/' \
+    --to-cell=cell-02 \
+    --dry-run
+# After verifying the new home is healthy, drop the old database:
+pnpm tenant:relocate -- --tenant=acme --drop-source
+
+# 4) Storage migration. Same lifecycle — read_only window + verify + cache
+# bust. Today: file:// ↔ file:// only; s3:// / smb:// throw "not
+# implemented" with the wiring already in place.
+pnpm storage:migrate -- \
+  --tenant=acme \
+  --to-storage-url='file:///srv/libriant-2/storage/<tenant-id>' \
+  --dry-run
+# Real run reports:
+#   [storage-migrate] opened read_only window event=…
+#   [storage-migrate] rsync -a → destination…
+#   [storage-migrate] verifying byte counts match…
+#   [storage-migrate] updating control plane (storage_url)…
+#   [storage-migrate] busting TenantResolver cache…
+#   [storage-migrate] closing read_only window…
+```
+
+**Architecture notes.**
+
+- **Standalone scripts, not API endpoints.** Each script imports
+  `@libriant/db-control` directly and uses `pg` for raw superuser DDL
+  (`CREATE DATABASE`, `pg_terminate_backend`). They don't boot Nest's
+  DI graph — they're sysadmin tools, runnable from a fleet jump host or
+  cron, with no app process required.
+- **Same Prisma migrate path as runtime provisioning.** All three of
+  `tenant-create`, `tenant-migrate`, and `tenant-relocate` shell out
+  through `pnpm exec prisma migrate deploy` against the target's
+  `TENANT_DATABASE_URL` — exact same code path the API's
+  `TenantProvisioningService` runs at signup. No drift between
+  signup-time and admin-time schema state.
+- **Two-phase commit, with rollback.** `tenant-create` creates the
+  physical DB first, then runs the control-plane TX. If the TX fails
+  after `CREATE DATABASE` succeeded, the script drops the orphan DB.
+  No half-states. The same shape governs `tenant-relocate`: the source
+  DB stays intact until the operator runs `--drop-source` after a
+  post-cutover probe.
+- **Reuses 18c's system mode as the "downtime window."** Both
+  `tenant-relocate` and `storage-migrate` open a per-tenant `read_only`
+  event before they touch any data, then close it on success. Failures
+  leave the window open so a human can investigate while users see a
+  clean 503-with-explanation rather than 500s or stale reads.
+- **Cache invalidation is part of the contract.** Both migration
+  scripts bust `lbr:tenant:slug:<slug>` (and `lbr:tenant:sub:<sub>` for
+  tenants with a custom subdomain) before closing the read-only window
+  — the next request through `TenantMiddleware` picks up the new
+  `db_url` / `storage_url` from the control DB rather than the
+  5-minute-cached old value.
+- **`pg_dump --format=custom --no-owner --no-acl` + matching
+  `pg_restore --clean --if-exists`.** Custom format lets pg_restore
+  parallelize. `--no-owner` / `--no-acl` mean the dump is portable
+  across cells with different role names — Prisma manages schema, so
+  per-tenant ownership doesn't need to follow. `--clean --if-exists`
+  makes the restore re-runnable on a freshly-created destination DB.
+- **Storage today is `file://` only.** The script parses the URL scheme
+  and dies cleanly on anything else (`s3://`, `smb://`), so the
+  storage-driver swap drill stays paper-testable today: the wiring is
+  here, only the per-scheme sync command is missing. Plugging in
+  `s3 sync` or `aws s3 cp --recursive` is a switch-arm in
+  `storage-migrate.ts`.
+- **Out of MVP, hooks in place.** Per-tenant Postgres roles + GRANTs
+  (today every tenant DB uses the superuser; the per-cell `libriant`
+  role is enough at the pilot scale), live-replication-based zero-
+  downtime relocation (pg_dump/restore is the simple workhorse for the
+  pilot), and an admin-UI runner for these scripts (today they're
+  CLI-only, which matches the on-call operator surface anyway).
+
 ## Where we are in the plan
 
 | Step | Description                                                                                               | Status                         |
@@ -1950,4 +2083,4 @@ act push -W .github/workflows/deploy.yml --container-architecture linux/amd64
 | 18b  | **Announcements (composer + audience filters + in-app banners + outbox email + tag editor)**              | ✅ done                        |
 | 18c  | **System mode (maintenance / read-only / out-of-order / under-construction + per-tenant + scheduling)**   | ✅ done                        |
 | 19   | **Infra (Caddy + prod compose + GH Actions deploy + worker + health/metrics + backups)**                  | ✅ done                        |
-| 20   | Tenant provisioning + relocation scripts                                                                  | ⏳                             |
+| 20   | **Tenant provisioning + fleet migrate + DB relocate + storage migrate scripts**                           | ✅ done                        |

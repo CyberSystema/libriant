@@ -30,6 +30,10 @@
     "tenant:migrate:deploy": "pnpm --filter @libriant/db-tenant prisma:migrate:deploy",
     "tenant:seed:defaults": "pnpm --filter @libriant/db-tenant seed:defaults",
     "tenant:smoke": "pnpm --filter @libriant/db-tenant smoke",
+    "tenant:create": "tsx scripts/tenant-create.ts",
+    "tenant:migrate": "tsx scripts/tenant-migrate.ts",
+    "tenant:relocate": "tsx scripts/tenant-relocate.ts",
+    "storage:migrate": "tsx scripts/storage-migrate.ts",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\""
   },
