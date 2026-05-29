@@ -239,11 +239,30 @@ them).
 mkdir -p /srv/libriant /var/log/libriant
 chown -R deploy:deploy /srv/libriant /var/log/libriant /mnt/libriant/backups
 
-# become deploy and clone the repo
+# become deploy
 su - deploy
-git clone https://github.com/<owner>/libriant.git /srv/libriant/app
+
+# The repo is PRIVATE, so give this box read access once (also used by CI):
+#  1) A read-only GitHub Deploy Key for git over SSH
+ssh-keygen -t ed25519 -f ~/.ssh/github-deploy -N ''
+printf 'Host github.com\n  IdentityFile ~/.ssh/github-deploy\n  IdentitiesOnly yes\n' >> ~/.ssh/config
+ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+cat ~/.ssh/github-deploy.pub
+#     → add the printed key at GitHub → repo → Settings → Deploy keys → Add,
+#       leave "Allow write access" UNCHECKED (read-only is all CI needs).
+#  2) Log in to GHCR so `docker compose pull` can fetch private images
+#     (a classic PAT with the read:packages scope):
+echo "<YOUR_GHCR_PAT>" | docker login ghcr.io -u <your-github-username> --password-stdin
+
+# clone over SSH (uses the deploy key above)
+git clone git@github.com:<owner>/libriant.git /srv/libriant/app
 cd /srv/libriant/app && git checkout main
 ```
+
+> Two host credentials, each minimally scoped: a **repo-scoped read-only deploy
+> key** (git) and a **`read:packages`-only PAT** (GHCR pull). Alternatively, make
+> just the two GHCR _packages_ public (repo stays private) to skip the
+> `docker login` entirely.
 
 **Write the env file** at `/srv/libriant/.env.prod` (paste your saved secrets):
 
@@ -513,10 +532,10 @@ volume, with a `/healthz` gate.
 4. **`production` environment** — GitHub → Settings → Environments → New →
    `production` (add an approval rule if you want a manual gate before deploys).
 5. **Server read access** — CI runs `git fetch` + `docker compose pull` on the
-   box. If the repo/packages are **private**, grant the box read access once (a
-   read-only git **deploy key** + `docker login ghcr.io` with a `read:packages`
-   PAT); if public, nothing to do. _(Image **push** uses the built-in
-   `GITHUB_TOKEN` — you never create a token for that.)_
+   box. Your repo is **private**, so this is the deploy key + `docker login ghcr.io`
+   you set up in **Part 6** (CI's `git fetch` reuses `deploy`'s deploy key; the
+   pull reuses its GHCR login). Nothing more to add here. _(Image **push** uses
+   the built-in `GITHUB_TOKEN` — you never create a token for that.)_
 6. **Push to `main`** → watch Actions: _build → deploy → healthy_. The first
    push deploys the stack; then run the one-time DB bootstrap (Part 9).
 
