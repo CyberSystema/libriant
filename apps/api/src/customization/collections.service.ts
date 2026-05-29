@@ -103,31 +103,34 @@ export class CollectionsService {
   ): Promise<CollectionDto> {
     const client = this.tenantPrisma.getClient(tenant);
 
-    // Global quota: how many active collections does this tenant already have?
-    const activeCount = await client.collection.count({ where: { archivedAt: null } });
-    await this.quota.enforce({
-      tenantId: tenant.id,
-      featureKey: 'max_custom_collections',
-      usedCount: activeCount,
-    });
+    // Count + insert in ONE transaction, serialized by a per-tenant advisory
+    // lock, so parallel collection creates can't both pass the global
+    // `max_custom_collections` check and overshoot it.
+    const created = await client.$transaction(async (tx) => {
+      await this.quota.enforceWithinTx(tx, {
+        tenantId: tenant.id,
+        featureKey: 'max_custom_collections',
+        count: () => tx.collection.count({ where: { archivedAt: null } }),
+      });
 
-    // Slug uniqueness among active collections (DB has a partial unique index).
-    const existing = await client.collection.findFirst({
-      where: { slug: input.slug, archivedAt: null },
-    });
-    if (existing) {
-      throw new ConflictException(`A collection with the URL "${input.slug}" already exists.`);
-    }
+      // Slug uniqueness among active collections (DB has a partial unique index).
+      const existing = await tx.collection.findFirst({
+        where: { slug: input.slug, archivedAt: null },
+      });
+      if (existing) {
+        throw new ConflictException(`A collection with the URL "${input.slug}" already exists.`);
+      }
 
-    const created = await client.collection.create({
-      data: {
-        slug: input.slug,
-        singularLabelJson: input.singularLabelJson,
-        pluralLabelJson: input.pluralLabelJson,
-        iconAssetRef: input.iconAssetRef ?? null,
-        sortOrder: input.sortOrder ?? 0,
-      },
-      include: { fields: true },
+      return tx.collection.create({
+        data: {
+          slug: input.slug,
+          singularLabelJson: input.singularLabelJson,
+          pluralLabelJson: input.pluralLabelJson,
+          iconAssetRef: input.iconAssetRef ?? null,
+          sortOrder: input.sortOrder ?? 0,
+        },
+        include: { fields: true },
+      });
     });
     return this.toCollectionDto(created);
   }
@@ -237,57 +240,58 @@ export class CollectionsService {
     const collectionId = await this.resolveCollectionId(tenant, slug);
     const client = this.tenantPrisma.getClient(tenant);
 
-    // Per-entity-kind quota (collection fields share the same setting as
-    // built-in entities' custom fields).
-    const activeCount = await client.collectionField.count({
-      where: { collectionId, archivedAt: null },
-    });
-    await this.quota.enforce({
-      tenantId: tenant.id,
-      featureKey: 'max_custom_fields_per_entity',
-      usedCount: activeCount,
-      context: { collectionSlug: slug },
-    });
+    // Per-collection field quota (collection fields share the same setting as
+    // built-in entities' custom fields). Count + insert in ONE transaction,
+    // serialized by an advisory lock on this collection, so parallel field
+    // creates can't both pass the check and overshoot the limit.
+    const result = await client.$transaction(async (tx) => {
+      await this.quota.enforceWithinTx(tx, {
+        tenantId: tenant.id,
+        featureKey: 'max_custom_fields_per_entity',
+        lockContext: `collection:${collectionId}`,
+        context: { collectionSlug: slug },
+        count: () => tx.collectionField.count({ where: { collectionId, archivedAt: null } }),
+      });
 
-    const existing = await client.collectionField.findUnique({
-      where: { collectionId_fieldKey: { collectionId, fieldKey: input.fieldKey } },
-    });
-    if (existing && !existing.archivedAt) {
-      throw new ConflictException(
-        `A field called "${input.fieldKey}" already exists on this collection.`,
-      );
-    }
-    if (existing?.archivedAt) {
-      const restored = await client.collectionField.update({
-        where: { id: existing.id },
+      const existing = await tx.collectionField.findUnique({
+        where: { collectionId_fieldKey: { collectionId, fieldKey: input.fieldKey } },
+      });
+      if (existing && !existing.archivedAt) {
+        throw new ConflictException(
+          `A field called "${input.fieldKey}" already exists on this collection.`,
+        );
+      }
+      if (existing?.archivedAt) {
+        return tx.collectionField.update({
+          where: { id: existing.id },
+          data: {
+            archivedAt: null,
+            labelJson: input.labelJson,
+            type: input.type,
+            required: input.required ?? false,
+            optionsJson: (input.optionsJson ?? null) as never,
+            validationJson: (input.validationJson ?? null) as never,
+            sortOrder: input.sortOrder ?? 0,
+            indexed: input.indexed ?? false,
+          },
+        });
+      }
+
+      return tx.collectionField.create({
         data: {
-          archivedAt: null,
+          collectionId,
+          fieldKey: input.fieldKey,
           labelJson: input.labelJson,
           type: input.type,
           required: input.required ?? false,
-          optionsJson: (input.optionsJson ?? null) as never,
-          validationJson: (input.validationJson ?? null) as never,
+          optionsJson: (input.optionsJson ?? undefined) as never,
+          validationJson: (input.validationJson ?? undefined) as never,
           sortOrder: input.sortOrder ?? 0,
           indexed: input.indexed ?? false,
         },
       });
-      return this.toFieldDto(restored);
-    }
-
-    const created = await client.collectionField.create({
-      data: {
-        collectionId,
-        fieldKey: input.fieldKey,
-        labelJson: input.labelJson,
-        type: input.type,
-        required: input.required ?? false,
-        optionsJson: (input.optionsJson ?? undefined) as never,
-        validationJson: (input.validationJson ?? undefined) as never,
-        sortOrder: input.sortOrder ?? 0,
-        indexed: input.indexed ?? false,
-      },
     });
-    return this.toFieldDto(created);
+    return this.toFieldDto(result);
   }
 
   async updateField(

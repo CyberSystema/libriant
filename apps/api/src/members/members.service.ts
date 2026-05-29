@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Inject,
   Injectable,
   Logger,
@@ -10,6 +11,7 @@ import type { MemberStatus, Prisma } from '@libriant/db-tenant';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { FieldDefinitionsService } from '../customization/field-definitions.service.js';
+import { QuotaService } from '../customization/quota.service.js';
 import { validateRecordOrThrow } from '../customization/dynamic-validator.js';
 import { buildSearchText, normalizeText } from '../catalog/normalize.js';
 import { buildMemberNumber, nextSequenceForYear } from './member-numbers.js';
@@ -60,6 +62,7 @@ export class MembersService {
   constructor(
     @Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService,
     @Inject(FieldDefinitionsService) private readonly fieldDefs: FieldDefinitionsService,
+    @Inject(QuotaService) private readonly quota: QuotaService,
   ) {}
 
   async list(
@@ -167,11 +170,25 @@ export class MembersService {
       customFields: cleanedCustom as Prisma.InputJsonValue,
     } as const;
 
+    // Enforce `max_members` and insert in ONE transaction, serialized by a
+    // per-tenant advisory lock, so parallel creates can't both pass the quota
+    // check and push the tenant past its plan ceiling. The lock also
+    // serializes member-number assignment, but the retry loop stays as a
+    // belt-and-braces guard against any residual sequence race.
+    const createWithQuota = (memberNumber: string) =>
+      client.$transaction(async (tx) => {
+        await this.quota.enforceWithinTx(tx, {
+          tenantId: tenant.id,
+          featureKey: 'max_members',
+          count: () =>
+            tx.member.count({ where: { archivedAt: null, status: { not: 'archived' } } }),
+        });
+        return tx.member.create({ data: { ...baseData, memberNumber } });
+      });
+
     if (input.memberNumber) {
       try {
-        const created = await client.member.create({
-          data: { ...baseData, memberNumber: input.memberNumber },
-        });
+        const created = await createWithQuota(input.memberNumber);
         return this.toDto(created);
       } catch (err) {
         throw this.translateCreateError(err);
@@ -183,9 +200,7 @@ export class MembersService {
       const seq = await nextSequenceForYear(client, year);
       const memberNumber = buildMemberNumber(year, seq);
       try {
-        const created = await client.member.create({
-          data: { ...baseData, memberNumber },
-        });
+        const created = await createWithQuota(memberNumber);
         return this.toDto(created);
       } catch (err) {
         lastErr = err;
@@ -366,6 +381,9 @@ export class MembersService {
   // -------- internals -----------------------------------------------------
 
   private translateCreateError(err: unknown): Error {
+    // Let deliberate HTTP errors (e.g. the 402 from the in-transaction quota
+    // gate) propagate untouched.
+    if (err instanceof HttpException) return err;
     if (this.isUniqueViolation(err)) {
       return new ConflictException(
         'A member with this number (or email) already exists. Archive the old record first if you want to re-use the number.',

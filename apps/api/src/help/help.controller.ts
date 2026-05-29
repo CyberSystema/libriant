@@ -1,4 +1,5 @@
 import { Controller, Get, Inject, Param, Query } from '@nestjs/common';
+import { parseLimit } from '../platform/query.js';
 import { HelpService } from './help.service.js';
 
 /**
@@ -24,7 +25,7 @@ export class HelpController {
     return this.svc.list({
       locale,
       q,
-      limit: limit ? Number.parseInt(limit, 10) : undefined,
+      limit: parseLimit(limit),
     });
   }
 

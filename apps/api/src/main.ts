@@ -34,6 +34,12 @@ async function bootstrap() {
   // which DTO class to apply. When we adopt a transpiler that emits
   // metadata (swc), we can swap back to `useGlobalPipes(new ValidationPipe(...))`.
 
+  // Run lifecycle hooks (e.g. TenantPrismaService.onModuleDestroy, which
+  // disconnects every cached tenant client; Redis cleanup) on SIGTERM /
+  // SIGINT so container stops drain connections cleanly instead of dropping
+  // them. `tini` (PID 1 in the Docker image) forwards the signal here.
+  app.enableShutdownHooks();
+
   await app.listen(env.port);
   // eslint-disable-next-line no-console
   console.log(`[libriant-api] listening on :${env.port} (${env.nodeEnv})`);

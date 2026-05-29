@@ -9,7 +9,7 @@ const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/;
 
 export class SignupDto {
   @IsString()
-  @Length(1, 200)
+  @Length(1, 200, { message: "Please enter your library's name." })
   libraryName!: string;
 
   @IsString()
@@ -21,7 +21,7 @@ export class SignupDto {
   slug!: string;
 
   @IsString()
-  @Length(1, 200)
+  @Length(1, 200, { message: 'Please enter your full name.' })
   fullName!: string;
 
   @IsEmail({}, { message: "This email doesn't look right." })

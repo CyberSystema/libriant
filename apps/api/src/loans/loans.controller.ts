@@ -16,6 +16,7 @@ import type { SessionPayload } from '../auth/jwt-session.service.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
+import { parseLimit } from '../platform/query.js';
 import {
   CheckoutDto,
   MarkLostDto,
@@ -72,7 +73,7 @@ export class LoansController {
       status,
       overdue: overdue === '1' || overdue === 'true',
       after: after && after.length ? after : undefined,
-      limit: limit ? Number.parseInt(limit, 10) : undefined,
+      limit: parseLimit(limit),
     });
   }
 

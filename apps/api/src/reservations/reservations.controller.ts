@@ -20,6 +20,7 @@ import { RequiresFeature } from '../plans/decorators.js';
 import { PlanGuard } from '../plans/plan.guard.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
+import { parseLimit } from '../platform/query.js';
 import {
   FulfillReservationDto,
   PlaceHoldDto,
@@ -77,7 +78,7 @@ export class ReservationsController {
       status,
       includeResolved: includeResolved === '1' || includeResolved === 'true',
       after: after && after.length ? after : undefined,
-      limit: limit ? Number.parseInt(limit, 10) : undefined,
+      limit: parseLimit(limit),
     });
   }
 

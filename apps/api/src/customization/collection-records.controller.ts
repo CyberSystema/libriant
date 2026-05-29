@@ -14,6 +14,7 @@ import { Sess } from '../auth/session-context.js';
 import type { SessionPayload } from '../auth/jwt-session.service.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
+import { parseLimit } from '../platform/query.js';
 import { CollectionRecordsService, type ListRecordsOptions } from './collection-records.service.js';
 
 /**
@@ -45,7 +46,7 @@ export class CollectionRecordsController {
   ) {
     const opts: ListRecordsOptions = {
       after: after && after.length ? after : undefined,
-      limit: limit ? Number.parseInt(limit, 10) : undefined,
+      limit: parseLimit(limit),
       q: q && q.length ? q : undefined,
       includeArchived: includeArchived === '1' || includeArchived === 'true',
     };

@@ -19,6 +19,7 @@ import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { RequiresQuota } from '../plans/decorators.js';
 import { QuotaInterceptor } from '../plans/quota.interceptor.js';
 import { validateDto } from '../auth/validate-dto.js';
+import { parseLimit } from '../platform/query.js';
 import { MembersService } from './members.service.js';
 import {
   CreateMemberDto,
@@ -65,7 +66,7 @@ export class MembersController {
       q: q && q.length ? q : undefined,
       status,
       after: after && after.length ? after : undefined,
-      limit: limit ? Number.parseInt(limit, 10) : undefined,
+      limit: parseLimit(limit),
       includeArchived: includeArchived === '1' || includeArchived === 'true',
     });
   }

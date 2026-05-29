@@ -16,6 +16,7 @@ import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { RequiresQuota } from '../plans/decorators.js';
 import { QuotaInterceptor } from '../plans/quota.interceptor.js';
 import { validateDto } from '../auth/validate-dto.js';
+import { parseIntParam, parseLimit } from '../platform/query.js';
 import { BooksService } from './books.service.js';
 import { CreateBookDto, UpdateBookDto } from './books.dto.js';
 
@@ -49,10 +50,10 @@ export class BooksController {
     return this.svc.list(tenant, {
       q: q && q.length ? q : undefined,
       authorId: authorId && authorId.length ? authorId : undefined,
-      yearFrom: yearFrom ? Number.parseInt(yearFrom, 10) : undefined,
-      yearTo: yearTo ? Number.parseInt(yearTo, 10) : undefined,
+      yearFrom: parseIntParam(yearFrom),
+      yearTo: parseIntParam(yearTo),
       after: after && after.length ? after : undefined,
-      limit: limit ? Number.parseInt(limit, 10) : undefined,
+      limit: parseLimit(limit),
       includeArchived: includeArchived === '1' || includeArchived === 'true',
     });
   }

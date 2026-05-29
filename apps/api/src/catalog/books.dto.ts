@@ -30,7 +30,7 @@ export class BookAuthorLinkDto {
 
 export class CreateBookDto {
   @IsString()
-  @Length(1, 500)
+  @Length(1, 500, { message: "Please enter the book's title." })
   title!: string;
 
   @IsOptional()

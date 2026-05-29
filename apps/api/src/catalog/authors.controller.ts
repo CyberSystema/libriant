@@ -13,6 +13,7 @@ import {
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { validateDto } from '../auth/validate-dto.js';
+import { parseLimit } from '../platform/query.js';
 import { AuthorsService } from './authors.service.js';
 import { CreateAuthorDto, UpdateAuthorDto } from './authors.dto.js';
 
@@ -39,7 +40,7 @@ export class AuthorsController {
     return this.svc.list(tenant, {
       q: q && q.length ? q : undefined,
       after: after && after.length ? after : undefined,
-      limit: limit ? Number.parseInt(limit, 10) : undefined,
+      limit: parseLimit(limit),
       includeArchived: includeArchived === '1' || includeArchived === 'true',
     });
   }

@@ -121,60 +121,61 @@ export class FieldDefinitionsService {
 
     const client = this.tenantPrisma.getClient(tenant);
 
-    // Per-entity-kind quota — counts only active rows.
-    const activeCount = await client.fieldDefinition.count({
-      where: { entityKind, archivedAt: null },
-    });
-    await this.quota.enforce({
-      tenantId: tenant.id,
-      featureKey: 'max_custom_fields_per_entity',
-      usedCount: activeCount,
-      context: { entityKind },
-    });
+    // Per-entity-kind quota. Count + insert in ONE transaction, serialized by
+    // an advisory lock on this entity kind, so concurrent field creates can't
+    // both pass the check and overshoot the limit.
+    const result = await client.$transaction(async (tx) => {
+      await this.quota.enforceWithinTx(tx, {
+        tenantId: tenant.id,
+        featureKey: 'max_custom_fields_per_entity',
+        lockContext: `entity:${entityKind}`,
+        context: { entityKind },
+        count: () => tx.fieldDefinition.count({ where: { entityKind, archivedAt: null } }),
+      });
 
-    // Race against the DB unique constraint — surface a 409 instead of 500.
-    const existing = await client.fieldDefinition.findUnique({
-      where: { entityKind_fieldKey: { entityKind, fieldKey: input.fieldKey } },
-    });
-    if (existing && !existing.archivedAt) {
-      throw new ConflictException(
-        `A field called "${input.fieldKey}" already exists for ${entityKind}.`,
-      );
-    }
-    // If archived row exists with the same key, restore it instead of
-    // creating a duplicate. This is the gentlest UX when a librarian
-    // accidentally archives a field then re-adds it.
-    if (existing?.archivedAt) {
-      const restored = await client.fieldDefinition.update({
-        where: { id: existing.id },
+      // Race against the DB unique constraint — surface a 409 instead of 500.
+      const existing = await tx.fieldDefinition.findUnique({
+        where: { entityKind_fieldKey: { entityKind, fieldKey: input.fieldKey } },
+      });
+      if (existing && !existing.archivedAt) {
+        throw new ConflictException(
+          `A field called "${input.fieldKey}" already exists for ${entityKind}.`,
+        );
+      }
+      // If archived row exists with the same key, restore it instead of
+      // creating a duplicate. This is the gentlest UX when a librarian
+      // accidentally archives a field then re-adds it.
+      if (existing?.archivedAt) {
+        return tx.fieldDefinition.update({
+          where: { id: existing.id },
+          data: {
+            archivedAt: null,
+            labelJson: input.labelJson,
+            type: input.type,
+            required: input.required ?? false,
+            optionsJson: (input.optionsJson ?? null) as never,
+            validationJson: (input.validationJson ?? null) as never,
+            sortOrder: input.sortOrder ?? 0,
+            indexed: input.indexed ?? false,
+          },
+        });
+      }
+
+      return tx.fieldDefinition.create({
         data: {
-          archivedAt: null,
+          entityKind,
+          fieldKey: input.fieldKey,
           labelJson: input.labelJson,
           type: input.type,
           required: input.required ?? false,
-          optionsJson: (input.optionsJson ?? null) as never,
-          validationJson: (input.validationJson ?? null) as never,
+          optionsJson: (input.optionsJson ?? undefined) as never,
+          validationJson: (input.validationJson ?? undefined) as never,
           sortOrder: input.sortOrder ?? 0,
           indexed: input.indexed ?? false,
         },
       });
-      return this.toDto(restored);
-    }
-
-    const created = await client.fieldDefinition.create({
-      data: {
-        entityKind,
-        fieldKey: input.fieldKey,
-        labelJson: input.labelJson,
-        type: input.type,
-        required: input.required ?? false,
-        optionsJson: (input.optionsJson ?? undefined) as never,
-        validationJson: (input.validationJson ?? undefined) as never,
-        sortOrder: input.sortOrder ?? 0,
-        indexed: input.indexed ?? false,
-      },
     });
-    return this.toDto(created);
+    return this.toDto(result);
   }
 
   /**

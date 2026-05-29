@@ -1,6 +1,15 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Pin the file-tracing root to the monorepo root. Without this Next walks
+  // up and can latch onto a stray lockfile in $HOME, mis-rooting production
+  // (standalone) output traces.
+  outputFileTracingRoot: path.join(here, '../../'),
   transpilePackages: ['@libriant/ui', '@libriant/i18n', '@libriant/shared'],
   // Don't bundle SVGs from /assets into JS — they're served via the
   // `/_assets/*` route so designers can hot-swap files at runtime.

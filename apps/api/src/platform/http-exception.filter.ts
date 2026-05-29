@@ -55,6 +55,21 @@ export class HttpExceptionFilter implements ExceptionFilter {
       return;
     }
 
+    // Path 1.5: framework/middleware errors that carry a client-error
+    // status but aren't NestJS HttpExceptions — e.g. body-parser's
+    // `PayloadTooLargeError` (413) or a malformed-body `SyntaxError` (400).
+    // These are the user's fault, not a server bug, so surface the real
+    // 4xx with a plain message rather than masking it as a 500.
+    const clientStatus = clientErrorStatus(exception);
+    if (clientStatus !== null) {
+      res.status(clientStatus).json({
+        statusCode: clientStatus,
+        error: 'BadRequest',
+        message: friendlyClientMessage(clientStatus),
+      });
+      return;
+    }
+
     // Path 2: anything else — unhandled throw, db connection lost, etc.
     this.handle5xx(req, res, HttpStatus.INTERNAL_SERVER_ERROR, exception, null);
   }
@@ -90,6 +105,30 @@ export class HttpExceptionFilter implements ExceptionFilter {
       supportCode,
     });
   }
+}
+
+/**
+ * If `exception` is an error-like object carrying a client-error status
+ * (4xx) — the shape http-errors / body-parser use — return that status,
+ * else null. We only trust 4xx here: 5xx-ish library errors fall through
+ * to the generic 500 path so they get a support code + full logging.
+ */
+function clientErrorStatus(exception: unknown): number | null {
+  if (!exception || typeof exception !== 'object') return null;
+  const e = exception as { status?: unknown; statusCode?: unknown };
+  const raw = typeof e.status === 'number' ? e.status : e.statusCode;
+  return typeof raw === 'number' && raw >= 400 && raw < 500 ? raw : null;
+}
+
+/** Plain-language message for the common middleware-level client errors. */
+function friendlyClientMessage(status: number): string {
+  if (status === HttpStatus.PAYLOAD_TOO_LARGE) {
+    return 'That was too large to accept. Please use a smaller file or shorter text.';
+  }
+  if (status === HttpStatus.BAD_REQUEST) {
+    return "We couldn't read that request. Please refresh and try again.";
+  }
+  return "We couldn't process that request. Please check your input and try again.";
 }
 
 function normalizeBody(exception: HttpException): Record<string, unknown> {

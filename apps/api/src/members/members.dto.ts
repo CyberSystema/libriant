@@ -29,7 +29,7 @@ export class CreateMemberDto {
   memberNumber?: string;
 
   @IsString()
-  @Length(1, 200)
+  @Length(1, 200, { message: "Please enter the member's full name." })
   fullName!: string;
 
   /** Optional override for the auto-derived (lowercased + accent-folded) sort key. */

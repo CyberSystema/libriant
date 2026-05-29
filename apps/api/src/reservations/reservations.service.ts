@@ -177,6 +177,14 @@ export class ReservationsService {
     let result: { id: string; outcome: 'queued' | 'ready' };
     try {
       result = await client.$transaction(async (tx) => {
+        // Serialize concurrent holds on the SAME book so the queued vs.
+        // ready decision and the `max(queuePosition) + 1` computation are
+        // race-free (two parallel holds previously both read the same max
+        // and landed on the same position). A transaction-scoped advisory
+        // lock keyed on the book id auto-releases at commit/rollback and
+        // only blocks other holds on this exact book.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`reservation:${input.bookId}`}, 0))`;
+
         const liveCount = await tx.reservation.count({
           where: {
             bookId: input.bookId,

@@ -91,23 +91,25 @@ export class CollectionRecordsService {
     const cleaned = validateRecordOrThrow(defs, rawBody);
 
     const client = this.tenantPrisma.getClient(tenant);
-    const usedCount = await client.collectionRecord.count({
-      where: { collectionId, archivedAt: null },
-    });
-    await this.quota.enforce({
-      tenantId: tenant.id,
-      featureKey: 'max_records_per_collection',
-      usedCount,
-      context: { collectionSlug: cslug },
-    });
-
-    const created = await client.collectionRecord.create({
-      data: {
-        collectionId,
-        data: cleaned as Prisma.InputJsonValue,
-        searchText: this.buildSearchText(cleaned),
-        createdByUserId,
-      },
+    // Count + insert in ONE transaction, serialized by an advisory lock on
+    // this collection, so concurrent record creates can't both pass the
+    // per-collection limit check and overshoot it.
+    const created = await client.$transaction(async (tx) => {
+      await this.quota.enforceWithinTx(tx, {
+        tenantId: tenant.id,
+        featureKey: 'max_records_per_collection',
+        lockContext: collectionId,
+        context: { collectionSlug: cslug },
+        count: () => tx.collectionRecord.count({ where: { collectionId, archivedAt: null } }),
+      });
+      return tx.collectionRecord.create({
+        data: {
+          collectionId,
+          data: cleaned as Prisma.InputJsonValue,
+          searchText: this.buildSearchText(cleaned),
+          createdByUserId,
+        },
+      });
     });
     return this.toDto(created);
   }

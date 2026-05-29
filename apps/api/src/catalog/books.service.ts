@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Inject,
   Injectable,
   NotFoundException,
@@ -9,6 +10,7 @@ import type { BookCopyStatus, Prisma } from '@libriant/db-tenant';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { FieldDefinitionsService } from '../customization/field-definitions.service.js';
+import { QuotaService } from '../customization/quota.service.js';
 import { validateRecordOrThrow } from '../customization/dynamic-validator.js';
 import { AuthorsService } from './authors.service.js';
 import { buildSearchText, digitsOnly, normalizeText } from './normalize.js';
@@ -70,6 +72,7 @@ export class BooksService {
     @Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService,
     @Inject(AuthorsService) private readonly authors: AuthorsService,
     @Inject(FieldDefinitionsService) private readonly fieldDefs: FieldDefinitionsService,
+    @Inject(QuotaService) private readonly quota: QuotaService,
   ) {}
 
   async list(
@@ -190,35 +193,46 @@ export class BooksService {
 
     const client = this.tenantPrisma.getClient(tenant);
     try {
-      const created = await client.book.create({
-        data: {
-          title: input.title,
-          subtitle: input.subtitle ?? null,
-          sortTitle,
-          searchText,
-          isbn13,
-          isbn10,
-          publisher: input.publisher ?? null,
-          publicationYear: input.publicationYear ?? null,
-          language: input.language ?? null,
-          edition: input.edition ?? null,
-          numPages: input.numPages ?? null,
-          description: input.description ?? null,
-          coverAssetRef: input.coverAssetRef ?? null,
-          classification: input.classification ?? null,
-          customFields: cleanedCustom as Prisma.InputJsonValue,
-          authors: {
-            create: authorLinks.map((a) => ({
-              authorId: a.authorId,
-              order: a.order,
-              role: a.role,
-            })),
+      // Enforce `max_books` and insert in ONE transaction, serialized by a
+      // per-tenant advisory lock, so parallel creates can't both pass the
+      // quota check and push the tenant past its plan ceiling. (The route's
+      // QuotaInterceptor is a fast pre-check; this is the race-safe authority.)
+      const created = await client.$transaction(async (tx) => {
+        await this.quota.enforceWithinTx(tx, {
+          tenantId: tenant.id,
+          featureKey: 'max_books',
+          count: () => tx.book.count({ where: { archivedAt: null } }),
+        });
+        return tx.book.create({
+          data: {
+            title: input.title,
+            subtitle: input.subtitle ?? null,
+            sortTitle,
+            searchText,
+            isbn13,
+            isbn10,
+            publisher: input.publisher ?? null,
+            publicationYear: input.publicationYear ?? null,
+            language: input.language ?? null,
+            edition: input.edition ?? null,
+            numPages: input.numPages ?? null,
+            description: input.description ?? null,
+            coverAssetRef: input.coverAssetRef ?? null,
+            classification: input.classification ?? null,
+            customFields: cleanedCustom as Prisma.InputJsonValue,
+            authors: {
+              create: authorLinks.map((a) => ({
+                authorId: a.authorId,
+                order: a.order,
+                role: a.role,
+              })),
+            },
           },
-        },
-        include: {
-          ...this.includeAuthors(),
-          copies: true,
-        },
+          include: {
+            ...this.includeAuthors(),
+            copies: true,
+          },
+        });
       });
       return this.toWithCopiesDto(created);
     } catch (err) {
@@ -510,6 +524,9 @@ export class BooksService {
    * handle both by reading whichever signal each form carries.
    */
   private translateDbError(err: unknown): Error {
+    // Let deliberate HTTP errors (e.g. the 402 from the in-transaction quota
+    // gate, or a 409 conflict) propagate untouched.
+    if (err instanceof HttpException) return err;
     if (typeof err !== 'object' || err === null) {
       return err instanceof Error ? err : new Error(String(err));
     }
