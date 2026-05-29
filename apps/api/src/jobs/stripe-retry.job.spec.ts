@@ -20,20 +20,33 @@ vi.mock('@libriant/db-control', () => ({
 vi.mock('../config/env.js', () => ({
   loadEnv: () => ({ stripeDriver: 'fake' }),
 }));
+// These are all instantiated with `new` in the sweeper. Under vitest 4 a
+// `vi.fn` wrapping an arrow can't be constructed, so use regular functions
+// that return the mock instance.
 vi.mock('../billing/billing.service.js', () => ({
-  BillingService: vi.fn(() => billingMethods),
+  BillingService: vi.fn(function () {
+    return billingMethods;
+  }),
 }));
 vi.mock('../plans/effective-plan.service.js', () => ({
-  EffectivePlanService: vi.fn(() => ({})),
+  EffectivePlanService: vi.fn(function () {
+    return {};
+  }),
 }));
 vi.mock('../billing/stripe-fake.driver.js', () => ({
-  FakeStripeDriver: vi.fn(() => ({})),
+  FakeStripeDriver: vi.fn(function () {
+    return {};
+  }),
 }));
 vi.mock('../billing/stripe-real.driver.js', () => ({
-  RealStripeDriver: vi.fn(() => ({})),
+  RealStripeDriver: vi.fn(function () {
+    return {};
+  }),
 }));
 vi.mock('../platform/redis.service.js', () => ({
-  RedisService: vi.fn(() => ({ onModuleDestroy: redisDestroy })),
+  RedisService: vi.fn(function () {
+    return { onModuleDestroy: redisDestroy };
+  }),
 }));
 
 import { sweepFailedStripeWebhooks } from './stripe-retry.job.js';

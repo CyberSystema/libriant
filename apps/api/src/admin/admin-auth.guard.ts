@@ -39,12 +39,10 @@ export class AdminAuthGuard implements CanActivate {
  * Throws 401 if no session — used inside handlers behind `AdminAuthGuard`
  * for type safety.
  */
-export const AdminSess = createParamDecorator<unknown, ExecutionContext, AdminSessionPayload>(
-  (_, ctx) => {
-    const req = ctx.switchToHttp().getRequest<Request>();
-    if (!req.adminSession) {
-      throw new UnauthorizedException('Admin sign-in required.');
-    }
-    return req.adminSession;
-  },
-);
+export const AdminSess = createParamDecorator<unknown, AdminSessionPayload>((_, ctx) => {
+  const req = ctx.switchToHttp().getRequest<Request>();
+  if (!req.adminSession) {
+    throw new UnauthorizedException('Admin sign-in required.');
+  }
+  return req.adminSession;
+});

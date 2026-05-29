@@ -1,4 +1,4 @@
-import { createParamDecorator, ExecutionContext, BadRequestException } from '@nestjs/common';
+import { createParamDecorator, BadRequestException } from '@nestjs/common';
 import type { Request } from 'express';
 import type { TenantStatus } from '@libriant/db-control';
 
@@ -39,12 +39,10 @@ declare global {
  * context exists (most controllers under /t/:slug live behind TenantGuard
  * which guarantees it, so this is a defense-in-depth).
  */
-export const TenantCtx = createParamDecorator<unknown, ExecutionContext, TenantContext>(
-  (_, ctx) => {
-    const req = ctx.switchToHttp().getRequest<Request>();
-    if (!req.tenant) {
-      throw new BadRequestException('No tenant on this request.');
-    }
-    return req.tenant;
-  },
-);
+export const TenantCtx = createParamDecorator<unknown, TenantContext>((_, ctx) => {
+  const req = ctx.switchToHttp().getRequest<Request>();
+  if (!req.tenant) {
+    throw new BadRequestException('No tenant on this request.');
+  }
+  return req.tenant;
+});

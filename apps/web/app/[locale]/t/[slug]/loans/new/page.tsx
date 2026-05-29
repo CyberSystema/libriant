@@ -9,11 +9,10 @@ import { CheckoutForm } from './CheckoutForm';
 // — the librarian can always override the dueAt on a per-loan basis.
 const DEFAULT_LOAN_PERIOD_DAYS = 14;
 
-export default async function NewLoanPage({
-  params,
-}: {
-  params: { locale: string; slug: string };
+export default async function NewLoanPage(props: {
+  params: Promise<{ locale: string; slug: string }>;
 }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);

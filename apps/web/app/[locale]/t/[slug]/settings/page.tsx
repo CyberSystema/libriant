@@ -9,11 +9,10 @@ import { loadCatalog } from '@/lib/locale-loader';
  * sections (loan policies, notification templates, branding) get their
  * own card on this page.
  */
-export default async function SettingsPage({
-  params,
-}: {
-  params: { locale: string; slug: string };
+export default async function SettingsPage(props: {
+  params: Promise<{ locale: string; slug: string }>;
 }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);

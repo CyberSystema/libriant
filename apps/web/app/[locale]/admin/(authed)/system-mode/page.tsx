@@ -9,7 +9,8 @@ import { EventTable } from './EventTable';
 
 export const dynamic = 'force-dynamic';
 
-export default async function SystemModePage({ params }: { params: { locale: string } }) {
+export default async function SystemModePage(props: { params: Promise<{ locale: string }> }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const cookie = await requestCookieHeader();
 

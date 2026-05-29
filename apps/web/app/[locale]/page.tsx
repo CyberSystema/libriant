@@ -4,7 +4,8 @@ import { isLocale, createTranslator, LOCALE_DISPLAY, SUPPORTED_LOCALES } from '@
 import { Asset, Banner, Button, EmptyState } from '@libriant/ui';
 import { loadCatalog } from '@/lib/locale-loader';
 
-export default async function LocaleHome({ params }: { params: { locale: string } }) {
+export default async function LocaleHome(props: { params: Promise<{ locale: string }> }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);

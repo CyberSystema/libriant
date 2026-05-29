@@ -7,11 +7,10 @@ import { ApiError, api, type BillingSnapshot } from '@/lib/api';
 import { BillingActions } from './BillingActions';
 import { PlanGrid, type AvailablePlan } from './PlanGrid';
 
-export default async function BillingPage({
-  params,
-}: {
-  params: { locale: string; slug: string };
+export default async function BillingPage(props: {
+  params: Promise<{ locale: string; slug: string }>;
 }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);

@@ -41,7 +41,13 @@ export function createTranslator(catalog: Catalog, locale: Locale): Translator {
   return (id, values, fallback) => {
     const template = catalog[id] ?? fallback;
     if (!template) {
-      if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production') {
+      // This package is isomorphic (no `@types/node`), so reach `process`
+      // through `globalThis` with a narrow inline type rather than the
+      // ambient Node global — keeps the dev-only warning without dragging
+      // Node types into a browser-capable lib.
+      const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+        .process;
+      if (proc && proc.env?.NODE_ENV !== 'production') {
         console.warn(`[i18n:${locale}] missing key "${id}"`);
       }
       return id;

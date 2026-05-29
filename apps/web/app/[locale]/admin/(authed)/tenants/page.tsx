@@ -21,13 +21,12 @@ type TenantRow = {
   billingMode: string | null;
 };
 
-export default async function AdminTenantsPage({
-  params,
-  searchParams,
-}: {
-  params: { locale: string };
-  searchParams: Record<string, string | undefined>;
+export default async function AdminTenantsPage(props: {
+  params: Promise<{ locale: string }>;
+  searchParams: Promise<Record<string, string | undefined>>;
 }) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const cookie = await requestCookieHeader();
 

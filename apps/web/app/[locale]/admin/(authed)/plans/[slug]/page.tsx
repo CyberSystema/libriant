@@ -40,11 +40,10 @@ type Feature = {
   sortOrder: number;
 };
 
-export default async function AdminPlanDetailPage({
-  params,
-}: {
-  params: { locale: string; slug: string };
+export default async function AdminPlanDetailPage(props: {
+  params: Promise<{ locale: string; slug: string }>;
 }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const cookie = await requestCookieHeader();
 

@@ -13,11 +13,10 @@ import globals from 'globals';
  * opinion rules that the tsc build already covers are kept as warnings so
  * `pnpm lint` fails only on genuine errors.
  *
- * NOTE: `@next/eslint-plugin-next@14` targets ESLint 8's rule API
- * (`context.getAncestors`) and crashes under ESLint 9, so it is not loaded
- * here. Its rules are Next-specific optimizations rather than correctness
- * checks; revisit when the app moves to Next 15 (whose plugin is ESLint-9
- * compatible).
+ * NOTE: the `@next/eslint-plugin-next` rules are Next-specific
+ * optimizations rather than correctness checks and have had ESLint-version
+ * API churn, so the plugin is not loaded here. Revisit if we want the
+ * framework's own lint rules.
  */
 export default tseslint.config(
   {
@@ -47,6 +46,11 @@ export default tseslint.config(
       // Prefer let/const; the one legitimate `var` (a `declare global`
       // singleton) carries its own disable directive.
       'no-var': 'error',
+      // New in ESLint 10 recommended — flags `let x = default; try { x = … }`
+      // initializer patterns the codebase uses deliberately for safe
+      // fallbacks. Restructuring would trip TS definite-assignment checks,
+      // so leave it off.
+      'no-useless-assignment': 'off',
       // App/lib code shouldn't `console.log`, but `warn`/`error` are
       // legitimate (dev diagnostics, fallbacks).
       'no-console': ['warn', { allow: ['warn', 'error'] }],
@@ -72,6 +76,9 @@ export default tseslint.config(
     rules: {
       'no-console': 'off',
       '@typescript-eslint/no-explicit-any': 'off',
+      // ESLint 10 wants `{ cause }` on rethrows; CLI scripts throw simple
+      // top-level errors where a cause adds no value.
+      'preserve-caught-error': 'off',
     },
   },
 );

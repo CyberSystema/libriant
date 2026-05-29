@@ -3,6 +3,11 @@
 // actual per-tenant caching, LRU eviction, and graceful shutdown live in
 // `TenantPrismaService` (added in Step 6). For now: a typed factory and a
 // disposer.
+//
+// Prisma 7 connects through a driver adapter, so each tenant's connection
+// string is handed to a fresh `@prisma/adapter-pg` instance instead of the
+// old `datasources` constructor option.
+import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../node_modules/.prisma/tenant-client/index.js';
 export type TenantPrismaClient = PrismaClient;
 
@@ -18,8 +23,9 @@ export type MakeTenantClientOptions = {
  * own the lifecycle — remember to `await client.$disconnect()` when done.
  */
 export function makeTenantPrismaClient(opts: MakeTenantClientOptions): TenantPrismaClient {
+  const adapter = new PrismaPg({ connectionString: opts.databaseUrl });
   return new PrismaClient({
-    datasources: { db: { url: opts.databaseUrl } },
+    adapter,
     log: opts.log ?? ['warn', 'error'],
     errorFormat: 'minimal',
   });

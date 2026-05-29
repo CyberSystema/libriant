@@ -16,13 +16,12 @@ export const dynamic = 'force-dynamic';
 const STATUS_TABS = ['active', 'scheduled', 'expired', 'archived'] as const;
 type StatusTab = (typeof STATUS_TABS)[number];
 
-export default async function AdminAnnouncementsPage({
-  params,
-  searchParams,
-}: {
-  params: { locale: string };
-  searchParams: { status?: string };
+export default async function AdminAnnouncementsPage(props: {
+  params: Promise<{ locale: string }>;
+  searchParams: Promise<{ status?: string }>;
 }) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const cookie = await requestCookieHeader();
   const status: StatusTab = STATUS_TABS.includes(searchParams.status as StatusTab)

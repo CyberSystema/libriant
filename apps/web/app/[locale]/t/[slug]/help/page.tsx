@@ -23,13 +23,12 @@ type ListResponse = {
   query: string | null;
 };
 
-export default async function HelpIndexPage({
-  params,
-  searchParams,
-}: {
-  params: { locale: string; slug: string };
-  searchParams: Record<string, string | undefined>;
+export default async function HelpIndexPage(props: {
+  params: Promise<{ locale: string; slug: string }>;
+  searchParams: Promise<Record<string, string | undefined>>;
 }) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);

@@ -75,11 +75,10 @@ type Plan = {
   }>;
 };
 
-export default async function AdminTenantDetailPage({
-  params,
-}: {
-  params: { locale: string; id: string };
+export default async function AdminTenantDetailPage(props: {
+  params: Promise<{ locale: string; id: string }>;
 }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const cookie = await requestCookieHeader();
 

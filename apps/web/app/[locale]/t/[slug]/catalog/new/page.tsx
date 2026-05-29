@@ -12,11 +12,10 @@ export const dynamic = 'force-dynamic';
 
 type FieldsResponse = { entityKind: string; fields: FieldDef[] };
 
-export default async function NewBookPage({
-  params,
-}: {
-  params: { locale: string; slug: string };
+export default async function NewBookPage(props: {
+  params: Promise<{ locale: string; slug: string }>;
 }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);

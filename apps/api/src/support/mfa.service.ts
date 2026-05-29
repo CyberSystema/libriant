@@ -40,17 +40,34 @@ export class MfaService {
     return { secret, otpauthUrl };
   }
 
-  /** Encrypt a base32 secret for storage. */
-  encrypt(secret: string): { cipher: Buffer; nonce: Buffer; keyId: string } {
+  /**
+   * Encrypt a base32 secret for storage. Returns `Uint8Array` (not
+   * `Buffer`) because Prisma 7 types `Bytes` columns as
+   * `Uint8Array<ArrayBuffer>`; `new Uint8Array(...)` copies into a plain
+   * ArrayBuffer-backed view that assigns cleanly to those columns.
+   */
+  encrypt(secret: string): {
+    cipher: Uint8Array<ArrayBuffer>;
+    nonce: Uint8Array<ArrayBuffer>;
+    keyId: string;
+  } {
     const nonce = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', this.masterKey, nonce);
     const ct = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
     const tag = cipher.getAuthTag();
-    return { cipher: Buffer.concat([ct, tag]), nonce, keyId: this.keyId };
+    return {
+      cipher: Uint8Array.from(Buffer.concat([ct, tag])),
+      nonce: Uint8Array.from(nonce),
+      keyId: this.keyId,
+    };
   }
 
-  /** Decrypt a stored secret. Throws on tampered ciphertext. */
-  decrypt(cipherWithTag: Buffer, nonce: Buffer): string {
+  /**
+   * Decrypt a stored secret. Throws on tampered ciphertext. Accepts
+   * `Uint8Array` so the values read back from Prisma's `Bytes` columns pass
+   * straight through.
+   */
+  decrypt(cipherWithTag: Uint8Array, nonce: Uint8Array): string {
     if (cipherWithTag.length < 16) {
       throw new Error('Stored MFA ciphertext is truncated.');
     }

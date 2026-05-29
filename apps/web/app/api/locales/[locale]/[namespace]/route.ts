@@ -4,8 +4,9 @@ import { isValidNamespace, loadCatalog } from '@/lib/locale-loader';
 
 export async function GET(
   _req: Request,
-  { params }: { params: { locale: string; namespace: string } },
+  props: { params: Promise<{ locale: string; namespace: string }> },
 ) {
+  const params = await props.params;
   if (!isLocale(params.locale)) return new NextResponse('Unknown locale', { status: 404 });
   if (!isValidNamespace(params.namespace))
     return new NextResponse('Unknown namespace', { status: 404 });

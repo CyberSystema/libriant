@@ -8,6 +8,7 @@ import {
   HttpStatus,
   Inject,
   Logger,
+  Param,
   Post,
   Req,
   Res,
@@ -228,8 +229,7 @@ export class AdminSupportController {
   }
 
   @Get('sessions/:id/log')
-  async sessionLog(@AdminSess() admin: AdminSessionPayload, @Req() req: Request) {
-    const sessionId = req.params.id;
+  async sessionLog(@AdminSess() admin: AdminSessionPayload, @Param('id') sessionId: string) {
     const session = await controlDb.supportSession.findUnique({
       where: { id: sessionId },
       include: {

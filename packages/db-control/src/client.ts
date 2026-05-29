@@ -1,3 +1,4 @@
+import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 
 /**
@@ -8,6 +9,10 @@ import { PrismaClient } from '@prisma/client';
  * writes, admin UI, etc.). We share ONE client across the API process. The
  * `globalThis` guard prevents Next.js / dev hot-reload from spawning a new
  * client on every reload, which would exhaust the connection budget.
+ *
+ * Prisma 7 connects through a driver adapter rather than a built-in engine,
+ * so the connection string (still `CONTROL_DATABASE_URL`) is handed to
+ * `@prisma/adapter-pg` here instead of living in `schema.prisma`.
  */
 
 declare global {
@@ -15,7 +20,13 @@ declare global {
 }
 
 function makeClient() {
+  const connectionString = process.env.CONTROL_DATABASE_URL;
+  if (!connectionString) {
+    throw new Error('CONTROL_DATABASE_URL is not set');
+  }
+  const adapter = new PrismaPg({ connectionString });
   return new PrismaClient({
+    adapter,
     log: process.env.NODE_ENV === 'production' ? ['warn', 'error'] : ['warn', 'error'],
     errorFormat: 'minimal',
   });

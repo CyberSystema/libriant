@@ -1,4 +1,4 @@
-import { createParamDecorator, ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { createParamDecorator, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
 import type { SessionPayload } from './jwt-session.service.js';
 
@@ -16,7 +16,7 @@ declare global {
  * Pull the verified session payload from the request. Throws 401 if not
  * present — used inside handlers protected by AuthGuard for type safety.
  */
-export const Sess = createParamDecorator<unknown, ExecutionContext, SessionPayload>((_, ctx) => {
+export const Sess = createParamDecorator<unknown, SessionPayload>((_, ctx) => {
   const req = ctx.switchToHttp().getRequest<Request>();
   if (!req.session) {
     throw new UnauthorizedException('Authentication required.');

@@ -7,13 +7,14 @@ import { isLocale } from '@libriant/i18n';
  * sidebar and auth-redirect live in `(authed)/layout.tsx`, the login
  * page is at the top level so it renders without a sidebar gate.
  */
-export default async function AdminLayout({
-  children,
-  params,
-}: {
+export default async function AdminLayout(props: {
   children: React.ReactNode;
-  params: { locale: string };
+  params: Promise<{ locale: string }>;
 }) {
+  const params = await props.params;
+
+  const { children } = props;
+
   if (!isLocale(params.locale)) notFound();
   return <ToastProvider>{children}</ToastProvider>;
 }

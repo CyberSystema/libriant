@@ -15,11 +15,10 @@ import { AnnouncementActions } from './AnnouncementActions';
 
 export const dynamic = 'force-dynamic';
 
-export default async function AnnouncementDetailPage({
-  params,
-}: {
-  params: { locale: string; id: string };
+export default async function AnnouncementDetailPage(props: {
+  params: Promise<{ locale: string; id: string }>;
 }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const cookie = await requestCookieHeader();
 

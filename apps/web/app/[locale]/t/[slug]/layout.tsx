@@ -21,13 +21,14 @@ import { SystemModeTakeover } from './SystemModeTakeover';
  *   3. Render the persistent sidebar shell so every child page gets the
  *      same nav + sign-out controls without duplicating boilerplate.
  */
-export default async function TenantLayout({
-  children,
-  params,
-}: {
+export default async function TenantLayout(props: {
   children: React.ReactNode;
-  params: { locale: string; slug: string };
+  params: Promise<{ locale: string; slug: string }>;
 }) {
+  const params = await props.params;
+
+  const { children } = props;
+
   if (!isLocale(params.locale)) notFound();
 
   // System mode resolves first. A maintenance / out_of_order takeover

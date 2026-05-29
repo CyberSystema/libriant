@@ -27,11 +27,10 @@ type BookWithCopies = BookInitial & {
   copies: BookCopy[];
 };
 
-export default async function BookDetailPage({
-  params,
-}: {
-  params: { locale: string; slug: string; id: string };
+export default async function BookDetailPage(props: {
+  params: Promise<{ locale: string; slug: string; id: string }>;
 }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);

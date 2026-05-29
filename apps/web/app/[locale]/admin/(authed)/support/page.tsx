@@ -15,7 +15,8 @@ type ActiveSession = {
   expiresAt: string;
 } | null;
 
-export default async function AdminSupportHome({ params }: { params: { locale: string } }) {
+export default async function AdminSupportHome(props: { params: Promise<{ locale: string }> }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const cookie = await requestCookieHeader();
 

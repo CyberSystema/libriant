@@ -14,7 +14,8 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-export async function GET(_req: Request, { params }: { params: { path: string[] } }) {
+export async function GET(_req: Request, props: { params: Promise<{ path: string[] }> }) {
+  const params = await props.params;
   const rel = params.path.join('/');
   const full = resolveAssetPath(rel);
   if (!full) return new NextResponse('Not found', { status: 404 });

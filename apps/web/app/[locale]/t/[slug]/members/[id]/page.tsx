@@ -26,11 +26,10 @@ type MemberWithCirculation = MemberInitial & {
   };
 };
 
-export default async function MemberDetailPage({
-  params,
-}: {
-  params: { locale: string; slug: string; id: string };
+export default async function MemberDetailPage(props: {
+  params: Promise<{ locale: string; slug: string; id: string }>;
 }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);

@@ -10,7 +10,8 @@ export const metadata = {
   title: 'Create your library · Libriant',
 };
 
-export default async function SignupPage({ params }: { params: { locale: string } }) {
+export default async function SignupPage(props: { params: Promise<{ locale: string }> }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
 
   const session = await currentSession();

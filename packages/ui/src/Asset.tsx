@@ -49,7 +49,11 @@ type AssetProps = Omit<React.ImgHTMLAttributes<HTMLImageElement>, 'src'> & {
 export function Asset({ name, alt, ...rest }: AssetProps) {
   const resolved = useAssetUrl(name);
   if (!resolved) {
-    if (process.env.NODE_ENV !== 'production') {
+    // Browser-oriented package (no `@types/node`): read `process.env`
+    // through `globalThis` with a narrow inline type. Bundlers still
+    // inline `NODE_ENV` at build time.
+    const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+    if (proc?.env?.NODE_ENV !== 'production') {
       console.warn(`[Asset] Unknown slot "${name}". Add it to assets/manifest.json.`);
     }
     return null;

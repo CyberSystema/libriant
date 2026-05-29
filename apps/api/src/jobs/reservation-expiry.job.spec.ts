@@ -15,10 +15,14 @@ vi.mock('../config/env.js', () => ({
   loadEnv: () => ({ tenantClientCacheSize: 10, tenantClientIdleMs: 60_000 }),
 }));
 vi.mock('../tenancy/tenant-prisma.service.js', () => ({
-  TenantPrismaService: vi.fn(() => ({
-    getClient: tenantGetClient,
-    onModuleDestroy: tenantDestroy,
-  })),
+  // Regular function (not an arrow) so the sweeper's `new TenantPrismaService()`
+  // works — under vitest 4 a `vi.fn` wrapping an arrow can't be constructed.
+  TenantPrismaService: vi.fn(function () {
+    return {
+      getClient: tenantGetClient,
+      onModuleDestroy: tenantDestroy,
+    };
+  }),
 }));
 
 import { sweepExpiredReservationPickups } from './reservation-expiry.job.js';

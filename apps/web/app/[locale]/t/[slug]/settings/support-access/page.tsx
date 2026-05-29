@@ -32,11 +32,10 @@ type SessionLogEntry = {
   }>;
 };
 
-export default async function SupportAccessPage({
-  params,
-}: {
-  params: { locale: string; slug: string };
+export default async function SupportAccessPage(props: {
+  params: Promise<{ locale: string; slug: string }>;
 }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const cookie = await requestCookieHeader();
   const slug = params.slug;

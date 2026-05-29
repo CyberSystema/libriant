@@ -16,11 +16,10 @@ type ArticleDetail = {
   updatedAt: string;
 };
 
-export default async function HelpArticlePage({
-  params,
-}: {
-  params: { locale: string; slug: string; articleSlug: string };
+export default async function HelpArticlePage(props: {
+  params: Promise<{ locale: string; slug: string; articleSlug: string }>;
 }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);

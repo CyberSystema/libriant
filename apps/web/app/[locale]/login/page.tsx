@@ -10,7 +10,8 @@ export const metadata = {
   title: 'Sign in · Libriant',
 };
 
-export default async function LoginPage({ params }: { params: { locale: string } }) {
+export default async function LoginPage(props: { params: Promise<{ locale: string }> }) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
 
   // Already signed in? Send them straight to their library — saves them a

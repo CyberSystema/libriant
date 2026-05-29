@@ -36,13 +36,12 @@ function nextStep(current: StepKey): StepKey {
  * The actual "first member" / "first book" facts come from the API counts —
  * the wizard doesn't track its own per-user "completed" flag.
  */
-export default async function OnboardingPage({
-  params,
-  searchParams,
-}: {
-  params: { locale: string; slug: string };
-  searchParams: Record<string, string | undefined>;
+export default async function OnboardingPage(props: {
+  params: Promise<{ locale: string; slug: string }>;
+  searchParams: Promise<Record<string, string | undefined>>;
 }) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);

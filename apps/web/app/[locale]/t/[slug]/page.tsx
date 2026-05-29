@@ -16,7 +16,10 @@ type ListShape = ListResponse<unknown>;
  * Each API failure is caught locally so one slow endpoint doesn't blank
  * the whole dashboard; the affected tile shows its own friendly error.
  */
-export default async function TenantHome({ params }: { params: { locale: string; slug: string } }) {
+export default async function TenantHome(props: {
+  params: Promise<{ locale: string; slug: string }>;
+}) {
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);

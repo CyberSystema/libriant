@@ -32,13 +32,12 @@ type FieldsResponse = { entityKind: string; fields: EditorFieldDef[] };
  * Page is server-rendered for the initial fetch; the editor inside is
  * a client component that handles all the mutations.
  */
-export default async function DataModelPage({
-  params,
-  searchParams,
-}: {
-  params: { locale: string; slug: string };
-  searchParams: Record<string, string | undefined>;
+export default async function DataModelPage(props: {
+  params: Promise<{ locale: string; slug: string }>;
+  searchParams: Promise<Record<string, string | undefined>>;
 }) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);

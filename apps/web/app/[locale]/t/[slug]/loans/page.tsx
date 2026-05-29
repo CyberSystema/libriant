@@ -10,13 +10,12 @@ import { LoansTable, type LoanRow } from './LoansTable';
 
 type ListResponse<T> = { items: T[]; nextCursor: string | null };
 
-export default async function LoansPage({
-  params,
-  searchParams,
-}: {
-  params: { locale: string; slug: string };
-  searchParams: Record<string, string | undefined>;
+export default async function LoansPage(props: {
+  params: Promise<{ locale: string; slug: string }>;
+  searchParams: Promise<Record<string, string | undefined>>;
 }) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);
