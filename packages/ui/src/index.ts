@@ -11,6 +11,7 @@ export { Input, Textarea } from './Input';
 export { Modal } from './Modal';
 export { Nav, NavLink } from './Nav';
 export { PageHeader } from './PageHeader';
+export { PoweredBy } from './PoweredBy';
 export { Skeleton } from './Skeleton';
 export { ToastProvider, useToast } from './Toast';
 export type { ToastItem } from './Toast';

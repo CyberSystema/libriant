@@ -1,1045 +1,656 @@
-# Deploying Libriant on Hetzner
+# Deploying Libriant on **CyberSystema-1**
 
-A complete, step‑by‑step guide to running Libriant on a **single Hetzner Cloud
-server** for a pilot of **up to ~20 libraries (tenants)**, plus exact procedures
-for **vertical** (bigger box) and **horizontal** (more boxes / split services)
-upgrades when you outgrow it.
+_Libriant is a **[CyberSystema](https://cybersystema.com)** product._
 
-It is written against this repository's real infra:
-`infra/compose/docker-compose.prod.yml`, `infra/caddy/Caddyfile`,
-`.env.prod.example`, `infra/deploy/fleet.yml`, `.github/workflows/deploy.yml`,
-and the `scripts/` provisioning tooling.
+A clean, friendly, step-by-step guide to running Libriant on your Hetzner server
+**CyberSystema-1**, with all data living on the attached **64 GB `libriant`
+volume**. You work mostly from **Termius over SSH**, so every step here is a
+short command you can paste.
+
+**Your setup at a glance**
+
+| Thing       | Value                                                                |
+| ----------- | -------------------------------------------------------------------- |
+| Server      | **CyberSystema-1** (Hetzner CPX32 — 4 AMD vCPU, 8 GB RAM, 160 GB OS) |
+| Data volume | **`libriant`** — 64 GB block volume, mounted at `/mnt/libriant`      |
+| OS          | **Ubuntu 26.04 LTS** (fresh reinstall)                               |
+| Your tools  | **Termius** (SSH) as the main workplace                              |
+| Scale       | a pilot of up to ~20 libraries (tenants)                             |
 
 > Throughout, replace `libriant.app` / `admin.libriant.app` with your real
-> domains, and `203.0.113.10` with your server's IP.
+> domains and `203.0.113.10` with CyberSystema-1's public IPv4.
+
+**The big idea — why the volume matters.** A Hetzner **Rebuild** wipes the boot
+disk but **keeps attached volumes**. We put _all your data_ (databases, uploads,
+TLS certificates, backups) on the `libriant` volume. So you can reinstall the OS
+any time, remount the volume, and everything comes straight back. (See Part 16.)
 
 ---
 
-## 0. What you are deploying
+## Part 0 — What you're building
 
-Single host, all containers on a private Docker network; only Caddy binds
-80/443 to the internet:
+One server, all containers on a private Docker network. Only Caddy (the web
+front door) is reachable from the internet.
 
 ```
-                         Internet
-                            │  80 / 443 (TCP+UDP/HTTP3)
-                      ┌─────▼─────┐
-                      │   caddy   │   TLS (Let's Encrypt), security headers,
-                      └─────┬─────┘   /_assets static, maintenance fallback
-                ┌───────────┼───────────┐
-                ▼           ▼            ▼
-            ┌───────┐   ┌───────┐    /webhooks/* → api
-            │  web  │   │  api  │
-            │ :3000 │   │ :3001 │
-            └───────┘   └───┬───┘
-                            │ (private "app" network)
-        ┌───────────┬───────┴───────┬───────────┐
-        ▼           ▼               ▼           ▼
-    ┌────────┐ ┌──────────┐    ┌────────┐  ┌────────┐
-    │postgres│ │ pgbouncer│    │ redis  │  │ worker │
-    │  :5432 │ │  :5432   │    │ :6379  │  │ :3002  │ (BullMQ jobs + email)
-    └────────┘ └──────────┘    └────────┘  └────────┘
+                    Internet
+                       │  80 / 443 (HTTPS + HTTP/3)
+                 ┌─────▼─────┐
+                 │   caddy   │  TLS, security headers, maintenance page
+                 └─────┬─────┘
+            ┌──────────┼──────────┐
+            ▼          ▼          ▼
+        ┌───────┐  ┌───────┐  /webhooks/* → api
+        │  web  │  │  api  │
+        │ :3000 │  │ :3001 │
+        └───────┘  └───┬───┘
+                       │  (private network — never exposed)
+       ┌───────┬───────┴───────┬───────────┐
+       ▼       ▼               ▼           ▼
+   ┌────────┐┌──────────┐  ┌───────┐  ┌────────┐
+   │postgres││ pgbouncer│  │ redis │  │ worker │
+   └────────┘└──────────┘  └───────┘  └────────┘
+        └──────────┴───── data on /mnt/libriant ───┘
 ```
 
 Seven containers: `caddy`, `web`, `api`, `worker`, `postgres`, `pgbouncer`,
-`redis`. Postgres/Redis/PgBouncer **never** bind to a host port — they are only
-reachable on the internal `app` network.
+`redis`. Postgres / Redis / PgBouncer **never** bind to a host port.
 
-Tenancy: one **control‑plane DB** (`libriant_control`) plus **one Postgres
-database per tenant** (`tenant_<id>`), all on the same Postgres instance at this
-scale. The API runs under `tsx` in production (per `apps/api/Dockerfile`); the
-web app runs `next start`.
+Tenancy: one **control database** (`libriant_control`) plus **one database per
+library** (`tenant_<id>`), all on the same Postgres instance at this scale.
 
 ---
 
-## 1. Server recommendation (≤ 20 tenants)
+## Part 1 — Before you start
 
-### Footprint at this scale
-
-Libraries are small (hundreds–low thousands of books/members) and staff‑facing,
-so concurrency is low (a handful of simultaneous requests platform‑wide). The
-seven containers idle around **1.5–3 GB RAM**; with the OS + Docker daemon you
-want **~4 GB used, 8 GB total** so backups, image pulls and request spikes never
-press on memory. Images are built in CI (GHCR), so the host only **pulls** —
-it does not need to compile anything.
-
-### Pick
-
-This guide is written for the path **start on `CPX32` now → rescale up to
-`CCX23` later** (a _vertical_ upgrade — same single box, bigger and dedicated;
-see Part J). Both are AMD x86 with a **160 GB** disk, so the move is a clean
-in‑place rescale with no disk‑shrink trap.
-
-| Need                  | Hetzner type                   | vCPU | RAM   | Disk        | ~€/mo\* |
-| --------------------- | ------------------------------ | ---- | ----- | ----------- | ------- |
-| **Recommended (now)** | **CPX32** (AMD, shared)        | 4    | 8 GB  | 160 GB NVMe | ~€16    |
-| **Upgrade target**    | **CCX23** (AMD, **dedicated**) | 4    | 16 GB | 160 GB NVMe | ~€30    |
-| Cheaper (ARM)         | CAX21 (Ampere, shared)         | 4    | 8 GB  | 80 GB NVMe  | ~€7     |
-| Backups offsite       | **Storage Box BX11**           | –    | –     | 1 TB        | ~€4     |
-
-\* Approximate — **check current Hetzner pricing**. The project plan targets a
-“Hetzner CX32” for the pilot; **CPX32** is the same class on AMD with **double
-the disk** (160 GB vs 80 GB) and a frictionless rescale path to the dedicated
-**CCX23**.
-
-**Recommendation: start on one `CPX32` + one `BX11` Storage Box for offsite
-backups; rescale to `CCX23` (Part J) when you need dedicated, jitter‑free CPU
-and more RAM.**
-
-- **Region:** pick the one nearest your libraries (e.g. `nbg1`/`fsn1`/`hel1` in
-  the EU). Keep it consistent with where your Storage Box lives.
-- **Why CPX32 now:** 4 shared AMD vCPU / 8 GB / 160 GB NVMe. Shared vCPU is
-  fine at pilot concurrency (a handful of simultaneous requests), and the
-  160 GB disk is generous headroom for per‑tenant DBs + uploads + nightly
-  backups.
-- **Why CCX23 as the upgrade:** **dedicated** vCPU (no noisy‑neighbour CPU
-  jitter) and **16 GB** RAM (double), on the **same 160 GB** disk — so it's a
-  power‑off → _Rescale_ → power‑on with no data migration (Part J). That's a
-  **vertical** upgrade; adding _more_ boxes / splitting services is the
-  **horizontal** path in Part K, and only needed once a single dedicated box
-  isn't enough.
-- **ARM note:** Prisma 7 is engine‑free (pure‑JS driver adapters) and the whole
-  stack is Node/Docker, so **ARM (CAX) works fine** and is cheaper. It is _not_
-  on the CPX→CCX rescale path, though (different architecture), so stay on AMD
-  if you want the in‑place upgrade above.
-- **Swap:** 8 GB is comfortable for this stack, but a 2 GB swap file (Part 4)
-  is still cheap insurance against memory spikes during the nightly
-  `pg_dumpall` + storage tar.
-- **Image:** **Ubuntu 26.04 LTS** (x86). Docker's `get.docker.com` installer
-  auto‑detects the `resolute` codename, so the host‑setup steps below are
-  unchanged.
-
-When to grow: see **Part J (vertical — your `CPX32 → CCX23` step)** and
-**Part K (horizontal)**.
-
----
-
-## 2. Prerequisites (before you touch a server)
+A short checklist. Tick these off first.
 
 - [ ] A **domain** you control (e.g. `libriant.app`) with access to its DNS.
-- [ ] **GitHub repo** for this code with **GHCR** (GitHub Container Registry)
-      images built by `.github/workflows/deploy.yml`, _or_ the ability to build
-      images locally and push them.
-- [ ] A **Stripe account** (test mode is fine to start) for billing keys.
-- [ ] An **SSH keypair** for server access (`ssh-keygen -t ed25519`). Upload the
-      **public** key (`~/.ssh/id_ed25519.pub`) in the Cloud Console →
-      _Security → SSH keys_ so it can be attached when you create the server.
-- [ ] Generate the production **secrets** now and keep them in your password
-      manager (the next block).
-
-> This guide uses **only the Hetzner Cloud Console (web UI) + SSH** — no
-> `hcloud` CLI or API token required. Cloud‑platform actions (create server,
-> firewall, rescale, networks, load balancer) are done in the Console; anything
-> _inside_ the server is done over SSH. **Prefer the CLI?** **Part L** (at the
-> end) lists the equivalent `hcloud` commands for every Console step.
-
-Generate the secrets:
+- [ ] Your **SSH key** in **Termius** (Keychain → your key). You'll register its
+      **public** half with Hetzner in Part 2.
+- [ ] **Container images** available on GHCR. Heads-up: the compose file pulls
+      `ghcr.io/libriant/api` + `ghcr.io/libriant/web`; the CI workflow pushes
+      `ghcr.io/<owner>/libriant-api` + `…-web`. Make these agree (edit the
+      `image:` lines in `infra/compose/docker-compose.prod.yml`, or the workflow
+      tags). Decide your final names now.
+- [ ] A **Stripe** account (test mode is fine to start).
+- [ ] **Secrets generated** and saved in your password manager — run this on
+      your laptop (or any shell) and keep the output safe:
 
 ```sh
 echo "SESSION_SECRET=$(openssl rand -hex 32)"
 echo "ADMIN_SESSION_SECRET=$(openssl rand -hex 32)"
 echo "IMPERSONATION_SECRET=$(openssl rand -hex 32)"
 echo "STORAGE_SIGNING_SECRET=$(openssl rand -hex 32)"
-echo "MFA_MASTER_KEY=$(openssl rand -hex 32)"   # exactly 64 hex chars
+echo "MFA_MASTER_KEY=$(openssl rand -hex 32)"   # 64 hex chars
 echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
 ```
 
-> ⚠️ **Reconcile the image names before deploying.** The compose file pulls
-> `ghcr.io/libriant/api` and `ghcr.io/libriant/web`, while the CI workflow pushes
-> `ghcr.io/<owner>/libriant-api` and `ghcr.io/<owner>/libriant-web`. Make these
-> agree: either edit `image:` in `infra/compose/docker-compose.prod.yml` to match
-> what CI pushes (recommended), or adjust the workflow tags. Decide your final
-> image names now and use them consistently below.
+---
+
+## Part 2 — Reinstall CyberSystema-1 (clean)
+
+All in the **Hetzner Cloud Console** (web UI) — these are cloud actions, not
+SSH.
+
+**1. Register your SSH public key** (so you can log in by key after the
+rebuild). _Security → SSH keys → Add SSH key_ → paste your **public** key (in
+Termius: your key → _Export Public Key_) → name it `libriant-key`.
+
+**2. Rebuild the server.** Open **CyberSystema-1** → _Rebuild_ → choose **Ubuntu
+26.04** → make sure `libriant-key` is selected → **Rebuild**.
+
+> ✅ The rebuild wipes the **boot disk** only. Your **`libriant` volume stays
+> attached and untouched** — its data (if any) is preserved. The server keeps
+> the same IP.
+
+**3. Lock down the network.** _Firewalls → Create Firewall_ → name `libriant-edge`
+→ add these **inbound** rules → **Apply to → CyberSystema-1**:
+
+| Protocol | Port | Source                                |
+| -------- | ---- | ------------------------------------- |
+| TCP      | 22   | your IP/CIDR (or `0.0.0.0/0`, `::/0`) |
+| TCP      | 80   | `0.0.0.0/0`, `::/0`                   |
+| TCP      | 443  | `0.0.0.0/0`, `::/0`                   |
+| UDP      | 443  | `0.0.0.0/0`, `::/0` (HTTP/3)          |
+
+> Outbound is open by default (needed for TLS certs, image pulls, Stripe,
+> backups). Tighten port 22 to your own IP if it's static.
 
 ---
 
-## 3. Part A — Provision the server
+## Part 3 — Connect with Termius
 
-### Create the server (Cloud Console)
+1. In Termius: **New Host** → Address `203.0.113.10`, Username `root`, and pick
+   your key under _SSH_.
+2. Connect. You're now at a `root@` prompt on the fresh server.
 
-1. **Add your SSH key** (if you didn't in Part 2): _Security → SSH keys → Add
-   SSH key_ → paste the contents of `~/.ssh/id_ed25519.pub` → name it
-   `libriant-deploy`.
-2. **Create server:** _Servers → Add server_ → choose your region → image
-   **Ubuntu 26.04** → type **CPX32** → under _SSH keys_ tick `libriant-deploy`
-   → name it `cell-01` → **Create & Buy now**.
-3. Note the public **IPv4** (and IPv6) on the server's page — you'll SSH to it
-   below.
-
-### Cloud Firewall (network‑level — do this first)
-
-Allow only SSH + HTTP/HTTPS; Postgres/Redis are never exposed. In the Console:
-_Firewalls → Create Firewall_, name it `libriant-edge`, add the **inbound** rules
-below, then **Apply to resources → select `cell-01`**:
-
-| Direction | Protocol | Port | Source                                |
-| --------- | -------- | ---- | ------------------------------------- |
-| Inbound   | TCP      | 22   | your IP/CIDR (or `0.0.0.0/0`, `::/0`) |
-| Inbound   | TCP      | 80   | `0.0.0.0/0`, `::/0`                   |
-| Inbound   | TCP      | 443  | `0.0.0.0/0`, `::/0`                   |
-| Inbound   | UDP      | 443  | `0.0.0.0/0`, `::/0` (HTTP/3)          |
-
-> Lock port 22 to your own IP/CIDR if it's static. Outbound is allowed by
-> default (needed for ACME, GHCR pulls, Stripe, OpenLibrary, backups). The
-> host‑level `ufw` firewall configured in Part B is the in‑server second layer.
-
----
-
-## 4. Part B — Host setup
-
-SSH in as root, then harden and install Docker.
+From here, everything is SSH. Patch the box first:
 
 ```sh
-ssh root@203.0.113.10
+apt-get update && apt-get -y upgrade
 ```
 
-```sh
-# 1. Patch + base packages
-apt-get update && apt-get -y upgrade
-apt-get -y install git curl ufw fail2ban unattended-upgrades ca-certificates
-dpkg-reconfigure -plow unattended-upgrades   # enable automatic security updates
+---
 
-# 2. Swap (cheap insurance against memory spikes during nightly backups)
+## Part 4 — Mount the `libriant` volume
+
+This is the foundation: all data lives here. Do it before installing anything
+else.
+
+**1. Find the volume.** It's the 64 GB disk:
+
+```sh
+lsblk -f
+```
+
+You'll see your boot disk plus a ~64 GB device (e.g. `sdb`). If its `FSTYPE`
+column is **empty**, it's blank and safe to format. If it shows a filesystem you
+want to keep, **skip the next step** and just mount it.
+
+**2. Format it once** (⚠️ this **erases** the volume — you said you want it
+clean):
+
+```sh
+mkfs.ext4 -L libriant /dev/sdb        # use the device name from lsblk
+```
+
+**3. Mount it at `/mnt/libriant` and make it permanent.** We mount by label, so
+it survives reboots and reinstalls:
+
+```sh
+mkdir -p /mnt/libriant
+echo 'LABEL=libriant /mnt/libriant ext4 defaults,nofail 0 2' >> /etc/fstab
+mount -a
+df -h /mnt/libriant                    # confirm: ~63 GB available
+```
+
+**4. Create the data folders** the app will use:
+
+```sh
+mkdir -p /mnt/libriant/{postgres,redis,storage,caddy,backups}
+```
+
+That's it — `/mnt/libriant` now holds (or will hold) every byte that matters.
+
+---
+
+## Part 5 — Base server setup
+
+Still as `root`. Five short blocks.
+
+```sh
+# 1. Base packages + automatic security updates
+apt-get -y install git curl ufw fail2ban unattended-upgrades ca-certificates
+dpkg-reconfigure -plow unattended-upgrades
+
+# 2. A little swap (cheap insurance during nightly backups)
 fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 sysctl -w vm.swappiness=10 && echo 'vm.swappiness=10' >> /etc/sysctl.d/99-libriant.conf
 
-# 3. Docker Engine + Compose plugin (official convenience script)
+# 3. Docker Engine + Compose (official installer; auto-detects Ubuntu 26.04)
 curl -fsSL https://get.docker.com | sh
-docker compose version   # sanity check
+docker compose version
 
-# 4. A non-root deploy user in the docker group (matches fleet.yml: user "deploy")
+# 4. A non-root "deploy" user that can run Docker
 adduser --disabled-password --gecos "" deploy
 usermod -aG docker deploy
 mkdir -p /home/deploy/.ssh
 cp ~/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
 chown -R deploy:deploy /home/deploy/.ssh && chmod 700 /home/deploy/.ssh && chmod 600 /home/deploy/.ssh/authorized_keys
 
-# 5. Host firewall (defense in depth behind the Cloud Firewall)
+# 5. Host firewall (a second layer behind the Cloud Firewall)
 ufw default deny incoming && ufw default allow outgoing
 ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443
 ufw --force enable
-
-# 6. SSH hardening
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-systemctl reload ssh
 ```
 
-### Directory layout + the repo
-
-We run Compose **from a full repo checkout** so the relative volume mounts in
-the compose file (`../../assets`, `../../locales`, `../caddy/...`) resolve
-correctly. (The CI workflow's rsync flattens those trees — fine once it's
-adjusted, but the repo checkout is the simplest correct path for a single host.)
+**SSH hardening** — use a drop-in file (not `sed`), because Ubuntu's cloud image
+ships its own SSH drop-in and sshd uses the _first_ value it finds:
 
 ```sh
-# as deploy user
+cat >/etc/ssh/sshd_config.d/00-libriant.conf <<'EOF'
+PasswordAuthentication no
+PermitRootLogin prohibit-password
+KbdInteractiveAuthentication no
+EOF
+sshd -t && systemctl reload ssh
+# Confirm the EFFECTIVE settings are what you expect:
+sshd -T | grep -Ei '^(passwordauthentication|permitrootlogin|kbdinteractiveauthentication) '
+```
+
+> **Don't lock yourself out.** Keep this Termius session open and open a
+> **second** Termius session to confirm key login still works _before_ you close
+> this one. `reload` keeps your current session alive, so a typo can't kick you
+> out mid-session.
+
+Now add Termius as a host for the **`deploy`** user too (same IP, same key,
+username `deploy`) — that's your day-to-day login.
+
+---
+
+## Part 6 — Get the code & configure
+
+Switch to the `deploy` user (the data dirs and code live where it can reach
+them).
+
+```sh
+# as root: hand the app + log dirs to deploy
+mkdir -p /srv/libriant /var/log/libriant
+chown -R deploy:deploy /srv/libriant /var/log/libriant /mnt/libriant/backups
+
+# become deploy and clone the repo
 su - deploy
-sudo mkdir -p /srv/libriant /var/log/libriant && sudo chown -R deploy:deploy /srv/libriant /var/log/libriant
 git clone https://github.com/<owner>/libriant.git /srv/libriant/app
-cd /srv/libriant/app
-git checkout main      # or a release tag you trust
+cd /srv/libriant/app && git checkout main
 ```
 
-### The production env file
+**Write the env file** at `/srv/libriant/.env.prod` (paste your saved secrets):
 
 ```sh
-cp .env.prod.example /srv/libriant/.env.prod
-chmod 600 /srv/libriant/.env.prod
 nano /srv/libriant/.env.prod
+chmod 600 /srv/libriant/.env.prod
 ```
-
-Fill in **every** value (paste the secrets you generated in Part 2):
 
 ```ini
+# --- hosts ---
 PUBLIC_HOST=libriant.app
 ADMIN_HOST=admin.libriant.app
 ACME_EMAIL=ops@libriant.app
 MAINTENANCE_HARD=false
-IMAGE_TAG=latest                 # or a pinned short-SHA from CI
+IMAGE_TAG=latest
 
-POSTGRES_PASSWORD=<from openssl>
+# --- postgres + secrets (from Part 1) ---
+POSTGRES_PASSWORD=...
+SESSION_SECRET=...
+ADMIN_SESSION_SECRET=...
+IMPERSONATION_SECRET=...
+MFA_MASTER_KEY=...            # 64 hex chars
+STORAGE_SIGNING_SECRET=...
 
-SESSION_SECRET=<from openssl>
-ADMIN_SESSION_SECRET=<from openssl>
-IMPERSONATION_SECRET=<from openssl>
-MFA_MASTER_KEY=<64 hex chars>
-STORAGE_SIGNING_SECRET=<from openssl>
+# --- billing ---
+STRIPE_DRIVER=real
+STRIPE_API_KEY=...
+STRIPE_WEBHOOK_SECRET=        # fill in Part 10
 
-STRIPE_DRIVER=real               # use "fake" only for a non-billing trial
-STRIPE_API_KEY=sk_live_or_test_xxx
-STRIPE_WEBHOOK_SECRET=whsec_xxx  # filled in Part F
-
-RCLONE_REMOTE=                   # set in Part G for offsite backups
+# --- data + backups live on the libriant volume ---
+COMPOSE_PROJECT_NAME=libriant
+LIBRIANT_DATA_ROOT=/mnt/libriant
+STORAGE_DIR=/mnt/libriant/storage
+BACKUP_ROOT=/mnt/libriant/backups
 BACKUP_KEEP_DAYS=14
+RCLONE_REMOTE=                # fill in Part 11
 ```
 
-> The compose file refuses to start if `SESSION_SECRET`, `ADMIN_SESSION_SECRET`,
-> `IMPERSONATION_SECRET`, `MFA_MASTER_KEY` or `POSTGRES_PASSWORD` are missing
-> (they use the `${VAR:?error}` form). Good — it fails loudly, not silently.
-
-### Authenticate to GHCR (if your images are private)
+**Set up your Termius shortcut.** Add this to `deploy`'s `~/.bashrc` so every
+session loads your env and gives you a short **`dc`** command (Docker Compose
+with both the prod file and the volume overlay):
 
 ```sh
-echo "<GitHub PAT with read:packages>" | docker login ghcr.io -u <github-user> --password-stdin
+cat >> ~/.bashrc <<'EOF'
+
+# --- Libriant ---
+export COMPOSE_PROJECT_NAME=libriant
+export LIBRIANT_DATA_ROOT=/mnt/libriant
+[ -f /srv/libriant/.env.prod ] && { set -a; . /srv/libriant/.env.prod; set +a; }
+dc() { ( cd /srv/libriant/app && docker compose \
+  -f infra/compose/docker-compose.prod.yml \
+  -f infra/compose/docker-compose.volume.yml "$@" ); }
+EOF
+source ~/.bashrc
 ```
 
-(Or make the GHCR packages public and skip this.)
+From now on, `dc <anything>` = the whole stack, data on your volume. Try
+`dc config >/dev/null && echo OK`.
 
 ---
 
-## 5. Part C — DNS
+## Part 7 — DNS
 
-Point your domains at the server. Both the apex and the admin host are required
-(the Caddyfile serves both and issues a cert for each).
+Point your domain at CyberSystema-1, then wait for it to propagate.
 
-| Record               | Type | Value                    |
-| -------------------- | ---- | ------------------------ |
-| `libriant.app`       | A    | `203.0.113.10`           |
-| `libriant.app`       | AAAA | `<your IPv6>` (optional) |
-| `admin.libriant.app` | A    | `203.0.113.10`           |
-| `admin.libriant.app` | AAAA | `<your IPv6>` (optional) |
+| Record               | Type | Value          |
+| -------------------- | ---- | -------------- |
+| `libriant.app`       | A    | `203.0.113.10` |
+| `admin.libriant.app` | A    | `203.0.113.10` |
 
-Wait for propagation (`dig +short libriant.app` returns your IP). Caddy needs
-the DNS to resolve **before** it can complete the Let's Encrypt HTTP‑01
-challenge.
+```sh
+dig +short libriant.app          # should return your IP before you continue
+```
 
-> Custom per‑tenant subdomains (`*.libriant.app`) are a later Pro/Enterprise
-> feature and need a **DNS‑01** wildcard challenge — see the commented wildcard
-> block at the bottom of `infra/caddy/Caddyfile`. Not needed for the pilot.
+TLS is automatic — Caddy fetches Let's Encrypt certificates on first start
+(Part 8), and they're stored on the volume so they survive reinstalls.
 
 ---
 
-## 6. Part D — First bring‑up
+## Part 8 — First start
 
 ```sh
-cd /srv/libriant/app
-set -a && . /srv/libriant/.env.prod && set +a     # export all env vars
-
-docker compose -f infra/compose/docker-compose.prod.yml pull
-docker compose -f infra/compose/docker-compose.prod.yml up -d
+dc pull
+dc up -d
 ```
 
-Watch it come up:
+Watch it come alive:
 
 ```sh
-docker compose -f infra/compose/docker-compose.prod.yml ps
-docker compose -f infra/compose/docker-compose.prod.yml logs -f caddy api web
+dc ps
+dc logs -f caddy api web
 ```
 
-You want: `postgres` healthy → `pgbouncer`/`redis` up → `api`/`web` healthy →
-`caddy` healthy. Caddy will obtain TLS certs on first start (watch its logs for
-“certificate obtained”).
+Healthy order: `postgres` → `pgbouncer`/`redis` → `api`/`web` → `caddy`. In the
+Caddy logs you'll see "certificate obtained". The site is up — but the
+**databases are still empty**. Finish in Part 9.
 
-At this point the app is up but the **databases are empty** — finish in Part E.
-
-> **Tip — a reusable “ops runner”.** Several admin tasks need the repo's
-> `scripts/`, which are **not** baked into the runtime image, and Postgres/Redis
-> are not reachable from the host. Run them in a throwaway Node container
-> attached to the app network, with the repo mounted. Paste this helper into
-> your shell (run from `/srv/libriant/app`):
->
-> ```sh
-> # Compose creates the network as "<project>_app". Default project = folder
-> # name ("app"); confirm with: docker network ls | grep app
-> APP_NET="$(docker network ls --format '{{.Name}}' | grep -E '_app$' | head -1)"
-> ops() {
->   docker run --rm --network "$APP_NET" \
->     -v /srv/libriant/app:/repo -w /repo \
->     -e CONTROL_DATABASE_URL="postgresql://libriant:${POSTGRES_PASSWORD}@pgbouncer:5432/libriant_control" \
->     -e PG_SUPERUSER_URL="postgresql://libriant:${POSTGRES_PASSWORD}@postgres:5432/libriant_control" \
->     -e REDIS_URL="redis://redis:6379" \
->     -e STORAGE_ROOT="/srv/libriant/storage" \
->     node:20-bookworm-slim sh -lc "corepack enable && $*"
-> }
-> # First call installs deps into the mounted repo (one-time, ~1-2 min):
-> ops "pnpm install --frozen-lockfile && pnpm db:generate"
-> ```
->
-> Migrations that only touch `db-control`/`db-tenant` can alternatively run
-> straight in the api container, e.g.
-> `docker compose -f infra/compose/docker-compose.prod.yml exec api pnpm db:migrate:deploy`.
+> Sanity-check the data landed on the volume:
+> `ls /mnt/libriant/postgres` should now be full of Postgres files.
 
 ---
 
-## 7. Part E — Bootstrap the platform
+## Part 9 — Bootstrap the platform
 
-Run these once, in order, using the `ops` helper from Part D.
+A few admin tasks need the repo's `scripts/` (not baked into the images) and
+access to Postgres/Redis. Paste this one-time **`ops`** helper, then run the
+steps in order:
 
 ```sh
-cd /srv/libriant/app && set -a && . /srv/libriant/.env.prod && set +a
+APP_NET="$(docker network ls --format '{{.Name}}' | grep -E '_app$' | head -1)"
+ops() {
+  docker run --rm --network "$APP_NET" -v /srv/libriant/app:/repo -w /repo \
+    -e CONTROL_DATABASE_URL="postgresql://libriant:${POSTGRES_PASSWORD}@pgbouncer:5432/libriant_control" \
+    -e PG_SUPERUSER_URL="postgresql://libriant:${POSTGRES_PASSWORD}@postgres:5432/libriant_control" \
+    -e REDIS_URL="redis://redis:6379" -e STORAGE_ROOT="/srv/libriant/storage" \
+    node:20-bookworm-slim sh -lc "corepack enable && $*"
+}
 
-# 1. Apply the control-plane schema (creates the ~25 control tables)
-ops "pnpm db:migrate:deploy"
+ops "pnpm install --frozen-lockfile && pnpm db:generate"   # one-time, ~1-2 min
+ops "pnpm db:migrate:deploy"   # 1. control-plane schema
+ops "pnpm db:seed"             # 2. cells + feature keys + starter plans
+ops "pnpm ingest:help"         # 3. help-centre articles into Postgres search
+```
 
-# 2. Seed cells + the 15 feature keys + 5 starter plans + 75 plan-feature values
-ops "pnpm db:seed"
+**Create your admin account** (then enrol MFA — it's mandatory):
 
-# 3. Load the bundled help-centre articles into Postgres FTS (both locales)
-ops "pnpm ingest:help"
-
-# 4. Create the first Libriant staff/admin account (control-plane, separate
-#    from tenant users). Then enrol MFA in the UI before using support access.
+```sh
 ADMIN_BOOTSTRAP_EMAIL=you@yourco.com \
 ADMIN_BOOTSTRAP_PASSWORD='a-long-admin-passphrase' \
   ops "ADMIN_BOOTSTRAP_EMAIL=$ADMIN_BOOTSTRAP_EMAIL ADMIN_BOOTSTRAP_PASSWORD='$ADMIN_BOOTSTRAP_PASSWORD' pnpm admin:bootstrap"
 ```
 
-### Creating tenants (libraries)
+Then visit `https://admin.libriant.app` → log in → **MFA page** → scan the QR in
+an authenticator app → verify.
 
-Two ways:
+**Libraries (tenants)** are created two ways:
 
-- **Self‑service (normal):** a librarian visits `https://libriant.app`, clicks
-  _Create account_, and signup provisions everything automatically — the tenant
-  database, its schema, default settings, the owner user, and the storage
-  directory. This is the path your pilot libraries use.
-- **Operator‑provisioned (optional):** to pre‑create a library on a specific
-  plan / billing mode:
-  ```sh
-  ops "pnpm tenant:create -- \
-    --slug=acme \
-    --name='Acme Public Library' \
-    --owner-email=ops@acme.org \
-    --owner-name='Acme Operator' \
-    --plan=community \
-    --billing-mode=manual"
-  ```
+- **Self-service (normal):** a librarian signs up at `https://libriant.app` and
+  everything is provisioned automatically (database, schema, owner, storage).
+- **Operator-provisioned (optional):**
 
-### Enrol admin MFA
-
-Log in at `https://admin.libriant.app` → MFA page → scan the QR / enter the
-secret in an authenticator app → verify. MFA is **mandatory** before the
-break‑glass support flow will work.
+```sh
+ops "pnpm tenant:create -- --slug=acme --name='Acme Public Library' \
+  --owner-email=ops@acme.org --owner-name='Acme Operator' \
+  --plan=community --billing-mode=manual"
+```
 
 ---
 
-## 8. Part F — Stripe webhook
+## Part 10 — Stripe webhook
 
-Billing state stays correct only if Stripe can reach your webhook.
+Billing stays correct only if Stripe can reach your webhook.
 
 1. Stripe Dashboard → _Developers → Webhooks → Add endpoint_.
 2. URL: `https://libriant.app/webhooks/stripe`
 3. Events: `customer.subscription.created/updated/deleted`,
    `invoice.payment_succeeded`, `invoice.payment_failed`.
 4. Copy the **Signing secret** (`whsec_…`) into `STRIPE_WEBHOOK_SECRET` in
-   `/srv/libriant/.env.prod`, then recreate the api + worker:
-   ```sh
-   set -a && . /srv/libriant/.env.prod && set +a
-   docker compose -f infra/compose/docker-compose.prod.yml up -d api worker
-   ```
-5. Use Stripe's “Send test webhook” and confirm a 200 in the api logs.
+   `/srv/libriant/.env.prod`, reload your shell, and restart the app:
+
+```sh
+source ~/.bashrc
+dc up -d api worker
+```
+
+5. Use Stripe's "Send test webhook" and confirm a `200` in `dc logs api`.
 
 ---
 
-## 9. Part G — Backups (do this on day one)
+## Part 11 — Backups (do this on day one)
 
-The repo ships `scripts/backup.sh`: it `pg_dumpall`s **all** databases (control +
-every tenant), tars `/srv/libriant/storage`, snapshots the Caddy access log,
-writes a manifest, prunes dailies older than `BACKUP_KEEP_DAYS`, and optionally
-`rclone`‑copies everything offsite.
+`scripts/backup.sh` dumps **all** databases, tars your uploads, snapshots the
+Caddy log, and prunes old dailies. Because your env points `BACKUP_ROOT` and
+`STORAGE_DIR` at the volume, backups land on `/mnt/libriant/backups`.
 
-### Offsite target — Hetzner Storage Box (recommended)
+**Offsite copy — Hetzner Storage Box (recommended).** A BX11 is cheap and keeps
+a copy off the server:
 
-1. Order a **Storage Box** (BX11) in the Console; note its SSH/SFTP host + user.
-2. Install + configure `rclone` on the host:
-   ```sh
-   sudo apt-get -y install rclone
-   rclone config    # new remote "storagebox", type "sftp", host/user/pass from Hetzner
-   ```
-3. Set `RCLONE_REMOTE=storagebox:libriant-backups` in `/srv/libriant/.env.prod`.
+```sh
+sudo apt-get -y install rclone
+rclone config        # new remote "storagebox", type "sftp", details from Hetzner
+```
 
-### Schedule it
+Then set `RCLONE_REMOTE=storagebox:libriant-backups` in `.env.prod`.
 
-The script reads env from the shell; wire a root cron that sources `.env.prod`:
+**Run it once to confirm** a non-trivial `postgres.sql.gz` appears:
+
+```sh
+source ~/.bashrc
+COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml \
+  /srv/libriant/app/scripts/backup.sh
+ls -lh /mnt/libriant/backups/$(date +%Y%m%d)/
+```
+
+**Schedule it** nightly at 02:15 (root cron that loads your env):
 
 ```sh
 sudo tee /etc/cron.d/libriant-backup >/dev/null <<'CRON'
-15 2 * * * deploy bash -lc 'set -a; . /srv/libriant/.env.prod; set +a; COMPOSE_PROJECT_NAME=app /srv/libriant/app/scripts/backup.sh >> /var/log/libriant/backup.log 2>&1'
+15 2 * * * deploy bash -lc 'set -a; . /srv/libriant/.env.prod; set +a; COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml /srv/libriant/app/scripts/backup.sh >> /var/log/libriant/backup.log 2>&1'
 CRON
 ```
 
-> `COMPOSE_PROJECT_NAME` must match your actual project (folder name `app` →
-> `app`; the script defaults to `libriant` — set it to match, or rename your
-> project). Verify the volume path it derives for Caddy logs
-> (`/var/lib/docker/volumes/<project>_caddy_logs/_data`).
-
-Run it once manually and confirm a non‑trivial `postgres.sql.gz` appears under
-`/srv/libriant/backups/<date>/` and lands in the Storage Box:
+**Restore drill** (practise before you need it):
 
 ```sh
-set -a && . /srv/libriant/.env.prod && set +a
-COMPOSE_PROJECT_NAME=app /srv/libriant/app/scripts/backup.sh
-```
-
-### Restore drill (practise before you need it)
-
-```sh
-# 1. Stop the app (keep data services), or restore into a fresh DB.
-gunzip -c /srv/libriant/backups/<date>/postgres.sql.gz | \
-  docker compose -f infra/compose/docker-compose.prod.yml exec -T postgres psql -U libriant -d postgres
-# 2. Restore storage:
-docker run --rm -v app_storage:/dst -v /srv/libriant/backups/<date>:/bak alpine \
-  sh -c 'tar -C /dst -xzf /bak/storage.tar.gz'
-```
-
-Also enable **Hetzner automated server backups/snapshots** in the Console for a
-whole‑disk safety net (cheap, separate from the logical backups above).
-
----
-
-## 10. Part H — Verify
-
-```sh
-curl -fsS https://libriant.app/healthz && echo            # edge up
-curl -fsS https://libriant.app/api/readyz | jq            # web → api reachable
-curl -fsS https://libriant.app/readyz | jq                # api: redis + controlDb true
-# Worker is internal; check it directly on the host:
-docker compose -f infra/compose/docker-compose.prod.yml exec worker wget -qO- http://localhost:3002/readyz
-```
-
-Then in a browser: visit `https://libriant.app` (gets redirected to `/el` or
-`/en` by `Accept‑Language`), create a test library, add a book, check it out —
-and confirm `https://admin.libriant.app` shows the admin login.
-
----
-
-## 11. Part I — Day‑2 operations
-
-### Routine deploys
-
-Two options:
-
-- **CI (recommended once stable):** push to `main` (or run the _deploy_ workflow
-  manually). It builds + pushes images and, for each host in
-  `infra/deploy/fleet.yml`, rsyncs infra and runs `compose pull && up -d`. Set
-  the repo secrets `DEPLOY_SSH_KEY` (a private key whose public half is in
-  `deploy`'s `authorized_keys`) and a `production` environment. Confirm
-  `fleet.yml`'s `ssh:`/`user:` match your host (`cell-01.libriant.app`,
-  `deploy`).
-- **Manual:** on the host,
-  ```sh
-  cd /srv/libriant/app && git pull
-  set -a && . /srv/libriant/.env.prod && set +a
-  docker compose -f infra/compose/docker-compose.prod.yml pull
-  docker compose -f infra/compose/docker-compose.prod.yml up -d --remove-orphans
-  ```
-
-### ⚠️ Migrations are NOT automatic
-
-Neither the CI workflow nor `compose up` runs database migrations. **After any
-deploy that changes the schema**, apply them yourself:
-
-```sh
-ops "pnpm db:migrate:deploy"      # control-plane schema
-ops "pnpm tenant:migrate"         # fans out tenant migrations across ALL tenant DBs
-```
-
-`scripts/tenant-migrate.ts` iterates every row in `tenants`, dials each
-`db_url`, and applies pending tenant migrations — so adding a column to the
-tenant schema is one command, whether you have 3 tenants or 300. Do this inside
-a read‑only window (see below) if a migration is not backward‑compatible.
-
-### Maintenance / read‑only windows
-
-- **Soft (preferred):** from the admin UI → _System mode_ → set `maintenance`
-  (global takeover) or `read_only` (GETs pass, writes return 503). The app
-  serves a branded, translated takeover page.
-- **Hard (last resort):** set `MAINTENANCE_HARD=true` in `.env.prod` and
-  `docker compose ... up -d caddy`. Caddy then serves the static
-  `maintenance.html` from disk **even if api/web are down**. Revert to `false`
-  and recreate caddy when done.
-
-### Logs, status, rollback
-
-```sh
-docker compose -f infra/compose/docker-compose.prod.yml logs -f api          # follow api
-docker compose -f infra/compose/docker-compose.prod.yml ps                   # health
-# Roll back to a known-good image tag:
-#   set IMAGE_TAG=<old-short-sha> in .env.prod, then:
-set -a && . /srv/libriant/.env.prod && set +a
-docker compose -f infra/compose/docker-compose.prod.yml up -d
-```
-
-(That's why the deploy workflow tags images with the commit SHA, not just
-`latest` — you can always pin back.)
-
-### Graceful shutdown
-
-The API enables NestJS shutdown hooks and the image runs under `tini`, so
-`docker compose stop` drains connections cleanly before exit — safe to use
-before any reboot/resize.
-
----
-
-## 12. Capacity & monitoring (watch these before you scale)
-
-You can't manage what you can't see. Libriant ships **two layers** of
-visibility — app-level (how many libraries, how big, how close to limits) and
-server-level (CPU/RAM/disk/containers) — both **free**.
-
-### 12.1 App-level — fleet & capacity (built in)
-
-- **Admin UI:** `https://admin.libriant.app` → **Capacity** in the sidebar. Shows
-  the tenant census (total **and** by status / plan / cell — not just active),
-  per‑tenant DB + storage sizes (heaviest first), and the host signals
-  (Postgres connections vs. max, cache‑hit ratio, Redis memory, disk %), with
-  amber/red colouring when a signal gets tight.
-- **API (JSON):** `GET /admin/fleet/overview` (admin‑authed) — the same data for
-  scripting/monitoring.
-- **CLI (on the server):** a human‑readable report, great for SSH or a daily
-  cron snapshot:
-  ```sh
-  ops "pnpm fleet:report"          # via the ops helper from Part D
-  ops "pnpm fleet:report -- --json"  # machine-readable
-  ```
-  ```
-  Libraries (total)   24      by status: active 22, suspended 1, archived 1
-  PG connections      8 / 100 (8%)      PG cache hit ratio  99.94%
-  Tenant DBs total    185 MB across 21  Disk (storage vol)  749 GB / 926 GB (81%)
-  Top libraries by total size: …
-  ```
-  Daily snapshot cron (optional):
-  ```sh
-  0 7 * * * deploy bash -lc 'set -a; . /srv/libriant/.env.prod; set +a; cd /srv/libriant/app && pnpm fleet:report >> /var/log/libriant/fleet.log 2>&1'
-  ```
-- **Prometheus gauges:** the API's internal `/metrics` exposes
-  `libriant_tenants_total{status=…}`, `libriant_storage_used_bytes`,
-  `libriant_pg_connections`, `libriant_pg_connections_max`,
-  `libriant_pg_cache_hit_ratio`, `libriant_redis_used_memory_bytes` (+ the
-  worker's `libriant_worker_jobs_running`). These are scraped by the stack
-  below and drive the alerts. `/metrics` is internal‑only (Caddy short‑circuits
-  the public path), so these counts are never exposed to tenants.
-
-### 12.2 Server-level — free self-hosted monitoring (Prometheus + Grafana)
-
-A complete, free, open‑source stack lives in `infra/monitoring/`:
-**Prometheus** (scrape + store + alert), **node-exporter** (host CPU/RAM/disk/
-network), **cAdvisor** (per‑container usage), **Grafana** (dashboards + alerts).
-It attaches to the app's private network to also scrape Libriant's own
-`/metrics`.
-
-**Bring it up** (after the main stack is running):
-
-```sh
-cd /srv/libriant/app
-# 1. Find the main stack's app network (created by the prod compose):
-export LIBRIANT_APP_NETWORK="$(docker network ls --format '{{.Name}}' | grep -E '_app$' | head -1)"
-# 2. Set a Grafana admin password:
-export GRAFANA_ADMIN_PASSWORD="$(openssl rand -hex 16)"; echo "Grafana admin pw: $GRAFANA_ADMIN_PASSWORD"
-# 3. Start the monitoring stack:
-docker compose -f infra/monitoring/docker-compose.monitoring.yml up -d
-```
-
-**Open Grafana** — it binds to `127.0.0.1` only (never public). Use an SSH
-tunnel from your laptop:
-
-```sh
-ssh -L 3300:127.0.0.1:3300 deploy@cell-01.libriant.app
-# then open http://localhost:3300  (user: admin, pw: the one you set)
-```
-
-The Prometheus datasource is **auto‑provisioned**. Import two community
-dashboards by ID (Grafana → Dashboards → Import):
-
-- **1860** — _Node Exporter Full_ (host CPU/RAM/disk/network).
-- **14282** — _cAdvisor_ (per‑container resources).
-
-For a Libriant‑specific panel, query the gauges directly, e.g.
-`libriant_tenants_total`, `libriant_pg_connections / libriant_pg_connections_max`,
-`libriant_pg_cache_hit_ratio`.
-
-**Alerts** — `infra/monitoring/alerts.yml` ships 10 rules covering exactly the
-capacity signals (validated with `promtool`):
-
-| Alert                                    | Fires when                     | Meaning / action                                  |
-| ---------------------------------------- | ------------------------------ | ------------------------------------------------- |
-| `LibriantApiDown` / `TargetDown`         | a target is unreachable        | the app or an exporter is down                    |
-| `HostLowMemory`                          | available RAM < 12% (10m)      | cache headroom gone → **scale up (Part J)**       |
-| `HostSwapping`                           | swap > 50% (10m)               | memory pressure → scale up                        |
-| `HostDiskFilling` / `HostDiskCritical`   | disk free < 15% / < 7%         | offload backups/storage; free space now           |
-| `HostHighCPU`                            | CPU busy > 85% (15m)           | bulk import/report, or scale CPU                  |
-| `LibriantPgConnectionsHigh` / `Critical` | connections > 80% / 95% of max | lower PgBouncer `DEFAULT_POOL_SIZE` (Parts J & K) |
-| `LibriantPgCacheHitLow`                  | cache hit < 95% (15m)          | working set outgrew RAM → scale up or shard       |
-
-They show in the Prometheus + Grafana **Alerts** views out of the box. To get
-**notified** (email / Slack / ntfy), run a free **Alertmanager** and point
-`prometheus.yml`'s `alerting:` block at it (a commented stub is included).
-
-> **Lighter free alternative:** if you'd rather one container with zero config,
-> **Netdata** (`docker run -d --name netdata -p 127.0.0.1:19999:19999 …
-netdata/netdata`) gives per‑second host + container dashboards and built‑in
-> alerts out of the box. The Prometheus stack above is the better choice once
-> you want long‑term retention, custom alerts, and to chart the `libriant_*`
-> app gauges alongside host metrics.
-
-### 12.3 What to watch, and what it tells you to do
-
-| Signal                             | Healthy                  | When it crosses → do                                                                          |
-| ---------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------- |
-| **RAM available / swap**           | RAM avail > 20%, no swap | low/ swapping → **vertical upgrade** (Part J), bigger RAM                                     |
-| **PG cache hit ratio**             | > 99%                    | < 95% sustained → more RAM (vertical) or **shard tenants** (Part K)                           |
-| **PG connections / max**           | < 60%                    | > 80% → tune PgBouncer pool; > 95% → urgent                                                   |
-| **Disk used**                      | < 80%                    | > 85% → backups to Storage Box, files to Object Storage (Part K Stage 4)                      |
-| **Tenant count / heaviest tenant** | within plan-for capacity | nearing your CPX32/CCX23 limit → first rescale (Part J), then split Postgres (Part K Stage 1) |
-
-The monitoring stack is the early‑warning system; the upgrade procedures below
-(Parts J & K) are what you do when it goes amber.
-
----
-
-## 13. Part J — Vertical upgrade (scale the single box up)
-
-Use this first: it's the cheapest way to buy headroom. Signs you need it:
-sustained high RAM/CPU, slow page loads, backups pressing on memory, Postgres
-connection pressure, or shared‑CPU jitter on the `CPX` line.
-
-> **Your planned step: `CPX32 → CCX23`.** This swaps 4 _shared_ AMD vCPU + 8 GB
-> for 4 _dedicated_ AMD vCPU + 16 GB — eliminating noisy‑neighbour CPU jitter
-> and doubling RAM (more Postgres cache + backup headroom). Both types have the
-> **same 160 GB disk**, so the rescale keeps the disk untouched and there is **no
-> data migration** — it's a power‑off → _Rescale_ → power‑on. Beyond that, `CCX23
-→ CCX33` (8 vCPU / 32 GB) is the next dedicated step before you'd go
-> horizontal (Part K).
-
-> **Hetzner rules you must know:**
->
-> - The server must be **powered off** to change type.
-> - **Disk growth is irreversible.** If you let the new type's larger disk be
->   applied, you can never rescale _down_ to a smaller‑disk type again. To keep
->   the option to downscale, choose **“keep disk size”** when rescaling.
->   (`CPX32 → CCX23` is 160 GB → 160 GB, so this doesn't bite — but keep the
->   habit.)
-> - CPU/RAM changes are reversible (as long as the disk wasn't grown).
-
-### Step by step
-
-1. **Backup first.** Run the backup over SSH and confirm it's good; optionally
-   also take a Hetzner snapshot in the Console (_server → Snapshots → Take
-   snapshot_, label it `pre-resize <date>`):
-   ```sh
-   set -a && . /srv/libriant/.env.prod && set +a
-   COMPOSE_PROJECT_NAME=app /srv/libriant/app/scripts/backup.sh
-   ```
-2. **Announce + enter maintenance** (admin UI → System mode → `maintenance`),
-   or set `MAINTENANCE_HARD=true` + recreate caddy.
-3. **Drain + stop** cleanly:
-   ```sh
-   cd /srv/libriant/app
-   docker compose -f infra/compose/docker-compose.prod.yml stop   # graceful (tini + shutdown hooks)
-   ```
-4. **Power off** the server: Console → _server → Power → Power off_ (wait until
-   the status shows **Off**).
-5. **Change the type** (`CPX32 → CCX23`): Console → _server → Rescale_ → pick
-   **`CCX23`** → choose **“Keep disk”** (a no‑op here since both are 160 GB, but
-   keep the habit) → **Rescale**.
-6. **Power on:** Console → _server → Power → Power on_.
-7. **If you grew the disk**, confirm the filesystem expanded (Hetzner's images
-   auto‑grow the root partition on boot via cloud‑init):
-   ```sh
-   df -h /            # should reflect the new size
-   # If not auto-grown:
-   sudo growpart /dev/sda 1 && sudo resize2fs /dev/sda1
-   ```
-8. **Bring the stack back + verify**, then exit maintenance:
-   ```sh
-   cd /srv/libriant/app && set -a && . /srv/libriant/.env.prod && set +a
-   docker compose -f infra/compose/docker-compose.prod.yml up -d
-   curl -fsS https://libriant.app/readyz | jq
-   # System mode → back to normal (or MAINTENANCE_HARD=false + recreate caddy)
-   ```
-9. **Tune Postgres for the new RAM (worthwhile on `CCX23`'s 16 GB).**
-   The compose passes only `max_connections=200` + `pg_stat_statements`. With
-   16 GB to play with, give Postgres a bigger cache: add flags to the postgres
-   `command:` in the compose file (rule of thumb: `shared_buffers` ≈ 25 % of
-   RAM, `effective_cache_size` ≈ 50–60 %), e.g.
-   `-c shared_buffers=4GB -c effective_cache_size=9GB`, then recreate
-   `postgres`. PgBouncer's `DEFAULT_POOL_SIZE=20` / `MAX_CLIENT_CONN=500` are
-   already generous for ≤20 tenants; raise only if you see pool exhaustion.
-
-**Downtime:** a few minutes (the resize itself). Plan a low‑traffic window.
-
----
-
-## 14. Part K — Horizontal upgrade (split services / add nodes)
-
-When one box can't grow further (or you want resilience), follow the project's
-designed scaling path. Each stage is **configuration, not a rewrite** — the
-architecture keeps per‑tenant `db_url`/`storage_url` in the control plane, runs
-stateless app processes with sessions in Redis, and fans out via `fleet.yml` and
-the `scripts/tenant-*` tooling.
-
-| Stage   | Topology change                         | Code changes                          |
-| ------- | --------------------------------------- | ------------------------------------- |
-| 0 (now) | one host: all containers                | —                                     |
-| **1**   | **dedicated Postgres host**             | none (update URLs + `tenants.db_url`) |
-| **2**   | **2+ app hosts behind a Load Balancer** | none (sessions already in Redis)      |
-| 3       | **tenant sharding across cells**        | none (`tenant-relocate.ts`)           |
-| 4       | **storage → S3 / Object Storage**       | none (`storage-migrate.ts`)           |
-
-### Stage 1 — Move Postgres to its own server
-
-1. Provision a second Hetzner server (e.g. a `CCX23` for the DB) **on a private
-   network** with `cell-01`, all in the Console:
-   - _Networks → Create network_ → name `libriant-net`, IP range `10.0.0.0/16`
-     (add a subnet in your network zone, e.g. `eu-central`, `10.0.0.0/24`).
-   - _Servers → Add server_ → image **Ubuntu 26.04**, type **CCX23**, attach the
-     `libriant-deploy` SSH key, and under _Networking_ attach **`libriant-net`**;
-     name it `db-01`.
-   - On `cell-01`'s page → _Networking → Attach to network_ → `libriant-net` (if
-     it isn't already attached).
-
-   Note the private IPs (e.g. `db-01` = `10.0.0.3`). Keep Postgres on the
-   **private** network only; never expose 5432 publicly.
-
-2. Stand up Postgres on `db-01` (its own minimal compose with just the
-   `postgres` service from this repo, same image/extensions/`postgres-init.sql`).
-3. **Migrate the data** during a maintenance window:
-   ```sh
-   # on cell-01: dump everything
-   docker compose -f infra/compose/docker-compose.prod.yml exec -T postgres \
-     pg_dumpall -U libriant --clean --if-exists | gzip -9 > /tmp/all.sql.gz
-   # restore into db-01 (run from a host that can reach 10.0.0.3)
-   gunzip -c /tmp/all.sql.gz | psql "postgresql://libriant:${POSTGRES_PASSWORD}@10.0.0.3:5432/postgres"
-   ```
-4. **Repoint the app** at the new DB host. Edit the compose so `postgres`/
-   `pgbouncer` point at `db-01` (or run PgBouncer on `db-01`), and update
-   `.env.prod`‑derived URLs — `CONTROL_DATABASE_URL`, `PG_SUPERUSER_URL` — to use
-   `10.0.0.3`.
-5. **Rewrite every tenant's `db_url`** (they currently point at the old host):
-   ```sql
-   -- connect to the control DB on db-01
-   UPDATE tenants SET "dbUrl" = replace("dbUrl", '@postgres:5432', '@10.0.0.3:5432');
-   ```
-   Then **bust the caches** so the new addresses take effect immediately:
-   ```sh
-   docker compose -f infra/compose/docker-compose.prod.yml exec redis \
-     redis-cli --scan --pattern 'lbr:tenant:*' | xargs -r -n50 docker compose ... exec redis redis-cli del
-   ```
-   (Or just `redis-cli FLUSHDB` during the maintenance window.)
-6. Bring the app back, `curl …/readyz`, run a tenant smoke test, exit
-   maintenance. Remove the local `postgres` container from `cell-01` once
-   confirmed healthy.
-
-### Stage 2 — Multiple app hosts behind a Load Balancer
-
-Sessions live in Redis and the app is stateless, so this is additive.
-
-1. Provision `cell-01b` (another app host) on the same private network, with
-   Docker + the repo + `.env.prod`. Point its `CONTROL_DATABASE_URL`/
-   `REDIS_URL` at the **shared** DB + Redis hosts (private IPs). Run only
-   `web` + `api` + `worker` there (DB/Redis/Caddy centralised — see below).
-2. Create a **Hetzner Load Balancer** in the Console (_Load Balancers → Create
-   Load Balancer_): type `LB11`, same location and attached to `libriant-net`.
-   Add a **service** (HTTPS, listen port 443 → target port 443), add **both app
-   hosts** (`cell-01`, `cell-01b`) as **targets**, and set the **health check**
-   to HTTP `/healthz` on port 80.
-   Point DNS for `libriant.app`/`admin.libriant.app` at the **LB** IP.
-3. TLS: either keep **Caddy on each app node** (LB does TCP passthrough on 443),
-   or terminate TLS at the LB and run Caddy in HTTP‑only mode. Keeping Caddy per
-   node preserves the existing security‑headers + maintenance behaviour with no
-   config change.
-4. **Run exactly one worker.** The scheduled jobs (`scripts/jobs/*`) assume a
-   single sweeper. If you add app nodes, run the `worker` service on **one** node
-   only (or add distributed locking before scaling it). The HTTP `api`/`web` can
-   scale freely.
-5. Add the new host to `infra/deploy/fleet.yml` so CI deploys to both:
-   ```yaml
-   hosts:
-     - {
-         name: cell-01,
-         user: deploy,
-         ssh: cell-01.libriant.app,
-         project: libriant,
-         cell_id: cell-01,
-         region: eu-central,
-       }
-     - {
-         name: cell-01b,
-         user: deploy,
-         ssh: cell-01b.libriant.app,
-         project: libriant,
-         cell_id: cell-01,
-         region: eu-central,
-       }
-   ```
-
-### Stage 3 — Tenant sharding (cells)
-
-When a single DB host gets hot, add a **cell** (a new DB host + app capacity)
-and split tenants across cells. New tenants land on the least‑loaded cell;
-existing ones move with the relocation script (minimal downtime: dump → restore
-→ flip `db_url` → invalidate caches).
-
-```sh
-# Add a cell row + DB host, then relocate a tenant to it:
-ops "pnpm tenant:relocate -- --slug=acme --to-cell=cell-02"
-```
-
-Add the new cell to `fleet.yml` (`cell_id: cell-02`). No app‑code change —
-`tenants.cell_id` + `tenants.db_url` drive everything.
-
-### Stage 4 — Storage to S3 / Object Storage
-
-Move per‑tenant files off local disk onto S3‑compatible storage (Hetzner Object
-Storage, MinIO, etc.). New tenants get `storage_url = s3://…`; migrate existing
-ones driver‑to‑driver:
-
-```sh
-ops "pnpm storage:migrate -- --slug=acme --to=s3://libriant-acme/…"
-```
-
-The `StorageService` dispatches on the URL scheme (`file://` / `s3://`), so
-different tenants can sit on different backends during the migration.
-
-> Stages 3 and 4 ship as working scaffolding/stubs in `scripts/` — exercise them
-> in staging before relying on them in production.
-
----
-
-## 15. Part L — Using the `hcloud` CLI (optional alternative to the Console)
-
-Everything the main guide does through the **Cloud Console** can also be driven
-from your laptop with Hetzner's [`hcloud`](https://github.com/hetznercloud/cli)
-CLI. This part is a **drop‑in alternative** to the Console clicks in Parts A, J
-and K — pick whichever you prefer; the resulting infrastructure is identical.
-Work _inside_ the server is still done over SSH exactly as in the main guide.
-
-### L.0 Install & authenticate
-
-```sh
-brew install hcloud                 # macOS; see the repo for Linux/Windows
-# Console → Security → API tokens → Generate (Read & Write), then:
-hcloud context create libriant      # paste the token when prompted
-hcloud context use libriant
-```
-
-### L.1 Provision — replaces Part A
-
-```sh
-# SSH key
-hcloud ssh-key create --name libriant-deploy --public-key-from-file ~/.ssh/id_ed25519.pub
-
-# Server: CPX32 / Ubuntu 26.04
-hcloud server create \
-  --name cell-01 \
-  --type cpx32 \
-  --image ubuntu-26.04 \
-  --location nbg1 \
-  --ssh-key libriant-deploy
-hcloud server ip cell-01            # → the public IPv4 you SSH to
-
-# Cloud Firewall: SSH + HTTP/HTTPS only (HTTP/3 = UDP 443)
-hcloud firewall create --name libriant-edge
-hcloud firewall add-rule libriant-edge --direction in --protocol tcp --port 22  --source-ips 0.0.0.0/0 --source-ips ::/0
-hcloud firewall add-rule libriant-edge --direction in --protocol tcp --port 80  --source-ips 0.0.0.0/0 --source-ips ::/0
-hcloud firewall add-rule libriant-edge --direction in --protocol tcp --port 443 --source-ips 0.0.0.0/0 --source-ips ::/0
-hcloud firewall add-rule libriant-edge --direction in --protocol udp --port 443 --source-ips 0.0.0.0/0 --source-ips ::/0
-hcloud firewall apply-to-resource libriant-edge --type server --server cell-01
-```
-
-> Lock port 22 to your own IP/CIDR (`--source-ips 203.0.113.5/32`) if it's
-> static. Then continue with **Part B (Host setup)** over SSH as normal.
-
-### L.2 Vertical upgrade — replaces Part J's power/rescale clicks
-
-Run the SSH steps (backup, drain, `docker compose stop`) from Part J as written;
-these commands replace only the Console power/rescale actions:
-
-```sh
-hcloud server create-image --type snapshot --description "pre-resize $(date +%F)" cell-01
-hcloud server poweroff cell-01
-# Same 160 GB disk on both, so --keep-disk is a no-op here — but keep the habit:
-hcloud server change-type --keep-disk cell-01 ccx23
-hcloud server poweron cell-01
-```
-
-### L.3 Horizontal upgrade — replaces Part K's Console steps
-
-**Stage 1 — dedicated Postgres host on a private network:**
-
-```sh
-hcloud network create --name libriant-net --ip-range 10.0.0.0/16
-hcloud network add-subnet libriant-net --type cloud --network-zone eu-central --ip-range 10.0.0.0/24
-hcloud server create --name db-01 --type ccx23 --image ubuntu-26.04 --location nbg1 --ssh-key libriant-deploy --network libriant-net
-hcloud server attach-to-network cell-01 --network libriant-net   # if not already
-```
-
-**Stage 2 — Load Balancer across app hosts:**
-
-```sh
-hcloud load-balancer create --name libriant-lb --type lb11 --location nbg1
-hcloud load-balancer attach-to-network libriant-lb --network libriant-net
-hcloud load-balancer add-service libriant-lb --protocol https --listen-port 443 --destination-port 443
-hcloud load-balancer add-target libriant-lb --server cell-01  --use-private-ip
-hcloud load-balancer add-target libriant-lb --server cell-01b --use-private-ip
-# Set the health check to HTTP /healthz on port 80 in the LB's service config.
-```
-
-### L.4 Handy everyday commands
-
-```sh
-hcloud server list                      # all servers + status + IPs
-hcloud server describe cell-01          # type, disk, network, etc.
-ssh root@"$(hcloud server ip cell-01)"  # SSH using the looked-up IP
-hcloud server reboot cell-01
+# Postgres:
+gunzip -c /mnt/libriant/backups/<date>/postgres.sql.gz | \
+  dc exec -T postgres psql -U libriant -d postgres
+# Uploads:
+sudo tar -C /mnt/libriant/storage -xzf /mnt/libriant/backups/<date>/storage.tar.gz
 ```
 
 ---
 
-## 16. Appendix
+## Part 12 — Verify
+
+```sh
+curl -fsS https://libriant.app/healthz && echo        # edge up
+curl -fsS https://libriant.app/readyz | jq            # api: redis + DB true
+curl -fsS https://libriant.app/api/readyz | jq        # web → api reachable
+dc exec worker wget -qO- http://localhost:3002/readyz # worker (internal)
+```
+
+Then in a browser: open `https://libriant.app`, create a test library, add a
+book, check it out — and confirm `https://admin.libriant.app` shows the admin
+login.
+
+---
+
+## Part 13 — Living in Termius (your cheat sheet)
+
+Everything below assumes your `~/.bashrc` shortcut from Part 6 (so `dc` and your
+env are ready in every session).
+
+```sh
+dc ps                       # health of all containers
+dc logs -f api              # follow a service's logs (api/web/worker/caddy)
+dc restart api              # restart one service
+dc stop                     # graceful stop (drains cleanly — safe before reboot)
+dc up -d                    # start / re-create after a change
+```
+
+**Deploy a new version:**
+
+```sh
+cd /srv/libriant/app && git pull
+dc pull && dc up -d --remove-orphans
+```
+
+**⚠️ Migrations are NOT automatic.** After any deploy that changes the schema:
+
+```sh
+ops "pnpm db:migrate:deploy"   # control-plane
+ops "pnpm tenant:migrate"      # fans out to EVERY tenant database
+```
+
+**Maintenance window:**
+
+- _Soft (preferred):_ admin UI → _System mode_ → `maintenance` or `read_only`.
+- _Hard (last resort):_ set `MAINTENANCE_HARD=true` in `.env.prod`, then
+  `source ~/.bashrc && dc up -d caddy`. Revert to `false` and re-up when done.
+
+**Roll back** to a known-good image: set `IMAGE_TAG=<old-sha>` in `.env.prod`,
+then `source ~/.bashrc && dc up -d`. (The deploy workflow tags images with the
+commit SHA precisely so you can pin back.)
+
+---
+
+## Part 14 — Capacity & monitoring
+
+Two layers of visibility ship with the project.
+
+**App-level (how many libraries, how big, how close to limits).**
+
+- **Admin UI:** the **Capacity** page (admin → _Capacity_) shows libraries by
+  status, Postgres connections, cache-hit ratio, disk %, storage, and the
+  heaviest tenants.
+- **CLI:** `ops "pnpm fleet:report"` (add `-- --json` for machine output).
+- **/metrics:** the api exposes Prometheus gauges (`libriant_tenants_total`,
+  `libriant_pg_connections`, `libriant_pg_cache_hit_ratio`, …) for charting.
+
+**Server-level (free, self-hosted).** `infra/monitoring/` ships a ready
+Prometheus + Grafana + node-exporter + cAdvisor stack:
+
+```sh
+cd /srv/libriant/app/infra/monitoring
+GRAFANA_ADMIN_PASSWORD=pick-one docker compose -f docker-compose.monitoring.yml up -d
+# Grafana is bound to localhost only — reach it through an SSH tunnel:
+#   (in Termius / locally)  ssh -L 3300:127.0.0.1:3300 deploy@203.0.113.10
+# then open http://localhost:3300  (import dashboards 1860 + 14282)
+```
+
+**What to watch, and what it means:**
+
+| Signal               | Healthy       | When it crosses → do                       |
+| -------------------- | ------------- | ------------------------------------------ |
+| RAM available / swap | >20%, no swap | swapping → grow the box (Part 15)          |
+| PG cache hit ratio   | >99%          | <95% sustained → more RAM (Part 15)        |
+| PG connections / max | <60%          | >80% → tune PgBouncer pool                 |
+| Volume disk used     | <80%          | >85% → resize the volume / offload backups |
+
+---
+
+## Part 15 — Growing the server
+
+**Vertical (first choice): `CPX32 → CCX23`.** Swaps 4 _shared_ vCPU + 8 GB for 4
+_dedicated_ vCPU + 16 GB, on the **same 160 GB boot disk**, and your data volume
+just comes along untouched.
+
+1. Back up and confirm it (Part 11).
+2. Soft-stop: admin UI → maintenance, then `dc stop`.
+3. Console → **CyberSystema-1** → _Power → Power off_.
+4. Console → _Rescale_ → pick **`CCX23`** → **Keep disk** → _Rescale_.
+5. Console → _Power on_, then `dc up -d` and re-check `/readyz`.
+6. With 16 GB you can give Postgres more cache — add to the `postgres`
+   `command:` in the prod compose: `-c shared_buffers=4GB -c effective_cache_size=9GB`,
+   then `dc up -d postgres`.
+
+> **Resize the volume** independently any time: Console → Volumes → `libriant` →
+> _Resize_, then on the host `sudo resize2fs /dev/sdb`.
+
+**Horizontal (later):** move Postgres to its own box, add app nodes behind a
+Hetzner Load Balancer, shard tenants across cells. The architecture already
+keeps each tenant's `db_url`/`storage_url` in the control plane, so these are
+config changes, not rewrites — see `infra/deploy/fleet.yml` and the
+`scripts/tenant-*` tooling.
+
+---
+
+## Part 16 — Reinstalling later (the volume payoff)
+
+Because all data lives on the `libriant` volume, a clean reinstall is quick and
+loss-free:
+
+1. Console → **CyberSystema-1** → _Rebuild_ → **Ubuntu 26.04** (volume stays
+   attached, data preserved).
+2. **Part 4**, but **skip the `mkfs` step** — the volume already has your data;
+   just `mkdir -p /mnt/libriant` + the fstab line + `mount -a`.
+3. **Part 5** (base setup) and **Part 6** (clone repo, restore `.env.prod`, add
+   the `~/.bashrc` shortcut).
+4. `dc pull && dc up -d`.
+
+Your databases, uploads, and TLS certs are exactly as you left them — **no
+restore needed**. (Keep a copy of `.env.prod` in your password manager; it's the
+one thing not on the volume.)
+
+---
+
+## Part 17 — Optional: the `hcloud` CLI
+
+Everything above uses the Console + SSH. If you'd rather script the
+cloud-platform actions from your laptop, install Hetzner's CLI:
+
+```sh
+brew install hcloud
+hcloud context create libriant      # paste an API token (Console → Security)
+```
+
+Common equivalents:
+
+```sh
+hcloud server poweroff CyberSystema-1
+hcloud server change-type --keep-disk CyberSystema-1 ccx23   # rescale
+hcloud server poweron CyberSystema-1
+hcloud server describe CyberSystema-1
+ssh root@"$(hcloud server ip CyberSystema-1)"
+```
+
+---
+
+## Appendix
 
 ### A. Ports
 
-| Port                                        | Who   | Exposed?      |
-| ------------------------------------------- | ----- | ------------- |
-| 80, 443 (TCP+UDP)                           | Caddy | **public**    |
-| 3000 web · 3001 api · 3002 worker           | app   | internal only |
-| 5432 postgres · 5432 pgbouncer · 6379 redis | data  | internal only |
+| Port                              | Who   | Exposed?      |
+| --------------------------------- | ----- | ------------- |
+| 80, 443 (TCP+UDP)                 | Caddy | **public**    |
+| 3000 web · 3001 api · 3002 worker | app   | internal only |
+| 5432 postgres/pgbouncer · 6379    | data  | internal only |
 
-### B. Key environment variables (`/srv/libriant/.env.prod`)
+### B. Where things live
 
-`PUBLIC_HOST`, `ADMIN_HOST`, `ACME_EMAIL`, `IMAGE_TAG`, `POSTGRES_PASSWORD`,
-`SESSION_SECRET`, `ADMIN_SESSION_SECRET`, `IMPERSONATION_SECRET`,
-`MFA_MASTER_KEY` (64 hex), `STORAGE_SIGNING_SECRET`, `STRIPE_DRIVER`,
-`STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `MAINTENANCE_HARD`, `RCLONE_REMOTE`,
-`BACKUP_KEEP_DAYS`. The compose derives `CONTROL_DATABASE_URL`, `REDIS_URL`,
-`PUBLIC_APP_URL`, `STORAGE_ROOT`, etc. from these — don't hand‑set those.
+| What            | Path                                  |
+| --------------- | ------------------------------------- |
+| Code (the repo) | `/srv/libriant/app` (boot disk)       |
+| Secrets         | `/srv/libriant/.env.prod` (boot disk) |
+| Postgres data   | `/mnt/libriant/postgres` (volume)     |
+| Redis data      | `/mnt/libriant/redis` (volume)        |
+| Uploads         | `/mnt/libriant/storage` (volume)      |
+| TLS certs       | `/mnt/libriant/caddy` (volume)        |
+| Backups         | `/mnt/libriant/backups` (volume)      |
 
-### C. Pre‑flight gotchas (specific to this repo)
+### C. Pre-flight gotchas
 
-1. **Image names** — make `infra/compose/docker-compose.prod.yml`'s `image:`
-   match what CI pushes to GHCR (`ghcr.io/libriant/api` vs
-   `ghcr.io/<owner>/libriant-api`). Fix before first deploy.
-2. **Run compose from the repo checkout** so `../../assets`, `../../locales`,
-   `../caddy/*` resolve. The CI rsync currently merges those trees into one
-   folder — adjust it (or keep using the repo‑checkout path) before relying on
-   CI for the volume mounts.
-3. **`scripts/` isn't in the runtime image** — admin/tenant/ingest tooling runs
-   via the `ops` helper (Node container on the app network with the repo
-   mounted). DB/seed migrations can also run in the api container directly.
-4. **Migrations never run automatically** — always `ops "pnpm db:migrate:deploy"`
-   and `ops "pnpm tenant:migrate"` after a schema‑changing deploy.
-5. **Greek collation** — the compose sets `LANG=el_GR.UTF-8` on the Alpine
-   Postgres image, which doesn't ship glibc locales. Accent‑insensitive search
-   (the `unaccent` extension) works regardless. If you need OS‑level Greek
-   _sort_ order, switch the image to Debian `postgres:16` (or use an ICU
-   collation) — not required for the pilot.
+- **Image names** must match between the compose file and CI (Part 1).
+- **Migrations are manual** after schema-changing deploys (Part 13).
+- **MFA is mandatory** before the break-glass support flow works.
+- The **volume must be mounted** before `dc up` — the overlay fails safe (the
+  stack won't start) rather than writing a fresh DB to the boot disk.
 
 ### D. Troubleshooting
 
-- **Caddy can't get a cert** → DNS not pointing at the host yet, or ports 80/443
-  blocked. `dig +short libriant.app`; check the Cloud Firewall + `ufw status`.
-- **api `readyz` shows `controlDb:false`** → DB not migrated, wrong
-  `POSTGRES_PASSWORD`, or pgbouncer not up. Check `docker compose … logs postgres pgbouncer`.
-- **402 on creating books/members** → the tenant is on a plan/limit; expected.
-- **Compose refuses to start citing a missing var** → a required secret is empty
-  in `.env.prod`.
-- **Out of memory during backup** → add/enlarge swap (Part 4) or move to the next
-  server size (Part J).
-
----
-
-_Keep this file in sync with `infra/compose/docker-compose.prod.yml`,
-`infra/caddy/Caddyfile`, and `.github/workflows/deploy.yml` — they are the source
-of truth for the running topology._
+| Symptom                     | Check                                                             |
+| --------------------------- | ----------------------------------------------------------------- |
+| Containers won't start      | Is the volume mounted? `df -h /mnt/libriant`                      |
+| No TLS / cert errors        | DNS points at the box? `dig +short libriant.app`; `dc logs caddy` |
+| `api` not ready             | `dc logs api`; is Postgres healthy in `dc ps`?                    |
+| Out of memory during backup | swap on? (`free -h`); or grow the box (Part 15)                   |
+| Stripe state stale          | webhook secret set + endpoint reachable? (Part 10)                |

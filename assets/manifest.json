@@ -8,6 +8,7 @@
     "brand/logo-square": { "file": "brand/logo-square.svg", "alt": "Libriant" },
     "brand/wordmark": { "file": "brand/wordmark.svg", "alt": "Libriant" },
     "brand/favicon": { "file": "brand/favicon.svg", "alt": "Libriant" },
+    "brand/cybersystema": { "file": "brand/cybersystema.svg", "alt": "CyberSystema" },
 
     "icons/book": { "file": "icons/book.svg", "alt": "Book" },
     "icons/member": { "file": "icons/member.svg", "alt": "Member" },

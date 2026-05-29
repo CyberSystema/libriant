@@ -2,7 +2,7 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Asset, Nav } from '@libriant/ui';
+import { Asset, Nav, PoweredBy } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { LogoutButton } from './LogoutButton';
@@ -71,6 +71,9 @@ export function SidebarNav({ catalog, locale, slug, libraryName, userFullName }:
       <div className="lbr-shell__footer">
         <div style={{ marginBottom: 'var(--sp-2)' }}>{userFullName}</div>
         <LogoutButton catalog={catalog} locale={locale} />
+        <div style={{ marginTop: 'var(--sp-3)' }}>
+          <PoweredBy />
+        </div>
       </div>
     </aside>
   );

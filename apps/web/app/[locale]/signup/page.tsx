@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
-import { Asset } from '@libriant/ui';
+import { Asset, PoweredBy } from '@libriant/ui';
 import { isLocale, createTranslator } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { currentSession } from '@/lib/session';
@@ -35,6 +35,9 @@ export default async function SignupPage(props: { params: Promise<{ locale: stri
           {t('auth.signUp.alreadyHaveAccount')}{' '}
           <Link href={`/${params.locale}/login`}>{t('common.actions.signIn')}</Link>
         </p>
+      </div>
+      <div style={{ marginTop: 'var(--sp-4)', textAlign: 'center' }}>
+        <PoweredBy />
       </div>
     </main>
   );

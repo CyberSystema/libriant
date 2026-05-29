@@ -10,6 +10,13 @@ import { EMAIL_JOB_NAME, EMAIL_QUEUE_NAME } from './email.service.js';
 type JobData = { outboxId: string };
 
 /**
+ * Appended to every outgoing email so recipients always see the parent brand.
+ * Libriant is a CyberSystema product. Added at send time (not persisted), so
+ * the stored outbox body stays clean.
+ */
+const BRAND_EMAIL_FOOTER = '\n\n---\n\nPowered by **CyberSystema** — https://cybersystema.com';
+
+/**
  * Worker-side consumer. Boots a single BullMQ worker that drains the
  * `email-outbox` queue using whatever driver `EMAIL_DRIVER` resolves to.
  * Lives in its own module (not via Nest DI) because the worker runs as a
@@ -118,7 +125,7 @@ async function processOne(driver: EmailDriver, outboxId: string): Promise<void> 
       from: row.fromEmail ?? env.emailFrom,
       replyTo: row.replyToEmail ?? env.emailReplyTo,
       subject: row.subject,
-      bodyMarkdown: row.bodyMarkdown,
+      bodyMarkdown: row.bodyMarkdown + BRAND_EMAIL_FOOTER,
     });
     await controlDb.emailOutbox.update({
       where: { id: outboxId },

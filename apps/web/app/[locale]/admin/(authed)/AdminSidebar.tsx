@@ -2,7 +2,7 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Asset, Button, useToast } from '@libriant/ui';
+import { Asset, Button, PoweredBy, useToast } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
 import type { AdminProfile } from '@/lib/admin-session';
 
@@ -83,6 +83,9 @@ export function AdminSidebar({ locale, admin }: Props) {
         <Button variant="ghost" size="sm" loading={signingOut} onClick={signOut}>
           Sign out
         </Button>
+        <div style={{ marginTop: 'var(--sp-3)' }}>
+          <PoweredBy />
+        </div>
       </div>
     </aside>
   );

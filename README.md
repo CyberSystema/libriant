@@ -1,5 +1,7 @@
 # Libriant
 
+_A **[CyberSystema](https://cybersystema.com)** product._
+
 Multi-tenant SaaS for library management. Path-based tenants (`libriant.app/t/<slug>/…`),
 DB-per-tenant, per-tenant storage, Stripe + manual billing, fully bilingual (Greek + English)
 from day one, hot-swappable graphic assets, designed end-to-end for non-technical librarians.

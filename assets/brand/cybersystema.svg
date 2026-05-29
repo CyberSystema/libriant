@@ -1,0 +1,155 @@
+<svg viewBox="0 0 1600 1600" width="1600" height="1600" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CyberSystema logo">
+  <defs>
+    <!-- Interior radial navy glow over near-black corners -->
+    <radialGradient id="bgGlow" cx="800" cy="800" r="820" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00375c"/>
+      <stop offset="0.35" stop-color="#002645"/>
+      <stop offset="0.60" stop-color="#001a33"/>
+      <stop offset="0.82" stop-color="#000f1c"/>
+      <stop offset="1" stop-color="#00080e"/>
+    </radialGradient>
+
+    <!-- Hexagon stroke: cyan (top) -> blue (sides) -> purple (bottom) -->
+    <linearGradient id="hexGrad" x1="770" y1="192" x2="830" y2="1408" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#00d6ff"/>
+      <stop offset="0.35" stop-color="#1f86f0"/>
+      <stop offset="0.65" stop-color="#4a40ec"/>
+      <stop offset="1" stop-color="#8a35fc"/>
+    </linearGradient>
+
+    <!-- Monogram gradient: near-vertical (tilted ~22 deg), cyan(top)->blue->purple(bottom) -->
+    <linearGradient id="monoGrad" x1="479" y1="515" x2="783" y2="1281" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b9f3ff"/>
+      <stop offset="0.20" stop-color="#16d6ff"/>
+      <stop offset="0.32" stop-color="#1cd9ff"/>
+      <stop offset="0.52" stop-color="#1c9aff"/>
+      <stop offset="0.66" stop-color="#3664ff"/>
+      <stop offset="0.80" stop-color="#4a3ffb"/>
+      <stop offset="0.89" stop-color="#5422fe"/>
+      <stop offset="1" stop-color="#5a20ff"/>
+    </linearGradient>
+
+    <!-- Per-letter white top-left highlights -->
+    <radialGradient id="hlC" cx="490" cy="545" r="160" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.35" stop-color="#dcf8ff" stop-opacity="0.62"/>
+      <stop offset="0.70" stop-color="#b4f0ff" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#b4f0ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="hlS" cx="875" cy="545" r="160" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.35" stop-color="#dcf8ff" stop-opacity="0.62"/>
+      <stop offset="0.70" stop-color="#b4f0ff" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#b4f0ff" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Letter shapes reused as fills and clips -->
+    <path id="letterC" d="M462,502 L757,502 L757,557 L517,557 L517,1042 L757,1042 L757,1097 L462,1097 Z"/>
+    <path id="letterS" d="M842,502 L1137,502 L1137,557 L897,557 L897,762 L1137,762 L1137,1097 L842,1097 L842,1042 L1082,1042 L1082,817 L842,817 Z"/>
+    <clipPath id="clipC"><use href="#letterC"/></clipPath>
+    <clipPath id="clipS"><use href="#letterS"/></clipPath>
+
+    <!-- Glow filters -->
+    <filter id="glowHex" x="-12%" y="-12%" width="124%" height="124%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <filter id="glowMed" x="-150%" y="-150%" width="400%" height="400%">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+    <filter id="glowSmall" x="-150%" y="-150%" width="400%" height="400%">
+      <feGaussianBlur stdDeviation="4"/>
+    </filter>
+    <filter id="glowBig" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="15"/>
+    </filter>
+  </defs>
+
+  <!-- 1. Base + interior glow -->
+  <rect width="1600" height="1600" fill="#000910"/>
+  <rect width="1600" height="1600" fill="url(#bgGlow)"/>
+
+  <!-- 2. Faint blueprint scaffolding -->
+  <g fill="none" stroke="#19476a">
+    <circle cx="800" cy="800" r="300" stroke-width="1.2" opacity="0.10"/>
+    <circle cx="800" cy="800" r="235" stroke-width="1.2" opacity="0.12"/>
+    <rect x="465" y="465" width="670" height="670" transform="rotate(13 800 800)" stroke="#1a4565" stroke-width="1.5" opacity="0.16"/>
+    <g stroke="#1c4a6e" stroke-width="1.4" opacity="0.22">
+      <line x1="800" y1="800" x2="800" y2="192"/>
+      <line x1="800" y1="800" x2="286" y2="505"/>
+      <line x1="800" y1="800" x2="1313" y2="505"/>
+      <line x1="800" y1="800" x2="286" y2="1095"/>
+      <line x1="800" y1="800" x2="1313" y2="1095"/>
+      <line x1="800" y1="800" x2="800" y2="1408"/>
+    </g>
+  </g>
+
+  <!-- 3. Hexagon frame (glow under, crisp over) -->
+  <polygon points="800,192 1313,505 1313,1095 800,1408 286,1095 286,505"
+           fill="none" stroke="url(#hexGrad)" stroke-width="11" stroke-linejoin="round"
+           filter="url(#glowHex)" opacity="0.55"/>
+  <polygon points="800,192 1313,505 1313,1095 800,1408 286,1095 286,505"
+           fill="none" stroke="url(#hexGrad)" stroke-width="4.5" stroke-linejoin="round"/>
+
+  <!-- 4. Vertex + center diamond markers (each: soft glow copy, then crisp) -->
+  <g>
+    <polygon points="800,174 818,192 800,210 782,192" fill="#00d6ff" filter="url(#glowMed)" opacity="0.85"/>
+    <polygon points="800,174 818,192 800,210 782,192" fill="#00d6ff"/>
+
+    <polygon points="286,490 301,505 286,520 271,505" fill="#1f9bda" filter="url(#glowMed)" opacity="0.85"/>
+    <polygon points="286,490 301,505 286,520 271,505" fill="#1f9bda"/>
+
+    <polygon points="1313,490 1328,505 1313,520 1298,505" fill="#00b2fe" filter="url(#glowMed)" opacity="0.85"/>
+    <polygon points="1313,490 1328,505 1313,520 1298,505" fill="#00b2fe"/>
+
+    <polygon points="286,1080 301,1095 286,1110 271,1095" fill="#3a48e6" filter="url(#glowMed)" opacity="0.85"/>
+    <polygon points="286,1080 301,1095 286,1110 271,1095" fill="#3a48e6"/>
+
+    <polygon points="1313,1080 1328,1095 1313,1110 1298,1095" fill="#4040ea" filter="url(#glowMed)" opacity="0.85"/>
+    <polygon points="1313,1080 1328,1095 1313,1110 1298,1095" fill="#4040ea"/>
+
+    <polygon points="800,1390 818,1408 800,1426 782,1408" fill="#8035fc" filter="url(#glowMed)" opacity="0.85"/>
+    <polygon points="800,1390 818,1408 800,1426 782,1408" fill="#8035fc"/>
+
+    <polygon points="800,787 813,800 800,813 787,800" fill="#03b5d9" filter="url(#glowSmall)" opacity="0.9"/>
+    <polygon points="800,787 813,800 800,813 787,800" fill="#03b5d9"/>
+  </g>
+
+  <!-- 5. Monogram outer glow -->
+  <g filter="url(#glowBig)" opacity="0.45">
+    <use href="#letterC" fill="#1cc8ff"/>
+    <use href="#letterS" fill="#1cc8ff"/>
+  </g>
+
+  <!-- 6. Crisp letters -->
+  <use href="#letterC" fill="url(#monoGrad)"/>
+  <use href="#letterS" fill="url(#monoGrad)"/>
+
+  <!-- 7. White top-left highlights, clipped to each letter -->
+  <g clip-path="url(#clipC)"><rect width="1600" height="1600" fill="url(#hlC)"/></g>
+  <g clip-path="url(#clipS)"><rect width="1600" height="1600" fill="url(#hlS)"/></g>
+
+  <!-- 8. Accent dots on the C bars -->
+  <g>
+    <circle cx="729" cy="534" r="12" fill="#1ec6ff" filter="url(#glowSmall)" opacity="0.5"/>
+    <circle cx="729" cy="534" r="12" fill="#1ec6ff" opacity="0.55"/>
+    <circle cx="727" cy="1071" r="12" fill="#1ec6ff" filter="url(#glowSmall)" opacity="0.5"/>
+    <circle cx="727" cy="1071" r="12" fill="#1ec6ff" opacity="0.7"/>
+  </g>
+
+  <!-- 9. Corner brackets -->
+  <g fill="none" stroke="#0f5e6e" stroke-width="3.5" stroke-linecap="square" opacity="0.9">
+    <polyline points="160,90 90,90 90,160"/>
+    <polyline points="1440,90 1510,90 1510,160"/>
+    <polyline points="90,1440 90,1510 160,1510"/>
+    <polyline points="1510,1440 1510,1510 1440,1510"/>
+  </g>
+
+  <!-- 10. Wordmark + flanking lines -->
+  <g stroke="#0f5e6e" stroke-width="1.2" opacity="0.5">
+    <line x1="150" y1="1497" x2="500" y2="1497"/>
+    <line x1="1100" y1="1497" x2="1450" y2="1497"/>
+  </g>
+  <text x="800" y="1509" text-anchor="middle"
+        font-family="'Helvetica Neue', Arial, sans-serif" font-size="36"
+        font-weight="400" letter-spacing="14" fill="#146778">CYBERSYSTEMA</text>
+</svg>

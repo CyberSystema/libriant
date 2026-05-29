@@ -7,23 +7,30 @@
 # moves them.
 
 hosts:
-  - name: cell-01
+  - name: CyberSystema-1
     user: deploy
-    ssh: cell-01.libriant.app
+    # SSH/rsync target. NOTE: the deploy workflow ALSO uses this as the public
+    # health-check host (`curl https://<ssh>/healthz`), so for CI it must be a
+    # DNS name with a valid TLS cert (e.g. `libriant.app`). A raw IP works for
+    # MANUAL ssh but fails that HTTPS cert check — switch this to your domain
+    # before relying on the CI deploy workflow.
+    ssh: 203.0.113.10
     # Compose project name on the remote host. The workflow exports this
     # as `COMPOSE_PROJECT_NAME` before running compose commands.
     project: libriant
-    # Cell id this host serves. Used for cell-aware health checks in CI.
-    cell_id: cell-01
+    # Informational label only — the deploy workflow does NOT read `cell_id`.
+    # The real cell lives in the control DB: the seeder (seed-data.ts) creates
+    # id `cell-eu-1`, slug `eu-1`, and that is what tenants are pinned to.
+    cell_id: cybersystema-1
     # Optional: tag this host with the region (informational; the
     # multi-region story lands at Stage 6).
     region: eu-central
 
   # Add more cells like this when the pilot graduates:
   #
-  # - name: cell-02
+  # - name: CyberSystema-2
   #   user: deploy
-  #   ssh: cell-02.libriant.app
+  #   ssh: 203.0.113.20
   #   project: libriant
-  #   cell_id: cell-02
+  #   cell_id: cybersystema-2
   #   region: eu-central

@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { isLocale, createTranslator, LOCALE_DISPLAY, SUPPORTED_LOCALES } from '@libriant/i18n';
-import { Asset, Banner, Button, EmptyState } from '@libriant/ui';
+import { Asset, Banner, Button, EmptyState, PoweredBy } from '@libriant/ui';
 import { loadCatalog } from '@/lib/locale-loader';
 
 export default async function LocaleHome(props: { params: Promise<{ locale: string }> }) {
@@ -72,6 +72,9 @@ export default async function LocaleHome(props: { params: Promise<{ locale: stri
       <footer
         style={{ marginTop: '3rem', fontSize: 'var(--fs-sm)', color: 'var(--color-text-subtle)' }}
       >
+        <div style={{ marginBottom: 'var(--sp-3)' }}>
+          <PoweredBy />
+        </div>
         <p>
           This page exercises the Step 0 foundation: design tokens from{' '}
           <code>assets/theme/tokens.json</code>, icons + illustrations from <code>assets/</code>,

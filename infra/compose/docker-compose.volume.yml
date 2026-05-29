@@ -1,0 +1,46 @@
+# Libriant — persistent-data overlay for an attached block volume.
+#
+# Stores all PERSISTENT data (Postgres, Redis, uploads, Caddy TLS certs) on a
+# block volume mounted at $LIBRIANT_DATA_ROOT (default /mnt/libriant) instead of
+# the boot disk. On Hetzner, a server "Rebuild" wipes the boot disk but KEEPS
+# attached volumes — so with this overlay your data survives an OS reinstall.
+#
+# It binds the named volumes from docker-compose.prod.yml to directories on the
+# volume. If the volume is NOT mounted, those directories won't exist and the
+# containers fail to start — a safe failure (no silently-fresh database on the
+# boot disk).
+#
+# Usage (chain it AFTER the prod file). Create the dirs first:
+#   mkdir -p ${LIBRIANT_DATA_ROOT:-/mnt/libriant}/{postgres,redis,storage,caddy}
+# then:
+#   docker compose \
+#     -f infra/compose/docker-compose.prod.yml \
+#     -f infra/compose/docker-compose.volume.yml up -d
+#
+# (The deployment guide wraps both files in a `dc` shell helper.)
+
+volumes:
+  pg_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${LIBRIANT_DATA_ROOT:-/mnt/libriant}/postgres
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${LIBRIANT_DATA_ROOT:-/mnt/libriant}/redis
+  storage:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${LIBRIANT_DATA_ROOT:-/mnt/libriant}/storage
+  caddy_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${LIBRIANT_DATA_ROOT:-/mnt/libriant}/caddy
