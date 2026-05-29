@@ -9,14 +9,21 @@ type PageHeaderProps = {
   actions?: React.ReactNode;
   /** Breadcrumb-like trail. Optional; rendered above the title. */
   trail?: React.ReactNode;
+  /**
+   * Contextual help slot. Typically a `<HelpButton>` — but anything that
+   * renders inline next to the title works. The button sits next to the
+   * title so it's visually tied to the page label, not the actions.
+   */
+  help?: React.ReactNode;
   className?: string;
 };
 
 /**
- * Shared header for every tenant-scoped page. Holds the page title, a
- * one-sentence subtitle, optional breadcrumb trail, and primary actions.
+ * Shared header for every page. Holds the page title, a one-sentence
+ * subtitle, optional breadcrumb trail, an optional help slot (typically a
+ * `?` button next to the title), and primary actions.
  */
-export function PageHeader({ title, subtitle, actions, trail, className }: PageHeaderProps) {
+export function PageHeader({ title, subtitle, actions, trail, help, className }: PageHeaderProps) {
   const classes = ['lbr-page-header'];
   if (className) classes.push(className);
   return (
@@ -24,7 +31,10 @@ export function PageHeader({ title, subtitle, actions, trail, className }: PageH
       {trail ? <div className="lbr-page-header__trail">{trail}</div> : null}
       <div className="lbr-page-header__row">
         <div className="lbr-page-header__text">
-          <h1 className="lbr-page-header__title">{title}</h1>
+          <div className="lbr-page-header__title-row">
+            <h1 className="lbr-page-header__title">{title}</h1>
+            {help ? <div className="lbr-page-header__help">{help}</div> : null}
+          </div>
           {subtitle ? <p className="lbr-page-header__subtitle">{subtitle}</p> : null}
         </div>
         {actions ? <div className="lbr-page-header__actions">{actions}</div> : null}

@@ -144,6 +144,7 @@ export default async function AnnouncementDetailPage({
             <CardBody>
               <AnnouncementActions
                 id={ann.id}
+                title={ann.title}
                 isExpired={!!ann.expiresAt && new Date(ann.expiresAt) <= new Date()}
                 isArchived={!!ann.archivedAt}
                 locale={params.locale}

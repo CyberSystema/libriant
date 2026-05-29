@@ -89,6 +89,20 @@ export type AppEnv = {
   billingReturnUrl: string;
   /** Days a tenant keeps full feature access after a failed payment. */
   billingGracePeriodDays: number;
+  /**
+   * `console` → log what would have gone out (dev default). `smtp` →
+   * deliver through nodemailer + `SMTP_URL` (e.g. `smtp://user:pass@host:port`).
+   * Production must opt in to a real driver.
+   */
+  emailDriver: 'console' | 'smtp';
+  /** SMTP connection URL — `smtp://user:pass@host:587` style. Required for `smtp`. */
+  smtpUrl: string | null;
+  /** Default `From:` envelope. Falls back to `Libriant <no-reply@$PUBLIC_HOST>`. */
+  emailFrom: string;
+  /** Optional default `Reply-To:` envelope. */
+  emailReplyTo: string | null;
+  /** Per-job retry budget. */
+  emailMaxAttempts: number;
 };
 
 function required(key: string): string {
@@ -200,5 +214,20 @@ export function loadEnv(): AppEnv {
       optional('PUBLIC_APP_URL', 'http://localhost:3000'),
     ),
     billingGracePeriodDays: Number(optional('BILLING_GRACE_PERIOD_DAYS', '7')),
+    emailDriver: (() => {
+      const raw = (process.env.EMAIL_DRIVER ?? '').toLowerCase().trim();
+      if (raw === 'console' || raw === 'smtp') return raw;
+      // Default: console in development (no network needed); smtp in any
+      // other environment. The smtp driver fails fast at boot if SMTP_URL
+      // is missing, so a misconfigured prod surfaces immediately.
+      return nodeEnv === 'development' ? 'console' : 'smtp';
+    })(),
+    smtpUrl: process.env.SMTP_URL?.length ? process.env.SMTP_URL : null,
+    emailFrom: optional(
+      'EMAIL_FROM',
+      `Libriant <no-reply@${optional('PUBLIC_APEX_DOMAIN', 'localhost')}>`,
+    ),
+    emailReplyTo: process.env.EMAIL_REPLY_TO?.length ? process.env.EMAIL_REPLY_TO : null,
+    emailMaxAttempts: Number(optional('EMAIL_MAX_ATTEMPTS', '5')),
   };
 }

@@ -1,7 +1,15 @@
 'use client';
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Banner, Button, Card, CardBody, CardHeader, Modal, useToast } from '@libriant/ui';
+import {
+  Banner,
+  Button,
+  Card,
+  CardBody,
+  CardHeader,
+  ConfirmDestructive,
+  useToast,
+} from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
 
 type PendingKey = {
@@ -292,47 +300,37 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
         </CardBody>
       </Card>
 
-      <Modal
+      <ConfirmDestructive
         open={revokeOpen}
         onClose={() => setRevokeOpen(false)}
+        onConfirm={revokeKey}
+        busy={busy}
         title="Revoke this code?"
-        actions={
-          <>
-            <Button variant="ghost" onClick={() => setRevokeOpen(false)}>
-              Keep it
-            </Button>
-            <Button variant="primary" loading={busy} onClick={revokeKey}>
-              Revoke
-            </Button>
-          </>
-        }
+        confirmText={pending?.prefix ?? slug}
+        confirmLabel="Revoke code"
+        cancelLabel="Keep it"
       >
         <p>
           The unused code starting with <strong>{pending?.prefix}</strong> will stop working
           immediately. Nobody will be able to redeem it.
         </p>
-      </Modal>
+      </ConfirmDestructive>
 
-      <Modal
+      <ConfirmDestructive
         open={endSessionOpen}
         onClose={() => setEndSessionOpen(false)}
+        onConfirm={endActive}
+        busy={busy}
         title="End Libriant's support access?"
-        actions={
-          <>
-            <Button variant="ghost" onClick={() => setEndSessionOpen(false)}>
-              Keep access
-            </Button>
-            <Button variant="primary" loading={busy} onClick={endActive}>
-              End access now
-            </Button>
-          </>
-        }
+        confirmText={slug}
+        confirmLabel="End access now"
+        cancelLabel="Keep access"
       >
         <p>
           Libriant support will lose access to your library immediately. You can grant access again
           later if you need help.
         </p>
-      </Modal>
+      </ConfirmDestructive>
     </>
   );
 }

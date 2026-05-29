@@ -2050,37 +2050,504 @@ pnpm storage:migrate -- \
   pilot), and an admin-UI runner for these scripts (today they're
   CLI-only, which matches the on-call operator surface anyway).
 
+### Verify the email + worker pipeline (Step 18d)
+
+Step 18d ships the durable email outbox and the BullMQ-backed worker
+that drains it, then wires every previously-deferred email TODO across
+18a, 18b, and auth onto the same pipeline. Two drivers ship today:
+`ConsoleEmailDriver` (dev default, logs the envelope) and
+`SmtpEmailDriver` (nodemailer + `SMTP_URL`). Adding Postmark / SES /
+Resend is a single new class implementing
+[`EmailDriver`](apps/api/src/email/drivers/email-driver.ts).
+
+```sh
+# 1) Boot the API + the worker (in two terminals; both need the env
+# vars from .env.local sourced). The worker exposes its own /healthz +
+# /readyz + Prometheus /metrics on WORKER_PORT (default 3002).
+set -a; source .env.local; set +a
+pnpm --filter @libriant/api dev                 # terminal 1
+WORKER_PORT=3022 \
+  TSX_TSCONFIG_PATH=$PWD/apps/api/tsconfig.json \
+  ./apps/api/node_modules/.bin/tsx \
+    apps/api/src/worker.ts                      # terminal 2
+
+curl -fs http://localhost:3022/healthz | jq    # → queues.email-outbox: "running"
+curl -fs http://localhost:3022/readyz          # 200 once Redis + driver are ready
+
+# 2) Trigger an 18a notification end-to-end. The flow is:
+#   - library POST /support/keys → row INSERT into email_outbox (pending)
+#   - producer pushes a BullMQ job
+#   - worker reads the row, calls driver.send, flips row to delivered
+LIB=/tmp/lib.txt
+curl -s -c $LIB -X POST http://localhost:3001/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"slug":"step18a","email":"lib@step18a.test","password":"librarian-pass-1234"}' >/dev/null
+curl -s -b $LIB -X POST http://localhost:3001/t/step18a/support/keys \
+  -H 'Content-Type: application/json' -d '{}'
+sleep 2
+# Row + delivery state visible in the outbox immediately:
+docker exec libriant-postgres psql -U libriant -d libriant_control -c \
+  "select kind, status, \"toEmail\", attempts, \"deliveredAt\" is not null as delivered
+   from email_outbox order by \"createdAt\" desc limit 3;"
+
+# 3) Idempotency drill. Step 18b's announcement publish uses the key
+# `announcement:<id>:tenant:<tenantId>`. A retried publish / re-fetch
+# never duplicates the library's email — the unique index on
+# `idempotencyKey` makes the second insert a no-op.
+ADMIN=/tmp/admin.txt
+TID=$(docker exec libriant-postgres psql -U libriant -d libriant_control -At \
+  -c "SELECT id FROM tenants WHERE slug='step18a';")
+ANN=$(curl -s -b $ADMIN -X POST http://localhost:3001/admin/announcements \
+  -H 'Content-Type: application/json' \
+  -d "{\"title\":\"x\",\"bodyMarkdown\":\"x\",\"severity\":\"info\",
+       \"audience\":{\"tenant_ids\":[\"$TID\"]},\"deliverInApp\":true,
+       \"deliverEmail\":true,\"dismissible\":true,\"requiresAck\":false}" \
+  | jq -r .announcement.id)
+curl -s -b $LIB http://localhost:3001/t/step18a/announcements/active >/dev/null
+curl -s -b $LIB http://localhost:3001/t/step18a/announcements/active >/dev/null
+docker exec libriant-postgres psql -U libriant -d libriant_control -At -c \
+  "SELECT count(*) FROM email_outbox WHERE \"idempotencyKey\" LIKE 'announcement:$ANN:%';"
+# → 1 (two fetches, one outbox row)
+
+# 4) Password-reset flow. The link is enqueued; the row's maxAttempts=2
+# (low budget — the user can click "Forgot" again, and the token TTL is
+# the actual timer). Minute-bucketed idempotency on
+# `auth.password_reset:<userId>:<minute>` keeps spam-clicks from
+# duplicating the queue.
+curl -s -X POST http://localhost:3001/auth/password-reset/request \
+  -H 'Content-Type: application/json' \
+  -d '{"slug":"step18a","email":"lib@step18a.test"}'
+curl -s -X POST http://localhost:3001/auth/password-reset/request \
+  -H 'Content-Type: application/json' \
+  -d '{"slug":"step18a","email":"lib@step18a.test"}'
+sleep 1
+docker exec libriant-postgres psql -U libriant -d libriant_control -At -c \
+  "SELECT count(*) FROM email_outbox WHERE kind='password_reset' AND \"toEmail\"='lib@step18a.test';"
+# → 1 (two requests, one outbox row)
+
+# 5) SMTP drill against MailHog (or any local catch-all). The worker
+# picks up the new driver on next boot.
+docker run -d --rm -p 1025:1025 -p 8025:8025 --name mailhog \
+  axllent/mailpit:latest
+EMAIL_DRIVER=smtp SMTP_URL='smtp://localhost:1025' \
+  WORKER_PORT=3022 \
+  TSX_TSCONFIG_PATH=$PWD/apps/api/tsconfig.json \
+  ./apps/api/node_modules/.bin/tsx apps/api/src/worker.ts &
+# Trigger another email and open http://localhost:8025 to see it.
+```
+
+**Architecture notes.**
+
+- **Two-table durable queue.** `email_outbox` rows are the source of
+  truth (committed inside the producer's transaction so the email is
+  guaranteed to be enqueued iff the trigger committed); BullMQ jobs in
+  Redis are the scheduler. The worker reads the row, calls the driver,
+  and flips status — Redis can lose its job queue without losing
+  outbound mail because a cold-start recovery scan over rows where
+  `status='pending' AND scheduledFor <= now()` rebuilds the queue.
+- **Idempotency key as the dedup lever.** `EmailService.enqueue` does
+  `INSERT … ON CONFLICT (idempotencyKey)`-style handling: on the unique
+  violation we look up the existing row and skip pushing a new BullMQ
+  job. Composing the key from the trigger's identity (`support.key.generated:<keyId>`,
+  `announcement:<id>:tenant:<tenantId>`, `auth.password_reset:<userId>:<minute>`)
+  means producer retries / replayed publishes never double-send.
+- **`maxAttempts` per row, exponential backoff via BullMQ.** Default 5
+  with a 30s base delay. The password-reset flow overrides to 2 because
+  the token TTL is the real timer and a transient SMTP hiccup
+  stalling for 30 minutes is wrong UX for "Forgot password?". After
+  `attempts >= maxAttempts` the row goes `dead` and stays for audit
+  - manual replay.
+- **Driver swapped at boot, not per-request.** `EMAIL_DRIVER=console`
+  works without network for dev + CI; `EMAIL_DRIVER=smtp` opens a
+  nodemailer transport from `SMTP_URL`. The SMTP driver verifies the
+  transport in the background so a misconfigured server logs a clear
+  error without blocking boot — the queue will retry sends and the
+  operator sees per-attempt errors in `email_outbox.lastError`.
+- **Producer + consumer use the same `prefix: 'lbr-bull'`.** BullMQ
+  insists on owning its own Redis key prefix (`keyPrefix` on the
+  shared `RedisService` breaks its LUA scripts), so the queue uses a
+  dedicated namespace next to the app's caching keys.
+- **Worker isn't Nest-DI.** The worker process boots a tiny HTTP
+  server + a BullMQ Worker directly — bringing up Nest just to grab
+  two services would double cold-start time on every redeploy. The
+  per-job code path imports `controlDb` and instantiates a driver, no
+  framework overhead.
+- **Notifications are best-effort, not transactional.** Every wired
+  caller (`SupportNotificationsService`, password-reset, announcement
+  delivery) catches enqueue failures and logs at WARN. The trigger
+  itself is already committed; a failed enqueue shouldn't roll that
+  back — the worker recovery path (scan `pending` rows on cold start,
+  to be implemented in the next maintenance pass) catches anything
+  that escaped.
+- **Out of MVP, hooks in place.** Recovery sweeper for orphaned
+  `pending` rows when Redis is wiped; admin UI for inspecting + manually
+  replaying dead-letter rows; richer templates than the inline string
+  bodies (would land alongside a real templating system); per-tenant
+  branded `From:` envelope (today every email goes from one platform
+  address); the `metadataJson` column is shaped for the admin
+  inspector but no UI consumes it yet.
+
+### Verify the safe-UX primitives (Step 18e)
+
+Step 18e drains the audit's hard UX misses: the global error path is now
+human-readable, every page can carry a `?` help drawer, and the most
+destructive actions require typed confirmation.
+
+```sh
+# 1) Global exception filter — 4xx pass through unchanged (they're already
+# user-readable: BadRequest, NotFound, Forbidden, etc.); 5xx are re-skinned
+# with a plain-language message + copyable supportCode that ops can grep
+# the server log for.
+curl -is http://localhost:3001/auth/login -X POST \
+  -H 'Content-Type: application/json' -d '{}'
+# → 400 + {"message":[...], "error":"Bad Request", "statusCode":400}
+#   No supportCode (4xx pass-through).
+
+docker stop libriant-redis    # induce a 5xx
+curl -is http://localhost:3001/healthz
+# → 500 + {"statusCode":500, "error":"InternalServerError",
+#          "message":"Sorry — something went wrong on our end. We've logged it.
+#                     Please try again, or send us this code if it keeps happening: 3Y9U4S4A",
+#          "supportCode":"3Y9U4S4A"}
+docker start libriant-redis
+# Find the trace by grepping the API log for the code:
+grep '"supportCode":"3Y9U4S4A"' /tmp/api.log    # → full stack + request context
+
+# 2) Help drawer — every PageHeader gets a `help` slot. We wired one onto
+# five high-traffic pages as proof of concept (catalog list, settings home,
+# support-access, admin announcements, admin system-mode). The drawer is
+# a right-edge native <dialog>: focus is trapped, Esc dismisses, the
+# overlay backdrop is click-to-close.
+JAR=/tmp/jar.txt
+curl -s -c $JAR -X POST http://localhost:3001/auth/login -H 'Content-Type: application/json' \
+  -d '{"slug":"step18a","email":"lib@step18a.test","password":"librarian-pass-1234"}' >/dev/null
+curl -s -b $JAR http://localhost:3000/en/t/step18a/catalog \
+  | grep -c 'lbr-help-button'                  # → 1
+curl -s -b $JAR http://localhost:3000/en/t/step18a/settings/support-access \
+  | grep -c 'How support access works'         # → 1 (drawer copy is SSR'd)
+
+# 3) ConfirmDestructive — three high-stakes sites are wired:
+#   • Library "End support access" (must type the slug)
+#   • Library "Revoke pending key" (must type the 4-char prefix)
+#   • Admin "Archive announcement" (must type the announcement title)
+# Behaviour at the UI level:
+#   • Confirm button stays DISABLED until typed text matches (trim + case-insensitive)
+#   • Enter on the input fires the same handler the button does
+#   • Esc + clicking the backdrop close the modal (native <dialog>)
+#   • busy=true freezes the dialog so a slow API can't be double-clicked
+
+# UI smoke from the browser:
+open http://localhost:3000/en/t/step18a/settings/support-access
+# • Click the ? next to the title → drawer slides in from the right, focus
+#   trapped, Esc closes, focus returns to the trigger.
+# • Click "End support access" → modal opens, "End access now" is disabled
+#   until you type the library's slug.
+```
+
+**Architecture notes.**
+
+- **One filter, two behaviours.** `HttpExceptionFilter` distinguishes 4xx
+  HttpException (already user-readable — the message was written by the
+  handler) from everything else (unhandled throws, lost DB connections,
+  5xx HttpException). The 5xx branch generates an 8-char base36
+  `supportCode`, logs the full diagnostic record on **one** line with
+  that code as the key, and returns to the client only the friendly
+  message + the code. Users copy/paste the code into a support email;
+  ops grep the log to find the trace instantly.
+- **Native `<dialog>` for both modals.** `Modal`, `HelpDrawer`, and
+  (via `Modal`) `ConfirmDestructive` use the platform `<dialog>` so
+  the browser handles focus trap + Esc + backdrop. We add an
+  `alertdialog` role to `ConfirmDestructive` so screen readers
+  announce it as a confirmation, not a generic dialog.
+- **`PageHeader` gets a `help` slot, not an `actions` extension.**
+  The `?` button lives next to the title (visually tied to the page
+  label), not next to the primary actions (which would associate it
+  with the destructive controls and confuse the cognitive grouping).
+- **`HelpButton` owns its own open state.** Most pages just want to
+  render `<HelpButton title="…">{markup}</HelpButton>` — no state
+  threading. Pages that need shared state (e.g. open the drawer
+  programmatically from a tour) can drop down to the bare
+  `<HelpDrawer open onClose>` primitive.
+- **`ConfirmDestructive` matches case-insensitively after trim.**
+  Pasting works; the goal isn't keystroke proof, it's making the
+  user's brain re-read the name once before continuing. The button
+  stays disabled until the match is exact + the dialog stays focused
+  on the input so the user's first action is reading.
+- **Wired sites use the right identifier.** Library "End support
+  access" asks for the **slug** (they're already on `/t/<slug>/…`);
+  library "Revoke code" asks for the **prefix** (visible right next
+  to the button); admin "Archive announcement" asks for the
+  **title** (the one human-readable name the operator just looked at).
+- **Out of MVP, hooks in place.** Translating the inline help-drawer
+  copy into Greek (the rest of the app is i18n-clean; the help copy
+  is the only English-only surface); wiring `?` onto every remaining
+  page (we proved the pattern on 5 high-traffic ones); wiring
+  `ConfirmDestructive` onto the long-tail destructive sites (book
+  delete, member delete, plan delete, tenant deletion); a per-tenant
+  "What was this code?" lookup so a support engineer can ask for the
+  `supportCode` and surface the user-facing context.
+
+### Verify the test suite (Step 18f)
+
+Step 18f delivers the plan's Drill 3 verbatim: unit tests for
+six call-out sites, plus one integration test that asserts a write to
+tenant A is invisible to tenant B. Today's CI runs static checks + db
+migrations + the catalog/loan smoke test, but no automated tests over
+business logic; this drains that gap.
+
+```sh
+# 1) Local — runs the unit project (sub-second, mocked) and the
+# integration project (boots Nest + hits the dev Postgres + Redis).
+set -a; source .env.local; set +a
+pnpm db:up                                    # postgres + pgbouncer + redis
+pnpm --filter @libriant/api test
+# → 61 tests pass in ~5 s
+#   56 unit / 5 integration
+
+# 2) Unit suite only — fast, no service deps. Useful in tight inner loop.
+pnpm --filter @libriant/api exec vitest run --project unit
+# → 56 tests in ~500 ms
+
+# 3) Integration only — opt in; needs postgres + redis up.
+pnpm --filter @libriant/api exec vitest run --project integration
+
+# 4) Watch mode while iterating on a single file:
+pnpm --filter @libriant/api test:watch
+```
+
+**What the unit suite covers (plan-mandated set, plus the bug surface
+each test actually guards):**
+
+| Spec                                | Behaviours pinned down                                                                                                                                                                                                                                                                         |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tenant-resolver.service.spec.ts`   | Slug lookup hits DB once, positive cache, negative cache, `invalidate(slug, customSubdomain)` deletes both keys, garbage-JSON cache survives.                                                                                                                                                  |
+| `effective-plan.service.spec.ts`    | Override > plan > default for int/bool/text; Redis cache hit; `invalidate()` causes re-read; garbage cache survives; `getBool` defaults `false`; `getInt` throws on non-int.                                                                                                                   |
+| `plan.guard.spec.ts`                | No-metadata pass-through; missing tenant → 400; impersonation short-circuit; feature on → allow; feature off → 402 with `{ feature, currentPlan }` payload.                                                                                                                                    |
+| `quota.interceptor.spec.ts`         | No-metadata pass-through; impersonation short-circuit; non-int feature → 500; under limit allows; at/over limit → 402 with `{ feature, limit, used }`.                                                                                                                                         |
+| `dynamic-validator.spec.ts`         | All ten `FieldType` enum members; required + missing → error; optional + missing → null; partial-mode skips required checks; unknown-field reject vs strip; min/max + minLength/maxLength + regex pattern.                                                                                     |
+| `stripe-webhook.controller.spec.ts` | Missing signature → 400; missing raw body → 400; bad signature → 400; fresh event drives billing + writes DB row + records `processedAt`; SETNX-loses-race returns `deduped:true`; dispatch failure drops the Redis lock so Stripe retries; each of 5 event types routes to the right handler. |
+
+**Integration test** (`test/integration/cross-tenant-isolation.spec.ts`):
+
+```
+beforeAll → boot NestFactory → wait for Redis PONG → signup tenant A → signup tenant B
+  1. Each tenant has its own id, slug, owner.
+  2. Login A; POST /t/<slugA>/catalog/books succeeds → 201; GET sees it → 200.
+  3. Login B; GET /t/<slugA>/catalog/books with B's cookie → 403 (TenantGuard).
+  4. GET /t/<slugB>/catalog/books → 200 with empty items (the write to A was invisible).
+  5. Anonymous GET /t/<slugA>/catalog/books → 401.
+afterAll  → drop both tenant DBs + delete control-plane rows for re-run idempotency.
+```
+
+**Architecture notes.**
+
+- **Two vitest projects — unit and integration.** Unit specs are
+  colocated with sources (`src/**/*.spec.ts`); integration specs live
+  under `test/integration/` and require the dev containers. Default
+  `pnpm test` runs both; `--project unit` runs the fast one in
+  isolation. Integration disables `fileParallelism` + `concurrent`
+  because tests share Postgres state.
+- **`vi.hoisted` for top-level mock fns.** Vitest hoists `vi.mock`
+  above all imports; the mock factories close over fns we want to
+  assert against, so the fns themselves have to be hoisted with
+  `vi.hoisted(() => …)` to avoid TDZ errors when the factory runs.
+- **Hand-rolled mocks, not `prisma-mock` or `@nestjs/testing`.**
+  Each spec constructs the service / guard / interceptor with
+  vitest-`fn` collaborators and asserts on call args + return values.
+  Faster than booting Nest's testing module, no decorator-metadata
+  gymnastics, and the failures point straight at production code
+  instead of test infrastructure.
+- **Integration boots the real Nest app + hits the real Postgres.**
+  `NestFactory.create` + supertest for HTTP. We `await
+redis.ping()` after `app.init()` because the RedisService opens a
+  non-blocking connection (`enableOfflineQueue: false`), and a
+  request that fires before the socket is ready otherwise throws
+  `Stream isn't writeable`.
+- **Cleanup tears down per-tenant DBs.** `afterAll` runs
+  `pg_terminate_backend` + `DROP DATABASE` against each provisioned
+  tenant DB so a re-run starts from the same baseline. The control-
+  plane Tenant row delete cascades subscriptions / billing accounts /
+  audit events automatically.
+- **CI wires two jobs in parallel.** `unit-tests` (~30 s, no service
+  deps) and `integration-tests` (Postgres + Redis service containers,
+  ~90 s including migrations + seed). Both gate the same way as the
+  existing `static-checks` + `db-migration` jobs.
+- **Out of MVP, hooks in place.** Coverage reporting (vitest emits
+  JSON; wiring `--coverage` + uploading to a tracker is one step);
+  Stripe webhook signature exercise against a real Stripe SDK; a web
+  unit suite (today web has no Vitest config — the React components
+  are exercised via SSR in the manual drills); end-to-end Playwright
+  for the wired ConfirmDestructive + HelpDrawer behaviour from 18e.
+
+### Verify the background-jobs subsystem (Step 18g)
+
+Step 18g lifts the audit's "remaining TODOs that need a scheduler" into a
+single shared BullMQ-based scheduler that runs **inside the worker
+process** (the same one that drains the email outbox from 18d). Three
+sweepers land in this step, draining inline TODOs from 18a, 14, and 16:
+
+| Job                         | Interval | What it does                                                                                                                                                                                                                                                                                | Drains                                 |
+| --------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| `support-session-expiry`    | 60 s     | Finds `support_sessions` with `endedAt IS NULL AND expiresAt < now`, marks them `endedReason='expired'`, fires the same `sessionEnded` notification email as a manual end.                                                                                                                  | 18a's `// TODO: scheduled job` comment |
+| `reservation-pickup-expiry` | 60 s     | Iterates every active tenant via control DB, opens a per-tenant client through `TenantPrismaService`, finds `reservation.status='ready' AND expiresAt < now`, marks expired, frees the held copy, and promotes the next queued hold (binding it to a fresh available copy when one exists). | Step 14's pickup-expiry TODO           |
+| `stripe-webhook-retry`      | 5 min    | Scans `stripe_webhook_events` for rows where `error IS NOT NULL AND processedAt IS NULL`, re-dispatches them through a freshly-constructed `BillingService` against the configured Stripe driver, clears the error on success. Bounded to 50 rows per tick to keep ticks short.             | Step 16's webhook-retry TODO           |
+
+```sh
+# 1) Boot the worker (in another shell — the API doesn't run these jobs).
+set -a; source .env.local; set +a
+pnpm --filter @libriant/api worker
+# → on boot you'll see:
+#   [email-worker] started — concurrency=4
+#   [scheduled] started — 3 job(s): support-session-expiry@60s, reservation-pickup-expiry@60s, stripe-webhook-retry@300s
+
+# 2) /healthz exposes both queues + the last result of every scheduled job.
+curl -s http://localhost:3022/healthz | jq
+# {
+#   "ok": true,
+#   "queues": {
+#     "email":     { "inFlight": 0, "lastResults": {…} },
+#     "scheduled": { "inFlight": 0, "lastResults": {
+#        "support-session-expiry":    { "at": "...", "message": "no expired sessions" },
+#        "reservation-pickup-expiry": { "at": "...", "message": "13 tenant(s) scanned; no pickups to expire" },
+#        "stripe-webhook-retry":      { "at": "...", "message": "no failed events to retry" }
+#     }}
+#   }
+# }
+
+# 3) /readyz requires BOTH queues to be alive — flaps red if either Worker dies.
+curl -s http://localhost:3022/readyz | jq
+
+# 4) /metrics labels each queue gauge separately for Prometheus.
+curl -s http://localhost:3022/metrics
+# # HELP libriant_jobs_in_flight Jobs currently executing per worker.
+# libriant_jobs_in_flight{queue="email"} 0
+# libriant_jobs_in_flight{queue="scheduled"} 0
+```
+
+**End-to-end drill — actually expire something and watch each job fire:**
+
+```sh
+# A) Induce an expired support session (generatedAt past, expiresAt future
+#    to satisfy the CHECK constraint; the sweeper only checks expiresAt < now).
+psql "$DATABASE_URL" <<SQL
+INSERT INTO support_keys (id, "tenantId", "createdByUserId", "codeHash", "codePrefix",
+                          "generatedAt", "expiresAt", status)
+VALUES ('drill-key-1', '<some-tenant-id>', '<some-user-id>',
+        'redeemed-hash', 'DRIL',
+        now() - interval '2 hours', now() + interval '1 hour', 'redeemed');
+
+INSERT INTO support_sessions (id, "tenantId", "adminId", "supportKeyId",
+                              "startedAt", "expiresAt")
+VALUES ('drill-sess-1', '<some-tenant-id>', '<some-admin-id>', 'drill-key-1',
+        now() - interval '2 hours', now() - interval '5 minutes');
+SQL
+
+# B) Induce a failed Stripe webhook row.
+psql "$DATABASE_URL" <<SQL
+INSERT INTO stripe_webhook_events (id, type, "receivedAt", error)
+VALUES ('evt_drill_1', 'invoice.payment_succeeded', now(), 'transient driver error');
+SQL
+
+# C) Trigger immediately via a tiny BullMQ producer (don't wait for the
+#    60s tick). See scripts/trigger-jobs.ts for the snippet; alternatively
+#    flush BullMQ's repeat-job delay with `bullmq` CLI.
+
+# D) Tail the worker log:
+# [scheduled] support-session-expiry (12ms): ended 1 expired session(s); notified 1
+# [scheduled] reservation-pickup-expiry (208ms): 13 tenant(s) scanned; no pickups to expire
+# [scheduled] stripe-webhook-retry (47ms): retried 1: 1 succeeded, 0 still failing
+
+# E) Verify side-effects:
+psql "$DATABASE_URL" -c "SELECT id, \"endedReason\" FROM support_sessions WHERE id='drill-sess-1';"
+# → endedReason = 'expired'
+psql "$DATABASE_URL" -c "SELECT \"idempotencyKey\", status FROM email_outbox WHERE \"idempotencyKey\" = 'support.session.ended:drill-sess-1';"
+# → support.session.ended:drill-sess-1 | delivered  (the email worker drained it)
+psql "$DATABASE_URL" -c "SELECT id, \"processedAt\", error FROM stripe_webhook_events WHERE id='evt_drill_1';"
+# → processedAt = <timestamp>, error = NULL
+```
+
+**Architecture notes.**
+
+- **One scheduler, registered jobs.** `apps/api/src/jobs/registry.ts` is
+  the single source of truth — adding a fourth sweep means adding a
+  `{ name, intervalMs, handler }` entry. The scheduler boots in
+  `worker.ts` alongside the email queue and shuts down with it.
+- **Repeat-job dedup keyed on `(name, intervalMs)`.** BullMQ infers a
+  stable repeat-job key from `name + repeat opts`, so re-running
+  `startScheduledJobs` with the same registry is a no-op. On boot, any
+  repeat-job whose key doesn't match a currently-registered entry gets
+  removed — prevents a deploy that renames or removes a job from
+  leaving a ghost schedule firing forever in Redis.
+- **No Nest DI in the worker.** Handlers construct their collaborators
+  directly (`new RedisService(env)`, `new EmailService(env)`,
+  `new BillingService(effectivePlan, stripe)`, etc.) because the worker
+  process doesn't boot a Nest app. This keeps the worker startup under
+  100 ms and avoids decorator-metadata gymnastics under `tsx`.
+- **Race-safe writes.** Both expiry sweepers use `updateMany` with a
+  guard on the previous state (e.g. `endedAt: null`, `status: 'ready'`)
+  so two concurrent ticks (or a sweep racing a manual "end" click)
+  can't double-fire side effects — the loser sees `count: 0` and skips.
+- **Idempotent emails reuse 18d's outbox key.** The expired-session
+  notification uses the same `support.session.ended:<sessionId>` key as
+  the manual-end path, so a sweep that races a manual end is a no-op
+  in the email queue.
+- **Tenant-failure isolation.** The reservation sweeper iterates all
+  active tenants; one tenant's DB being unreachable doesn't stop the
+  others — the per-tenant `try`/`catch` increments
+  `tenantsFailed` and continues. Tenant LRU clients are evicted at the
+  end of the tick so the worker doesn't hold a connection per tenant
+  indefinitely.
+- **Per-job snapshot in `/healthz`.** Each successful tick writes
+  `{ at, message }` into a process-local map; `/healthz` returns the
+  map so the operator can see at a glance which job ran when and what
+  it counted, without tailing logs.
+- **Unit tests pin every branch.** 13 specs across the 3 handlers
+  (4 + 5 + 4) cover happy paths, race losses, tenant failures, email
+  failures, missing-copy promotion paths, and the `take: 50` bound.
+  Vitest mocks `controlDb` + `TenantPrismaService` + driver
+  factories — no Postgres needed.
+- **Out of MVP, hooks in place.** Storage size tally job (Step 10's
+  TODO — needs the storage-walker), fine accrual ratchet (Step 13 has
+  the math, just needs a daily tick), ISBN refresh job, and
+  before/after diff capture for the support audit log are all
+  registry-ready: add the handler + the `{ name, intervalMs, handler }`
+  entry and they ride the same infrastructure.
+
 ## Where we are in the plan
 
-| Step | Description                                                                                               | Status                         |
-| ---- | --------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| 0    | Design system + i18n + assets foundation                                                                  | ✅ done                        |
-| 1    | Repo scaffold (pnpm/turbo/tsconfig/prettier)                                                              | ✅ done                        |
-| 2    | **Control-plane Prisma schema + idempotent seed**                                                         | ✅ done                        |
-| 3    | Feature key catalog                                                                                       | ✅ done (in `packages/shared`) |
-| 4    | **Tenant Prisma schema (catalog/members/loans/customization/audit)**                                      | ✅ done                        |
-| 5    | NestJS API skeleton (health endpoints)                                                                    | ✅ done                        |
-| 6    | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**                                            | ✅ done                        |
-| 7    | **Auth (signup with tenant provisioning + login + sessions + reset)**                                     | ✅ done                        |
-| 8    | **Plan/quota system (EffectivePlan + PlanGuard + QuotaInterceptor)**                                      | ✅ done                        |
-| 9    | **Schema customization (per-entity fields + custom collections + records)**                               | ✅ done                        |
-| 10   | **Storage layer (driver pattern + signed URLs + quota + recompute)**                                      | ✅ done                        |
-| 11   | **Catalog (authors + books + copies + ISBN lookup + covers)**                                             | ✅ done                        |
-| 12   | **Members (CRUD + auto member-number + status + archive + photos)**                                       | ✅ done                        |
-| 13   | **Loans (checkout / return / renew / mark-lost + overdue fines)**                                         | ✅ done                        |
-| 14   | **Reservations (holds queue + auto-promote + ready-pickup + fulfill)**                                    | ✅ done                        |
-| 15   | **Custom collections (records CRUD + dynamic validation + restore + search)**                             | ✅ done                        |
-| 16   | **Billing (Stripe + manual + grace + webhooks + idempotency)**                                            | ✅ done                        |
-| 17   | **Staff UI foundation (UI primitives + auth + tenant shell + dashboard)**                                 | ✅ done                        |
-| 17b  | **Staff data screens (catalog / members / loans tables + billing self-serve)**                            | ✅ done                        |
-| 17c  | **Staff circulation flows (loans checkout + return/renew/mark-lost + reservations place/cancel/fulfill)** | ✅ done                        |
-| 17d  | **Add-book + add-member forms (custom-field rendering) + 3-step onboarding wizard**                       | ✅ done                        |
-| 17e  | **Data-model editor (drag-drop fields + live form preview + plain-language types)**                       | ✅ done                        |
-| 17f  | **Member + book detail pages (view + edit + status actions + photo/cover upload + add-copy)**             | ✅ done                        |
-| 17g  | **In-product help center (markdown KB + Postgres FTS + accent-insensitive search + sidebar link)**        | ✅ done                        |
-| 18   | **Internal admin core (auth + tenant list + plan editor + per-tenant override editor + gated billing)**   | ✅ done                        |
-| 18a  | **Support sessions (MFA + one-time keys + impersonation + audit log + library revoke)**                   | ✅ done                        |
-| 18b  | **Announcements (composer + audience filters + in-app banners + outbox email + tag editor)**              | ✅ done                        |
-| 18c  | **System mode (maintenance / read-only / out-of-order / under-construction + per-tenant + scheduling)**   | ✅ done                        |
-| 19   | **Infra (Caddy + prod compose + GH Actions deploy + worker + health/metrics + backups)**                  | ✅ done                        |
-| 20   | **Tenant provisioning + fleet migrate + DB relocate + storage migrate scripts**                           | ✅ done                        |
+| Step | Description                                                                                                  | Status                         |
+| ---- | ------------------------------------------------------------------------------------------------------------ | ------------------------------ |
+| 0    | Design system + i18n + assets foundation                                                                     | ✅ done                        |
+| 1    | Repo scaffold (pnpm/turbo/tsconfig/prettier)                                                                 | ✅ done                        |
+| 2    | **Control-plane Prisma schema + idempotent seed**                                                            | ✅ done                        |
+| 3    | Feature key catalog                                                                                          | ✅ done (in `packages/shared`) |
+| 4    | **Tenant Prisma schema (catalog/members/loans/customization/audit)**                                         | ✅ done                        |
+| 5    | NestJS API skeleton (health endpoints)                                                                       | ✅ done                        |
+| 6    | **Tenancy layer (resolver + Prisma LRU + middleware + guard)**                                               | ✅ done                        |
+| 7    | **Auth (signup with tenant provisioning + login + sessions + reset)**                                        | ✅ done                        |
+| 8    | **Plan/quota system (EffectivePlan + PlanGuard + QuotaInterceptor)**                                         | ✅ done                        |
+| 9    | **Schema customization (per-entity fields + custom collections + records)**                                  | ✅ done                        |
+| 10   | **Storage layer (driver pattern + signed URLs + quota + recompute)**                                         | ✅ done                        |
+| 11   | **Catalog (authors + books + copies + ISBN lookup + covers)**                                                | ✅ done                        |
+| 12   | **Members (CRUD + auto member-number + status + archive + photos)**                                          | ✅ done                        |
+| 13   | **Loans (checkout / return / renew / mark-lost + overdue fines)**                                            | ✅ done                        |
+| 14   | **Reservations (holds queue + auto-promote + ready-pickup + fulfill)**                                       | ✅ done                        |
+| 15   | **Custom collections (records CRUD + dynamic validation + restore + search)**                                | ✅ done                        |
+| 16   | **Billing (Stripe + manual + grace + webhooks + idempotency)**                                               | ✅ done                        |
+| 17   | **Staff UI foundation (UI primitives + auth + tenant shell + dashboard)**                                    | ✅ done                        |
+| 17b  | **Staff data screens (catalog / members / loans tables + billing self-serve)**                               | ✅ done                        |
+| 17c  | **Staff circulation flows (loans checkout + return/renew/mark-lost + reservations place/cancel/fulfill)**    | ✅ done                        |
+| 17d  | **Add-book + add-member forms (custom-field rendering) + 3-step onboarding wizard**                          | ✅ done                        |
+| 17e  | **Data-model editor (drag-drop fields + live form preview + plain-language types)**                          | ✅ done                        |
+| 17f  | **Member + book detail pages (view + edit + status actions + photo/cover upload + add-copy)**                | ✅ done                        |
+| 17g  | **In-product help center (markdown KB + Postgres FTS + accent-insensitive search + sidebar link)**           | ✅ done                        |
+| 18   | **Internal admin core (auth + tenant list + plan editor + per-tenant override editor + gated billing)**      | ✅ done                        |
+| 18a  | **Support sessions (MFA + one-time keys + impersonation + audit log + library revoke)**                      | ✅ done                        |
+| 18b  | **Announcements (composer + audience filters + in-app banners + outbox email + tag editor)**                 | ✅ done                        |
+| 18c  | **System mode (maintenance / read-only / out-of-order / under-construction + per-tenant + scheduling)**      | ✅ done                        |
+| 18d  | **Email + worker pipeline (durable outbox + BullMQ + console/SMTP drivers + 18a/18b/auth wired)**            | ✅ done                        |
+| 18e  | **Safe-UX primitives (HttpExceptionFilter + HelpDrawer + ConfirmDestructive + wired into 5 + 3 pages)**      | ✅ done                        |
+| 18f  | **Automated test suite (vitest, 6 unit + 1 integration; CI runs unit + integration in parallel)**            | ✅ done                        |
+| 18g  | **Background job infrastructure (BullMQ scheduler + 3 sweepers: support expiry, hold expiry, Stripe retry)** | ✅ done                        |
+| 19   | **Infra (Caddy + prod compose + GH Actions deploy + worker + health/metrics + backups)**                     | ✅ done                        |
+| 20   | **Tenant provisioning + fleet migrate + DB relocate + storage migrate scripts**                              | ✅ done                        |

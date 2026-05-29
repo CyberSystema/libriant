@@ -1,9 +1,9 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { controlDb, type AnnouncementSeverity } from '@libriant/db-control';
+import { EmailService } from '../email/email.service.js';
 import { RedisService } from '../platform/redis.service.js';
 import { type AudienceFilter, audienceFromJson } from './audience.js';
 import { AnnouncementService } from './announcement.service.js';
-import { EmailOutboxService } from './email-outbox.service.js';
 
 /**
  * One "active" announcement as returned to the tenant — already merged
@@ -47,7 +47,7 @@ export class AnnouncementDeliveryService {
   constructor(
     @Inject(RedisService) private readonly redis: RedisService,
     @Inject(AnnouncementService) private readonly anns: AnnouncementService,
-    @Inject(EmailOutboxService) private readonly outbox: EmailOutboxService,
+    @Inject(EmailService) private readonly emails: EmailService,
   ) {}
 
   /**
@@ -245,17 +245,23 @@ export class AnnouncementDeliveryService {
     let deliveredEmailAt: Date | null = null;
     if (input.markEmail) {
       try {
-        const { deliveredAt } = await this.outbox.enqueue({
-          to: input.markEmail.to,
+        // Idempotency key ties (announcement, tenant) so a publisher retry
+        // never duplicates the library's email. The worker decides
+        // deliveredAt; we record the enqueue moment so the in-app stats
+        // can show "queued" before the worker picks it up.
+        await this.emails.enqueue({
+          kind: 'announcement',
+          toEmail: input.markEmail.to,
           subject: input.markEmail.title,
           bodyMarkdown: input.markEmail.body,
-          announcementId: input.announcementId,
           tenantId: input.tenantId,
+          idempotencyKey: `announcement:${input.announcementId}:tenant:${input.tenantId}`,
+          metadata: { announcementId: input.announcementId },
         });
-        deliveredEmailAt = deliveredAt;
+        deliveredEmailAt = now;
       } catch (err) {
         this.logger.warn(
-          `Outbox enqueue failed for announcement ${input.announcementId}: ${(err as Error).message}`,
+          `Email enqueue failed for announcement ${input.announcementId}: ${(err as Error).message}`,
         );
       }
     }

@@ -220,11 +220,17 @@ a { color: var(--color-info); }
   gap: var(--sp-4);
   flex-wrap: wrap;
 }
+.lbr-page-header__title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
 .lbr-page-header__title {
   font-size: var(--fs-3xl);
   margin: 0;
   line-height: 1.2;
 }
+.lbr-page-header__help { display: inline-flex; }
 .lbr-page-header__subtitle {
   color: var(--color-text-muted);
   margin: var(--sp-2) 0 0 0;
@@ -311,6 +317,107 @@ a { color: var(--color-info); }
   padding: var(--sp-4) var(--sp-5);
   border-top: 1px solid var(--color-border-muted);
   background: var(--color-surface-muted);
+}
+
+/* --- help drawer (right-edge slide-in panel) --- */
+.lbr-help-drawer {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  /* Pin to the right edge; `<dialog>` defaults to centered. */
+  margin: 0 0 0 auto;
+  width: min(480px, 92vw);
+  height: 100vh;
+  max-height: 100vh;
+}
+.lbr-help-drawer::backdrop {
+  background: rgba(15, 23, 42, 0.4);
+  backdrop-filter: blur(2px);
+}
+.lbr-help-drawer__inner {
+  background: var(--color-surface);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -16px 0 32px rgba(15, 23, 42, 0.18);
+}
+.lbr-help-drawer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--color-border-muted);
+}
+.lbr-help-drawer__title {
+  font-size: var(--fs-lg);
+  margin: 0;
+}
+.lbr-help-drawer__close {
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 1.5rem;
+  line-height: 1;
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--color-text-muted);
+}
+.lbr-help-drawer__body {
+  padding: var(--sp-5);
+  overflow-y: auto;
+  flex: 1;
+  line-height: 1.55;
+}
+.lbr-help-drawer__body h3 {
+  margin-top: var(--sp-4);
+  font-size: var(--fs-md);
+}
+.lbr-help-drawer__body p { margin: var(--sp-2) 0; }
+.lbr-help-drawer__body ul { padding-left: var(--sp-4); }
+.lbr-help-drawer__body code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--color-bg-muted);
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+}
+
+/* --- help button (the `?` trigger that opens the drawer) --- */
+.lbr-help-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+.lbr-help-button:hover { color: var(--color-text); border-color: var(--color-text-muted); }
+
+/* --- destructive-confirm modal extras --- */
+.lbr-confirm-destructive__warning {
+  background: var(--color-bg-muted);
+  border-left: 3px solid var(--color-status-critical);
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-sm);
+}
+.lbr-confirm-destructive__type-hint {
+  margin-top: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--color-text-muted);
+}
+.lbr-confirm-destructive__type-hint code {
+  font-family: var(--font-mono);
+  background: var(--color-bg-muted);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
 }
 
 /* --- toast stack --- */

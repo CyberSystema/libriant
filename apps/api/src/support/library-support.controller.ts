@@ -5,6 +5,7 @@ import type { SessionPayload } from '../auth/jwt-session.service.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { SupportKeyService } from './support-key.service.js';
+import { SupportNotificationsService } from './support-notifications.service.js';
 import { SupportSessionService } from './support-session.service.js';
 
 /**
@@ -26,6 +27,7 @@ export class LibrarySupportController {
   constructor(
     @Inject(SupportKeyService) private readonly keys: SupportKeyService,
     @Inject(SupportSessionService) private readonly sessions: SupportSessionService,
+    @Inject(SupportNotificationsService) private readonly notifs: SupportNotificationsService,
   ) {}
 
   @Post('keys')
@@ -37,7 +39,16 @@ export class LibrarySupportController {
     });
     // We hand the plaintext code back exactly once — the librarian has
     // to copy it to chat with their Libriant support contact. We never
-    // log it server-side.
+    // log it server-side. The notification email omits the plaintext
+    // entirely; it only echoes the 4-char prefix so the recipient can
+    // recognise the key in support chat without disclosing the secret.
+    await this.notifs.keyGenerated({
+      keyId: key.id,
+      tenantId: tenant.id,
+      prefix: key.prefix,
+      expiresAt: key.expiresAt,
+      createdByUserId: session.sub,
+    });
     return {
       id: key.id,
       code: key.code,
@@ -67,9 +78,18 @@ export class LibrarySupportController {
       },
     });
     if (!session) return { session: null };
-    // Auto-expire if past TTL.
+    // Auto-expire if past TTL. Fire the same notification flow the admin
+    // path does so the library hears about it through one channel.
     if (session.expiresAt < new Date()) {
-      await this.sessions.end(session.id, 'expired');
+      const ended = await this.sessions.end(session.id, 'expired');
+      if (ended) {
+        await this.notifs.sessionEnded({
+          sessionId: ended.id,
+          tenantId: ended.tenantId,
+          endedReason: 'expired',
+          actionCount: ended.actionCount,
+        });
+      }
       return { session: null };
     }
     return {
@@ -85,7 +105,18 @@ export class LibrarySupportController {
   @Delete('sessions/active')
   @HttpCode(204)
   async revokeActive(@TenantCtx() tenant: TenantContext) {
-    await this.sessions.endActiveForTenant(tenant.id, 'library_revoked');
+    const ended = await this.sessions.endActiveForTenant(tenant.id, 'library_revoked');
+    // Fire one notification per session that we actually ended (under
+    // the at-most-one-active invariant this is 0 or 1; loop is
+    // defensive for the rare double-active edge).
+    for (const e of ended) {
+      await this.notifs.sessionEnded({
+        sessionId: e.id,
+        tenantId: e.tenantId,
+        endedReason: 'library_revoked',
+        actionCount: e.actionCount,
+      });
+    }
   }
 
   @Get('sessions/log')

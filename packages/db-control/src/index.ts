@@ -20,6 +20,8 @@ export {
   SystemModeKind,
   SystemModeScope,
   AuditActorType,
+  EmailOutboxStatus,
+  EmailMessageKind,
 } from '@prisma/client';
 
 export type {
@@ -43,4 +45,5 @@ export type {
   Announcement,
   AnnouncementDelivery,
   SystemModeEvent,
+  EmailOutbox,
 } from '@prisma/client';

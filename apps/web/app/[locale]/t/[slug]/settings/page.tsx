@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { Card, CardBody, CardHeader, PageHeader } from '@libriant/ui';
+import { Card, CardBody, CardHeader, HelpButton, PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 
@@ -20,7 +20,29 @@ export default async function SettingsPage({
 
   return (
     <>
-      <PageHeader title={t('settings.title')} subtitle={t('settings.subtitle')} />
+      <PageHeader
+        title={t('settings.title')}
+        subtitle={t('settings.subtitle')}
+        help={
+          <HelpButton title="About settings">
+            <p>This is the home for everything that changes how your library behaves.</p>
+            <h3>What lives here today</h3>
+            <ul>
+              <li>
+                <strong>Data model</strong> — add custom fields to books / members / loans, or whole
+                new collection types (DVDs, Board games, …). Changes take effect on next page load,
+                no migration needed.
+              </li>
+              <li>
+                <strong>Get help from Libriant</strong> — generate a one-time code so our team can
+                debug something in your library. End access at any time.
+              </li>
+            </ul>
+            <h3>Coming soon</h3>
+            <p>Loan policies, notification templates, branding.</p>
+          </HelpButton>
+        }
+      />
 
       <div
         style={{

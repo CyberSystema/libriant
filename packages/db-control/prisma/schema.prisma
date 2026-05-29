@@ -101,6 +101,29 @@ enum AnnouncementSeverity {
   critical
 }
 
+enum EmailOutboxStatus {
+  pending
+  sending
+  delivered
+  failed
+  // Permanently abandoned after `attempts >= maxAttempts`. Kept in the
+  // table for audit; the worker won't retry it.
+  dead
+}
+
+enum EmailMessageKind {
+  // Step 18a — support-access lifecycle
+  support_key_generated
+  support_key_redeemed
+  support_session_ended
+  // Step 18b — announcement delivery
+  announcement
+  // Step 7 — auth
+  password_reset
+  // Generic catch-all for ad-hoc admin-composed mail
+  transactional
+}
+
 enum SystemModeKind {
   normal
   maintenance
@@ -190,6 +213,7 @@ model Tenant {
   supportSessions        SupportSession[]
   announcementDeliveries AnnouncementDelivery[]
   systemModeEvents       SystemModeEvent[]
+  emailOutbox            EmailOutbox[]
 
   @@index([cellId])
   @@index([status])
@@ -426,6 +450,73 @@ model StripeWebhookEvent {
 
   @@index([type, receivedAt])
   @@map("stripe_webhook_events")
+}
+
+// ---------------------------------------------------------------------------
+// Email outbox — durable queue of outbound transactional mail.
+//
+// Two-table pattern (this row + a BullMQ Redis job): callers write the row
+// inside the same transaction that produced the trigger (announcement,
+// support key generation, password reset, …) so the email is guaranteed
+// to be ENQUEUED iff the trigger committed. The worker reads the row,
+// sends via the configured driver, and updates `status` + delivery /
+// failure timestamps. Retries are BullMQ's job (exponential backoff,
+// up to `maxAttempts`); after that the row goes `dead` and stays for
+// audit + manual replay.
+//
+// `idempotencyKey` is the de-dupe lever: an upsert keyed on it makes
+// re-trying the producing transaction a no-op, so a 18b announcement
+// publish that retries doesn't email the same library twice.
+// ---------------------------------------------------------------------------
+
+model EmailOutbox {
+  id String @id @default(cuid())
+  /// Free-form key the producer chooses so re-runs don't double-send. For
+  /// 18b: `announcement:<id>:tenant:<tenantId>`. For 18a support events:
+  /// `support.key.generated:<keyId>`. NULL means "send unconditionally".
+  idempotencyKey  String?           @unique
+  kind            EmailMessageKind
+  /// Envelope. `fromEmail` is rendered with `EMAIL_FROM` when null.
+  toEmail         String            @db.Citext
+  fromEmail       String?           @db.Citext
+  replyToEmail    String?           @db.Citext
+  subject         String
+  /// Plain-text body. The driver may also render a sanitized HTML version
+  /// from the markdown captured in `bodyMarkdown`. We keep both so the
+  /// worker can fall back to plain text on SMTP servers that reject HTML.
+  bodyMarkdown    String
+  /// What this email is "about" — used by stats + admin search. Mirrors
+  /// the (tenantId, kind, …) the producer cares about.
+  tenantId        String?
+  /// Per-row metadata the producer wants to surface in admin UI (e.g.
+  /// `{ announcementId, deliveryId }` for 18b). Opaque to the worker.
+  metadataJson    Json              @default("{}")
+  status          EmailOutboxStatus @default(pending)
+  attempts        Int               @default(0)
+  maxAttempts     Int               @default(5)
+  /// Earliest time the worker may try this row. Producer sets it when
+  /// scheduling a future send (defaults to NOW for "send asap"). BullMQ
+  /// re-enqueues with backoff; this column is the source-of-truth.
+  scheduledFor    DateTime          @default(now())
+  /// Set on `delivered`. Driver's identifier (Message-ID, etc.).
+  providerId      String?
+  /// Set on a transient failure that will be retried.
+  lastError       String?
+  deliveredAt     DateTime?
+  failedAt        DateTime?
+  /// Set on a permanent abandonment (>= maxAttempts).
+  abandonedAt     DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+
+  // Worker polls `WHERE status='pending' AND scheduledFor <= now()`;
+  // BullMQ does the actual reservation, this index is the cold-start
+  // recovery path.
+  @@index([status, scheduledFor])
+  @@index([tenantId, kind, createdAt])
+  @@map("email_outbox")
 }
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import { MfaController } from './mfa.controller.js';
 import { MfaService } from './mfa.service.js';
 import { SupportAuditInterceptor } from './support-audit.interceptor.js';
 import { SupportKeyService } from './support-key.service.js';
+import { SupportNotificationsService } from './support-notifications.service.js';
 import { SupportSessionGuard } from './support-session.guard.js';
 import { SupportSessionService } from './support-session.service.js';
 
@@ -28,6 +29,7 @@ import { SupportSessionService } from './support-session.service.js';
     SupportKeyService,
     SupportSessionService,
     SupportSessionGuard,
+    SupportNotificationsService,
     ImpersonationSessionService,
     ImpersonationCookieService,
     SupportAuditInterceptor,

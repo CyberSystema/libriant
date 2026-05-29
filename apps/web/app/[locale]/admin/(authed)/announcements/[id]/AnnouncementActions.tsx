@@ -1,17 +1,18 @@
 'use client';
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Button, Modal, useToast } from '@libriant/ui';
+import { Button, ConfirmDestructive, Modal, useToast } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
 
 type Props = {
   id: string;
+  title: string;
   isExpired: boolean;
   isArchived: boolean;
   locale: string;
 };
 
-export function AnnouncementActions({ id, isExpired, isArchived, locale }: Props) {
+export function AnnouncementActions({ id, title, isExpired, isArchived, locale }: Props) {
   const router = useRouter();
   const toast = useToast();
   const [busy, setBusy] = React.useState(false);
@@ -86,26 +87,20 @@ export function AnnouncementActions({ id, isExpired, isArchived, locale }: Props
         </p>
       </Modal>
 
-      <Modal
+      <ConfirmDestructive
         open={archiveOpen}
         onClose={() => setArchiveOpen(false)}
+        onConfirm={archive}
+        busy={busy}
         title="Archive this announcement?"
-        actions={
-          <>
-            <Button variant="ghost" onClick={() => setArchiveOpen(false)}>
-              Cancel
-            </Button>
-            <Button variant="primary" loading={busy} onClick={archive}>
-              Archive
-            </Button>
-          </>
-        }
+        confirmText={title}
+        confirmLabel="Archive forever"
       >
         <p>
           Hidden from the active and expired lists. Delivery + acknowledgement history stays in the
           database for audit.
         </p>
-      </Modal>
+      </ConfirmDestructive>
     </div>
   );
 }

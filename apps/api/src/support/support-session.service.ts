@@ -99,20 +99,51 @@ export class SupportSessionService {
     return row;
   }
 
-  /** Library-side: end any active session for a tenant. */
-  async endActiveForTenant(tenantId: string, reason: SupportSessionEndReason): Promise<number> {
-    const result = await controlDb.supportSession.updateMany({
-      where: { tenantId, endedAt: null },
-      data: { endedAt: new Date(), endedReason: reason },
-    });
-    return result.count;
+  /**
+   * Library-side: end any active session for a tenant. Returns the
+   * snapshot of each ended session so the caller (the controller) can
+   * fire downstream notifications without re-querying — at most one row
+   * per tenant under the model's invariants but we return an array to
+   * be future-safe.
+   */
+  async endActiveForTenant(
+    tenantId: string,
+    reason: SupportSessionEndReason,
+  ): Promise<Array<{ id: string; tenantId: string; actionCount: number }>> {
+    return this.endWhere({ tenantId, endedAt: null }, reason);
   }
 
   /** Admin-side or expiry sweeper: end a single session. */
-  async end(id: string, reason: SupportSessionEndReason): Promise<void> {
-    await controlDb.supportSession.updateMany({
-      where: { id, endedAt: null },
-      data: { endedAt: new Date(), endedReason: reason },
+  async end(
+    id: string,
+    reason: SupportSessionEndReason,
+  ): Promise<{ id: string; tenantId: string; actionCount: number } | null> {
+    const ended = await this.endWhere({ id, endedAt: null }, reason);
+    return ended[0] ?? null;
+  }
+
+  private async endWhere(
+    where: { id?: string; tenantId?: string; endedAt: null },
+    reason: SupportSessionEndReason,
+  ): Promise<Array<{ id: string; tenantId: string; actionCount: number }>> {
+    // Snapshot the targets *before* the update so we can return ids +
+    // action counts back to the caller. Same-transaction so we don't
+    // race a concurrent ender.
+    return controlDb.$transaction(async (tx) => {
+      const targets = await tx.supportSession.findMany({
+        where,
+        select: { id: true, tenantId: true, _count: { select: { actions: true } } },
+      });
+      if (targets.length === 0) return [];
+      await tx.supportSession.updateMany({
+        where,
+        data: { endedAt: new Date(), endedReason: reason },
+      });
+      return targets.map((t) => ({
+        id: t.id,
+        tenantId: t.tenantId,
+        actionCount: t._count.actions,
+      }));
     });
   }
 }

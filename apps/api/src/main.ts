@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module.js';
 import { loadEnv } from './config/env.js';
+import { HttpExceptionFilter } from './platform/http-exception.filter.js';
 
 async function bootstrap() {
   const env = loadEnv();
@@ -20,6 +21,12 @@ async function bootstrap() {
 
   // Parse Cookie header into req.cookies — required by SessionMiddleware.
   app.use(cookieParser());
+
+  // Global error envelope: 4xx pass through (already user-readable);
+  // 5xx get re-skinned with a plain-language message + copyable
+  // supportCode that ops can grep the log for. See the filter for the
+  // full UX-principle rationale.
+  app.useGlobalFilters(new HttpExceptionFilter());
 
   // Input validation runs per-route via `auth/validate-dto.ts`. We avoid
   // NestJS's global ValidationPipe because `tsx` (esbuild) doesn't emit

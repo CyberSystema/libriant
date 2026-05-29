@@ -21,6 +21,7 @@ import { ImpersonationCookieService } from './impersonation-cookie.service.js';
 import { ImpersonationSessionService } from './impersonation-session.service.js';
 import { MfaService } from './mfa.service.js';
 import { SupportKeyService } from './support-key.service.js';
+import { SupportNotificationsService } from './support-notifications.service.js';
 import { SupportSessionService } from './support-session.service.js';
 
 class RedeemDto {
@@ -63,6 +64,8 @@ export class AdminSupportController {
     private readonly impJwt: ImpersonationSessionService,
     @Inject(ImpersonationCookieService)
     private readonly impCookies: ImpersonationCookieService,
+    @Inject(SupportNotificationsService)
+    private readonly notifs: SupportNotificationsService,
   ) {}
 
   @Post('redeem')
@@ -124,7 +127,24 @@ export class AdminSupportController {
 
     await this.recordAttempt(admin.sub, req, true, dto.code);
 
-    // 5. Return what the UI needs to navigate.
+    // 5. Notify the library the session is now open. Pull the admin's
+    // identity in the same query so the email shows who's working.
+    const adminRecord = await controlDb.adminUser.findUnique({
+      where: { id: admin.sub },
+      select: { email: true, fullName: true },
+    });
+    if (adminRecord) {
+      await this.notifs.keyRedeemed({
+        sessionId: session.id,
+        tenantId: matched.tenantId,
+        adminEmail: adminRecord.email,
+        adminFullName: adminRecord.fullName,
+        expiresAt,
+        ipAddress: req.ip ?? null,
+      });
+    }
+
+    // 6. Return what the UI needs to navigate.
     const tenant = await controlDb.tenant.findUnique({
       where: { id: matched.tenantId },
       select: { id: true, slug: true, name: true },
@@ -148,7 +168,15 @@ export class AdminSupportController {
     });
     if (!row) return { session: null };
     if (row.expiresAt < new Date()) {
-      await this.sessions.end(row.id, 'expired');
+      const ended = await this.sessions.end(row.id, 'expired');
+      if (ended) {
+        await this.notifs.sessionEnded({
+          sessionId: ended.id,
+          tenantId: ended.tenantId,
+          endedReason: 'expired',
+          actionCount: ended.actionCount,
+        });
+      }
       return { session: null };
     }
     return {
@@ -175,7 +203,17 @@ export class AdminSupportController {
       orderBy: { startedAt: 'desc' },
       select: { id: true },
     });
-    if (row) await this.sessions.end(row.id, 'admin_ended');
+    if (row) {
+      const ended = await this.sessions.end(row.id, 'admin_ended');
+      if (ended) {
+        await this.notifs.sessionEnded({
+          sessionId: ended.id,
+          tenantId: ended.tenantId,
+          endedReason: 'admin_ended',
+          actionCount: ended.actionCount,
+        });
+      }
+    }
     this.impCookies.clear(res);
   }
 

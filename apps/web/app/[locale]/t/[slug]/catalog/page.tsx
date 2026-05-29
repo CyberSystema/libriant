@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Banner, PageHeader } from '@libriant/ui';
+import { Banner, HelpButton, PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { notFound } from 'next/navigation';
 import { loadCatalog } from '@/lib/locale-loader';
@@ -43,6 +43,31 @@ export default async function CatalogPage({
       <PageHeader
         title={t('common.nav.catalog')}
         subtitle={t('catalog.subtitle')}
+        help={
+          <HelpButton title="About the catalog">
+            <p>
+              The catalog is every book your library owns. Each row is one <em>title</em>; click
+              into it to see the individual <em>copies</em> you have on the shelf.
+            </p>
+            <h3>What you can do here</h3>
+            <ul>
+              <li>
+                Search by title, author, or ISBN — the search is accent-insensitive, so{' '}
+                <code>πατωντας</code> finds <code>Πατώντας</code>.
+              </li>
+              <li>
+                Click <strong>Add a book</strong> to enter one by hand or look it up by ISBN.
+              </li>
+              <li>Click any title to edit, add custom fields, or manage copies.</li>
+            </ul>
+            <h3>Counts on the table</h3>
+            <p>
+              The “Available” column shows how many copies aren’t currently checked out or reserved.
+              The plan you’re on caps the total titles in your catalog — you can see your current
+              usage from the Billing page.
+            </p>
+          </HelpButton>
+        }
         actions={
           <Link
             href={`/${params.locale}/t/${params.slug}/catalog/new`}

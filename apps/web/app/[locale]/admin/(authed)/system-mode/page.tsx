@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { Banner, Card, CardBody, CardHeader, PageHeader } from '@libriant/ui';
+import { Banner, Card, CardBody, CardHeader, HelpButton, PageHeader } from '@libriant/ui';
 import { isLocale } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
 import { requestCookieHeader } from '@/lib/admin-session';
@@ -39,6 +39,47 @@ export default async function SystemModePage({ params }: { params: { locale: str
       <PageHeader
         title="System mode"
         subtitle="Take the whole platform — or a single library — into maintenance, read-only, outage, or under-construction state."
+        help={
+          <HelpButton title="System mode reference">
+            <h3>The four modes</h3>
+            <ul>
+              <li>
+                <strong>maintenance</strong> — full takeover. Tenant routes return 503; users see
+                the branded takeover page. <code>/admin/*</code> + <code>/healthz</code> stay open.
+              </li>
+              <li>
+                <strong>read_only</strong> — GETs pass through; POST / PATCH / PUT / DELETE return
+                503 with a structured payload the UI uses to show a banner.
+              </li>
+              <li>
+                <strong>out_of_order</strong> — same enforcement as maintenance, different branding
+                (emergency outage).
+              </li>
+              <li>
+                <strong>under_construction</strong> — no blocking; renders a persistent banner.
+              </li>
+            </ul>
+            <h3>Stricter wins</h3>
+            <p>
+              A global event + a per-tenant event both in flight resolve to whichever is stricter (
+              <code>
+                normal &lt; under_construction &lt; read_only &lt; out_of_order = maintenance
+              </code>
+              ). Ties go to the per-tenant event.
+            </p>
+            <h3>The escape hatch</h3>
+            <p>
+              Even with <code>allowAdminBypass=false</code>, <code>/admin/system-mode/*</code> stays
+              open. You cannot lock yourself out of the lever you need to recover.
+            </p>
+            <h3>Scheduling</h3>
+            <p>
+              Future windows resolve at read-time — no worker flips state at the boundary. Cancel a
+              scheduled window any time before it starts; use <strong>End now</strong> once
+              it&rsquo;s active.
+            </p>
+          </HelpButton>
+        }
       />
 
       {error ? (

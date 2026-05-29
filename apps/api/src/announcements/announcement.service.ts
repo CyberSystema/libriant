@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { controlDb, type AnnouncementSeverity, type Prisma } from '@libriant/db-control';
 import {
   type AudienceFilter,
@@ -6,7 +6,6 @@ import {
   audienceToJson,
   validateAudience,
 } from './audience.js';
-import { EmailOutboxService } from './email-outbox.service.js';
 
 type CreateInput = {
   title: string;
@@ -30,8 +29,6 @@ type UpdateInput = Partial<Omit<CreateInput, 'createdByAdminId'>>;
  */
 @Injectable()
 export class AnnouncementService {
-  constructor(@Inject(EmailOutboxService) private readonly outbox: EmailOutboxService) {}
-
   async create(input: CreateInput) {
     validateAudience(input.audience);
     // If publishAt is null or in the past, the announcement goes live

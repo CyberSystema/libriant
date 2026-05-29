@@ -9,6 +9,7 @@ import { SessionMiddleware } from './auth/session.middleware.js';
 import { BillingModule } from './billing/billing.module.js';
 import { CatalogModule } from './catalog/catalog.module.js';
 import { CustomizationModule } from './customization/customization.module.js';
+import { EmailModule } from './email/email.module.js';
 import { HelpModule } from './help/help.module.js';
 import { LoansModule } from './loans/loans.module.js';
 import { MembersModule } from './members/members.module.js';
@@ -37,6 +38,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
       },
     }),
     RedisModule,
+    EmailModule,
     PlatformModule,
     TenantModule,
     AuthModule,

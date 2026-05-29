@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { Banner, Button, PageHeader } from '@libriant/ui';
+import { Banner, Button, HelpButton, PageHeader } from '@libriant/ui';
 import { isLocale } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
 import { requestCookieHeader } from '@/lib/admin-session';
@@ -46,6 +46,56 @@ export default async function AdminAnnouncementsPage({
       <PageHeader
         title="Announcements"
         subtitle="Send messages to libraries — in-app, email, or both. Target everyone, specific libraries, plans, or tags."
+        help={
+          <HelpButton title="About announcements">
+            <h3>Severity → behaviour</h3>
+            <ul>
+              <li>
+                <strong>info</strong> — blue dismissible banner.
+              </li>
+              <li>
+                <strong>warning</strong> — orange dismissible banner.
+              </li>
+              <li>
+                <strong>critical</strong> — red sticky banner. With <em>requires ack</em>, it
+                becomes a full-screen modal blocking each user until they acknowledge.
+              </li>
+            </ul>
+            <h3>Audience targeting</h3>
+            <p>Four shapes, mutually exclusive:</p>
+            <ul>
+              <li>
+                <strong>all</strong> — every active library.
+              </li>
+              <li>
+                <strong>tenant_ids</strong> — specific libraries by id.
+              </li>
+              <li>
+                <strong>plan_slugs</strong> — libraries on a plan (e.g. <code>community</code>).
+              </li>
+              <li>
+                <strong>tags</strong> — libraries with any of the matching tags.
+              </li>
+            </ul>
+            <h3>Delivery + scheduling</h3>
+            <p>
+              <strong>In-app</strong> shows the banner; <strong>email</strong> queues a row in the
+              email outbox (Step 18d). Email delivery is idempotent on{' '}
+              <code>announcement:&lt;id&gt;:tenant:&lt;tenantId&gt;</code> — a retried publish never
+              duplicates the library&rsquo;s email.
+            </p>
+            <p>
+              <strong>publishAt</strong> defers the live state — until then the row is in the
+              Scheduled tab. <strong>expiresAt</strong> ends visibility cleanly.
+            </p>
+            <h3>Lifecycle</h3>
+            <p>
+              <strong>Expire now</strong> ends visibility but keeps the row + history.{' '}
+              <strong>Archive</strong> hides it from active and expired lists (history stays for
+              audit). Both are non-destructive — delivery + acknowledgement rows are never deleted.
+            </p>
+          </HelpButton>
+        }
         actions={
           <Link
             href={`/${params.locale}/admin/announcements/new`}

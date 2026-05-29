@@ -1,20 +1,23 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import * as crypto from 'node:crypto';
 import { controlDb } from '@libriant/db-control';
+import { loadEnv } from '../config/env.js';
+import { EmailService } from '../email/email.service.js';
 import { RedisService } from '../platform/redis.service.js';
 import { PasswordService } from './password.service.js';
 
 /**
- * Password-reset stub.
+ * Password-reset flow.
  *
  * - `request()` always returns the same generic OK to avoid leaking which
  *   emails are registered. If the (tenant, email) combo exists, a one-time
  *   reset token is generated, stored in Redis with a 60-minute TTL, and
- *   logged so a human (or future EmailService) can deliver it.
+ *   the reset link is enqueued for delivery via Step 18d's email pipeline.
  * - `complete()` consumes a token and sets a new password atomically.
  *
- * When the email service lands, the only change here is replacing the
- * `console.log` with a `Mailer.send(...)` call.
+ * Idempotency: a (tenant, user, minute-bucket) key prevents the same
+ * one-minute window from queuing multiple identical reset emails if the
+ * user spam-clicks "Forgot password".
  */
 @Injectable()
 export class PasswordResetService {
@@ -24,6 +27,7 @@ export class PasswordResetService {
   constructor(
     @Inject(RedisService) private readonly redis: RedisService,
     @Inject(PasswordService) private readonly passwords: PasswordService,
+    @Inject(EmailService) private readonly emails: EmailService,
   ) {}
 
   /**
@@ -33,13 +37,13 @@ export class PasswordResetService {
   async request(input: { tenantSlug: string; email: string }): Promise<void> {
     const tenant = await controlDb.tenant.findUnique({
       where: { slug: input.tenantSlug },
-      select: { id: true, name: true, status: true },
+      select: { id: true, slug: true, name: true, status: true, defaultLocale: true },
     });
     if (!tenant || tenant.status !== 'active') return;
 
     const user = await controlDb.user.findUnique({
       where: { tenantId_email: { tenantId: tenant.id, email: input.email } },
-      select: { id: true, status: true },
+      select: { id: true, status: true, fullName: true },
     });
     if (!user || user.status !== 'active') return;
 
@@ -51,12 +55,41 @@ export class PasswordResetService {
       'EX',
       PasswordResetService.TOKEN_TTL_SEC,
     );
-    // TODO(email): replace with Mailer.send. For now we log the link so a
-    // dev / support can hand it to the user.
-    this.logger.warn(
-      `[PASSWORD RESET] tenant=${tenant.name} user=${input.email} token=${token} ` +
-        `(valid 60min). Deliver via: <reset-link>?token=${token}`,
-    );
+    const env = loadEnv();
+    const resetLink = `${env.publicAppUrl}/${tenant.defaultLocale}/login/reset?token=${token}&slug=${tenant.slug}`;
+    const minuteBucket = Math.floor(Date.now() / 60_000);
+    const body = [
+      `Hi ${user.fullName},`,
+      ``,
+      `Someone (hopefully you) asked to reset your password for ${tenant.name}.`,
+      `Open this link to set a new one — it expires in 60 minutes:`,
+      ``,
+      `  ${resetLink}`,
+      ``,
+      `If this wasn't you, ignore this email. Nothing changes until the link`,
+      `is opened and a new password is set.`,
+      ``,
+      `— Libriant`,
+    ].join('\n');
+    try {
+      await this.emails.enqueue({
+        kind: 'password_reset',
+        toEmail: input.email,
+        tenantId: tenant.id,
+        idempotencyKey: `auth.password_reset:${user.id}:${minuteBucket}`,
+        subject: `Reset your ${tenant.name} password`,
+        bodyMarkdown: body,
+        // Resets are intentionally low-retry: a transient SMTP hiccup
+        // can stall this for half an hour without harm (the user will
+        // click "forgot" again), and the token TTL is the real timer.
+        maxAttempts: 2,
+        metadata: { userId: user.id },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `password-reset enqueue failed for user=${input.email}: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**
