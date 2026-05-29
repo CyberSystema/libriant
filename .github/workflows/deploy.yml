@@ -53,6 +53,8 @@ jobs:
             TAG="${GITHUB_SHA::12}"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # GHCR image paths must be lowercase; the owner login may not be.
+          echo "owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -69,8 +71,8 @@ jobs:
           file: apps/api/Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/libriant-api:${{ steps.meta.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/libriant-api:latest
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/libriant-api:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/libriant-api:latest
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max
 
@@ -81,8 +83,8 @@ jobs:
           file: apps/web/Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/libriant-web:${{ steps.meta.outputs.tag }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/libriant-web:latest
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/libriant-web:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/libriant-web:latest
           cache-from: type=gha,scope=web
           cache-to: type=gha,scope=web,mode=max
 
@@ -100,7 +102,9 @@ jobs:
       - id: read
         run: |
           # Parse the YAML host list into a JSON matrix the deploy job
-          # can fan out across.
+          # can fan out across. (PyYAML ships on the runner, but install
+          # defensively so a missing module never blocks all deploys.)
+          python3 -m pip install --quiet pyyaml || true
           python3 -c "
           import json, sys, yaml
           fleet = yaml.safe_load(open('infra/deploy/fleet.yml'))
@@ -132,31 +136,31 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H "${{ matrix.host.ssh }}" >> ~/.ssh/known_hosts
 
-      - name: Sync deploy bundle
-        run: |
-          # Only ship the bits the host needs at runtime: compose file,
-          # Caddy assets, the static maintenance page, and the docs
-          # subfolder that holds the .env.prod.example.
-          rsync -az --delete \
-            infra/ \
-            assets/ \
-            locales/ \
-            "${{ matrix.host.user }}@${{ matrix.host.ssh }}:/srv/libriant/deploy/"
-
-      - name: Compose pull + up
+      - name: Deploy (git sync + compose up)
         env:
           IMAGE_TAG: ${{ needs.build.outputs.tag }}
-          COMPOSE_PROJECT_NAME: ${{ matrix.host.project }}
+          GIT_SHA: ${{ github.sha }}
         run: |
-          ssh "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<'EOF'
+          # Deploy from the repo checkout the host already keeps at
+          # /srv/libriant/app — the same layout + commands as the manual `dc`
+          # flow, so manual and CI never diverge. `git reset --hard` deploys the
+          # exact built commit (host-local edits to tracked files are
+          # overwritten — keep customisations in .env.prod). The volume overlay
+          # keeps all data on /mnt/libriant. The heredoc is UNQUOTED so only
+          # ${GIT_SHA}/${IMAGE_TAG} expand on the runner; remote `$`-vars are
+          # escaped.
+          ssh "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<EOF
             set -euo pipefail
-            cd /srv/libriant/deploy
-            # The .env.prod file lives outside this folder so secrets are
-            # never overwritten by the rsync above.
-            export $(grep -v '^#' /srv/libriant/.env.prod | xargs)
-            export IMAGE_TAG="$IMAGE_TAG"
-            docker compose -f compose/docker-compose.prod.yml pull
-            docker compose -f compose/docker-compose.prod.yml up -d --remove-orphans
+            cd /srv/libriant/app
+            git fetch --quiet origin
+            git reset --hard ${GIT_SHA}
+            set -a; . /srv/libriant/.env.prod; set +a
+            export IMAGE_TAG="${IMAGE_TAG}"
+            export COMPOSE_PROJECT_NAME=libriant
+            export LIBRIANT_DATA_ROOT=/mnt/libriant
+            FILES="-f infra/compose/docker-compose.prod.yml -f infra/compose/docker-compose.volume.yml"
+            docker compose \$FILES pull
+            docker compose \$FILES up -d --remove-orphans
           EOF
 
       - name: Wait for health

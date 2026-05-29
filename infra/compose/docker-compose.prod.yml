@@ -96,7 +96,7 @@ services:
 
   # ----- app processes --------------------------------------------------
   api:
-    image: ghcr.io/libriant/api:${IMAGE_TAG:-latest}
+    image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-api:${IMAGE_TAG:-latest}
     <<: [*restart, *logging]
     build:
       context: ../..
@@ -124,7 +124,7 @@ services:
       start_period: 30s
 
   web:
-    image: ghcr.io/libriant/web:${IMAGE_TAG:-latest}
+    image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-web:${IMAGE_TAG:-latest}
     <<: [*restart, *logging]
     build:
       context: ../..
@@ -154,7 +154,7 @@ services:
       start_period: 30s
 
   worker:
-    image: ghcr.io/libriant/api:${IMAGE_TAG:-latest}
+    image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-api:${IMAGE_TAG:-latest}
     <<: [*restart, *logging]
     build:
       context: ../..

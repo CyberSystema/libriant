@@ -68,11 +68,10 @@ A short checklist. Tick these off first.
 - [ ] A **domain** you control (e.g. `libriant.app`) with access to its DNS.
 - [ ] Your **SSH key** in **Termius** (Keychain → your key). You'll register its
       **public** half with Hetzner in Part 2.
-- [ ] **Container images** available on GHCR. Heads-up: the compose file pulls
-      `ghcr.io/libriant/api` + `ghcr.io/libriant/web`; the CI workflow pushes
-      `ghcr.io/<owner>/libriant-api` + `…-web`. Make these agree (edit the
-      `image:` lines in `infra/compose/docker-compose.prod.yml`, or the workflow
-      tags). Decide your final names now.
+- [ ] A **GitHub repo** for this code. CI builds images to
+      `ghcr.io/<owner>/libriant-api` + `…-web`; the compose file pulls the same
+      path via `IMAGE_OWNER` (you set it in `.env.prod`, Part 6). Decide your
+      GitHub owner/org now — you'll use it **lowercase**.
 - [ ] A **Stripe** account (test mode is fine to start).
 - [ ] **Secrets generated** and saved in your password manager — run this on
       your laptop (or any shell) and keep the output safe:
@@ -259,7 +258,10 @@ PUBLIC_HOST=libriant.app
 ADMIN_HOST=admin.libriant.app
 ACME_EMAIL=ops@libriant.app
 MAINTENANCE_HARD=false
-IMAGE_TAG=latest
+
+# --- images (GHCR) ---
+IMAGE_OWNER=your-github-owner   # LOWERCASE; matches what CI pushes
+IMAGE_TAG=latest                # CI sets this to the commit SHA per deploy
 
 # --- postgres + secrets (from Part 1) ---
 POSTGRES_PASSWORD=...
@@ -487,7 +489,43 @@ dc stop                     # graceful stop (drains cleanly — safe before rebo
 dc up -d                    # start / re-create after a change
 ```
 
-**Deploy a new version:**
+**Deploys run through CI.** Push to `main` (or trigger the _deploy_ workflow from
+the Actions tab). CI builds the images, pushes them to GHCR, SSHes to
+CyberSystema-1, checks out the exact commit at `/srv/libriant/app`, and runs the
+same `dc`-style `pull` + `up -d` you'd run by hand — SHA-pinned, data on the
+volume, with a `/healthz` gate.
+
+**Turn on CI/CD — one-time setup:**
+
+1. **`IMAGE_OWNER`** is set in `.env.prod` (Part 6) to your GitHub owner/org,
+   lowercase. CI pushes — and the host pulls — `ghcr.io/$IMAGE_OWNER/libriant-{api,web}`.
+2. **DNS is live** (Part 7): `libriant.app` resolves to the box with a valid
+   cert. CI health-checks `https://libriant.app/healthz`, and `fleet.yml`'s
+   `ssh:` is already `libriant.app`.
+3. **Deploy key (runner → server)** — a dedicated keypair, authorized for
+   `deploy`, private half stored as the `DEPLOY_SSH_KEY` repo secret:
+   ```sh
+   ssh-keygen -t ed25519 -f libriant-ci -N ''          # on your laptop
+   # append libriant-ci.pub to /home/deploy/.ssh/authorized_keys on the server
+   # GitHub → Settings → Secrets and variables → Actions → New secret:
+   #   DEPLOY_SSH_KEY = the PRIVATE key (contents of ./libriant-ci)
+   ```
+4. **`production` environment** — GitHub → Settings → Environments → New →
+   `production` (add an approval rule if you want a manual gate before deploys).
+5. **Server read access** — CI runs `git fetch` + `docker compose pull` on the
+   box. If the repo/packages are **private**, grant the box read access once (a
+   read-only git **deploy key** + `docker login ghcr.io` with a `read:packages`
+   PAT); if public, nothing to do. _(Image **push** uses the built-in
+   `GITHUB_TOKEN` — you never create a token for that.)_
+6. **Push to `main`** → watch Actions: _build → deploy → healthy_. The first
+   push deploys the stack; then run the one-time DB bootstrap (Part 9).
+
+> **Heads-up:** CI does `git reset --hard`, so host-local edits to **tracked**
+> files (e.g. tuning the `postgres` command in the compose file) are overwritten
+> on the next deploy. Keep customisations in `.env.prod` or an untracked
+> override file.
+
+**Manual deploy** (fallback / break-glass) is always available:
 
 ```sh
 cd /srv/libriant/app && git pull

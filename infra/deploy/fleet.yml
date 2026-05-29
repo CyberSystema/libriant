@@ -9,12 +9,11 @@
 hosts:
   - name: CyberSystema-1
     user: deploy
-    # SSH/rsync target. NOTE: the deploy workflow ALSO uses this as the public
-    # health-check host (`curl https://<ssh>/healthz`), so for CI it must be a
-    # DNS name with a valid TLS cert (e.g. `libriant.app`). A raw IP works for
-    # MANUAL ssh but fails that HTTPS cert check — switch this to your domain
-    # before relying on the CI deploy workflow.
-    ssh: 203.0.113.10
+    # SSH/rsync target AND the public health-check host the deploy workflow
+    # curls (`https://<ssh>/healthz`). Must be a DNS name with a valid TLS cert
+    # so CI's health check passes — a raw IP fails the cert check. Point this
+    # A-record at the box (same IP you SSH to).
+    ssh: libriant.app
     # Compose project name on the remote host. The workflow exports this
     # as `COMPOSE_PROJECT_NAME` before running compose commands.
     project: libriant
