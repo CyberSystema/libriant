@@ -121,12 +121,17 @@ When to grow: see **Part J (vertical — your `CPX32 → CCX23` step)** and
       images built by `.github/workflows/deploy.yml`, _or_ the ability to build
       images locally and push them.
 - [ ] A **Stripe account** (test mode is fine to start) for billing keys.
-- [ ] An **SSH keypair** for server access (`ssh-keygen -t ed25519`).
-- [ ] `hcloud` CLI installed locally (optional but handy):
-      `brew install hcloud` / see Hetzner docs. Create an API token in the
-      Cloud Console → _Security → API tokens_ and `hcloud context create libriant`.
+- [ ] An **SSH keypair** for server access (`ssh-keygen -t ed25519`). Upload the
+      **public** key (`~/.ssh/id_ed25519.pub`) in the Cloud Console →
+      _Security → SSH keys_ so it can be attached when you create the server.
 - [ ] Generate the production **secrets** now and keep them in your password
       manager (the next block).
+
+> This guide uses **only the Hetzner Cloud Console (web UI) + SSH** — no
+> `hcloud` CLI or API token required. Cloud‑platform actions (create server,
+> firewall, rescale, networks, load balancer) are done in the Console; anything
+> _inside_ the server is done over SSH. **Prefer the CLI?** **Part L** (at the
+> end) lists the equivalent `hcloud` commands for every Console step.
 
 Generate the secrets:
 
@@ -150,41 +155,33 @@ echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
 
 ## 3. Part A — Provision the server
 
-### Via the Cloud Console
+### Create the server (Cloud Console)
 
-1. **Create server** → choose your region → image **Ubuntu 26.04** → type
-   **CPX32** → add your SSH key → name it `cell-01` → **Create**.
-2. Note the public IPv4 (and IPv6) address.
-
-### Or via `hcloud`
-
-```sh
-hcloud ssh-key create --name libriant-deploy --public-key-from-file ~/.ssh/id_ed25519.pub
-hcloud server create \
-  --name cell-01 \
-  --type cpx32 \
-  --image ubuntu-26.04 \
-  --location nbg1 \
-  --ssh-key libriant-deploy
-hcloud server ip cell-01      # → your IPv4
-```
+1. **Add your SSH key** (if you didn't in Part 2): _Security → SSH keys → Add
+   SSH key_ → paste the contents of `~/.ssh/id_ed25519.pub` → name it
+   `libriant-deploy`.
+2. **Create server:** _Servers → Add server_ → choose your region → image
+   **Ubuntu 26.04** → type **CPX32** → under _SSH keys_ tick `libriant-deploy`
+   → name it `cell-01` → **Create & Buy now**.
+3. Note the public **IPv4** (and IPv6) on the server's page — you'll SSH to it
+   below.
 
 ### Cloud Firewall (network‑level — do this first)
 
-Allow only SSH + HTTP/HTTPS. Postgres/Redis are never exposed.
+Allow only SSH + HTTP/HTTPS; Postgres/Redis are never exposed. In the Console:
+_Firewalls → Create Firewall_, name it `libriant-edge`, add the **inbound** rules
+below, then **Apply to resources → select `cell-01`**:
 
-```sh
-hcloud firewall create --name libriant-edge
-# inbound: SSH (lock to your IP if you have a static one), HTTP, HTTPS (incl. HTTP/3)
-hcloud firewall add-rule libriant-edge --direction in --protocol tcp --port 22  --source-ips 0.0.0.0/0 --source-ips ::/0
-hcloud firewall add-rule libriant-edge --direction in --protocol tcp --port 80  --source-ips 0.0.0.0/0 --source-ips ::/0
-hcloud firewall add-rule libriant-edge --direction in --protocol tcp --port 443 --source-ips 0.0.0.0/0 --source-ips ::/0
-hcloud firewall add-rule libriant-edge --direction in --protocol udp --port 443 --source-ips 0.0.0.0/0 --source-ips ::/0
-hcloud firewall apply-to-resource libriant-edge --type server --server cell-01
-```
+| Direction | Protocol | Port | Source                                |
+| --------- | -------- | ---- | ------------------------------------- |
+| Inbound   | TCP      | 22   | your IP/CIDR (or `0.0.0.0/0`, `::/0`) |
+| Inbound   | TCP      | 80   | `0.0.0.0/0`, `::/0`                   |
+| Inbound   | TCP      | 443  | `0.0.0.0/0`, `::/0`                   |
+| Inbound   | UDP      | 443  | `0.0.0.0/0`, `::/0` (HTTP/3)          |
 
-> Tighten port 22 to your own IP/CIDR if it's static. Outbound is allowed by
-> default (needed for ACME, GHCR pulls, Stripe, OpenLibrary, backups).
+> Lock port 22 to your own IP/CIDR if it's static. Outbound is allowed by
+> default (needed for ACME, GHCR pulls, Stripe, OpenLibrary, backups). The
+> host‑level `ufw` firewall configured in Part B is the in‑server second layer.
 
 ---
 
@@ -717,12 +714,12 @@ connection pressure, or shared‑CPU jitter on the `CPX` line.
 
 ### Step by step
 
-1. **Backup first.** Run the backup, confirm it's good, and (optionally) take a
-   Hetzner snapshot:
+1. **Backup first.** Run the backup over SSH and confirm it's good; optionally
+   also take a Hetzner snapshot in the Console (_server → Snapshots → Take
+   snapshot_, label it `pre-resize <date>`):
    ```sh
    set -a && . /srv/libriant/.env.prod && set +a
    COMPOSE_PROJECT_NAME=app /srv/libriant/app/scripts/backup.sh
-   hcloud server create-image --type snapshot --description "pre-resize $(date +%F)" cell-01
    ```
 2. **Announce + enter maintenance** (admin UI → System mode → `maintenance`),
    or set `MAINTENANCE_HARD=true` + recreate caddy.
@@ -731,20 +728,12 @@ connection pressure, or shared‑CPU jitter on the `CPX` line.
    cd /srv/libriant/app
    docker compose -f infra/compose/docker-compose.prod.yml stop   # graceful (tini + shutdown hooks)
    ```
-4. **Power off** the server:
-   ```sh
-   hcloud server poweroff cell-01      # or Console → Power → Power off
-   ```
-5. **Change the type** (`CPX32 → CCX23`):
-   ```sh
-   # Same 160 GB disk on both, so --keep-disk is a no-op here — but keep the habit:
-   hcloud server change-type --keep-disk cell-01 ccx23
-   ```
-   (Console: _server → Rescale → pick `CCX23` → choose “Keep disk” → Rescale_.)
-6. **Power on:**
-   ```sh
-   hcloud server poweron cell-01
-   ```
+4. **Power off** the server: Console → _server → Power → Power off_ (wait until
+   the status shows **Off**).
+5. **Change the type** (`CPX32 → CCX23`): Console → _server → Rescale_ → pick
+   **`CCX23`** → choose **“Keep disk”** (a no‑op here since both are 160 GB, but
+   keep the habit) → **Rescale**.
+6. **Power on:** Console → _server → Power → Power on_.
 7. **If you grew the disk**, confirm the filesystem expanded (Hetzner's images
    auto‑grow the root partition on boot via cloud‑init):
    ```sh
@@ -790,16 +779,19 @@ the `scripts/tenant-*` tooling.
 
 ### Stage 1 — Move Postgres to its own server
 
-1. Provision a second Hetzner server (e.g. a `CCX`/`CX` with more RAM for the
-   DB) **on a private network** with `cell-01`:
-   ```sh
-   hcloud network create --name libriant-net --ip-range 10.0.0.0/16
-   hcloud network add-subnet libriant-net --type cloud --network-zone eu-central --ip-range 10.0.0.0/24
-   hcloud server create --name db-01 --type ccx23 --image ubuntu-26.04 --location nbg1 --ssh-key libriant-deploy --network libriant-net
-   hcloud server attach-to-network cell-01 --network libriant-net   # if not already
-   ```
+1. Provision a second Hetzner server (e.g. a `CCX23` for the DB) **on a private
+   network** with `cell-01`, all in the Console:
+   - _Networks → Create network_ → name `libriant-net`, IP range `10.0.0.0/16`
+     (add a subnet in your network zone, e.g. `eu-central`, `10.0.0.0/24`).
+   - _Servers → Add server_ → image **Ubuntu 26.04**, type **CCX23**, attach the
+     `libriant-deploy` SSH key, and under _Networking_ attach **`libriant-net`**;
+     name it `db-01`.
+   - On `cell-01`'s page → _Networking → Attach to network_ → `libriant-net` (if
+     it isn't already attached).
+
    Note the private IPs (e.g. `db-01` = `10.0.0.3`). Keep Postgres on the
    **private** network only; never expose 5432 publicly.
+
 2. Stand up Postgres on `db-01` (its own minimal compose with just the
    `postgres` service from this repo, same image/extensions/`postgres-init.sql`).
 3. **Migrate the data** during a maintenance window:
@@ -837,15 +829,11 @@ Sessions live in Redis and the app is stateless, so this is additive.
    Docker + the repo + `.env.prod`. Point its `CONTROL_DATABASE_URL`/
    `REDIS_URL` at the **shared** DB + Redis hosts (private IPs). Run only
    `web` + `api` + `worker` there (DB/Redis/Caddy centralised — see below).
-2. Create a **Hetzner Load Balancer**, add both app hosts as targets, health
-   check `/healthz`:
-   ```sh
-   hcloud load-balancer create --name libriant-lb --type lb11 --location nbg1
-   hcloud load-balancer add-service libriant-lb --protocol https --listen-port 443 --destination-port 443
-   hcloud load-balancer add-target libriant-lb --server cell-01
-   hcloud load-balancer add-target libriant-lb --server cell-01b
-   # health check → HTTP /healthz on 80
-   ```
+2. Create a **Hetzner Load Balancer** in the Console (_Load Balancers → Create
+   Load Balancer_): type `LB11`, same location and attached to `libriant-net`.
+   Add a **service** (HTTPS, listen port 443 → target port 443), add **both app
+   hosts** (`cell-01`, `cell-01b`) as **targets**, and set the **health check**
+   to HTTP `/healthz` on port 80.
    Point DNS for `libriant.app`/`admin.libriant.app` at the **LB** IP.
 3. TLS: either keep **Caddy on each app node** (LB does TCP passthrough on 443),
    or terminate TLS at the LB and run Caddy in HTTP‑only mode. Keeping Caddy per
@@ -909,7 +897,97 @@ different tenants can sit on different backends during the migration.
 
 ---
 
-## 15. Appendix
+## 15. Part L — Using the `hcloud` CLI (optional alternative to the Console)
+
+Everything the main guide does through the **Cloud Console** can also be driven
+from your laptop with Hetzner's [`hcloud`](https://github.com/hetznercloud/cli)
+CLI. This part is a **drop‑in alternative** to the Console clicks in Parts A, J
+and K — pick whichever you prefer; the resulting infrastructure is identical.
+Work _inside_ the server is still done over SSH exactly as in the main guide.
+
+### L.0 Install & authenticate
+
+```sh
+brew install hcloud                 # macOS; see the repo for Linux/Windows
+# Console → Security → API tokens → Generate (Read & Write), then:
+hcloud context create libriant      # paste the token when prompted
+hcloud context use libriant
+```
+
+### L.1 Provision — replaces Part A
+
+```sh
+# SSH key
+hcloud ssh-key create --name libriant-deploy --public-key-from-file ~/.ssh/id_ed25519.pub
+
+# Server: CPX32 / Ubuntu 26.04
+hcloud server create \
+  --name cell-01 \
+  --type cpx32 \
+  --image ubuntu-26.04 \
+  --location nbg1 \
+  --ssh-key libriant-deploy
+hcloud server ip cell-01            # → the public IPv4 you SSH to
+
+# Cloud Firewall: SSH + HTTP/HTTPS only (HTTP/3 = UDP 443)
+hcloud firewall create --name libriant-edge
+hcloud firewall add-rule libriant-edge --direction in --protocol tcp --port 22  --source-ips 0.0.0.0/0 --source-ips ::/0
+hcloud firewall add-rule libriant-edge --direction in --protocol tcp --port 80  --source-ips 0.0.0.0/0 --source-ips ::/0
+hcloud firewall add-rule libriant-edge --direction in --protocol tcp --port 443 --source-ips 0.0.0.0/0 --source-ips ::/0
+hcloud firewall add-rule libriant-edge --direction in --protocol udp --port 443 --source-ips 0.0.0.0/0 --source-ips ::/0
+hcloud firewall apply-to-resource libriant-edge --type server --server cell-01
+```
+
+> Lock port 22 to your own IP/CIDR (`--source-ips 203.0.113.5/32`) if it's
+> static. Then continue with **Part B (Host setup)** over SSH as normal.
+
+### L.2 Vertical upgrade — replaces Part J's power/rescale clicks
+
+Run the SSH steps (backup, drain, `docker compose stop`) from Part J as written;
+these commands replace only the Console power/rescale actions:
+
+```sh
+hcloud server create-image --type snapshot --description "pre-resize $(date +%F)" cell-01
+hcloud server poweroff cell-01
+# Same 160 GB disk on both, so --keep-disk is a no-op here — but keep the habit:
+hcloud server change-type --keep-disk cell-01 ccx23
+hcloud server poweron cell-01
+```
+
+### L.3 Horizontal upgrade — replaces Part K's Console steps
+
+**Stage 1 — dedicated Postgres host on a private network:**
+
+```sh
+hcloud network create --name libriant-net --ip-range 10.0.0.0/16
+hcloud network add-subnet libriant-net --type cloud --network-zone eu-central --ip-range 10.0.0.0/24
+hcloud server create --name db-01 --type ccx23 --image ubuntu-26.04 --location nbg1 --ssh-key libriant-deploy --network libriant-net
+hcloud server attach-to-network cell-01 --network libriant-net   # if not already
+```
+
+**Stage 2 — Load Balancer across app hosts:**
+
+```sh
+hcloud load-balancer create --name libriant-lb --type lb11 --location nbg1
+hcloud load-balancer attach-to-network libriant-lb --network libriant-net
+hcloud load-balancer add-service libriant-lb --protocol https --listen-port 443 --destination-port 443
+hcloud load-balancer add-target libriant-lb --server cell-01  --use-private-ip
+hcloud load-balancer add-target libriant-lb --server cell-01b --use-private-ip
+# Set the health check to HTTP /healthz on port 80 in the LB's service config.
+```
+
+### L.4 Handy everyday commands
+
+```sh
+hcloud server list                      # all servers + status + IPs
+hcloud server describe cell-01          # type, disk, network, etc.
+ssh root@"$(hcloud server ip cell-01)"  # SSH using the looked-up IP
+hcloud server reboot cell-01
+```
+
+---
+
+## 16. Appendix
 
 ### A. Ports
 
