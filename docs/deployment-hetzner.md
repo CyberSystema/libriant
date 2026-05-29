@@ -65,29 +65,52 @@ it does not need to compile anything.
 
 ### Pick
 
-| Need                 | Hetzner type               | vCPU | RAM  | Disk       | ~€/mo\* |
-| -------------------- | -------------------------- | ---- | ---- | ---------- | ------- |
-| **Recommended**      | **CX32** (Intel, shared)   | 4    | 8 GB | 80 GB NVMe | ~€8     |
-| Cheaper (ARM)        | CAX21 (Ampere, shared)     | 4    | 8 GB | 80 GB NVMe | ~€7     |
-| Predictable perf     | CCX13 (AMD, **dedicated**) | 2    | 8 GB | 80 GB NVMe | ~€13    |
-| Budget floor (tight) | CX22                       | 2    | 4 GB | 40 GB      | ~€4.5   |
-| Backups offsite      | **Storage Box BX11**       | –    | –    | 1 TB       | ~€4     |
+This guide is written for the path **start on `CPX32` now → rescale up to
+`CCX23` later** (a _vertical_ upgrade — same single box, bigger and dedicated;
+see Part J). Both are AMD x86 with a **160 GB** disk, so the move is a clean
+in‑place rescale with no disk‑shrink trap.
 
-\* Approximate — **check current Hetzner pricing**. The project plan itself
-targets a “Hetzner CX32” for the pilot, which is the sweet spot here.
+| Need                  | Hetzner type                   | vCPU | RAM   | Disk        | ~€/mo\* |
+| --------------------- | ------------------------------ | ---- | ----- | ----------- | ------- |
+| **Recommended (now)** | **CPX32** (AMD, shared)        | 4    | 8 GB  | 160 GB NVMe | ~€16    |
+| **Upgrade target**    | **CCX23** (AMD, **dedicated**) | 4    | 16 GB | 160 GB NVMe | ~€30    |
+| Cheaper (ARM)         | CAX21 (Ampere, shared)         | 4    | 8 GB  | 80 GB NVMe  | ~€7     |
+| Backups offsite       | **Storage Box BX11**           | –    | –     | 1 TB        | ~€4     |
 
-**Recommendation: one `CX32` + one `BX11` Storage Box for offsite backups.**
+\* Approximate — **check current Hetzner pricing**. The project plan targets a
+“Hetzner CX32” for the pilot; **CPX32** is the same class on AMD with **double
+the disk** (160 GB vs 80 GB) and a frictionless rescale path to the dedicated
+**CCX23**.
+
+**Recommendation: start on one `CPX32` + one `BX11` Storage Box for offsite
+backups; rescale to `CCX23` (Part J) when you need dedicated, jitter‑free CPU
+and more RAM.**
 
 - **Region:** pick the one nearest your libraries (e.g. `nbg1`/`fsn1`/`hel1` in
   the EU). Keep it consistent with where your Storage Box lives.
+- **Why CPX32 now:** 4 shared AMD vCPU / 8 GB / 160 GB NVMe. Shared vCPU is
+  fine at pilot concurrency (a handful of simultaneous requests), and the
+  160 GB disk is generous headroom for per‑tenant DBs + uploads + nightly
+  backups.
+- **Why CCX23 as the upgrade:** **dedicated** vCPU (no noisy‑neighbour CPU
+  jitter) and **16 GB** RAM (double), on the **same 160 GB** disk — so it's a
+  power‑off → _Rescale_ → power‑on with no data migration (Part J). That's a
+  **vertical** upgrade; adding _more_ boxes / splitting services is the
+  **horizontal** path in Part K, and only needed once a single dedicated box
+  isn't enough.
 - **ARM note:** Prisma 7 is engine‑free (pure‑JS driver adapters) and the whole
-  stack is Node/Docker, so **ARM (CAX) works fine** and is cheaper. Choose
-  `CX32` only if you prefer x86 for zero surprises.
-- **CX22 (4 GB) is viable but tight** — it leaves little headroom for the nightly
-  `pg_dumpall` + storage tar. Add a 2 GB swap file (Part 4) if you use it.
-- **Image:** Ubuntu 24.04 LTS (x86) or the ARM equivalent for CAX.
+  stack is Node/Docker, so **ARM (CAX) works fine** and is cheaper. It is _not_
+  on the CPX→CCX rescale path, though (different architecture), so stay on AMD
+  if you want the in‑place upgrade above.
+- **Swap:** 8 GB is comfortable for this stack, but a 2 GB swap file (Part 4)
+  is still cheap insurance against memory spikes during the nightly
+  `pg_dumpall` + storage tar.
+- **Image:** **Ubuntu 26.04 LTS** (x86). Docker's `get.docker.com` installer
+  auto‑detects the `resolute` codename, so the host‑setup steps below are
+  unchanged.
 
-When to grow: see **Part J (vertical)** and **Part K (horizontal)**.
+When to grow: see **Part J (vertical — your `CPX32 → CCX23` step)** and
+**Part K (horizontal)**.
 
 ---
 
@@ -129,8 +152,8 @@ echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
 
 ### Via the Cloud Console
 
-1. **Create server** → choose your region → image **Ubuntu 24.04** → type
-   **CX32** → add your SSH key → name it `cell-01` → **Create**.
+1. **Create server** → choose your region → image **Ubuntu 26.04** → type
+   **CPX32** → add your SSH key → name it `cell-01` → **Create**.
 2. Note the public IPv4 (and IPv6) address.
 
 ### Or via `hcloud`
@@ -139,8 +162,8 @@ echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
 hcloud ssh-key create --name libriant-deploy --public-key-from-file ~/.ssh/id_ed25519.pub
 hcloud server create \
   --name cell-01 \
-  --type cx32 \
-  --image ubuntu-24.04 \
+  --type cpx32 \
+  --image ubuntu-26.04 \
   --location nbg1 \
   --ssh-key libriant-deploy
 hcloud server ip cell-01      # → your IPv4
@@ -179,7 +202,7 @@ apt-get update && apt-get -y upgrade
 apt-get -y install git curl ufw fail2ban unattended-upgrades ca-certificates
 dpkg-reconfigure -plow unattended-upgrades   # enable automatic security updates
 
-# 2. Swap (cheap insurance against memory spikes; essential on a 4 GB box)
+# 2. Swap (cheap insurance against memory spikes during nightly backups)
 fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 sysctl -w vm.swappiness=10 && echo 'vm.swappiness=10' >> /etc/sysctl.d/99-libriant.conf
@@ -655,13 +678,13 @@ netdata/netdata`) gives per‑second host + container dashboards and built‑in
 
 ### 12.3 What to watch, and what it tells you to do
 
-| Signal                             | Healthy                  | When it crosses → do                                                       |
-| ---------------------------------- | ------------------------ | -------------------------------------------------------------------------- |
-| **RAM available / swap**           | RAM avail > 20%, no swap | low/ swapping → **vertical upgrade** (Part J), bigger RAM                  |
-| **PG cache hit ratio**             | > 99%                    | < 95% sustained → more RAM (vertical) or **shard tenants** (Part K)        |
-| **PG connections / max**           | < 60%                    | > 80% → tune PgBouncer pool; > 95% → urgent                                |
-| **Disk used**                      | < 80%                    | > 85% → backups to Storage Box, files to Object Storage (Part K Stage 4)   |
-| **Tenant count / heaviest tenant** | within plan-for capacity | nearing your CCX/CPX limit → split Postgres (Part K Stage 1) or add a cell |
+| Signal                             | Healthy                  | When it crosses → do                                                                          |
+| ---------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------- |
+| **RAM available / swap**           | RAM avail > 20%, no swap | low/ swapping → **vertical upgrade** (Part J), bigger RAM                                     |
+| **PG cache hit ratio**             | > 99%                    | < 95% sustained → more RAM (vertical) or **shard tenants** (Part K)                           |
+| **PG connections / max**           | < 60%                    | > 80% → tune PgBouncer pool; > 95% → urgent                                                   |
+| **Disk used**                      | < 80%                    | > 85% → backups to Storage Box, files to Object Storage (Part K Stage 4)                      |
+| **Tenant count / heaviest tenant** | within plan-for capacity | nearing your CPX32/CCX23 limit → first rescale (Part J), then split Postgres (Part K Stage 1) |
 
 The monitoring stack is the early‑warning system; the upgrade procedures below
 (Parts J & K) are what you do when it goes amber.
@@ -670,9 +693,17 @@ The monitoring stack is the early‑warning system; the upgrade procedures below
 
 ## 13. Part J — Vertical upgrade (scale the single box up)
 
-Use this first: it's the cheapest way to buy headroom (e.g. `CX32 → CX42 → CX52`,
-or `CAX21 → CAX31`). Signs you need it: sustained high RAM/CPU, slow page loads,
-backups pressing on memory, Postgres connection pressure.
+Use this first: it's the cheapest way to buy headroom. Signs you need it:
+sustained high RAM/CPU, slow page loads, backups pressing on memory, Postgres
+connection pressure, or shared‑CPU jitter on the `CPX` line.
+
+> **Your planned step: `CPX32 → CCX23`.** This swaps 4 _shared_ AMD vCPU + 8 GB
+> for 4 _dedicated_ AMD vCPU + 16 GB — eliminating noisy‑neighbour CPU jitter
+> and doubling RAM (more Postgres cache + backup headroom). Both types have the
+> **same 160 GB disk**, so the rescale keeps the disk untouched and there is **no
+> data migration** — it's a power‑off → _Rescale_ → power‑on. Beyond that, `CCX23
+→ CCX33` (8 vCPU / 32 GB) is the next dedicated step before you'd go
+> horizontal (Part K).
 
 > **Hetzner rules you must know:**
 >
@@ -680,6 +711,8 @@ backups pressing on memory, Postgres connection pressure.
 > - **Disk growth is irreversible.** If you let the new type's larger disk be
 >   applied, you can never rescale _down_ to a smaller‑disk type again. To keep
 >   the option to downscale, choose **“keep disk size”** when rescaling.
+>   (`CPX32 → CCX23` is 160 GB → 160 GB, so this doesn't bite — but keep the
+>   habit.)
 > - CPU/RAM changes are reversible (as long as the disk wasn't grown).
 
 ### Step by step
@@ -702,14 +735,12 @@ backups pressing on memory, Postgres connection pressure.
    ```sh
    hcloud server poweroff cell-01      # or Console → Power → Power off
    ```
-5. **Change the type:**
+5. **Change the type** (`CPX32 → CCX23`):
    ```sh
-   # Keep disk size so you can downscale later (recommended):
-   hcloud server change-type --keep-disk cell-01 cx42
-   # ...or accept the bigger disk (irreversible):
-   # hcloud server change-type cell-01 cx42
+   # Same 160 GB disk on both, so --keep-disk is a no-op here — but keep the habit:
+   hcloud server change-type --keep-disk cell-01 ccx23
    ```
-   (Console: _server → Rescale → pick type → choose “Keep disk” → Rescale_.)
+   (Console: _server → Rescale → pick `CCX23` → choose “Keep disk” → Rescale_.)
 6. **Power on:**
    ```sh
    hcloud server poweron cell-01
@@ -728,13 +759,14 @@ backups pressing on memory, Postgres connection pressure.
    curl -fsS https://libriant.app/readyz | jq
    # System mode → back to normal (or MAINTENANCE_HARD=false + recreate caddy)
    ```
-9. **Tune Postgres for the new RAM (optional but worthwhile on a bigger box).**
-   The compose passes only `max_connections=200` + `pg_stat_statements`. On
-   CX42+ you may want larger `shared_buffers`/`effective_cache_size`. Add flags
-   to the postgres `command:` in the compose file (e.g.
-   `-c shared_buffers=2GB -c effective_cache_size=6GB`) and recreate `postgres`.
-   PgBouncer's `DEFAULT_POOL_SIZE=20` / `MAX_CLIENT_CONN=500` are already
-   generous for ≤20 tenants; raise only if you see pool exhaustion.
+9. **Tune Postgres for the new RAM (worthwhile on `CCX23`'s 16 GB).**
+   The compose passes only `max_connections=200` + `pg_stat_statements`. With
+   16 GB to play with, give Postgres a bigger cache: add flags to the postgres
+   `command:` in the compose file (rule of thumb: `shared_buffers` ≈ 25 % of
+   RAM, `effective_cache_size` ≈ 50–60 %), e.g.
+   `-c shared_buffers=4GB -c effective_cache_size=9GB`, then recreate
+   `postgres`. PgBouncer's `DEFAULT_POOL_SIZE=20` / `MAX_CLIENT_CONN=500` are
+   already generous for ≤20 tenants; raise only if you see pool exhaustion.
 
 **Downtime:** a few minutes (the resize itself). Plan a low‑traffic window.
 
@@ -763,7 +795,7 @@ the `scripts/tenant-*` tooling.
    ```sh
    hcloud network create --name libriant-net --ip-range 10.0.0.0/16
    hcloud network add-subnet libriant-net --type cloud --network-zone eu-central --ip-range 10.0.0.0/24
-   hcloud server create --name db-01 --type ccx13 --image ubuntu-24.04 --location nbg1 --ssh-key libriant-deploy --network libriant-net
+   hcloud server create --name db-01 --type ccx23 --image ubuntu-26.04 --location nbg1 --ssh-key libriant-deploy --network libriant-net
    hcloud server attach-to-network cell-01 --network libriant-net   # if not already
    ```
    Note the private IPs (e.g. `db-01` = `10.0.0.3`). Keep Postgres on the
