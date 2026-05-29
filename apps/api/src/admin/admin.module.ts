@@ -9,6 +9,8 @@ import { AdminOverridesController } from './admin-overrides.controller.js';
 import { AdminPlansController } from './admin-plans.controller.js';
 import { AdminSessionService } from './admin-session.service.js';
 import { AdminTenantsController } from './admin-tenants.controller.js';
+import { FleetController } from './fleet.controller.js';
+import { FleetService } from './fleet.service.js';
 
 /**
  * Internal admin module — auth + tenant list + plan editor + tenant
@@ -27,12 +29,14 @@ import { AdminTenantsController } from './admin-tenants.controller.js';
     AdminCookieService,
     AdminAuthService,
     AdminAuthGuard,
+    FleetService,
   ],
   controllers: [
     AdminAuthController,
     AdminTenantsController,
     AdminPlansController,
     AdminOverridesController,
+    FleetController,
   ],
   exports: [AdminSessionService, AdminCookieService, AdminAuthGuard],
 })

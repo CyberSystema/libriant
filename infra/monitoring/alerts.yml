@@ -1,0 +1,98 @@
+# Libriant — Prometheus alert rules.
+#
+# Thresholds map to the capacity signals from the deployment guide: host
+# RAM / disk / CPU / swap, scrape-target liveness, and the app's own
+# Postgres connection-saturation + cache-hit gauges. Wire an Alertmanager
+# (email / Slack / ntfy) in prometheus.yml to actually deliver these; until
+# then they're visible in the Prometheus + Grafana "Alerts" views.
+
+groups:
+  - name: availability
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Scrape target down ({{ $labels.job }} / {{ $labels.instance }})'
+          description: 'Prometheus cannot scrape {{ $labels.job }} for >2m.'
+
+      - alert: LibriantApiDown
+        expr: up{job="libriant-api"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Libriant API is not responding to scrapes'
+          description: 'The api /metrics endpoint has been down for >1m.'
+
+  - name: host
+    rules:
+      - alert: HostLowMemory
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.12
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Low available memory on {{ $labels.instance }}'
+          description: 'Available RAM < 12% for 10m. Cache headroom is gone — tune Postgres or scale the box (vertical upgrade).'
+
+      - alert: HostSwapping
+        expr: node_memory_SwapTotal_bytes > 0 and (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / node_memory_SwapTotal_bytes > 0.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Host is swapping heavily ({{ $labels.instance }})'
+          description: 'Swap >50% used for 10m — memory pressure. Time to scale up.'
+
+      - alert: HostDiskFilling
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs|ramfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs|ramfs"}) < 0.15
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Disk filling on {{ $labels.instance }} ({{ $labels.mountpoint }})'
+          description: 'Free space < 15%. Offload backups to a Storage Box and/or move per-tenant files to Object Storage.'
+
+      - alert: HostDiskCritical
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs|ramfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|devtmpfs|ramfs"}) < 0.07
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Disk nearly full on {{ $labels.instance }} ({{ $labels.mountpoint }})'
+          description: 'Free space < 7%. Act now — Postgres/uploads will fail when the disk fills.'
+
+      - alert: HostHighCPU
+        expr: 1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.85
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Sustained high CPU on {{ $labels.instance }}'
+          description: 'CPU busy > 85% for 15m. Check for a bulk import/report, or scale CPU.'
+
+  - name: libriant
+    rules:
+      - alert: LibriantPgConnectionsHigh
+        expr: libriant_pg_connections / libriant_pg_connections_max > 0.8
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Postgres connections > 80% of max'
+          description: 'Approaching max_connections. Lower PgBouncer DEFAULT_POOL_SIZE or raise max_connections (see the deployment guide capacity section).'
+
+      - alert: LibriantPgConnectionsCritical
+        expr: libriant_pg_connections / libriant_pg_connections_max > 0.95
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Postgres connections > 95% of max'
+          description: 'New connections will start failing. Tune pools now.'
+
+      - alert: LibriantPgCacheHitLow
+        expr: libriant_pg_cache_hit_ratio < 0.95
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Postgres cache hit ratio < 95%'
+          description: 'Working set is outgrowing RAM — queries are hitting disk. Add RAM (vertical) or shard tenants (horizontal).'

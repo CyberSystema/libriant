@@ -1,0 +1,118 @@
+# Libriant — free, self-hosted server-level monitoring (optional add-on).
+#
+#   Prometheus  — scrapes + stores time series (30d retention)
+#   node-exporter — host CPU / RAM / disk / network
+#   cAdvisor    — per-container CPU / RAM / I/O
+#   Grafana     — dashboards + alerting (OSS edition)
+#
+# All images are free / open-source. The stack attaches to the main app's
+# private network so Prometheus can scrape the app's own /metrics
+# (api:3001, worker:3002 — incl. the libriant_tenants_total /
+# libriant_pg_* / libriant_redis_* gauges).
+#
+# Bring up (after the main stack is running):
+#   export LIBRIANT_APP_NETWORK="$(docker network ls --format '{{.Name}}' | grep -E '_app$' | head -1)"
+#   export GRAFANA_ADMIN_PASSWORD="$(openssl rand -hex 16)"
+#   docker compose -f infra/monitoring/docker-compose.monitoring.yml up -d
+#
+# Grafana binds to localhost only — reach it over an SSH tunnel:
+#   ssh -L 3300:127.0.0.1:3300 deploy@your-server   # then open http://localhost:3300
+#
+# Versions are pinned but old enough to exist everywhere — bump to current
+# stable when you set this up.
+
+x-restart: &restart
+  restart: unless-stopped
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: '20m'
+      max-file: '5'
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    <<: [*restart, *logging]
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prom_data:/prometheus
+    # `monitoring` to talk to exporters + Grafana; `app` to scrape the app.
+    networks: [monitoring, app]
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    <<: [*restart, *logging]
+    pid: host
+    command:
+      - '--path.rootfs=/host'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - '/:/host:ro,rslave'
+    networks: [monitoring]
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    <<: [*restart, *logging]
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks: [monitoring]
+
+  grafana:
+    image: grafana/grafana-oss:11.4.0
+    <<: [*restart, *logging]
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    # localhost only — open via SSH tunnel, never exposed to the internet.
+    ports:
+      - '127.0.0.1:3300:3000'
+    networks: [monitoring]
+
+  # ---- Optional richer exporters (uncomment + set creds to enable) --------
+  # postgres-exporter:
+  #   image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
+  #   <<: [*restart, *logging]
+  #   environment:
+  #     DATA_SOURCE_NAME: "postgresql://libriant:${POSTGRES_PASSWORD}@postgres:5432/libriant_control?sslmode=disable"
+  #   networks: [monitoring, app]
+  #
+  # redis-exporter:
+  #   image: oliver006/redis_exporter:v1.67.0
+  #   <<: [*restart, *logging]
+  #   environment:
+  #     REDIS_ADDR: redis://redis:6379
+  #   networks: [monitoring, app]
+
+networks:
+  monitoring:
+    driver: bridge
+  # The main stack's private network (created by docker-compose.prod.yml).
+  # `docker network ls | grep _app` → set LIBRIANT_APP_NETWORK accordingly.
+  app:
+    external: true
+    name: ${LIBRIANT_APP_NETWORK:-libriant_app}
+
+volumes:
+  prom_data:
+  grafana_data:

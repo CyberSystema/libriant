@@ -21,6 +21,7 @@ export function AdminSidebar({ locale, admin }: Props) {
 
   const links = [
     { href: `${base}/tenants`, label: 'Tenants' },
+    { href: `${base}/fleet`, label: 'Capacity' },
     { href: `${base}/plans`, label: 'Plans' },
     { href: `${base}/announcements`, label: 'Announcements' },
     { href: `${base}/system-mode`, label: 'System mode' },

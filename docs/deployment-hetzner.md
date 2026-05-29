@@ -552,7 +552,123 @@ before any reboot/resize.
 
 ---
 
-## 12. Part J — Vertical upgrade (scale the single box up)
+## 12. Capacity & monitoring (watch these before you scale)
+
+You can't manage what you can't see. Libriant ships **two layers** of
+visibility — app-level (how many libraries, how big, how close to limits) and
+server-level (CPU/RAM/disk/containers) — both **free**.
+
+### 12.1 App-level — fleet & capacity (built in)
+
+- **Admin UI:** `https://admin.libriant.app` → **Capacity** in the sidebar. Shows
+  the tenant census (total **and** by status / plan / cell — not just active),
+  per‑tenant DB + storage sizes (heaviest first), and the host signals
+  (Postgres connections vs. max, cache‑hit ratio, Redis memory, disk %), with
+  amber/red colouring when a signal gets tight.
+- **API (JSON):** `GET /admin/fleet/overview` (admin‑authed) — the same data for
+  scripting/monitoring.
+- **CLI (on the server):** a human‑readable report, great for SSH or a daily
+  cron snapshot:
+  ```sh
+  ops "pnpm fleet:report"          # via the ops helper from Part D
+  ops "pnpm fleet:report -- --json"  # machine-readable
+  ```
+  ```
+  Libraries (total)   24      by status: active 22, suspended 1, archived 1
+  PG connections      8 / 100 (8%)      PG cache hit ratio  99.94%
+  Tenant DBs total    185 MB across 21  Disk (storage vol)  749 GB / 926 GB (81%)
+  Top libraries by total size: …
+  ```
+  Daily snapshot cron (optional):
+  ```sh
+  0 7 * * * deploy bash -lc 'set -a; . /srv/libriant/.env.prod; set +a; cd /srv/libriant/app && pnpm fleet:report >> /var/log/libriant/fleet.log 2>&1'
+  ```
+- **Prometheus gauges:** the API's internal `/metrics` exposes
+  `libriant_tenants_total{status=…}`, `libriant_storage_used_bytes`,
+  `libriant_pg_connections`, `libriant_pg_connections_max`,
+  `libriant_pg_cache_hit_ratio`, `libriant_redis_used_memory_bytes` (+ the
+  worker's `libriant_worker_jobs_running`). These are scraped by the stack
+  below and drive the alerts. `/metrics` is internal‑only (Caddy short‑circuits
+  the public path), so these counts are never exposed to tenants.
+
+### 12.2 Server-level — free self-hosted monitoring (Prometheus + Grafana)
+
+A complete, free, open‑source stack lives in `infra/monitoring/`:
+**Prometheus** (scrape + store + alert), **node-exporter** (host CPU/RAM/disk/
+network), **cAdvisor** (per‑container usage), **Grafana** (dashboards + alerts).
+It attaches to the app's private network to also scrape Libriant's own
+`/metrics`.
+
+**Bring it up** (after the main stack is running):
+
+```sh
+cd /srv/libriant/app
+# 1. Find the main stack's app network (created by the prod compose):
+export LIBRIANT_APP_NETWORK="$(docker network ls --format '{{.Name}}' | grep -E '_app$' | head -1)"
+# 2. Set a Grafana admin password:
+export GRAFANA_ADMIN_PASSWORD="$(openssl rand -hex 16)"; echo "Grafana admin pw: $GRAFANA_ADMIN_PASSWORD"
+# 3. Start the monitoring stack:
+docker compose -f infra/monitoring/docker-compose.monitoring.yml up -d
+```
+
+**Open Grafana** — it binds to `127.0.0.1` only (never public). Use an SSH
+tunnel from your laptop:
+
+```sh
+ssh -L 3300:127.0.0.1:3300 deploy@cell-01.libriant.app
+# then open http://localhost:3300  (user: admin, pw: the one you set)
+```
+
+The Prometheus datasource is **auto‑provisioned**. Import two community
+dashboards by ID (Grafana → Dashboards → Import):
+
+- **1860** — _Node Exporter Full_ (host CPU/RAM/disk/network).
+- **14282** — _cAdvisor_ (per‑container resources).
+
+For a Libriant‑specific panel, query the gauges directly, e.g.
+`libriant_tenants_total`, `libriant_pg_connections / libriant_pg_connections_max`,
+`libriant_pg_cache_hit_ratio`.
+
+**Alerts** — `infra/monitoring/alerts.yml` ships 10 rules covering exactly the
+capacity signals (validated with `promtool`):
+
+| Alert                                    | Fires when                     | Meaning / action                                  |
+| ---------------------------------------- | ------------------------------ | ------------------------------------------------- |
+| `LibriantApiDown` / `TargetDown`         | a target is unreachable        | the app or an exporter is down                    |
+| `HostLowMemory`                          | available RAM < 12% (10m)      | cache headroom gone → **scale up (Part J)**       |
+| `HostSwapping`                           | swap > 50% (10m)               | memory pressure → scale up                        |
+| `HostDiskFilling` / `HostDiskCritical`   | disk free < 15% / < 7%         | offload backups/storage; free space now           |
+| `HostHighCPU`                            | CPU busy > 85% (15m)           | bulk import/report, or scale CPU                  |
+| `LibriantPgConnectionsHigh` / `Critical` | connections > 80% / 95% of max | lower PgBouncer `DEFAULT_POOL_SIZE` (Parts J & K) |
+| `LibriantPgCacheHitLow`                  | cache hit < 95% (15m)          | working set outgrew RAM → scale up or shard       |
+
+They show in the Prometheus + Grafana **Alerts** views out of the box. To get
+**notified** (email / Slack / ntfy), run a free **Alertmanager** and point
+`prometheus.yml`'s `alerting:` block at it (a commented stub is included).
+
+> **Lighter free alternative:** if you'd rather one container with zero config,
+> **Netdata** (`docker run -d --name netdata -p 127.0.0.1:19999:19999 …
+netdata/netdata`) gives per‑second host + container dashboards and built‑in
+> alerts out of the box. The Prometheus stack above is the better choice once
+> you want long‑term retention, custom alerts, and to chart the `libriant_*`
+> app gauges alongside host metrics.
+
+### 12.3 What to watch, and what it tells you to do
+
+| Signal                             | Healthy                  | When it crosses → do                                                       |
+| ---------------------------------- | ------------------------ | -------------------------------------------------------------------------- |
+| **RAM available / swap**           | RAM avail > 20%, no swap | low/ swapping → **vertical upgrade** (Part J), bigger RAM                  |
+| **PG cache hit ratio**             | > 99%                    | < 95% sustained → more RAM (vertical) or **shard tenants** (Part K)        |
+| **PG connections / max**           | < 60%                    | > 80% → tune PgBouncer pool; > 95% → urgent                                |
+| **Disk used**                      | < 80%                    | > 85% → backups to Storage Box, files to Object Storage (Part K Stage 4)   |
+| **Tenant count / heaviest tenant** | within plan-for capacity | nearing your CCX/CPX limit → split Postgres (Part K Stage 1) or add a cell |
+
+The monitoring stack is the early‑warning system; the upgrade procedures below
+(Parts J & K) are what you do when it goes amber.
+
+---
+
+## 13. Part J — Vertical upgrade (scale the single box up)
 
 Use this first: it's the cheapest way to buy headroom (e.g. `CX32 → CX42 → CX52`,
 or `CAX21 → CAX31`). Signs you need it: sustained high RAM/CPU, slow page loads,
@@ -624,7 +740,7 @@ backups pressing on memory, Postgres connection pressure.
 
 ---
 
-## 13. Part K — Horizontal upgrade (split services / add nodes)
+## 14. Part K — Horizontal upgrade (split services / add nodes)
 
 When one box can't grow further (or you want resilience), follow the project's
 designed scaling path. Each stage is **configuration, not a rewrite** — the
@@ -761,7 +877,7 @@ different tenants can sit on different backends during the migration.
 
 ---
 
-## 14. Appendix
+## 15. Appendix
 
 ### A. Ports
 
