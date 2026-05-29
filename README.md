@@ -1350,8 +1350,9 @@ open http://localhost:3000/en/admin/plans/community # feature value editor
 ### Verify support access (Step 18a)
 
 Step 18a ships the **only** path by which a Libriant admin can see a
-tenant's data: the library issues a one-time `SUPPORT-XXXXXX` code with a
-1h TTL; the admin redeems it with code + TOTP MFA; a 4h `SupportSession`
+tenant's data: the library issues a one-time `SUPPORT-XXXXXXXXXX` code with a
+1h TTL; the admin redeems it with code + TOTP MFA (rate-limited, with a
+401 on a bad code); a 4h `SupportSession`
 opens; every request during the session is audit-logged; the library can
 revoke at any time and the admin's next request 401s.
 
@@ -1445,12 +1446,13 @@ curl -s -b $LIB http://localhost:3001/t/step18a/support/sessions/log | jq '.sess
   `mfaKeyId` (label for future key rotation). Enroll is a two-step
   setup→verify dance; we only persist + flip `mfaEnabled=true` once the
   admin's authenticator has typed back a correct code.
-- **Support codes are bcrypt-hashed.** Format `SUPPORT-XXXXXX` (4-char
-  prefix + 6-char body) from a 32-char alphabet that excludes
-  visually-ambiguous chars (no `O`, `0`, `I`, `1`). The prefix is stored
-  in plaintext to narrow the bcrypt search to a tiny candidate set; the
-  body is bcrypt(cost 12). Plaintext is returned **once** on generate,
-  never persisted, never logged, never echoed in audit entries.
+- **Support codes are bcrypt-hashed.** Format `SUPPORT-` + a 10-character
+  random token (a 4-char prefix + 6-char body) from a 32-char alphabet
+  that excludes visually-ambiguous chars (no `O`, `0`, `I`, `1`) — e.g.
+  `SUPPORT-7HX29PQK4M`. The prefix is stored in plaintext to narrow the
+  bcrypt search to a tiny candidate set; the body is bcrypt(cost 12).
+  Plaintext is returned **once** on generate, never persisted, never
+  logged, never echoed in audit entries.
 - **One pending key, one active session per tenant.** Generating a new
   key revokes the previous pending one in the same transaction; opening
   a new session ends any existing active one for the tenant.
@@ -1473,10 +1475,18 @@ curl -s -b $LIB http://localhost:3001/t/step18a/support/sessions/log | jq '.sess
   requests pay no audit cost. Writes are non-blocking — a failed audit
   row never fails the request ("prefer 'request completed but no audit
   row' over 'request failed because audit row failed'").
+- **Redemption is rate-limited.** Every attempt (success or fail) is
+  recorded in `support_redemption_attempts`; before any bcrypt/MFA work
+  the controller enforces 5 attempts/min/admin, 10 attempts/min/IP, and a
+  temporary lockout after 10 failed attempts/hour/admin (returns `429`).
+  Wrong, expired, or already-redeemed codes return `401` (not `404`) so
+  key existence can't be enumerated. The pure verdict lives in
+  `support-rate-limit.ts` (unit-tested); the rolling-hour lockout
+  self-heals.
 - **Out of MVP, hooks in place.** Email notifications, before/after
-  diffs (needs Prisma middleware), redemption rate limiting (schema
-  `SupportRedemptionAttempt` already records every attempt), and an
-  auto-expiry sweeper job are all deferred with TODOs in code.
+  diffs (needs Prisma middleware), an explicit owner-tier unlock for the
+  hourly lockout, and an auto-expiry sweeper job are deferred with TODOs
+  in code.
 
 ### Verify announcements (Step 18b)
 

@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { controlDb, type AnnouncementSeverity } from '@libriant/db-control';
 import { EmailService } from '../email/email.service.js';
 import { RedisService } from '../platform/redis.service.js';
-import { type AudienceFilter, audienceFromJson } from './audience.js';
+import { audienceFromJson } from './audience.js';
 import { AnnouncementService } from './announcement.service.js';
 
 /**

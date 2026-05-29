@@ -10,7 +10,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "lint": "turbo run lint",
+    "lint": "eslint .",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
     "check:translations": "tsx scripts/check-translations.ts",
@@ -38,12 +38,17 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\""
   },
   "devDependencies": {
+    "@eslint/js": "^9",
+    "@next/eslint-plugin-next": "^14",
     "@types/node": "^20.14.0",
+    "eslint": "^9",
+    "globals": "^15",
     "marked": "^18.0.4",
     "prettier": "^3.3.3",
     "tsx": "^4.19.0",
     "turbo": "^2.1.0",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8"
   },
   "pnpm": {
     "overrides": {

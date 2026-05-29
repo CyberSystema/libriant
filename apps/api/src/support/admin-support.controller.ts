@@ -4,7 +4,10 @@ import {
   Controller,
   Get,
   HttpCode,
+  HttpException,
+  HttpStatus,
   Inject,
+  Logger,
   Post,
   Req,
   Res,
@@ -23,6 +26,7 @@ import { MfaService } from './mfa.service.js';
 import { SupportKeyService } from './support-key.service.js';
 import { SupportNotificationsService } from './support-notifications.service.js';
 import { SupportSessionService } from './support-session.service.js';
+import { evaluateRedeemRateLimit } from './support-rate-limit.js';
 
 class RedeemDto {
   @IsString()
@@ -49,13 +53,16 @@ class EndSessionDto {
  *   GET  /admin/support/sessions             — list recent sessions (read-only history)
  *   GET  /admin/support/sessions/:id/log     — read one session's audit log
  *
- * Redemption rate-limiting + email notifications are TODO (the schema
- * already has `SupportRedemptionAttempt` for the former; both are
- * deferred to a separate hardening step).
+ * Redemption is rate-limited (5/min/admin, 10/min/IP, 10 failed/hour →
+ * temporary lockout) via `support_redemption_attempts`. The lockout
+ * self-heals after the rolling hour; an explicit owner-tier unlock and a
+ * lockout notification email remain documented follow-ups.
  */
 @Controller('admin/support')
 @UseGuards(AdminAuthGuard)
 export class AdminSupportController {
+  private readonly logger = new Logger(AdminSupportController.name);
+
   constructor(
     @Inject(SupportKeyService) private readonly keys: SupportKeyService,
     @Inject(SupportSessionService) private readonly sessions: SupportSessionService,
@@ -77,6 +84,9 @@ export class AdminSupportController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const dto = await validateDto(RedeemDto, raw);
+
+    // 0. Brute-force defense — throttle before any bcrypt/MFA work.
+    await this.enforceRedeemRateLimit(admin.sub, req.ip);
 
     // 1. Admin must have MFA enabled. The plan: hard rule.
     const adminRow = await controlDb.adminUser.findUnique({
@@ -234,6 +244,43 @@ export class AdminSupportController {
       throw new UnauthorizedException('You can only view your own sessions.');
     }
     return { session };
+  }
+
+  /**
+   * Reject the redemption with 429 if the admin or IP has tripped a rate
+   * limit. Counts come from `support_redemption_attempts`; the verdict is
+   * the pure `evaluateRedeemRateLimit` so it stays unit-testable.
+   */
+  private async enforceRedeemRateLimit(adminId: string, ip: string | undefined): Promise<void> {
+    const now = Date.now();
+    const oneMinuteAgo = new Date(now - 60_000);
+    const oneHourAgo = new Date(now - 60 * 60_000);
+    const [adminLastMinute, ipLastMinute, adminFailedLastHour] = await Promise.all([
+      controlDb.supportRedemptionAttempt.count({
+        where: { adminId, ts: { gte: oneMinuteAgo } },
+      }),
+      ip
+        ? controlDb.supportRedemptionAttempt.count({
+            where: { ipAddress: ip, ts: { gte: oneMinuteAgo } },
+          })
+        : Promise.resolve(0),
+      controlDb.supportRedemptionAttempt.count({
+        where: { adminId, success: false, ts: { gte: oneHourAgo } },
+      }),
+    ]);
+    const decision = evaluateRedeemRateLimit({
+      adminLastMinute,
+      ipLastMinute,
+      adminFailedLastHour,
+    });
+    if (!decision.allowed) {
+      if (decision.reason === 'locked_out') {
+        this.logger.warn(
+          `Support redemption locked out: admin=${adminId} had ${adminFailedLastHour} failed attempts in the last hour.`,
+        );
+      }
+      throw new HttpException(decision.message, HttpStatus.TOO_MANY_REQUESTS);
+    }
   }
 
   private async recordAttempt(

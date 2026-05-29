@@ -1,7 +1,4 @@
 import type { Metadata } from 'next';
-import { redirect } from 'next/navigation';
-import { headers } from 'next/headers';
-import { negotiateLocale } from '@libriant/i18n';
 
 export const metadata: Metadata = {
   title: 'Libriant',

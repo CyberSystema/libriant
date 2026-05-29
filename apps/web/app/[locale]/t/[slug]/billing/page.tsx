@@ -35,8 +35,6 @@ export default async function BillingPage({
         : t('common.states.error')
       : null;
 
-  const fmtMoney = (cents: number, currency: string) =>
-    new Intl.NumberFormat(params.locale, { style: 'currency', currency }).format(cents / 100);
   const fmtDate = (iso: string | null) =>
     iso ? new Date(iso).toLocaleDateString(params.locale) : null;
 

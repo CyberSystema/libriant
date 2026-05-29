@@ -44,6 +44,9 @@ jobs:
       - name: TypeScript typecheck (all packages)
         run: pnpm typecheck
 
+      - name: ESLint (all packages)
+        run: pnpm lint
+
       - name: Prettier formatting
         run: pnpm format:check
 

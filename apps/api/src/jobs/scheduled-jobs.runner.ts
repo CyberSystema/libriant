@@ -96,7 +96,6 @@ export async function startScheduledJobs(
   );
 
   worker.on('failed', (job, err) => {
-    // eslint-disable-next-line no-console
     console.error(`[scheduled] ${job?.name} failed: ${err.message}`);
   });
 

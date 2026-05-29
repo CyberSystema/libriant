@@ -75,7 +75,6 @@ export async function startEmailWorker(): Promise<EmailWorkerHandle> {
   );
 
   worker.on('failed', (job, err) => {
-    // eslint-disable-next-line no-console
     console.error(`[email-worker] job ${job?.id} failed: ${err.message}`);
   });
   worker.on('completed', (job) => {
@@ -99,7 +98,6 @@ async function processOne(driver: EmailDriver, outboxId: string): Promise<void> 
   const env = loadEnv();
   const row = await controlDb.emailOutbox.findUnique({ where: { id: outboxId } });
   if (!row) {
-    // eslint-disable-next-line no-console
     console.warn(`[email-worker] outbox row ${outboxId} not found — skipping`);
     return;
   }

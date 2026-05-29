@@ -99,7 +99,6 @@ export function PhotoUploader({ slug, memberId, photoAssetRef, catalog, locale, 
         }}
       >
         {photoUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={photoUrl}
             alt={t('members.detail.photo')}

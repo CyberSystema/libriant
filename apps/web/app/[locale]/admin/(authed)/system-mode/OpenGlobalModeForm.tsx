@@ -12,7 +12,7 @@ const NON_NORMAL_MODES: Exclude<SystemModeKind, 'normal'>[] = [
   'under_construction',
 ];
 
-export function OpenGlobalModeForm({ locale }: { locale: string }) {
+export function OpenGlobalModeForm(_props: { locale: string }) {
   const router = useRouter();
   const toast = useToast();
   const [mode, setMode] = React.useState<Exclude<SystemModeKind, 'normal'>>('maintenance');

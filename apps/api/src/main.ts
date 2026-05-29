@@ -40,7 +40,6 @@ async function bootstrap() {
 }
 
 bootstrap().catch((err) => {
-  // eslint-disable-next-line no-console
   console.error('[libriant-api] failed to start', err);
   process.exit(1);
 });

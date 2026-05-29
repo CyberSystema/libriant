@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import bcrypt from 'bcryptjs';
 import { controlDb } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
@@ -15,7 +15,6 @@ function pickRandom(): string {
   let out = '';
   const bytes = randomBytes(PREFIX_LEN + BODY_LEN);
   for (let i = 0; i < bytes.length; i++) {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     out += ALPHABET[bytes[i]! % ALPHABET.length]!;
   }
   return out;
@@ -147,6 +146,11 @@ export class SupportKeyService {
       const ok = await bcrypt.compare(body, c.codeHash);
       if (ok) return { keyId: c.id, tenantId: c.tenantId };
     }
-    throw new NotFoundException('No matching support key. Ask the library to generate a new one.');
+    // Use 401 (not 404) so a wrong, expired, or already-redeemed code is
+    // indistinguishable from any other failed redemption — matches the
+    // support-access security contract (no key-existence enumeration).
+    throw new UnauthorizedException(
+      'No matching support key. Ask the library to generate a new one.',
+    );
   }
 }

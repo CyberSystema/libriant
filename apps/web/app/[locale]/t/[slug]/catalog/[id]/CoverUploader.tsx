@@ -92,7 +92,6 @@ export function CoverUploader({ slug, bookId, coverAssetRef, catalog, locale, on
         }}
       >
         {coverUrl ? (
-          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={coverUrl}
             alt={t('catalog.book.cover')}

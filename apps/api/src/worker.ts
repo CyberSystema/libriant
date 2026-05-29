@@ -103,7 +103,6 @@ startEmailWorker()
     emailWorker = handle;
   })
   .catch((err) => {
-    // eslint-disable-next-line no-console
     console.error(`[worker] failed to start email worker: ${(err as Error).message}`);
   });
 
@@ -118,7 +117,6 @@ startScheduledJobs(SCHEDULED_JOBS, { emails: sharedEmails })
     scheduledJobs = handle;
   })
   .catch((err) => {
-    // eslint-disable-next-line no-console
     console.error(`[worker] failed to start scheduled jobs: ${(err as Error).message}`);
   });
 
@@ -132,11 +130,9 @@ async function shutdown(signal: NodeJS.Signals) {
   // overall shutdown deadline.
   await Promise.all([
     emailWorker?.stop().catch((err) => {
-      // eslint-disable-next-line no-console
       console.warn(`[worker] email-worker stop: ${(err as Error).message}`);
     }),
     scheduledJobs?.stop().catch((err) => {
-      // eslint-disable-next-line no-console
       console.warn(`[worker] scheduled-jobs stop: ${(err as Error).message}`);
     }),
   ]);

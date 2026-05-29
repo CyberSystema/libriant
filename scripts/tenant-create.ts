@@ -37,7 +37,7 @@ import { execFile } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import bcrypt from 'bcryptjs';
 import { Client as PgClient } from 'pg';
 import { controlDb, type Prisma } from '@libriant/db-control';
@@ -150,7 +150,7 @@ async function main() {
   const dbName = dbNameForTenant(tenantId);
   const dbUrl = urlForDb(reqEnv('PG_SUPERUSER_URL'), dbName);
   const storageRoot = process.env.STORAGE_ROOT ?? './.dev-storage';
-  const storageUrl = `file://${path.resolve(storageRoot)}/${tenantId}`;
+  const storageUrl = pathToFileURL(path.join(path.resolve(storageRoot), tenantId)).href;
 
   // 3. Provision physical resources first (DB + storage dir). If the
   //    control-plane TX fails downstream, we tear these down.

@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Client as PgClient } from 'pg';
 import { makeTenantPrismaClient, disconnectTenantClient } from '@libriant/db-tenant';
 import { loadEnv } from '../config/env.js';
@@ -59,7 +59,14 @@ export class TenantProvisioningService {
   async provision(input: { tenantId: string; cellId: string }): Promise<TenantPlacement> {
     const dbName = this.dbNameFor(input.tenantId);
     const dbUrl = this.urlForDb(dbName);
-    const storageUrl = `file://${this.env.storageRoot}/${input.tenantId}`;
+    // `storageRoot` may be relative (the dev default is `./.dev-storage`).
+    // Resolve it to an absolute path and build the file URL with
+    // `pathToFileURL` so we never emit a malformed `file://./…` URL whose
+    // first path segment is parsed as a host (which `fileURLToPath` rejects
+    // on POSIX). Mirrors the CLI provisioner in `scripts/tenant-create.ts`.
+    const storageUrl = pathToFileURL(
+      path.join(path.resolve(this.env.storageRoot), input.tenantId),
+    ).href;
 
     await this.createDatabase(dbName);
     await this.applyTenantMigrations(dbUrl);

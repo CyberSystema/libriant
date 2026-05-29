@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { Banner, Button, HelpButton, PageHeader } from '@libriant/ui';
+import { Banner, HelpButton, PageHeader } from '@libriant/ui';
 import { isLocale } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
 import { requestCookieHeader } from '@/lib/admin-session';

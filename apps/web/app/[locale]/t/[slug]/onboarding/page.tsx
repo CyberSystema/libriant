@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
-import { Banner, Button, Card, CardBody, CardHeader, PageHeader } from '@libriant/ui';
+import { Banner, Card, CardBody, CardHeader, PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { currentSession, requestCookieHeader } from '@/lib/session';

@@ -184,7 +184,6 @@ export function validateField(def: FieldDef, raw: unknown): FieldCheck {
     case 'url': {
       if (typeof raw !== 'string') return err(def.fieldKey, 'Must be a link.');
       try {
-        // eslint-disable-next-line no-new
         new URL(raw);
       } catch {
         return err(def.fieldKey, "This link doesn't look right.");

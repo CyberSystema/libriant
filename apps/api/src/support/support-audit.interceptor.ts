@@ -1,4 +1,4 @@
-import { CallHandler, ExecutionContext, Inject, Injectable, NestInterceptor } from '@nestjs/common';
+import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import type { Request, Response } from 'express';
 import { Observable, tap } from 'rxjs';
@@ -49,7 +49,6 @@ export class SupportAuditInterceptor implements NestInterceptor {
         },
       });
     } catch (writeErr) {
-      // eslint-disable-next-line no-console
       console.error('[support-audit] failed to write log row', writeErr);
     }
   }

@@ -15,4 +15,5 @@ coverage/
 *.tsbuildinfo
 .cache/
 storage/
+.dev-storage/
 prisma/generated/
