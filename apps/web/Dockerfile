@@ -4,7 +4,7 @@
 # multi-stage Node build: install deps → next build → ship a minimal
 # runtime layer with .next/, public/, and prod deps.
 
-FROM node:20-alpine AS base
+FROM node:24-alpine AS base
 RUN apk add --no-cache tini
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 WORKDIR /app

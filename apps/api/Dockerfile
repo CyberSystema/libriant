@@ -9,7 +9,7 @@
 # build pipeline that mirrors `pnpm dev` exactly.
 #
 # Build stages:
-#   base       — node 20 + pnpm + openssl (needed for Prisma's engine)
+#   base       — node 24 + pnpm + openssl (needed for Prisma's engine)
 #   deps       — locked dep install
 #   build      — workspace source + Prisma client generation
 #   runtime    — minimal image with source + node_modules + non-root user
@@ -17,7 +17,7 @@
 # Cache hits: changes to source under apps/api/src only invalidate `build`;
 # everything below that re-fetches in seconds.
 
-FROM node:20-alpine AS base
+FROM node:24-alpine AS base
 RUN apk add --no-cache openssl tini
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 WORKDIR /app

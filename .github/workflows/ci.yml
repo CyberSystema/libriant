@@ -22,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'pnpm'
 
       - name: Install
@@ -62,7 +62,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'pnpm'
 
       - name: Install
@@ -109,7 +109,9 @@ jobs:
       SESSION_SECRET: ci-only-test
       ADMIN_SESSION_SECRET: ci-only-test
       IMPERSONATION_SECRET: ci-only-test
-      MFA_MASTER_KEY: 0011223344556677889900112233445566778899001122334455667788990011
+      # Quoted: the value is all digits, which unquoted YAML coerces to a
+      # float (1.12e+61) — the app then rejects it as non-hex.
+      MFA_MASTER_KEY: '0011223344556677889900112233445566778899001122334455667788990011'
       STRIPE_DRIVER: fake
       STORAGE_ROOT: /tmp/libriant-test-storage
       EMAIL_DRIVER: console
@@ -124,7 +126,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'pnpm'
 
       - name: Install
@@ -177,7 +179,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'pnpm'
 
       - name: Install
