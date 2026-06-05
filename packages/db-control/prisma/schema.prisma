@@ -143,6 +143,48 @@ enum AuditActorType {
 }
 
 // ---------------------------------------------------------------------------
+// Bulk import / migration — durable job state for moving a library's existing
+// catalogue + patrons + circulation INTO a tenant DB from a legacy ILS export.
+// The batch row lives here (control plane) so the shared worker process can
+// drive it; the actual writes land in the tenant DB.
+// ---------------------------------------------------------------------------
+
+enum ImportEntityKind {
+  author
+  book
+  book_copy
+  member
+  loan
+  reservation
+  fine
+}
+
+enum ImportSourceFormat {
+  csv
+  tsv
+  xlsx
+  marc // MARC21 / ISO 2709 binary
+  marcxml
+}
+
+enum ImportStatus {
+  uploaded // file staged + columns detected; awaiting a column mapping
+  validating // dry-run validation job is running
+  validated // dry-run finished; report available; awaiting commit
+  committing // commit job is running
+  completed // commit finished with no row errors
+  partially_completed // commit finished; some rows skipped / errored
+  failed // fatal error (unreadable file, worker crash, canceled mid-commit)
+  canceled
+}
+
+enum ImportDuplicateMode {
+  skip // leave the existing row untouched; don't insert the duplicate
+  update // upsert: update the matched existing row
+  error // treat a duplicate as a per-row error
+}
+
+// ---------------------------------------------------------------------------
 // Topology: cells, tenants, per-tenant DB credentials
 // ---------------------------------------------------------------------------
 
@@ -213,6 +255,7 @@ model Tenant {
   announcementDeliveries AnnouncementDelivery[]
   systemModeEvents       SystemModeEvent[]
   emailOutbox            EmailOutbox[]
+  importBatches          ImportBatch[]
 
   @@index([cellId])
   @@index([status])
@@ -815,4 +858,93 @@ model HelpArticle {
   @@unique([slug, locale])
   @@index([locale, sortOrder])
   @@map("help_articles")
+}
+
+// ---------------------------------------------------------------------------
+// Import batches — one row per uploaded migration file. Drives a 4-step
+// flow: upload → map columns → dry-run validate → commit. Progress + counts
+// live here; per-row problems live in `import_row_issues`.
+// ---------------------------------------------------------------------------
+
+model ImportBatch {
+  id         String             @id @default(cuid())
+  tenantId   String
+  entityKind ImportEntityKind
+  format     ImportSourceFormat
+  status     ImportStatus       @default(uploaded)
+  /// Original client filename (display only).
+  originalName String
+  /// Path to the staged raw upload under STORAGE_ROOT/_imports — shared
+  /// across the api + worker containers so the worker can re-read it for
+  /// the validate + commit passes. Cleaned up after the batch finishes.
+  stagingPath  String
+  sizeBytes    Int              @default(0)
+  /// Detected/declared character encoding (`utf-8`, `windows-1253`, …).
+  encoding     String?
+  /// Field delimiter for csv/tsv (`,` `\t` `;` `|`).
+  delimiter    String?
+  /// Worksheet name for xlsx imports.
+  sheetName    String?
+  hasHeaderRow Boolean          @default(true)
+  /// Detected source columns + a few sample rows, surfaced in the mapping UI.
+  columnsJson  Json             @default("{}")
+  /// Column→field mapping + per-column transforms + custom-field targets.
+  mappingJson  Json?
+  /// Run options: static defaults, skipInvalidRows, etc.
+  optionsJson  Json             @default("{}")
+  duplicateMode ImportDuplicateMode @default(skip)
+
+  totalRows    Int              @default(0)
+  validRows    Int              @default(0)
+  errorRows    Int              @default(0)
+  warningRows  Int              @default(0)
+  importedRows Int              @default(0)
+  updatedRows  Int              @default(0)
+  skippedRows  Int              @default(0)
+  /// True when the per-row issue list was capped (a very dirty file).
+  issuesTruncated Boolean       @default(false)
+
+  /// Control-plane User.id of the librarian who started the import. Stored as
+  /// a plain id (not a FK) — it's an audit pointer, mirroring how cross-record
+  /// actor ids are kept elsewhere (e.g. audit_log.actorId).
+  createdByUserId String?
+  /// Fatal error summary when status = failed.
+  error        String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  tenant Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issues ImportRowIssue[]
+
+  @@index([tenantId, createdAt])
+  @@index([status])
+  @@map("import_batches")
+}
+
+model ImportRowIssue {
+  id        String   @id @default(cuid())
+  batchId   String
+  /// `validate` or `commit` — which pass produced the issue.
+  phase     String
+  /// 1-based row number in the source file (header excluded).
+  rowNumber Int
+  /// `error` blocks the row; `warning` is informational (row still imported).
+  severity  String
+  /// Target field key when the issue is field-specific (else null).
+  field     String?
+  /// Machine-readable code: `required`, `invalid_value`, `duplicate`,
+  /// `reference_not_found`, `quota_exceeded`, `db_rejected`, …
+  code      String
+  message   String
+  /// Compact snapshot of the offending source row, for the errors.csv export.
+  rawJson   Json?
+  createdAt DateTime @default(now())
+
+  batch ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId, rowNumber])
+  @@index([batchId, severity])
+  @@map("import_row_issues")
 }

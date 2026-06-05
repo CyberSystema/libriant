@@ -124,9 +124,16 @@ a { color: var(--color-info); }
   100% { background-position: -100% 0; }
 }
 
+/* Indeterminate spinner (e.g. the bulk-import progress step). */
+@keyframes lbr-spin {
+  to { transform: rotate(360deg); }
+}
+.lbr-spinner { animation: lbr-spin 0.8s linear infinite; }
+
 /* respect reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .lbr-skeleton { animation: none; }
+  .lbr-spinner { animation: none; }
 }
 
 /* --- input / form field --- */

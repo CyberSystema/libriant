@@ -11,6 +11,7 @@ import { CatalogModule } from './catalog/catalog.module.js';
 import { CustomizationModule } from './customization/customization.module.js';
 import { EmailModule } from './email/email.module.js';
 import { HelpModule } from './help/help.module.js';
+import { ImportModule } from './import/import.module.js';
 import { LoansModule } from './loans/loans.module.js';
 import { MembersModule } from './members/members.module.js';
 import { ReservationsModule } from './reservations/reservations.module.js';
@@ -49,6 +50,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     MembersModule,
     LoansModule,
     ReservationsModule,
+    ImportModule,
     BillingModule,
     HelpModule,
     AdminModule,

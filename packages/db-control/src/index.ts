@@ -22,6 +22,10 @@ export {
   AuditActorType,
   EmailOutboxStatus,
   EmailMessageKind,
+  ImportEntityKind,
+  ImportSourceFormat,
+  ImportStatus,
+  ImportDuplicateMode,
 } from '@prisma/client';
 
 export type {
@@ -46,4 +50,6 @@ export type {
   AnnouncementDelivery,
   SystemModeEvent,
   EmailOutbox,
+  ImportBatch,
+  ImportRowIssue,
 } from '@prisma/client';
