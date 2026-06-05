@@ -13,13 +13,20 @@ import { PrismaClient } from '@prisma/client';
  * Prisma 7 connects through a driver adapter rather than a built-in engine,
  * so the connection string (still `CONTROL_DATABASE_URL`) is handed to
  * `@prisma/adapter-pg` here instead of living in `schema.prisma`.
+ *
+ * Construction is LAZY (deferred to first use via the Proxy below) rather
+ * than at import time. That keeps `import { controlDb }` free of any env
+ * requirement, so unit tests that mock every DB call can pull in services
+ * transitively without a live `CONTROL_DATABASE_URL`. `@prisma/adapter-pg`
+ * opens no socket until the first query, so deferring construction changes
+ * nothing at runtime, where the env var is always present.
  */
 
 declare global {
   var __libriantControlPrisma: PrismaClient | undefined;
 }
 
-function makeClient() {
+function makeClient(): PrismaClient {
   const connectionString = process.env.CONTROL_DATABASE_URL;
   if (!connectionString) {
     throw new Error('CONTROL_DATABASE_URL is not set');
@@ -27,20 +34,49 @@ function makeClient() {
   const adapter = new PrismaPg({ connectionString });
   return new PrismaClient({
     adapter,
-    log: process.env.NODE_ENV === 'production' ? ['warn', 'error'] : ['warn', 'error'],
+    log: ['warn', 'error'],
     errorFormat: 'minimal',
   });
 }
 
-export const controlDb: PrismaClient = globalThis.__libriantControlPrisma ?? makeClient();
-
-if (process.env.NODE_ENV !== 'production') {
-  globalThis.__libriantControlPrisma = controlDb;
+/**
+ * Memoized singleton. `memo` holds the instance in every environment; the
+ * `globalThis` slot is only the dev hot-reload guard so repeated module
+ * evaluations reuse one client.
+ */
+let memo: PrismaClient | undefined;
+function instance(): PrismaClient {
+  if (memo) return memo;
+  memo = globalThis.__libriantControlPrisma ?? makeClient();
+  if (process.env.NODE_ENV !== 'production') {
+    globalThis.__libriantControlPrisma = memo;
+  }
+  return memo;
 }
 
 /**
- * Gracefully disconnect on process shutdown. Wire from main.ts and seed scripts.
+ * Proxy that forwards every property access to the lazily-built singleton.
+ * Methods are bound to the real client so `this` stays correct (`$transaction`,
+ * `$queryRaw`, model delegates, …). Typed as `PrismaClient` for consumers.
+ */
+export const controlDb: PrismaClient = new Proxy({} as PrismaClient, {
+  get(_target, prop) {
+    const client = instance();
+    const value = Reflect.get(client as object, prop);
+    return typeof value === 'function' ? value.bind(client) : value;
+  },
+  has(_target, prop) {
+    return prop in (instance() as object);
+  },
+});
+
+/**
+ * Gracefully disconnect on process shutdown. Wire from main.ts and seed
+ * scripts. No-op if the client was never constructed, so calling it doesn't
+ * force construction (and an env requirement) purely to tear nothing down.
  */
 export async function disconnectControlDb(): Promise<void> {
-  await controlDb.$disconnect();
+  if (memo) {
+    await memo.$disconnect();
+  }
 }

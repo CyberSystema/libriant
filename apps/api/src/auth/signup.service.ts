@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   ConflictException,
   Inject,
@@ -196,9 +197,13 @@ export class SignupService {
    * when the field is left empty in a create() call.
    */
   private newCuid(): string {
-    // Lightweight cuid-shape generator: 'c' + Date.now in base36 + 8 random.
+    // Lightweight cuid-shape id: 'c' + Date.now in base36 + a crypto-random
+    // suffix. We use `crypto` (not Math.random) because this id becomes a
+    // physical Postgres database name, so unguessability + collision-
+    // resistance actually matter. Hex stays within `dbNameFor()`'s safe
+    // identifier charset.
     const time = Date.now().toString(36);
-    const rnd = Math.random().toString(36).slice(2, 10).padEnd(8, '0');
+    const rnd = randomBytes(9).toString('hex');
     return `c${time}${rnd}`;
   }
 }

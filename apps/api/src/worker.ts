@@ -23,6 +23,11 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { loadEnv } from './config/env.js';
 import { startEmailWorker, type EmailWorkerHandle } from './email/email-worker.js';
 import { EmailService } from './email/email.service.js';
+import {
+  makeImportWorkerDeps,
+  startImportWorker,
+  type ImportWorkerHandle,
+} from './import/import-worker.js';
 import { RedisService } from './platform/redis.service.js';
 import { SCHEDULED_JOBS } from './jobs/registry.js';
 import { startScheduledJobs, type ScheduledJobsHandle } from './jobs/scheduled-jobs.runner.js';
@@ -34,6 +39,7 @@ const bootedAt = new Date();
 let shuttingDown = false;
 let emailWorker: EmailWorkerHandle | null = null;
 let scheduledJobs: ScheduledJobsHandle | null = null;
+let importWorker: ImportWorkerHandle | null = null;
 
 const server = createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
@@ -47,6 +53,7 @@ const server = createServer((req, res) => {
         queues: {
           'email-outbox': emailWorker ? 'running' : 'starting',
           scheduled: scheduledJobs ? 'running' : 'starting',
+          import: importWorker ? 'running' : 'starting',
         },
         scheduledLastResults: scheduledJobs?.lastResults() ?? {},
       }),
@@ -57,7 +64,7 @@ const server = createServer((req, res) => {
     // Ready when both BullMQ workers are connected to Redis. If either
     // isn't, the orchestrator should pull traffic — jobs are silently
     // not being drained.
-    const ready = !shuttingDown && !!emailWorker && !!scheduledJobs;
+    const ready = !shuttingDown && !!emailWorker && !!scheduledJobs && !!importWorker;
     res.statusCode = ready ? 200 : 503;
     res.end(
       JSON.stringify({
@@ -70,6 +77,7 @@ const server = createServer((req, res) => {
     const upSec = Math.round((Date.now() - bootedAt.getTime()) / 1000);
     const emailInFlight = emailWorker?.inFlight() ?? 0;
     const scheduledInFlight = scheduledJobs?.inFlight() ?? 0;
+    const importInFlight = importWorker?.inFlight() ?? 0;
     res.setHeader('Content-Type', 'text/plain; version=0.0.4');
     res.end(
       [
@@ -80,6 +88,7 @@ const server = createServer((req, res) => {
         '# TYPE libriant_worker_jobs_running gauge',
         `libriant_worker_jobs_running{queue="email-outbox"} ${emailInFlight}`,
         `libriant_worker_jobs_running{queue="scheduled"} ${scheduledInFlight}`,
+        `libriant_worker_jobs_running{queue="import"} ${importInFlight}`,
         '',
       ].join('\n'),
     );
@@ -120,6 +129,17 @@ startScheduledJobs(SCHEDULED_JOBS, { emails: sharedEmails })
     console.error(`[worker] failed to start scheduled jobs: ${(err as Error).message}`);
   });
 
+// Bulk-import consumer (validate + commit passes). Shares the process's
+// Redis for its EffectivePlanService limit lookups; BullMQ gets its own
+// socket inside startImportWorker.
+startImportWorker(makeImportWorkerDeps(sharedRedis))
+  .then((handle) => {
+    importWorker = handle;
+  })
+  .catch((err) => {
+    console.error(`[worker] failed to start import worker: ${(err as Error).message}`);
+  });
+
 async function shutdown(signal: NodeJS.Signals) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -135,7 +155,15 @@ async function shutdown(signal: NodeJS.Signals) {
     scheduledJobs?.stop().catch((err) => {
       console.warn(`[worker] scheduled-jobs stop: ${(err as Error).message}`);
     }),
+    importWorker?.stop().catch((err) => {
+      console.warn(`[worker] import-worker stop: ${(err as Error).message}`);
+    }),
   ]);
+  // Close the standalone Redis connection the scheduled-jobs EmailService
+  // borrows (it lives outside Nest's DI graph, so nothing else disconnects it).
+  await sharedRedis.onModuleDestroy().catch((err) => {
+    console.warn(`[worker] redis close: ${(err as Error).message}`);
+  });
   await wait(1000);
   process.exit(0);
 }

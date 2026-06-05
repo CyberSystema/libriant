@@ -56,7 +56,6 @@
 	# request below returns the static page directly. We use a `try_files`
 	# style match so /healthz still passes through (load balancer checks
 	# need this to keep working).
-	@maint_off vars {$MAINTENANCE_HARD:false} "false"
 	@is_probe path /healthz /readyz /metrics
 	handle @is_probe {
 		respond "ok" 200
