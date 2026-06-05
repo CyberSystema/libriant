@@ -188,7 +188,10 @@ async function main() {
       db.loan.create({
         data: { copyId: copy1.id, memberId: m2.id, loanedAt: now, dueAt: due },
       }),
-      ['loans_one_active_per_copy', 'Unique constraint failed on the fields: (`copyId`)'],
+      // Prisma surfaces a partial-unique-index violation as a generic
+      // "Unique constraint failed" (the index name isn't in the message, and
+      // Prisma 7 quotes the column as `"copyId"`), so match on the stable phrase.
+      ['loans_one_active_per_copy', 'Unique constraint failed'],
       'second active loan on same copy',
     );
 
