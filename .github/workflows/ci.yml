@@ -191,10 +191,12 @@ jobs:
             CREATE EXTENSION IF NOT EXISTS pgcrypto;
             CREATE EXTENSION IF NOT EXISTS citext;
           "
-          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "
-            SELECT 'CREATE DATABASE libriant_demo'
-            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'libriant_demo')\gexec
-          "
+          # `\gexec` is a psql meta-command and is NOT honored by `psql -c`
+          # (that path only runs plain SQL), so guard the create in the shell.
+          if ! PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -tAc \
+            "SELECT 1 FROM pg_database WHERE datname = 'libriant_demo'" | grep -q 1; then
+            PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "CREATE DATABASE libriant_demo"
+          fi
           PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_demo -c "
             CREATE EXTENSION IF NOT EXISTS unaccent;
             CREATE EXTENSION IF NOT EXISTS pg_trgm;
