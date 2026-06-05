@@ -185,6 +185,15 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # The seed + tenant scripts import the generated Prisma clients, so they
+      # must be generated first (the other jobs do this too). Generation
+      # doesn't connect — the placeholder URLs just silence the warnings.
+      - name: Generate Prisma clients (control-plane + tenant)
+        run: pnpm db:generate
+        env:
+          CONTROL_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_control
+          TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
+
       - name: Create + extend both DBs (control + demo tenant)
         run: |
           PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "
