@@ -1,4 +1,4 @@
-# Libriant web (Next.js 14 app router).
+# Libriant web (Next.js 16 app router).
 #
 # Next.js handles its own compilation, so this is closer to a stock
 # multi-stage Node build: install deps → next build → ship a minimal
