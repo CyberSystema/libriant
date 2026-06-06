@@ -293,10 +293,14 @@ IMPERSONATION_SECRET=...
 MFA_MASTER_KEY=...            # 64 hex chars
 STORAGE_SIGNING_SECRET=...
 
-# --- billing ---
-STRIPE_DRIVER=real
-STRIPE_API_KEY=...
-STRIPE_WEBHOOK_SECRET=        # fill in Part 10
+# --- billing (trial: no Stripe account needed) ---
+STRIPE_DRIVER=fake           # all billing flows work, nothing is ever charged
+STRIPE_API_KEY=              # set STRIPE_DRIVER=real + keys when you go live
+STRIPE_WEBHOOK_SECRET=       # (fill in Part 10)
+
+# --- email (trial: no mail server needed) ---
+EMAIL_DRIVER=console         # logs outgoing mail instead of sending it
+SMTP_URL=                    # set EMAIL_DRIVER=smtp + this URL to send for real
 
 # --- data + backups live on the libriant volume ---
 COMPOSE_PROJECT_NAME=libriant
