@@ -17,8 +17,11 @@ short command you can paste.
 | Your tools  | **Termius** (SSH) as the main workplace                              |
 | Scale       | a pilot of up to ~20 libraries (tenants)                             |
 
-> Throughout, replace `libriant.com` / `admin.libriant.com` with your real
-> domains and `203.0.113.10` with CyberSystema-1's public IPv4.
+> This runbook is filled in for **CyberSystema-1**: apex `libriant.com`, admin
+> `admin.libriant.com`, and public IPv4 `178.104.32.176`. Reusing it for a
+> different host? Swap those three values. The app reads the domain from
+> `/srv/libriant/.env.prod` (`PUBLIC_HOST` / `ADMIN_HOST`) at runtime — the repo
+> defaults just mirror it.
 
 **The big idea — why the volume matters.** A Hetzner **Rebuild** wipes the boot
 disk but **keeps attached volumes**. We put _all your data_ (databases, uploads,
@@ -120,7 +123,7 @@ Termius: your key → _Export Public Key_) → name it `libriant-key`.
 
 ## Part 3 — Connect with Termius
 
-1. In Termius: **New Host** → Address `203.0.113.10`, Username `root`, and pick
+1. In Termius: **New Host** → Address `178.104.32.176`, Username `root`, and pick
    your key under _SSH_.
 2. Connect. You're now at a `root@` prompt on the fresh server.
 
@@ -331,10 +334,10 @@ From now on, `dc <anything>` = the whole stack, data on your volume. Try
 
 Point your domain at CyberSystema-1, then wait for it to propagate.
 
-| Record               | Type | Value          |
-| -------------------- | ---- | -------------- |
-| `libriant.com`       | A    | `203.0.113.10` |
-| `admin.libriant.com` | A    | `203.0.113.10` |
+| Record               | Type | Value            |
+| -------------------- | ---- | ---------------- |
+| `libriant.com`       | A    | `178.104.32.176` |
+| `admin.libriant.com` | A    | `178.104.32.176` |
 
 ```sh
 dig +short libriant.com          # should return your IP before you continue
@@ -381,7 +384,7 @@ ops() {
     -e CONTROL_DATABASE_URL="postgresql://libriant:${POSTGRES_PASSWORD}@pgbouncer:5432/libriant_control" \
     -e PG_SUPERUSER_URL="postgresql://libriant:${POSTGRES_PASSWORD}@postgres:5432/libriant_control" \
     -e REDIS_URL="redis://redis:6379" -e STORAGE_ROOT="/srv/libriant/storage" \
-    node:20-bookworm-slim sh -lc "corepack enable && $*"
+    node:24-bookworm-slim sh -lc "corepack enable && $*"
 }
 
 ops "pnpm install --frozen-lockfile && pnpm db:generate"   # one-time, ~1-2 min
@@ -590,7 +593,7 @@ Prometheus + Grafana + node-exporter + cAdvisor stack:
 cd /srv/libriant/app/infra/monitoring
 GRAFANA_ADMIN_PASSWORD=pick-one docker compose -f docker-compose.monitoring.yml up -d
 # Grafana is bound to localhost only — reach it through an SSH tunnel:
-#   (in Termius / locally)  ssh -L 3300:127.0.0.1:3300 deploy@203.0.113.10
+#   (in Termius / locally)  ssh -L 3300:127.0.0.1:3300 deploy@178.104.32.176
 # then open http://localhost:3300  (import dashboards 1860 + 14282)
 ```
 
