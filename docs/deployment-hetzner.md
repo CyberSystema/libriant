@@ -17,8 +17,11 @@ short command you can paste.
 | Your tools  | **Termius** (SSH) as the main workplace                              |
 | Scale       | a pilot of up to ~20 libraries (tenants)                             |
 
-> Throughout, replace `libriant.app` / `admin.libriant.app` with your real
-> domains and `203.0.113.10` with CyberSystema-1's public IPv4.
+> This runbook is filled in for **CyberSystema-1**: apex `libriant.com`, admin
+> `admin.libriant.com`, and public IPv4 `178.104.32.176`. Reusing it for a
+> different host? Swap those three values. The app reads the domain from
+> `/srv/libriant/.env.prod` (`PUBLIC_HOST` / `ADMIN_HOST`) at runtime — the repo
+> defaults just mirror it.
 
 **The big idea — why the volume matters.** A Hetzner **Rebuild** wipes the boot
 disk but **keeps attached volumes**. We put _all your data_ (databases, uploads,
@@ -65,7 +68,7 @@ library** (`tenant_<id>`), all on the same Postgres instance at this scale.
 
 A short checklist. Tick these off first.
 
-- [ ] A **domain** you control (e.g. `libriant.app`) with access to its DNS.
+- [ ] A **domain** you control (e.g. `libriant.com`) with access to its DNS.
 - [ ] Your **SSH key** in **Termius** (Keychain → your key). You'll register its
       **public** half with Hetzner in Part 2.
 - [ ] A **GitHub repo** for this code. CI builds images to
@@ -120,7 +123,7 @@ Termius: your key → _Export Public Key_) → name it `libriant-key`.
 
 ## Part 3 — Connect with Termius
 
-1. In Termius: **New Host** → Address `203.0.113.10`, Username `root`, and pick
+1. In Termius: **New Host** → Address `178.104.32.176`, Username `root`, and pick
    your key under _SSH_.
 2. Connect. You're now at a `root@` prompt on the fresh server.
 
@@ -273,9 +276,9 @@ chmod 600 /srv/libriant/.env.prod
 
 ```ini
 # --- hosts ---
-PUBLIC_HOST=libriant.app
-ADMIN_HOST=admin.libriant.app
-ACME_EMAIL=ops@libriant.app
+PUBLIC_HOST=libriant.com
+ADMIN_HOST=admin.libriant.com
+ACME_EMAIL=ops@libriant.com
 MAINTENANCE_HARD=false
 
 # --- images (GHCR) ---
@@ -327,21 +330,53 @@ From now on, `dc <anything>` = the whole stack, data on your volume. Try
 
 ---
 
-## Part 7 — DNS
+## Part 7 — DNS + TLS (Cloudflare)
 
-Point your domain at CyberSystema-1, then wait for it to propagate.
+Cloudflare is the registrar, DNS, **and** CDN — we run the hosts **behind its
+proxy** (orange-cloud) for caching + DDoS protection. Because Cloudflare
+terminates TLS at its edge, Caddy can't use Let's Encrypt here; it serves a
+**Cloudflare Origin Certificate** and Cloudflare validates it in **Full
+(strict)** mode.
 
-| Record               | Type | Value          |
-| -------------------- | ---- | -------------- |
-| `libriant.app`       | A    | `203.0.113.10` |
-| `admin.libriant.app` | A    | `203.0.113.10` |
+**1. DNS records** — Cloudflare dashboard → `libriant.com` zone → **DNS →
+Records** (nameservers already point at Cloudflare since it's your registrar):
+
+| Type | Name    | Value            | Proxy          |
+| ---- | ------- | ---------------- | -------------- |
+| A    | `@`     | `178.104.32.176` | **Proxied** 🟠 |
+| A    | `admin` | `178.104.32.176` | **Proxied** 🟠 |
+
+> Proxied records resolve to Cloudflare's edge, **not** your box — so
+> `dig +short libriant.com` returns Cloudflare IPs. That's expected. Deploys
+> SSH to the box by **raw IP** (`fleet.yml`), so they don't depend on this.
+
+**2. Origin certificate** — dashboard → **SSL/TLS → Origin Server → Create
+Certificate**. Keep defaults, hostnames `libriant.com` **and** `*.libriant.com`,
+15-year validity → **Create**. Paste the two PEM blocks onto the box (on the
+volume, so they survive a rebuild):
 
 ```sh
-dig +short libriant.app          # should return your IP before you continue
+mkdir -p /mnt/libriant/caddy/origin
+nano /mnt/libriant/caddy/origin/origin.crt    # paste "Origin Certificate"
+nano /mnt/libriant/caddy/origin/origin.key    # paste "Private Key"
+chmod 600 /mnt/libriant/caddy/origin/origin.key
 ```
 
-TLS is automatic — Caddy fetches Let's Encrypt certificates on first start
-(Part 8), and they're stored on the volume so they survive reinstalls.
+Compose mounts that folder read-only into Caddy at `/etc/caddy/origin`, and the
+Caddyfile already points `tls` at `origin.crt` / `origin.key`.
+
+**3. SSL/TLS mode** — dashboard → **SSL/TLS → Overview** → set the mode to **Full
+(strict)**. Under **Edge Certificates**, turn on **Always Use HTTPS**.
+
+**4. Lock the origin to Cloudflare** — so nobody bypasses the proxy to hit the
+box directly (which would also let them spoof the real-client-IP header). In the
+Hetzner firewall (`libriant-edge`, Part 2), change the **source** for ports
+**80** and **443** from `0.0.0.0/0` to **[Cloudflare's IP ranges](https://www.cloudflare.com/ips/)**.
+Leave **22** open to your own IP — SSH deploys reach the box directly.
+
+> The real visitor IP arrives via Cloudflare's `CF-Connecting-IP` header, which
+> the Caddyfile forwards to the app as `X-Real-IP` for rate-limiting + audit.
+> Certs live on the volume, so they survive reinstalls.
 
 ---
 
@@ -381,7 +416,7 @@ ops() {
     -e CONTROL_DATABASE_URL="postgresql://libriant:${POSTGRES_PASSWORD}@pgbouncer:5432/libriant_control" \
     -e PG_SUPERUSER_URL="postgresql://libriant:${POSTGRES_PASSWORD}@postgres:5432/libriant_control" \
     -e REDIS_URL="redis://redis:6379" -e STORAGE_ROOT="/srv/libriant/storage" \
-    node:20-bookworm-slim sh -lc "corepack enable && $*"
+    node:24-bookworm-slim sh -lc "corepack enable && $*"
 }
 
 ops "pnpm install --frozen-lockfile && pnpm db:generate"   # one-time, ~1-2 min
@@ -398,12 +433,12 @@ ADMIN_BOOTSTRAP_PASSWORD='a-long-admin-passphrase' \
   ops "ADMIN_BOOTSTRAP_EMAIL=$ADMIN_BOOTSTRAP_EMAIL ADMIN_BOOTSTRAP_PASSWORD='$ADMIN_BOOTSTRAP_PASSWORD' pnpm admin:bootstrap"
 ```
 
-Then visit `https://admin.libriant.app` → log in → **MFA page** → scan the QR in
+Then visit `https://admin.libriant.com` → log in → **MFA page** → scan the QR in
 an authenticator app → verify.
 
 **Libraries (tenants)** are created two ways:
 
-- **Self-service (normal):** a librarian signs up at `https://libriant.app` and
+- **Self-service (normal):** a librarian signs up at `https://libriant.com` and
   everything is provisioned automatically (database, schema, owner, storage).
 - **Operator-provisioned (optional):**
 
@@ -420,7 +455,7 @@ ops "pnpm tenant:create -- --slug=acme --name='Acme Public Library' \
 Billing stays correct only if Stripe can reach your webhook.
 
 1. Stripe Dashboard → _Developers → Webhooks → Add endpoint_.
-2. URL: `https://libriant.app/webhooks/stripe`
+2. URL: `https://libriant.com/webhooks/stripe`
 3. Events: `customer.subscription.created/updated/deleted`,
    `invoice.payment_succeeded`, `invoice.payment_failed`.
 4. Copy the **Signing secret** (`whsec_…`) into `STRIPE_WEBHOOK_SECRET` in
@@ -483,14 +518,14 @@ sudo tar -C /mnt/libriant/storage -xzf /mnt/libriant/backups/<date>/storage.tar.
 ## Part 12 — Verify
 
 ```sh
-curl -fsS https://libriant.app/healthz && echo        # edge up
-curl -fsS https://libriant.app/readyz | jq            # api: redis + DB true
-curl -fsS https://libriant.app/api/readyz | jq        # web → api reachable
+curl -fsS https://libriant.com/healthz && echo        # edge up
+curl -fsS https://libriant.com/readyz | jq            # api: redis + DB true
+curl -fsS https://libriant.com/api/readyz | jq        # web → api reachable
 dc exec worker wget -qO- http://localhost:3002/readyz # worker (internal)
 ```
 
-Then in a browser: open `https://libriant.app`, create a test library, add a
-book, check it out — and confirm `https://admin.libriant.app` shows the admin
+Then in a browser: open `https://libriant.com`, create a test library, add a
+book, check it out — and confirm `https://admin.libriant.com` shows the admin
 login.
 
 ---
@@ -518,9 +553,9 @@ volume, with a `/healthz` gate.
 
 1. **`IMAGE_OWNER`** is set in `.env.prod` (Part 6) to your GitHub owner/org,
    lowercase. CI pushes — and the host pulls — `ghcr.io/$IMAGE_OWNER/libriant-{api,web}`.
-2. **DNS is live** (Part 7): `libriant.app` resolves to the box with a valid
-   cert. CI health-checks `https://libriant.app/healthz`, and `fleet.yml`'s
-   `ssh:` is already `libriant.app`.
+2. **DNS is live** (Part 7): `libriant.com` resolves to the box with a valid
+   cert. CI health-checks `https://libriant.com/healthz`, and `fleet.yml`'s
+   `ssh:` is already `libriant.com`.
 3. **Deploy key (runner → server)** — a dedicated keypair, authorized for
    `deploy`, private half stored as the `DEPLOY_SSH_KEY` repo secret:
    ```sh
@@ -590,7 +625,7 @@ Prometheus + Grafana + node-exporter + cAdvisor stack:
 cd /srv/libriant/app/infra/monitoring
 GRAFANA_ADMIN_PASSWORD=pick-one docker compose -f docker-compose.monitoring.yml up -d
 # Grafana is bound to localhost only — reach it through an SSH tunnel:
-#   (in Termius / locally)  ssh -L 3300:127.0.0.1:3300 deploy@203.0.113.10
+#   (in Termius / locally)  ssh -L 3300:127.0.0.1:3300 deploy@178.104.32.176
 # then open http://localhost:3300  (import dashboards 1860 + 14282)
 ```
 
@@ -704,10 +739,10 @@ ssh root@"$(hcloud server ip CyberSystema-1)"
 
 ### D. Troubleshooting
 
-| Symptom                     | Check                                                             |
-| --------------------------- | ----------------------------------------------------------------- |
-| Containers won't start      | Is the volume mounted? `df -h /mnt/libriant`                      |
-| No TLS / cert errors        | DNS points at the box? `dig +short libriant.app`; `dc logs caddy` |
-| `api` not ready             | `dc logs api`; is Postgres healthy in `dc ps`?                    |
-| Out of memory during backup | swap on? (`free -h`); or grow the box (Part 15)                   |
-| Stripe state stale          | webhook secret set + endpoint reachable? (Part 10)                |
+| Symptom                     | Check                                                                                                          |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Containers won't start      | Is the volume mounted? `df -h /mnt/libriant`                                                                   |
+| No TLS / cert errors (5xx)  | Cloudflare SSL mode = **Full (strict)**? Origin cert present at `/mnt/libriant/caddy/origin/`? `dc logs caddy` |
+| `api` not ready             | `dc logs api`; is Postgres healthy in `dc ps`?                                                                 |
+| Out of memory during backup | swap on? (`free -h`); or grow the box (Part 15)                                                                |
+| Stripe state stale          | webhook secret set + endpoint reachable? (Part 10)                                                             |

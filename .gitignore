@@ -14,6 +14,11 @@ coverage/
 .idea/
 *.tsbuildinfo
 .cache/
+# Runtime upload storage (STORAGE_ROOT) — never the API's storage *source*
+# module. The broad match below otherwise swallows apps/api/src/storage/,
+# which left the whole module untracked and broke CI + image builds.
 storage/
+!apps/api/src/storage/
+!apps/api/src/storage/**
 .dev-storage/
 prisma/generated/

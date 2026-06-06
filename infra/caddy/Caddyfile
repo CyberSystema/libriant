@@ -18,7 +18,7 @@
 	# Defaults applied to every site block below. ACME issuance uses
 	# Caddy's built-in HTTP-01 / TLS-ALPN-01 challenges; for the wildcard
 	# block, override to a DNS provider plugin.
-	email {$ACME_EMAIL:ops@libriant.app}
+	email {$ACME_EMAIL:ops@libriant.com}
 
 	# Structured access log. Compose mounts this to a host volume so the
 	# nightly job can rotate it.
@@ -88,26 +88,40 @@
 	}
 }
 
+(cloudflare_origin) {
+	# We run BEHIND Cloudflare's proxy (orange-cloud). Cloudflare terminates
+	# the public TLS, so Caddy can't complete a Let's Encrypt ACME challenge
+	# (the challenge never reaches the origin). Instead Caddy serves a
+	# Cloudflare **Origin Certificate** (15-year, trusted by Cloudflare), and
+	# Cloudflare's SSL/TLS mode is set to **Full (strict)** so the edge
+	# validates it. Generate the cert in the Cloudflare dashboard
+	# (SSL/TLS → Origin Server → Create Certificate; hosts: libriant.com,
+	# *.libriant.com) and place it on the host — see the compose mount.
+	tls /etc/caddy/origin/origin.crt /etc/caddy/origin/origin.key
+}
+
 # ---------------------------------------------------------------------------
-# Public apex — libriant.app
+# Public apex — libriant.com
 # ---------------------------------------------------------------------------
 
-{$PUBLIC_HOST:libriant.app} {
+{$PUBLIC_HOST:libriant.com} {
 	import security_headers
 	import maintenance_check
 	import maintenance_takeover
 	import static_assets
+	import cloudflare_origin
 
 	# API requests routed by the browser go through /lbr-api/* (same-origin)
 	# to avoid SameSite + CORS pain on the session cookie. Strip the prefix
 	# before forwarding so the API sees its native routes (/auth/me etc).
 	handle_path /lbr-api/* {
 		reverse_proxy api:3001 {
-			# Pass real client info through so audit logs + rate limits
-			# can key off the right IP. Caddy auto-adds X-Forwarded-For,
-			# X-Forwarded-Proto, and Host — we only need to override
-			# X-Real-IP explicitly because Caddy doesn't set that one.
-			header_up X-Real-IP {remote_host}
+			# Pass the REAL client IP so audit logs + rate limits key off it.
+			# Behind Cloudflare the true client is in `CF-Connecting-IP`
+			# (the TCP peer {remote_host} is a Cloudflare edge node). The host
+			# firewall only admits Cloudflare's ranges, so the header can't be
+			# spoofed by hitting the origin directly.
+			header_up X-Real-IP {http.request.header.CF-Connecting-IP}
 			# A failed upstream should look like a 503, not a 502.
 			fail_duration 10s
 			max_fails 3
@@ -128,20 +142,23 @@
 }
 
 # ---------------------------------------------------------------------------
-# Admin host — admin.libriant.app
+# Admin host — admin.libriant.com
 #
 # Same backend; we just want a different cookie scope + a host an operator
 # can bookmark. Admin login lives at /admin/login on the web app.
 # ---------------------------------------------------------------------------
 
-{$ADMIN_HOST:admin.libriant.app} {
+{$ADMIN_HOST:admin.libriant.com} {
 	import security_headers
 	import maintenance_check
 	import maintenance_takeover
 	import static_assets
+	import cloudflare_origin
 
 	handle_path /lbr-api/* {
-		reverse_proxy api:3001
+		reverse_proxy api:3001 {
+			header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+		}
 	}
 
 	# Redirect bare visits straight into the admin login if the user isn't
@@ -158,15 +175,15 @@
 }
 
 # ---------------------------------------------------------------------------
-# Wildcard — *.libriant.app (custom subdomains, Pro/Enterprise feature)
+# Wildcard — *.libriant.com (custom subdomains, Pro/Enterprise feature)
 #
 # When this ships we need a DNS-01 challenge so ACME can prove control of
-# *.libriant.app rather than each subdomain. Uncomment + fill in the DNS
+# *.libriant.com rather than each subdomain. Uncomment + fill in the DNS
 # provider when ready. The host header carries the tenant slug; the API's
 # TenantMiddleware already supports subdomain resolution.
 # ---------------------------------------------------------------------------
 
-# *.{$PUBLIC_HOST:libriant.app} {
+# *.{$PUBLIC_HOST:libriant.com} {
 # 	import security_headers
 # 	import maintenance_check
 # 	import maintenance_takeover

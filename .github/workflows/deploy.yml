@@ -165,13 +165,13 @@ jobs:
 
       - name: Wait for health
         run: |
-          # Poll the public host's /healthz endpoint until Caddy + web +
-          # api are all reporting up. 3 minutes max — beyond that something
-          # is wrong and rolling back is preferable to silent breakage.
+          # Poll the public host's /healthz endpoint (through Cloudflare) until
+          # Caddy + web + api are all reporting up. 3 minutes max — beyond that
+          # something is wrong and rolling back is preferable to silent breakage.
           deadline=$(( $(date +%s) + 180 ))
           while [ $(date +%s) -lt $deadline ]; do
             if curl -fs --max-time 5 \
-              "https://${{ matrix.host.ssh }}/healthz" >/dev/null; then
+              "https://${{ matrix.host.health_host }}/healthz" >/dev/null; then
               echo "healthy"
               exit 0
             fi

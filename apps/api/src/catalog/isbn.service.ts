@@ -79,7 +79,7 @@ export class IsbnLookupService {
     try {
       const res = await fetch(url, {
         signal: ctrl.signal,
-        headers: { 'User-Agent': 'Libriant/0.1 (library-mgmt; +https://libriant.app)' },
+        headers: { 'User-Agent': 'Libriant/0.1 (library-mgmt; +https://libriant.com)' },
       });
       if (!res.ok) return null;
       const body = (await res.json()) as Record<string, OpenLibraryEntry | undefined>;

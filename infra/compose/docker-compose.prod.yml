@@ -17,8 +17,8 @@
 # Tear down:  docker compose -f infra/compose/docker-compose.prod.yml down
 #
 # Required env (load via `--env-file` or shell):
-#   PUBLIC_HOST                 — apex domain (libriant.app)
-#   ADMIN_HOST                  — admin host (admin.libriant.app)
+#   PUBLIC_HOST                 — apex domain (libriant.com)
+#   ADMIN_HOST                  — admin host (admin.libriant.com)
 #   ACME_EMAIL                  — contact for Let's Encrypt
 #   IMAGE_TAG                   — image tag to pull (default: latest)
 #   POSTGRES_PASSWORD           — superuser password
@@ -32,8 +32,8 @@ x-app-env: &app-env
   NODE_ENV: production
   CONTROL_DATABASE_URL: postgresql://libriant:${POSTGRES_PASSWORD}@pgbouncer:5432/libriant_control
   REDIS_URL: redis://redis:6379
-  PUBLIC_APP_URL: https://${PUBLIC_HOST:-libriant.app}
-  PUBLIC_APEX_DOMAIN: ${PUBLIC_HOST:-libriant.app}
+  PUBLIC_APP_URL: https://${PUBLIC_HOST:-libriant.com}
+  PUBLIC_APEX_DOMAIN: ${PUBLIC_HOST:-libriant.com}
   TENANT_PATH_PREFIX: /t/
   SESSION_COOKIE_SECURE: 'true'
   SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required in production}
@@ -47,7 +47,7 @@ x-app-env: &app-env
   STRIPE_DRIVER: ${STRIPE_DRIVER:-real}
   STRIPE_API_KEY: ${STRIPE_API_KEY:-}
   STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
-  BILLING_RETURN_URL: https://${PUBLIC_HOST:-libriant.app}
+  BILLING_RETURN_URL: https://${PUBLIC_HOST:-libriant.com}
   BCRYPT_COST: '12'
   PG_SUPERUSER_URL: postgresql://libriant:${POSTGRES_PASSWORD}@postgres:5432/libriant_control
 
@@ -76,14 +76,18 @@ services:
       - '443:443'
       - '443:443/udp' # HTTP/3
     environment:
-      PUBLIC_HOST: ${PUBLIC_HOST:-libriant.app}
-      ADMIN_HOST: ${ADMIN_HOST:-admin.libriant.app}
-      ACME_EMAIL: ${ACME_EMAIL:-ops@libriant.app}
+      PUBLIC_HOST: ${PUBLIC_HOST:-libriant.com}
+      ADMIN_HOST: ${ADMIN_HOST:-admin.libriant.com}
+      ACME_EMAIL: ${ACME_EMAIL:-ops@libriant.com}
       MAINTENANCE_HARD: ${MAINTENANCE_HARD:-false}
     volumes:
       - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ../caddy/maintenance.html:/srv/libriant/caddy/maintenance.html:ro
       - ../../assets:/srv/libriant/assets:ro
+      # Cloudflare Origin Certificate (origin.crt + origin.key) — Caddy serves
+      # it because we sit behind Cloudflare's proxy (Full strict). Place the
+      # two files on the data volume at $LIBRIANT_DATA_ROOT/caddy/origin/.
+      - ${LIBRIANT_DATA_ROOT:-/mnt/libriant}/caddy/origin:/etc/caddy/origin:ro
       - caddy_data:/data
       - caddy_config:/config
       - caddy_logs:/var/log/caddy
@@ -137,8 +141,8 @@ services:
       # the docker network. Browser-side fetches still go through Caddy at
       # /lbr-api/* (see lib/api.ts).
       API_INTERNAL_URL: http://api:3001
-      NEXT_PUBLIC_API_URL: https://${PUBLIC_HOST:-libriant.app}
-      PUBLIC_APP_URL: https://${PUBLIC_HOST:-libriant.app}
+      NEXT_PUBLIC_API_URL: https://${PUBLIC_HOST:-libriant.com}
+      PUBLIC_APP_URL: https://${PUBLIC_HOST:-libriant.com}
     depends_on:
       api:
         condition: service_healthy

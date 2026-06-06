@@ -98,7 +98,7 @@ export class TenantMiddleware implements NestMiddleware {
   }
 
   /**
-   * Parse the Host header (`acme.libriant.app:443`). Returns the
+   * Parse the Host header (`acme.libriant.com:443`). Returns the
    * subdomain when the host matches `<sub>.<apex>` for our configured
    * apex; null otherwise.
    */
@@ -109,7 +109,7 @@ export class TenantMiddleware implements NestMiddleware {
     const suffix = `.${this.apex}`;
     if (!bare.endsWith(suffix)) return null;
     const sub = bare.slice(0, -suffix.length);
-    // Reject multi-level subdomains (e.g. www.acme.libriant.app); we only
+    // Reject multi-level subdomains (e.g. www.acme.libriant.com); we only
     // support `<slug>.<apex>` for tenant routing.
     if (!sub || sub.includes('.')) return null;
     return this.isValidSlug(sub) ? sub : null;

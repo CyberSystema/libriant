@@ -22,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'pnpm'
 
       - name: Install
@@ -62,7 +62,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'pnpm'
 
       - name: Install
@@ -109,7 +109,9 @@ jobs:
       SESSION_SECRET: ci-only-test
       ADMIN_SESSION_SECRET: ci-only-test
       IMPERSONATION_SECRET: ci-only-test
-      MFA_MASTER_KEY: 0011223344556677889900112233445566778899001122334455667788990011
+      # Quoted: the value is all digits, which unquoted YAML coerces to a
+      # float (1.12e+61) — the app then rejects it as non-hex.
+      MFA_MASTER_KEY: '0011223344556677889900112233445566778899001122334455667788990011'
       STRIPE_DRIVER: fake
       STORAGE_ROOT: /tmp/libriant-test-storage
       EMAIL_DRIVER: console
@@ -124,7 +126,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'pnpm'
 
       - name: Install
@@ -177,11 +179,20 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'pnpm'
 
       - name: Install
         run: pnpm install --frozen-lockfile
+
+      # The seed + tenant scripts import the generated Prisma clients, so they
+      # must be generated first (the other jobs do this too). Generation
+      # doesn't connect — the placeholder URLs just silence the warnings.
+      - name: Generate Prisma clients (control-plane + tenant)
+        run: pnpm db:generate
+        env:
+          CONTROL_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_control
+          TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
 
       - name: Create + extend both DBs (control + demo tenant)
         run: |
@@ -191,10 +202,12 @@ jobs:
             CREATE EXTENSION IF NOT EXISTS pgcrypto;
             CREATE EXTENSION IF NOT EXISTS citext;
           "
-          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "
-            SELECT 'CREATE DATABASE libriant_demo'
-            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'libriant_demo')\gexec
-          "
+          # `\gexec` is a psql meta-command and is NOT honored by `psql -c`
+          # (that path only runs plain SQL), so guard the create in the shell.
+          if ! PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -tAc \
+            "SELECT 1 FROM pg_database WHERE datname = 'libriant_demo'" | grep -q 1; then
+            PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "CREATE DATABASE libriant_demo"
+          fi
           PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_demo -c "
             CREATE EXTENSION IF NOT EXISTS unaccent;
             CREATE EXTENSION IF NOT EXISTS pg_trgm;
