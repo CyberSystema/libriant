@@ -18,7 +18,7 @@
 	# Defaults applied to every site block below. ACME issuance uses
 	# Caddy's built-in HTTP-01 / TLS-ALPN-01 challenges; for the wildcard
 	# block, override to a DNS provider plugin.
-	email {$ACME_EMAIL:ops@libriant.app}
+	email {$ACME_EMAIL:ops@libriant.com}
 
 	# Structured access log. Compose mounts this to a host volume so the
 	# nightly job can rotate it.
@@ -89,10 +89,10 @@
 }
 
 # ---------------------------------------------------------------------------
-# Public apex — libriant.app
+# Public apex — libriant.com
 # ---------------------------------------------------------------------------
 
-{$PUBLIC_HOST:libriant.app} {
+{$PUBLIC_HOST:libriant.com} {
 	import security_headers
 	import maintenance_check
 	import maintenance_takeover
@@ -128,13 +128,13 @@
 }
 
 # ---------------------------------------------------------------------------
-# Admin host — admin.libriant.app
+# Admin host — admin.libriant.com
 #
 # Same backend; we just want a different cookie scope + a host an operator
 # can bookmark. Admin login lives at /admin/login on the web app.
 # ---------------------------------------------------------------------------
 
-{$ADMIN_HOST:admin.libriant.app} {
+{$ADMIN_HOST:admin.libriant.com} {
 	import security_headers
 	import maintenance_check
 	import maintenance_takeover
@@ -158,15 +158,15 @@
 }
 
 # ---------------------------------------------------------------------------
-# Wildcard — *.libriant.app (custom subdomains, Pro/Enterprise feature)
+# Wildcard — *.libriant.com (custom subdomains, Pro/Enterprise feature)
 #
 # When this ships we need a DNS-01 challenge so ACME can prove control of
-# *.libriant.app rather than each subdomain. Uncomment + fill in the DNS
+# *.libriant.com rather than each subdomain. Uncomment + fill in the DNS
 # provider when ready. The host header carries the tenant slug; the API's
 # TenantMiddleware already supports subdomain resolution.
 # ---------------------------------------------------------------------------
 
-# *.{$PUBLIC_HOST:libriant.app} {
+# *.{$PUBLIC_HOST:libriant.com} {
 # 	import security_headers
 # 	import maintenance_check
 # 	import maintenance_takeover

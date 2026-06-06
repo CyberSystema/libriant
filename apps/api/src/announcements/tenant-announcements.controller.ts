@@ -40,7 +40,7 @@ export class TenantAnnouncementsController {
       tenantTags: tenant.tags,
       tenantStatus: tenant.status,
       userId: session.sub,
-      userEmail: u?.email ?? 'unknown@libriant.app',
+      userEmail: u?.email ?? 'unknown@libriant.com',
     });
     return { announcements: items };
   }

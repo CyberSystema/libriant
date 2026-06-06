@@ -17,7 +17,7 @@ short command you can paste.
 | Your tools  | **Termius** (SSH) as the main workplace                              |
 | Scale       | a pilot of up to ~20 libraries (tenants)                             |
 
-> Throughout, replace `libriant.app` / `admin.libriant.app` with your real
+> Throughout, replace `libriant.com` / `admin.libriant.com` with your real
 > domains and `203.0.113.10` with CyberSystema-1's public IPv4.
 
 **The big idea — why the volume matters.** A Hetzner **Rebuild** wipes the boot
@@ -65,7 +65,7 @@ library** (`tenant_<id>`), all on the same Postgres instance at this scale.
 
 A short checklist. Tick these off first.
 
-- [ ] A **domain** you control (e.g. `libriant.app`) with access to its DNS.
+- [ ] A **domain** you control (e.g. `libriant.com`) with access to its DNS.
 - [ ] Your **SSH key** in **Termius** (Keychain → your key). You'll register its
       **public** half with Hetzner in Part 2.
 - [ ] A **GitHub repo** for this code. CI builds images to
@@ -273,9 +273,9 @@ chmod 600 /srv/libriant/.env.prod
 
 ```ini
 # --- hosts ---
-PUBLIC_HOST=libriant.app
-ADMIN_HOST=admin.libriant.app
-ACME_EMAIL=ops@libriant.app
+PUBLIC_HOST=libriant.com
+ADMIN_HOST=admin.libriant.com
+ACME_EMAIL=ops@libriant.com
 MAINTENANCE_HARD=false
 
 # --- images (GHCR) ---
@@ -333,11 +333,11 @@ Point your domain at CyberSystema-1, then wait for it to propagate.
 
 | Record               | Type | Value          |
 | -------------------- | ---- | -------------- |
-| `libriant.app`       | A    | `203.0.113.10` |
-| `admin.libriant.app` | A    | `203.0.113.10` |
+| `libriant.com`       | A    | `203.0.113.10` |
+| `admin.libriant.com` | A    | `203.0.113.10` |
 
 ```sh
-dig +short libriant.app          # should return your IP before you continue
+dig +short libriant.com          # should return your IP before you continue
 ```
 
 TLS is automatic — Caddy fetches Let's Encrypt certificates on first start
@@ -398,12 +398,12 @@ ADMIN_BOOTSTRAP_PASSWORD='a-long-admin-passphrase' \
   ops "ADMIN_BOOTSTRAP_EMAIL=$ADMIN_BOOTSTRAP_EMAIL ADMIN_BOOTSTRAP_PASSWORD='$ADMIN_BOOTSTRAP_PASSWORD' pnpm admin:bootstrap"
 ```
 
-Then visit `https://admin.libriant.app` → log in → **MFA page** → scan the QR in
+Then visit `https://admin.libriant.com` → log in → **MFA page** → scan the QR in
 an authenticator app → verify.
 
 **Libraries (tenants)** are created two ways:
 
-- **Self-service (normal):** a librarian signs up at `https://libriant.app` and
+- **Self-service (normal):** a librarian signs up at `https://libriant.com` and
   everything is provisioned automatically (database, schema, owner, storage).
 - **Operator-provisioned (optional):**
 
@@ -420,7 +420,7 @@ ops "pnpm tenant:create -- --slug=acme --name='Acme Public Library' \
 Billing stays correct only if Stripe can reach your webhook.
 
 1. Stripe Dashboard → _Developers → Webhooks → Add endpoint_.
-2. URL: `https://libriant.app/webhooks/stripe`
+2. URL: `https://libriant.com/webhooks/stripe`
 3. Events: `customer.subscription.created/updated/deleted`,
    `invoice.payment_succeeded`, `invoice.payment_failed`.
 4. Copy the **Signing secret** (`whsec_…`) into `STRIPE_WEBHOOK_SECRET` in
@@ -483,14 +483,14 @@ sudo tar -C /mnt/libriant/storage -xzf /mnt/libriant/backups/<date>/storage.tar.
 ## Part 12 — Verify
 
 ```sh
-curl -fsS https://libriant.app/healthz && echo        # edge up
-curl -fsS https://libriant.app/readyz | jq            # api: redis + DB true
-curl -fsS https://libriant.app/api/readyz | jq        # web → api reachable
+curl -fsS https://libriant.com/healthz && echo        # edge up
+curl -fsS https://libriant.com/readyz | jq            # api: redis + DB true
+curl -fsS https://libriant.com/api/readyz | jq        # web → api reachable
 dc exec worker wget -qO- http://localhost:3002/readyz # worker (internal)
 ```
 
-Then in a browser: open `https://libriant.app`, create a test library, add a
-book, check it out — and confirm `https://admin.libriant.app` shows the admin
+Then in a browser: open `https://libriant.com`, create a test library, add a
+book, check it out — and confirm `https://admin.libriant.com` shows the admin
 login.
 
 ---
@@ -518,9 +518,9 @@ volume, with a `/healthz` gate.
 
 1. **`IMAGE_OWNER`** is set in `.env.prod` (Part 6) to your GitHub owner/org,
    lowercase. CI pushes — and the host pulls — `ghcr.io/$IMAGE_OWNER/libriant-{api,web}`.
-2. **DNS is live** (Part 7): `libriant.app` resolves to the box with a valid
-   cert. CI health-checks `https://libriant.app/healthz`, and `fleet.yml`'s
-   `ssh:` is already `libriant.app`.
+2. **DNS is live** (Part 7): `libriant.com` resolves to the box with a valid
+   cert. CI health-checks `https://libriant.com/healthz`, and `fleet.yml`'s
+   `ssh:` is already `libriant.com`.
 3. **Deploy key (runner → server)** — a dedicated keypair, authorized for
    `deploy`, private half stored as the `DEPLOY_SSH_KEY` repo secret:
    ```sh
@@ -707,7 +707,7 @@ ssh root@"$(hcloud server ip CyberSystema-1)"
 | Symptom                     | Check                                                             |
 | --------------------------- | ----------------------------------------------------------------- |
 | Containers won't start      | Is the volume mounted? `df -h /mnt/libriant`                      |
-| No TLS / cert errors        | DNS points at the box? `dig +short libriant.app`; `dc logs caddy` |
+| No TLS / cert errors        | DNS points at the box? `dig +short libriant.com`; `dc logs caddy` |
 | `api` not ready             | `dc logs api`; is Postgres healthy in `dc ps`?                    |
 | Out of memory during backup | swap on? (`free -h`); or grow the box (Part 15)                   |
 | Stripe state stale          | webhook secret set + endpoint reachable? (Part 10)                |

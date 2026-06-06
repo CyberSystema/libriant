@@ -2,7 +2,7 @@
 
 _A **[CyberSystema](https://cybersystema.com)** product._
 
-Multi-tenant SaaS for library management. Path-based tenants (`libriant.app/t/<slug>/…`),
+Multi-tenant SaaS for library management. Path-based tenants (`libriant.com/t/<slug>/…`),
 DB-per-tenant, per-tenant storage, Stripe + manual billing, fully bilingual (Greek + English)
 from day one, hot-swappable graphic assets, designed end-to-end for non-technical librarians.
 
@@ -1273,7 +1273,7 @@ system-mode subsystems are 18a/18b/18c.
 ```sh
 # 1) Bootstrap an admin (idempotent — re-running just updates fields)
 CONTROL_DATABASE_URL=postgresql://libriant:libriant@localhost:5432/libriant_control \
-ADMIN_BOOTSTRAP_EMAIL=owner@libriant.app \
+ADMIN_BOOTSTRAP_EMAIL=owner@libriant.com \
 ADMIN_BOOTSTRAP_PASSWORD=AdminBootstrapPw2026! \
 ADMIN_BOOTSTRAP_NAME="Libriant Owner" \
 ADMIN_BOOTSTRAP_ROLE=owner \
@@ -1284,7 +1284,7 @@ JAR=/tmp/admin-jar.txt && rm -f $JAR
 curl -i http://localhost:3001/admin/tenants                                  # 401 anonymous
 curl -s -c $JAR -X POST http://localhost:3001/admin/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"owner@libriant.app","password":"AdminBootstrapPw2026!"}'
+  -d '{"email":"owner@libriant.com","password":"AdminBootstrapPw2026!"}'
 curl -s -b $JAR http://localhost:3001/admin/auth/me                           # admin profile
 curl -s -b $JAR http://localhost:3001/admin/tenants | jq '.tenants | length'
 curl -s -b $JAR http://localhost:3001/admin/plans | jq '.plans[].slug'
@@ -1361,7 +1361,7 @@ revoke at any time and the admin's next request 401s.
 ```sh
 # 1) Bootstrap an admin (idempotent)
 CONTROL_DATABASE_URL=postgresql://libriant:libriant@localhost:5432/libriant_control \
-ADMIN_BOOTSTRAP_EMAIL=owner@libriant.app \
+ADMIN_BOOTSTRAP_EMAIL=owner@libriant.com \
 ADMIN_BOOTSTRAP_PASSWORD=AdminBootstrapPw2026! \
 pnpm admin:bootstrap
 
@@ -1369,7 +1369,7 @@ pnpm admin:bootstrap
 JAR=/tmp/admin.txt
 curl -s -c $JAR -X POST http://localhost:3001/admin/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"owner@libriant.app","password":"AdminBootstrapPw2026!"}'
+  -d '{"email":"owner@libriant.com","password":"AdminBootstrapPw2026!"}'
 
 SECRET=$(curl -s -b $JAR -X POST http://localhost:3001/admin/mfa/setup \
   -H "Content-Type: application/json" -d '{}' | jq -r .secret)
@@ -1505,7 +1505,7 @@ Step 18b ships the platform-wide announcements subsystem: admin composes
 JAR=/tmp/admin.txt
 curl -s -c $JAR -X POST http://localhost:3001/admin/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"owner@libriant.app","password":"AdminBootstrapPw2026!"}'
+  -d '{"email":"owner@libriant.com","password":"AdminBootstrapPw2026!"}'
 
 # 2) Librarian login (any signed-in user under a tenant works)
 LIB=/tmp/lib.txt
@@ -1668,7 +1668,7 @@ fully down.
 JAR=/tmp/admin.txt
 curl -s -c $JAR -X POST http://localhost:3001/admin/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"owner@libriant.app","password":"AdminBootstrapPw2026!"}'
+  -d '{"email":"owner@libriant.com","password":"AdminBootstrapPw2026!"}'
 
 # 2) Librarian login
 LIB=/tmp/lib.txt
@@ -1843,18 +1843,18 @@ cp .env.prod.example /srv/libriant/.env.prod    # then fill in the blanks
   docker compose -f infra/compose/docker-compose.prod.yml up -d )
 
 # 3) Health probes (every service has the same contract):
-curl -fs https://libriant.app/healthz              # Caddy → web
-curl -fs https://libriant.app/lbr-api/healthz      # Caddy → api
+curl -fs https://libriant.com/healthz              # Caddy → web
+curl -fs https://libriant.com/lbr-api/healthz      # Caddy → api
 docker compose -f infra/compose/docker-compose.prod.yml \
   exec worker wget -qO- http://localhost:3002/healthz
 # Readiness fans out: web /api/readyz round-trips to api /readyz, which
 # pings Redis + the control DB. Either dependency down → 503.
-curl -is https://libriant.app/api/readyz
-curl -is https://libriant.app/lbr-api/readyz
+curl -is https://libriant.com/api/readyz
+curl -is https://libriant.com/lbr-api/readyz
 
 # 4) Prometheus metrics (text exposition; same contract on all three).
-curl -s https://libriant.app/api/metrics      | head -6
-curl -s https://libriant.app/lbr-api/metrics  | head -6
+curl -s https://libriant.com/api/metrics      | head -6
+curl -s https://libriant.com/lbr-api/metrics  | head -6
 docker compose -f infra/compose/docker-compose.prod.yml \
   exec worker wget -qO- http://localhost:3002/metrics | head -6
 
@@ -1862,14 +1862,14 @@ docker compose -f infra/compose/docker-compose.prod.yml \
 # even with api + web killed, Caddy serves the brand-aware page.
 MAINTENANCE_HARD=true docker compose -f infra/compose/docker-compose.prod.yml \
   up -d --force-recreate caddy
-curl -is https://libriant.app/ | head -8     # 200 with X-Maintenance: hard
+curl -is https://libriant.com/ | head -8     # 200 with X-Maintenance: hard
 # /healthz still passes through so the load balancer doesn't pull the host.
-curl -is https://libriant.app/healthz | head -4
+curl -is https://libriant.com/healthz | head -4
 
 # 6) Asset hot-swap (still works under prod compose — the assets/ folder
 # is bind-mounted into Caddy + web + api as a single read-only volume).
 echo "<svg ...>...</svg>" > assets/brand/logo.svg
-curl -I https://libriant.app/_assets/brand/logo.svg     # ETag updates
+curl -I https://libriant.com/_assets/brand/logo.svg     # ETag updates
 
 # 7) Backup drill. Runs against the live compose project; idempotent on
 # the same day.
@@ -1923,7 +1923,7 @@ act push -W .github/workflows/deploy.yml --container-architecture linux/amd64
   older than `$BACKUP_KEEP_DAYS` (default 14), and optionally
   rclone-mirrors off-host. Re-running on the same day is a no-op
   (idempotent overwrite), so a missed cron + manual catch-up is safe.
-- **Out of MVP, hooks in place.** Wildcard TLS for `*.libriant.app`
+- **Out of MVP, hooks in place.** Wildcard TLS for `*.libriant.com`
   (commented Caddyfile block with a DNS-01 challenge — needs a provider
   plugin), multi-region cell routing, OpenTelemetry traces, and a real
   Prometheus + Grafana stack are all deferred. The metrics endpoints

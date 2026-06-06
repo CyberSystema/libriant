@@ -13,7 +13,7 @@ hosts:
     # curls (`https://<ssh>/healthz`). Must be a DNS name with a valid TLS cert
     # so CI's health check passes — a raw IP fails the cert check. Point this
     # A-record at the box (same IP you SSH to).
-    ssh: libriant.app
+    ssh: libriant.com
     # Compose project name on the remote host. The workflow exports this
     # as `COMPOSE_PROJECT_NAME` before running compose commands.
     project: libriant

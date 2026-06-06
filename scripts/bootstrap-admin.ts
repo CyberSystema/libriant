@@ -3,7 +3,7 @@
  *
  *   ENV:
  *     CONTROL_DATABASE_URL  (required)
- *     ADMIN_BOOTSTRAP_EMAIL (required, e.g. owner@libriant.app)
+ *     ADMIN_BOOTSTRAP_EMAIL (required, e.g. owner@libriant.com)
  *     ADMIN_BOOTSTRAP_PASSWORD (required, plaintext — hashed by bcrypt before insert)
  *     ADMIN_BOOTSTRAP_NAME  (optional, defaults to "Libriant Owner")
  *     ADMIN_BOOTSTRAP_ROLE  (optional, "owner" | "support"; defaults to "owner")

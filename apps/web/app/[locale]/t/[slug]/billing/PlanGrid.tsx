@@ -133,7 +133,7 @@ export function PlanGrid({ plans, slug, catalog, locale }: Props) {
                 </Button>
               ) : isManual ? (
                 <a
-                  href="mailto:hello@libriant.app"
+                  href="mailto:hello@libriant.com"
                   className="lbr-btn lbr-btn--secondary lbr-btn--md"
                   style={{ width: '100%', textDecoration: 'none' }}
                 >

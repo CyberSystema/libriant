@@ -458,7 +458,7 @@ export class BillingService {
     const { customerId } = await this.stripe.createCustomer({
       tenantId: tenant.id,
       tenantSlug: tenant.slug,
-      email: tenant.primaryEmail ?? `billing@${tenant.slug}.libriant.app`,
+      email: tenant.primaryEmail ?? `billing@${tenant.slug}.libriant.com`,
       name: tenant.name,
     });
     if (account) {
@@ -471,7 +471,7 @@ export class BillingService {
         data: {
           tenantId,
           stripeCustomerId: customerId,
-          billingEmail: tenant.primaryEmail ?? `billing@${tenant.slug}.libriant.app`,
+          billingEmail: tenant.primaryEmail ?? `billing@${tenant.slug}.libriant.com`,
           billingName: tenant.name,
         },
       });
