@@ -330,21 +330,53 @@ From now on, `dc <anything>` = the whole stack, data on your volume. Try
 
 ---
 
-## Part 7 — DNS
+## Part 7 — DNS + TLS (Cloudflare)
 
-Point your domain at CyberSystema-1, then wait for it to propagate.
+Cloudflare is the registrar, DNS, **and** CDN — we run the hosts **behind its
+proxy** (orange-cloud) for caching + DDoS protection. Because Cloudflare
+terminates TLS at its edge, Caddy can't use Let's Encrypt here; it serves a
+**Cloudflare Origin Certificate** and Cloudflare validates it in **Full
+(strict)** mode.
 
-| Record               | Type | Value            |
-| -------------------- | ---- | ---------------- |
-| `libriant.com`       | A    | `178.104.32.176` |
-| `admin.libriant.com` | A    | `178.104.32.176` |
+**1. DNS records** — Cloudflare dashboard → `libriant.com` zone → **DNS →
+Records** (nameservers already point at Cloudflare since it's your registrar):
+
+| Type | Name    | Value            | Proxy          |
+| ---- | ------- | ---------------- | -------------- |
+| A    | `@`     | `178.104.32.176` | **Proxied** 🟠 |
+| A    | `admin` | `178.104.32.176` | **Proxied** 🟠 |
+
+> Proxied records resolve to Cloudflare's edge, **not** your box — so
+> `dig +short libriant.com` returns Cloudflare IPs. That's expected. Deploys
+> SSH to the box by **raw IP** (`fleet.yml`), so they don't depend on this.
+
+**2. Origin certificate** — dashboard → **SSL/TLS → Origin Server → Create
+Certificate**. Keep defaults, hostnames `libriant.com` **and** `*.libriant.com`,
+15-year validity → **Create**. Paste the two PEM blocks onto the box (on the
+volume, so they survive a rebuild):
 
 ```sh
-dig +short libriant.com          # should return your IP before you continue
+mkdir -p /mnt/libriant/caddy/origin
+nano /mnt/libriant/caddy/origin/origin.crt    # paste "Origin Certificate"
+nano /mnt/libriant/caddy/origin/origin.key    # paste "Private Key"
+chmod 600 /mnt/libriant/caddy/origin/origin.key
 ```
 
-TLS is automatic — Caddy fetches Let's Encrypt certificates on first start
-(Part 8), and they're stored on the volume so they survive reinstalls.
+Compose mounts that folder read-only into Caddy at `/etc/caddy/origin`, and the
+Caddyfile already points `tls` at `origin.crt` / `origin.key`.
+
+**3. SSL/TLS mode** — dashboard → **SSL/TLS → Overview** → set the mode to **Full
+(strict)**. Under **Edge Certificates**, turn on **Always Use HTTPS**.
+
+**4. Lock the origin to Cloudflare** — so nobody bypasses the proxy to hit the
+box directly (which would also let them spoof the real-client-IP header). In the
+Hetzner firewall (`libriant-edge`, Part 2), change the **source** for ports
+**80** and **443** from `0.0.0.0/0` to **[Cloudflare's IP ranges](https://www.cloudflare.com/ips/)**.
+Leave **22** open to your own IP — SSH deploys reach the box directly.
+
+> The real visitor IP arrives via Cloudflare's `CF-Connecting-IP` header, which
+> the Caddyfile forwards to the app as `X-Real-IP` for rate-limiting + audit.
+> Certs live on the volume, so they survive reinstalls.
 
 ---
 
@@ -707,10 +739,10 @@ ssh root@"$(hcloud server ip CyberSystema-1)"
 
 ### D. Troubleshooting
 
-| Symptom                     | Check                                                             |
-| --------------------------- | ----------------------------------------------------------------- |
-| Containers won't start      | Is the volume mounted? `df -h /mnt/libriant`                      |
-| No TLS / cert errors        | DNS points at the box? `dig +short libriant.com`; `dc logs caddy` |
-| `api` not ready             | `dc logs api`; is Postgres healthy in `dc ps`?                    |
-| Out of memory during backup | swap on? (`free -h`); or grow the box (Part 15)                   |
-| Stripe state stale          | webhook secret set + endpoint reachable? (Part 10)                |
+| Symptom                     | Check                                                                                                          |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Containers won't start      | Is the volume mounted? `df -h /mnt/libriant`                                                                   |
+| No TLS / cert errors (5xx)  | Cloudflare SSL mode = **Full (strict)**? Origin cert present at `/mnt/libriant/caddy/origin/`? `dc logs caddy` |
+| `api` not ready             | `dc logs api`; is Postgres healthy in `dc ps`?                                                                 |
+| Out of memory during backup | swap on? (`free -h`); or grow the box (Part 15)                                                                |
+| Stripe state stale          | webhook secret set + endpoint reachable? (Part 10)                                                             |

@@ -9,11 +9,15 @@
 hosts:
   - name: CyberSystema-1
     user: deploy
-    # SSH/rsync target AND the public health-check host the deploy workflow
-    # curls (`https://<ssh>/healthz`). Must be a DNS name with a valid TLS cert
-    # so CI's health check passes — a raw IP fails the cert check. Point this
-    # A-record at the box (same IP you SSH to).
-    ssh: libriant.com
+    # SSH target. We use the RAW IP, not the domain, because the apex is
+    # proxied through Cloudflare (orange-cloud) — `libriant.com` resolves to
+    # Cloudflare's edge, which doesn't carry SSH (port 22). The IP reaches the
+    # box directly. (Lock host port 22 to your own IP in the firewall.)
+    ssh: 178.104.32.176
+    # Public host the deploy workflow health-checks (`https://<health_host>/healthz`).
+    # This one goes THROUGH Cloudflare → origin, so it must be the proxied
+    # domain with a valid cert (Cloudflare's edge cert + the origin cert).
+    health_host: libriant.com
     # Compose project name on the remote host. The workflow exports this
     # as `COMPOSE_PROJECT_NAME` before running compose commands.
     project: libriant

@@ -84,6 +84,10 @@ services:
       - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - ../caddy/maintenance.html:/srv/libriant/caddy/maintenance.html:ro
       - ../../assets:/srv/libriant/assets:ro
+      # Cloudflare Origin Certificate (origin.crt + origin.key) — Caddy serves
+      # it because we sit behind Cloudflare's proxy (Full strict). Place the
+      # two files on the data volume at $LIBRIANT_DATA_ROOT/caddy/origin/.
+      - ${LIBRIANT_DATA_ROOT:-/mnt/libriant}/caddy/origin:/etc/caddy/origin:ro
       - caddy_data:/data
       - caddy_config:/config
       - caddy_logs:/var/log/caddy

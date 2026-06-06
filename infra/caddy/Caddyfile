@@ -88,6 +88,18 @@
 	}
 }
 
+(cloudflare_origin) {
+	# We run BEHIND Cloudflare's proxy (orange-cloud). Cloudflare terminates
+	# the public TLS, so Caddy can't complete a Let's Encrypt ACME challenge
+	# (the challenge never reaches the origin). Instead Caddy serves a
+	# Cloudflare **Origin Certificate** (15-year, trusted by Cloudflare), and
+	# Cloudflare's SSL/TLS mode is set to **Full (strict)** so the edge
+	# validates it. Generate the cert in the Cloudflare dashboard
+	# (SSL/TLS → Origin Server → Create Certificate; hosts: libriant.com,
+	# *.libriant.com) and place it on the host — see the compose mount.
+	tls /etc/caddy/origin/origin.crt /etc/caddy/origin/origin.key
+}
+
 # ---------------------------------------------------------------------------
 # Public apex — libriant.com
 # ---------------------------------------------------------------------------
@@ -97,17 +109,19 @@
 	import maintenance_check
 	import maintenance_takeover
 	import static_assets
+	import cloudflare_origin
 
 	# API requests routed by the browser go through /lbr-api/* (same-origin)
 	# to avoid SameSite + CORS pain on the session cookie. Strip the prefix
 	# before forwarding so the API sees its native routes (/auth/me etc).
 	handle_path /lbr-api/* {
 		reverse_proxy api:3001 {
-			# Pass real client info through so audit logs + rate limits
-			# can key off the right IP. Caddy auto-adds X-Forwarded-For,
-			# X-Forwarded-Proto, and Host — we only need to override
-			# X-Real-IP explicitly because Caddy doesn't set that one.
-			header_up X-Real-IP {remote_host}
+			# Pass the REAL client IP so audit logs + rate limits key off it.
+			# Behind Cloudflare the true client is in `CF-Connecting-IP`
+			# (the TCP peer {remote_host} is a Cloudflare edge node). The host
+			# firewall only admits Cloudflare's ranges, so the header can't be
+			# spoofed by hitting the origin directly.
+			header_up X-Real-IP {http.request.header.CF-Connecting-IP}
 			# A failed upstream should look like a 503, not a 502.
 			fail_duration 10s
 			max_fails 3
@@ -139,9 +153,12 @@
 	import maintenance_check
 	import maintenance_takeover
 	import static_assets
+	import cloudflare_origin
 
 	handle_path /lbr-api/* {
-		reverse_proxy api:3001
+		reverse_proxy api:3001 {
+			header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+		}
 	}
 
 	# Redirect bare visits straight into the admin login if the user isn't
