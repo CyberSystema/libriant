@@ -24,7 +24,10 @@
 #   POSTGRES_PASSWORD           — superuser password
 #   SESSION_SECRET / ADMIN_SESSION_SECRET / IMPERSONATION_SECRET — JWT secrets
 #   MFA_MASTER_KEY              — 64-hex (32-byte) AES key
-#   STRIPE_API_KEY / STRIPE_WEBHOOK_SECRET — billing
+#
+# Optional (default to trial-safe drivers — see x-app-env):
+#   STRIPE_DRIVER=real + STRIPE_API_KEY / STRIPE_WEBHOOK_SECRET — real billing
+#   EMAIL_DRIVER=smtp + SMTP_URL                                — real email
 #
 # See `.env.prod.example` in the repo root for the full list.
 
@@ -44,10 +47,19 @@ x-app-env: &app-env
   STORAGE_SIGNING_SECRET: ${STORAGE_SIGNING_SECRET:-}
   ASSETS_ROOT: /srv/libriant/assets
   LOCALES_ROOT: /srv/libriant/locales
-  STRIPE_DRIVER: ${STRIPE_DRIVER:-real}
+  # Billing + email default to the no-cost "trial" drivers so a clean deploy
+  # boots without a Stripe account or a mail server. Flip these in .env.prod
+  # (STRIPE_DRIVER=real + keys, EMAIL_DRIVER=smtp + SMTP_URL) when you go live.
+  # NOTE: every driver var the app reads MUST be listed here — Compose only
+  # injects variables referenced in this block, not everything in .env.prod.
+  STRIPE_DRIVER: ${STRIPE_DRIVER:-fake}
   STRIPE_API_KEY: ${STRIPE_API_KEY:-}
   STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
   BILLING_RETURN_URL: https://${PUBLIC_HOST:-libriant.com}
+  EMAIL_DRIVER: ${EMAIL_DRIVER:-console}
+  SMTP_URL: ${SMTP_URL:-}
+  EMAIL_FROM: ${EMAIL_FROM:-}
+  EMAIL_REPLY_TO: ${EMAIL_REPLY_TO:-}
   BCRYPT_COST: '12'
   PG_SUPERUSER_URL: postgresql://libriant:${POSTGRES_PASSWORD}@postgres:5432/libriant_control
 
