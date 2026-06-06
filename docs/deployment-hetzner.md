@@ -267,49 +267,31 @@ cd /srv/libriant/app && git checkout main
 > just the two GHCR _packages_ public (repo stays private) to skip the
 > `docker login` entirely.
 
-**Write the env file** at `/srv/libriant/.env.prod` (paste your saved secrets):
+**Write the env file** — you don't fill it in by hand. Run the initializer and
+it generates every random secret for you (Postgres password, session secrets,
+MFA key, …) and asks only for the three things it can't invent: your GitHub
+owner, and the first admin login:
 
 ```sh
-nano /srv/libriant/.env.prod
-chmod 600 /srv/libriant/.env.prod
+cd /srv/libriant/app
+bash scripts/ensure-env.sh        # interactive — fills /srv/libriant/.env.prod
 ```
 
-```ini
-# --- hosts ---
-PUBLIC_HOST=libriant.com
-ADMIN_HOST=admin.libriant.com
-ACME_EMAIL=ops@libriant.com
-MAINTENANCE_HARD=false
+It is **idempotent and never overwrites an existing value**, so it's safe to
+re-run, and the deploy workflow runs it again (`--auto`) on every push to fill
+anything missing — meaning a fresh host self-provisions its secrets. The only
+keys you ever touch by hand are the operator settings:
 
-# --- images (GHCR) ---
-IMAGE_OWNER=your-github-owner   # LOWERCASE; matches what CI pushes
-IMAGE_TAG=latest                # CI sets this to the commit SHA per deploy
+| Key                                                  | What                                                                                     | Default                                                    |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `IMAGE_OWNER`                                        | your GitHub owner/org, **lowercase** (GHCR namespace)                                    | — (asked)                                                  |
+| `ADMIN_BOOTSTRAP_EMAIL` / `ADMIN_BOOTSTRAP_PASSWORD` | first admin login, auto-created on deploy                                                | — (asked)                                                  |
+| `PUBLIC_HOST` / `ADMIN_HOST` / `ACME_EMAIL`          | your domain                                                                              | `libriant.com` / `admin.libriant.com` / `ops@libriant.com` |
+| `STRIPE_DRIVER` / `EMAIL_DRIVER`                     | `fake` / `console` for a trial; flip to `real` / `smtp` (+ keys / `SMTP_URL`) to go live | `fake` / `console`                                         |
 
-# --- postgres + secrets (from Part 1) ---
-POSTGRES_PASSWORD=...
-SESSION_SECRET=...
-ADMIN_SESSION_SECRET=...
-IMPERSONATION_SECRET=...
-MFA_MASTER_KEY=...            # 64 hex chars
-STORAGE_SIGNING_SECRET=...
-
-# --- billing (trial: no Stripe account needed) ---
-STRIPE_DRIVER=fake           # all billing flows work, nothing is ever charged
-STRIPE_API_KEY=              # set STRIPE_DRIVER=real + keys when you go live
-STRIPE_WEBHOOK_SECRET=       # (fill in Part 10)
-
-# --- email (trial: no mail server needed) ---
-EMAIL_DRIVER=console         # logs outgoing mail instead of sending it
-SMTP_URL=                    # set EMAIL_DRIVER=smtp + this URL to send for real
-
-# --- data + backups live on the libriant volume ---
-COMPOSE_PROJECT_NAME=libriant
-LIBRIANT_DATA_ROOT=/mnt/libriant
-STORAGE_DIR=/mnt/libriant/storage
-BACKUP_ROOT=/mnt/libriant/backups
-BACKUP_KEEP_DAYS=14
-RCLONE_REMOTE=                # fill in Part 11
-```
+Everything else (the random secrets, `COMPOSE_PROJECT_NAME`,
+`LIBRIANT_DATA_ROOT`, `IMAGE_TAG`, …) is filled automatically. See
+`.env.prod.example` for the full annotated list. `chmod 600` is applied for you.
 
 **Set up your Termius shortcut.** Add this to `deploy`'s `~/.bashrc` so every
 session loads your env and gives you a short **`dc`** command (Docker Compose
@@ -407,38 +389,38 @@ Caddy logs you'll see "certificate obtained". The site is up — but the
 
 ---
 
-## Part 9 — Bootstrap the platform
+## Part 9 — Bootstrap the platform (automatic)
 
-A few admin tasks need the repo's `scripts/` (not baked into the images) and
-access to Postgres/Redis. Paste this one-time **`ops`** helper, then run the
-steps in order:
+**There is no manual bootstrap step.** Every `dc up` / deploy runs a one-shot
+`migrate` service to completion _before_ `api` and `worker` start
+(`depends_on: condition: service_completed_successfully`). It runs
+`scripts/prod-bootstrap.sh`, which is idempotent:
 
-```sh
-APP_NET="$(docker network ls --format '{{.Name}}' | grep -E '_app$' | head -1)"
-ops() {
-  docker run --rm --network "$APP_NET" -v /srv/libriant/app:/repo -w /repo \
-    -e CONTROL_DATABASE_URL="postgresql://libriant:${POSTGRES_PASSWORD}@pgbouncer:5432/libriant_control" \
-    -e PG_SUPERUSER_URL="postgresql://libriant:${POSTGRES_PASSWORD}@postgres:5432/libriant_control" \
-    -e REDIS_URL="redis://redis:6379" -e STORAGE_ROOT="/srv/libriant/storage" \
-    node:24-bookworm-slim sh -lc "corepack enable && $*"
-}
+1. control-plane migrations (`pnpm db:migrate:deploy`) — **fatal** if it fails
+2. seed cells + feature keys + starter plans (`pnpm db:seed`) — **fatal**
+3. help-centre articles (`pnpm ingest:help`) — best-effort
+4. existing-tenant migrations (`pnpm tenant:migrate`) — best-effort
+5. first admin (`pnpm admin:bootstrap`) — only if `ADMIN_BOOTSTRAP_*` are set
 
-ops "pnpm install --frozen-lockfile && pnpm db:generate"   # one-time, ~1-2 min
-ops "pnpm db:migrate:deploy"   # 1. control-plane schema
-ops "pnpm db:seed"             # 2. cells + feature keys + starter plans
-ops "pnpm ingest:help"         # 3. help-centre articles into Postgres search
-```
+So once you've set `ADMIN_BOOTSTRAP_EMAIL` / `ADMIN_BOOTSTRAP_PASSWORD` (Part 6,
+via `ensure-env.sh`), the schema, seed data, and your admin account are all
+created on the next deploy. If `migrate` fails, `api` never starts and the
+deploy reports failure — migration errors can't slip through silently.
 
-**Create your admin account** (then enrol MFA — it's mandatory):
+**Run it now** (first time, or after pulling a release that adds migrations):
 
 ```sh
-ADMIN_BOOTSTRAP_EMAIL=you@yourco.com \
-ADMIN_BOOTSTRAP_PASSWORD='a-long-admin-passphrase' \
-  ops "ADMIN_BOOTSTRAP_EMAIL=$ADMIN_BOOTSTRAP_EMAIL ADMIN_BOOTSTRAP_PASSWORD='$ADMIN_BOOTSTRAP_PASSWORD' pnpm admin:bootstrap"
+dc up -d            # runs migrate -> then starts the stack
+dc logs migrate     # see the bootstrap output
+dc ps               # api should be "healthy"
 ```
 
-Then visit `https://admin.libriant.com` → log in → **MFA page** → scan the QR in
-an authenticator app → verify.
+Then visit `https://admin.libriant.com` → log in with your `ADMIN_BOOTSTRAP_*`
+credentials → **MFA page** → scan the QR in an authenticator app → verify.
+
+> **Manual escape hatch.** To run a single step yourself (e.g. re-seed) without
+> a full `up`, exec into a throwaway container:
+> `dc run --rm --no-deps migrate sh -lc 'cd /app && pnpm db:seed'`.
 
 **Libraries (tenants)** are created two ways:
 
@@ -447,10 +429,15 @@ an authenticator app → verify.
 - **Operator-provisioned (optional):**
 
 ```sh
-ops "pnpm tenant:create -- --slug=acme --name='Acme Public Library' \
+dc run --rm --no-deps migrate sh -lc "cd /app && pnpm tenant:create -- \
+  --slug=acme --name='Acme Public Library' \
   --owner-email=ops@acme.org --owner-name='Acme Operator' \
   --plan=community --billing-mode=manual"
 ```
+
+> The `migrate` service carries the repo `scripts/` mount + DB env, so it
+> doubles as your operator shell for occasional one-off commands —
+> `dc run --rm --no-deps migrate sh -lc 'cd /app && pnpm <task>'`.
 
 ---
 
@@ -590,12 +577,10 @@ cd /srv/libriant/app && git pull
 dc pull && dc up -d --remove-orphans
 ```
 
-**⚠️ Migrations are NOT automatic.** After any deploy that changes the schema:
-
-```sh
-ops "pnpm db:migrate:deploy"   # control-plane
-ops "pnpm tenant:migrate"      # fans out to EVERY tenant database
-```
+**✅ Migrations are automatic.** Both manual `dc up` and the CI deploy run the
+one-shot `migrate` service (control-plane migrate + seed + tenant fan-out)
+to completion before `api`/`worker` start (Part 9). You don't run migrations by
+hand. To watch them: `dc logs migrate`.
 
 **Maintenance window:**
 
@@ -618,7 +603,8 @@ Two layers of visibility ship with the project.
 - **Admin UI:** the **Capacity** page (admin → _Capacity_) shows libraries by
   status, Postgres connections, cache-hit ratio, disk %, storage, and the
   heaviest tenants.
-- **CLI:** `ops "pnpm fleet:report"` (add `-- --json` for machine output).
+- **CLI:** `dc run --rm --no-deps migrate sh -lc 'cd /app && pnpm fleet:report'`
+  (add `-- --json` for machine output).
 - **/metrics:** the api exposes Prometheus gauges (`libriant_tenants_total`,
   `libriant_pg_connections`, `libriant_pg_cache_hit_ratio`, …) for charting.
 

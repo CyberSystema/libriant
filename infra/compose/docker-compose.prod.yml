@@ -111,6 +111,34 @@ services:
       retries: 5
 
   # ----- app processes --------------------------------------------------
+  # One-shot bootstrap: control-plane migrations + seed + (optional) first
+  # admin, run to completion BEFORE api/worker start. Idempotent, so it runs
+  # safely on every deploy — that is what makes deploys self-bootstrapping.
+  # scripts/ + locales/ are mounted from the repo checkout (not baked into the
+  # image), so this needs no separate image. Migrations go straight to Postgres
+  # (PG_SUPERUSER_URL) — pgbouncer's transaction pooling breaks Prisma's
+  # session advisory lock.
+  migrate:
+    image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-api:${IMAGE_TAG:-latest}
+    <<: *logging
+    restart: 'no'
+    # Runs as root (not the image's `node` user): this one-shot uses `pnpm` via
+    # corepack, whose cache was prepared as root at build time, and only does DB
+    # DDL — it serves no traffic. Avoids a corepack cache-permission re-download.
+    user: root
+    command: ['sh', '/app/scripts/prod-bootstrap.sh']
+    environment:
+      <<: *app-env
+      ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../../scripts:/app/scripts:ro
+      - ../../locales:/app/locales:ro
+    networks: [app]
+
   api:
     image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-api:${IMAGE_TAG:-latest}
     <<: [*restart, *logging]
@@ -121,6 +149,8 @@ services:
       <<: *app-env
       PORT: '3001'
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       pgbouncer:
@@ -181,6 +211,8 @@ services:
       PORT: '3002'
       WORKER_PORT: '3002'
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
