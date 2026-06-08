@@ -35,11 +35,20 @@ export class TenantMiddleware implements NestMiddleware {
   private readonly logger = new Logger(TenantMiddleware.name);
   private readonly pathPrefix: string;
   private readonly apex: string;
+  private readonly adminHost: string;
+
+  /**
+   * Subdomains that are NEVER a tenant — they belong to the platform, not a
+   * library. `admin` is the platform console (`admin.<apex>`); the others are
+   * conventional infra names we never want resolved as a library slug.
+   */
+  private static readonly RESERVED_SUBDOMAINS = new Set(['admin', 'www', 'api', 'app']);
 
   constructor(@Inject(TenantResolverService) private readonly resolver: TenantResolverService) {
     const env = loadEnv();
     this.pathPrefix = env.tenantPathPrefix;
     this.apex = env.publicApexDomain.toLowerCase();
+    this.adminHost = env.adminHost.toLowerCase();
   }
 
   async use(req: Request, _res: Response, next: NextFunction): Promise<void> {
@@ -106,12 +115,18 @@ export class TenantMiddleware implements NestMiddleware {
     if (!host) return null;
     const bare = host.split(':')[0]!.toLowerCase();
     if (bare === this.apex) return null;
+    // The platform admin host is not a tenant — otherwise `admin.<apex>`
+    // resolves to a library named "admin" and every admin request 404s with
+    // `Unknown library "admin"`.
+    if (bare === this.adminHost) return null;
     const suffix = `.${this.apex}`;
     if (!bare.endsWith(suffix)) return null;
     const sub = bare.slice(0, -suffix.length);
     // Reject multi-level subdomains (e.g. www.acme.libriant.com); we only
     // support `<slug>.<apex>` for tenant routing.
     if (!sub || sub.includes('.')) return null;
+    // Reserved platform subdomains are never libraries.
+    if (TenantMiddleware.RESERVED_SUBDOMAINS.has(sub)) return null;
     return this.isValidSlug(sub) ? sub : null;
   }
 

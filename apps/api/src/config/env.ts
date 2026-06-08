@@ -12,6 +12,9 @@ export type AppEnv = {
   assetsRoot: string;
   /** Apex domain used to detect a tenant from the Host header subdomain. */
   publicApexDomain: string;
+  /** Platform admin host (e.g. `admin.libriant.com`). Excluded from tenant
+   *  subdomain resolution so it isn't mistaken for a library slug. */
+  adminHost: string;
   /** Path prefix that signals a tenant-scoped request, e.g. `/t/<slug>/...`. */
   tenantPathPrefix: string;
   /** TTL for the slug → tenant context Redis cache, in seconds. */
@@ -143,6 +146,10 @@ export function loadEnv(): AppEnv {
     storageRoot: optional('STORAGE_ROOT', '/srv/libriant/storage'),
     assetsRoot: optional('ASSETS_ROOT', new URL('../../../../assets', import.meta.url).pathname),
     publicApexDomain: optional('PUBLIC_APEX_DOMAIN', 'localhost'),
+    adminHost: optional(
+      'ADMIN_HOST',
+      `admin.${optional('PUBLIC_APEX_DOMAIN', 'localhost')}`,
+    ).toLowerCase(),
     tenantPathPrefix: optional('TENANT_PATH_PREFIX', '/t/'),
     tenantCacheTtlSec: Number(optional('TENANT_CACHE_TTL_SEC', '300')),
     tenantClientCacheSize: Number(optional('TENANT_CLIENT_CACHE_SIZE', '50')),
