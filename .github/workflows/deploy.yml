@@ -166,21 +166,40 @@ jobs:
             FILES="-f infra/compose/docker-compose.prod.yml -f infra/compose/docker-compose.volume.yml"
             docker compose \$FILES pull
             docker compose \$FILES up -d --remove-orphans
+            # Caddy's config is a bind-mount, so \`up -d\` won't restart it when
+            # only the Caddyfile content changed. Reload it explicitly (graceful,
+            # zero-downtime) so Caddyfile edits actually take effect; fall back to
+            # a recreate if the running config can't be reloaded.
+            docker compose \$FILES exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile \
+              || docker compose \$FILES up -d --force-recreate caddy
           EOF
 
       - name: Wait for health
         run: |
-          # Poll the public host's /healthz endpoint (through Cloudflare) until
-          # Caddy + web + api are all reporting up. 3 minutes max — beyond that
-          # something is wrong and rolling back is preferable to silent breakage.
-          deadline=$(( $(date +%s) + 180 ))
-          while [ $(date +%s) -lt $deadline ]; do
-            if curl -fs --max-time 5 \
-              "https://${{ matrix.host.health_host }}/healthz" >/dev/null; then
-              echo "healthy"
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "host did not become healthy within 3 minutes" >&2
-          exit 1
+          # Poll the ORIGIN's /healthz on the host itself — deliberately NOT
+          # through Cloudflare. Cloudflare's managed challenge / bot protection
+          # 403s automated requests (cf-mitigated: challenge), so a public curl
+          # can never pass even when the site is perfectly healthy for browsers.
+          # A deploy's success must reflect "the new code came up", not the CDN's
+          # bot policy. Running over the existing SSH session also means this is
+          # immune to how the edge firewall is locked down. Quoted heredoc, so
+          # everything evaluates on the host. (Public reachability is a separate
+          # concern, monitored by uptime checks — not the deploy gate.)
+          ssh "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<'REMOTE'
+            set -euo pipefail
+            deadline=$(( $(date +%s) + 150 ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              # Require a real 200 — not a 3xx. The plaintext :80 /healthz block
+              # answers 200; if Caddy were still on an old config it would 301 to
+              # HTTPS, which must NOT count as healthy.
+              code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://localhost/healthz 2>/dev/null || true)"
+              if [ "$code" = "200" ]; then
+                echo "origin healthy"
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "origin did not become healthy within 150s" >&2
+            docker ps --format 'table {{.Names}}\t{{.Status}}' || true
+            exit 1
+          REMOTE

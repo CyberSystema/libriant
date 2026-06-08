@@ -364,6 +364,16 @@ Leave **22** open to your own IP — SSH deploys reach the box directly.
 > the Caddyfile forwards to the app as `X-Real-IP` for rate-limiting + audit.
 > Certs live on the volume, so they survive reinstalls.
 
+**5. Bot protection vs. automated checks.** With **Bot Fight Mode** on, or the
+security level set to **I'm Under Attack**, Cloudflare serves a _managed
+challenge_ (`cf-mitigated: challenge`) to every request — browsers solve it
+transparently, but `curl` / uptime probes get a **403**. That's expected, and
+the deploy does **not** rely on the public URL (it health-checks the origin on
+the host over SSH). If you want an external monitor to reach `/healthz`, add
+_Security → WAF → Custom rules_: `(http.request.uri.path eq "/healthz")` →
+**Skip**. For a normal public app, keep the security level at **Medium** so
+visitors aren't challenged on every page load.
+
 ---
 
 ## Part 8 — First start
@@ -729,10 +739,11 @@ ssh root@"$(hcloud server ip CyberSystema-1)"
 
 ### D. Troubleshooting
 
-| Symptom                     | Check                                                                                                          |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Containers won't start      | Is the volume mounted? `df -h /mnt/libriant`                                                                   |
-| No TLS / cert errors (5xx)  | Cloudflare SSL mode = **Full (strict)**? Origin cert present at `/mnt/libriant/caddy/origin/`? `dc logs caddy` |
-| `api` not ready             | `dc logs api`; is Postgres healthy in `dc ps`?                                                                 |
-| Out of memory during backup | swap on? (`free -h`); or grow the box (Part 15)                                                                |
-| Stripe state stale          | webhook secret set + endpoint reachable? (Part 10)                                                             |
+| Symptom                     | Check                                                                                                                                                                                                                                                                                   |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Containers won't start      | Is the volume mounted? `df -h /mnt/libriant`                                                                                                                                                                                                                                            |
+| No TLS / cert errors (5xx)  | Cloudflare SSL mode = **Full (strict)**? Origin cert present at `/mnt/libriant/caddy/origin/`? `dc logs caddy`                                                                                                                                                                          |
+| Public URL returns **403**  | Cloudflare _managed challenge_ (browsers fine, `curl` blocked). Lower Security Level / Bot Fight Mode, or add a `/healthz` Skip rule (Part 7.5). Origin itself: `curl -sko /dev/null -w '%{http_code}' --resolve $PUBLIC_HOST:443:127.0.0.1 https://$PUBLIC_HOST/healthz` should be 200 |
+| `api` not ready             | `dc logs api`; is Postgres healthy in `dc ps`?                                                                                                                                                                                                                                          |
+| Out of memory during backup | swap on? (`free -h`); or grow the box (Part 15)                                                                                                                                                                                                                                         |
+| Stripe state stale          | webhook secret set + endpoint reachable? (Part 10)                                                                                                                                                                                                                                      |
