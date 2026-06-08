@@ -166,6 +166,12 @@ jobs:
             FILES="-f infra/compose/docker-compose.prod.yml -f infra/compose/docker-compose.volume.yml"
             docker compose \$FILES pull
             docker compose \$FILES up -d --remove-orphans
+            # Caddy's config is a bind-mount, so \`up -d\` won't restart it when
+            # only the Caddyfile content changed. Reload it explicitly (graceful,
+            # zero-downtime) so Caddyfile edits actually take effect; fall back to
+            # a recreate if the running config can't be reloaded.
+            docker compose \$FILES exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile \
+              || docker compose \$FILES up -d --force-recreate caddy
           EOF
 
       - name: Wait for health
@@ -183,7 +189,11 @@ jobs:
             set -euo pipefail
             deadline=$(( $(date +%s) + 150 ))
             while [ "$(date +%s)" -lt "$deadline" ]; do
-              if curl -fsS --max-time 5 http://localhost/healthz >/dev/null 2>&1; then
+              # Require a real 200 — not a 3xx. The plaintext :80 /healthz block
+              # answers 200; if Caddy were still on an old config it would 301 to
+              # HTTPS, which must NOT count as healthy.
+              code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://localhost/healthz 2>/dev/null || true)"
+              if [ "$code" = "200" ]; then
                 echo "origin healthy"
                 exit 0
               fi
