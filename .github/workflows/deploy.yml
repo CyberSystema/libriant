@@ -154,6 +154,11 @@ jobs:
             cd /srv/libriant/app
             git fetch --quiet origin
             git reset --hard ${GIT_SHA}
+            # Self-bootstrap secrets: generate any MISSING values in .env.prod
+            # (idempotent — never overwrites existing, so POSTGRES_PASSWORD is
+            # preserved). Operator-supplied bits (admin login) stay blank here;
+            # set them once via an interactive run of the same script.
+            bash scripts/ensure-env.sh --auto /srv/libriant/.env.prod
             set -a; . /srv/libriant/.env.prod; set +a
             export IMAGE_TAG="${IMAGE_TAG}"
             export COMPOSE_PROJECT_NAME=libriant
