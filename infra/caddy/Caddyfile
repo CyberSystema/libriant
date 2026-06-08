@@ -183,15 +183,17 @@ http:// {
 		}
 	}
 
-	# Redirect bare visits straight into the admin login if the user isn't
-	# already authenticated — Next.js handles the actual gate, but this
-	# saves them a click when they land on the host root.
+	# Redirect bare visits straight into the admin login, then proxy
+	# everything else to the web app.
+	#
+	# This is wrapped in `route` ON PURPOSE: a standalone `handle @bare`
+	# alongside the other handle/handle_path blocks above gets bypassed —
+	# the catch-all `handle { reverse_proxy }` wins for "/", so the bare host
+	# root rendered blank. `route` evaluates its directives in source order,
+	# so the "/" redirect is matched before the catch-all proxy.
 	@bare path /
-	handle @bare {
-		redir /en/admin/login 302
-	}
-
-	handle {
+	route {
+		redir @bare /en/admin/login 302
 		reverse_proxy web:3000
 	}
 }
