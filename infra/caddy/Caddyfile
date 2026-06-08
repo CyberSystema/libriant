@@ -101,6 +101,28 @@
 }
 
 # ---------------------------------------------------------------------------
+# Plaintext HTTP (:80) — health probes + redirect everything else to HTTPS.
+#
+# Container/host health checks hit `http://localhost/healthz` and must get a
+# 200 directly. Without this explicit block, Caddy's automatic HTTP→HTTPS
+# redirect sends the probe to `https://localhost`, whose SNI has no certificate
+# (we only hold the libriant.com origin cert) → the probe fails and Caddy
+# reports "unhealthy" even though it is serving fine. Carving the probe out on
+# :80 also keeps it reachable for an on-host deploy health check that bypasses
+# Cloudflare (whose managed challenge 403s automated requests).
+# ---------------------------------------------------------------------------
+
+http:// {
+	@probe path /healthz /readyz
+	handle @probe {
+		respond "ok" 200
+	}
+	handle {
+		redir https://{host}{uri} permanent
+	}
+}
+
+# ---------------------------------------------------------------------------
 # Public apex — libriant.com
 # ---------------------------------------------------------------------------
 
