@@ -55,6 +55,10 @@ x-app-env: &app-env
   # (STRIPE_DRIVER=real + keys, EMAIL_DRIVER=smtp + SMTP_URL) when you go live.
   # NOTE: every driver var the app reads MUST be listed here — Compose only
   # injects variables referenced in this block, not everything in .env.prod.
+  # Plan/quota enforcement. Default OFF for a free pre-monetization launch:
+  # every tenant gets unlimited access to all features. Set 'true' (and
+  # STRIPE_DRIVER=real) when you start charging. (Admin panel is unaffected.)
+  BILLING_ENABLED: ${BILLING_ENABLED:-false}
   STRIPE_DRIVER: ${STRIPE_DRIVER:-fake}
   STRIPE_API_KEY: ${STRIPE_API_KEY:-}
   STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}

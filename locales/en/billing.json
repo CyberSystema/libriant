@@ -1,6 +1,8 @@
 {
   "title": "Plan & billing",
   "subtitle": "Manage your library's subscription.",
+  "freeMode.title": "Everything's included",
+  "freeMode.body": "Libriant is free for all libraries right now — every feature, with no limits and no subscription needed. We'll give you plenty of notice before any paid plans begin.",
   "currentPlan": "Current plan",
   "usage": "Usage",
   "usage.books": "{used} of {limit} books used",

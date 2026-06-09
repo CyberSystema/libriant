@@ -70,6 +70,7 @@ ensure_rand MFA_MASTER_KEY 32        # 32 bytes -> 64 hex chars (AES-256)
 ensure_rand POSTGRES_PASSWORD 24     # preserved if the DB already has one
 
 echo "Ensuring config defaults ..."
+ensure_default BILLING_ENABLED false # free launch: all tenants get every feature; set 'true' to enforce plans
 ensure_default STRIPE_DRIVER fake    # trial-safe; set 'real' + keys to charge
 ensure_default EMAIL_DRIVER console  # trial-safe; set 'smtp' + SMTP_URL to send
 ensure_default PUBLIC_HOST libriant.com

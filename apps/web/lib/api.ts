@@ -134,6 +134,8 @@ export type BillingSnapshot = {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   driver: 'real' | 'fake';
+  /** When false, plan/quota enforcement is off — all features are free. */
+  billingEnabled: boolean;
 };
 
 export type ListResponse<T> = { items: T[]; nextCursor: string | null };
