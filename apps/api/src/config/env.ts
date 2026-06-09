@@ -220,9 +220,15 @@ export function loadEnv(): AppEnv {
       // happens in the real driver constructor (see stripe-real.driver.ts).
       return nodeEnv === 'development' ? 'fake' : 'real';
     })(),
-    // Enforcement is ON unless explicitly set to "false". Anything else
-    // (unset, "true", "1") keeps plan/quota gates active.
-    billingEnabled: (process.env.BILLING_ENABLED ?? 'true').toLowerCase().trim() !== 'false',
+    // Subscriptions default to OFF (free for everyone). Enforcement turns on
+    // ONLY when BILLING_ENABLED is an explicit truthy value — unset, EMPTY, or
+    // anything non-truthy means disabled. (The old default was "true", and `??`
+    // doesn't catch an empty string, so a blank env var silently enforced
+    // Starter limits.) The admin "Subscriptions" toggle — a platform_settings
+    // DB row — overrides this at runtime and is the authoritative switch.
+    billingEnabled: ['true', '1', 'yes', 'on'].includes(
+      (process.env.BILLING_ENABLED ?? '').toLowerCase().trim(),
+    ),
     stripeApiKey: process.env.STRIPE_API_KEY?.length ? process.env.STRIPE_API_KEY : null,
     stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET?.length
       ? process.env.STRIPE_WEBHOOK_SECRET
