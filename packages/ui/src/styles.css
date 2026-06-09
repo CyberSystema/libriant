@@ -66,6 +66,17 @@ a { color: var(--color-info); }
   border-color: var(--color-danger);
 }
 .lbr-btn--danger:hover:not(:disabled) { background: var(--color-danger-hover); border-color: var(--color-danger-hover); }
+/* Loading: keep the label and append a spinner (the button is a flex row with
+   `gap`, so the pseudo-element sits beside the text). */
+.lbr-btn--loading::after {
+  content: "";
+  width: 0.85em;
+  height: 0.85em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: lbr-spin 0.6s linear infinite;
+}
 
 /* --- banner --- */
 .lbr-banner {
@@ -134,6 +145,7 @@ a { color: var(--color-info); }
 @media (prefers-reduced-motion: reduce) {
   .lbr-skeleton { animation: none; }
   .lbr-spinner { animation: none; }
+  .lbr-btn--loading::after { animation: none; border-right-color: currentColor; }
 }
 
 /* --- input / form field --- */
@@ -189,6 +201,9 @@ a { color: var(--color-info); }
   color: var(--color-danger);
   margin: var(--sp-1) 0 0 0;
 }
+/* A field that grows to fill a flex row beside a sibling control (e.g. the
+   ISBN input next to its "Look up" button on the new-book form). */
+.lbr-isbn-field { flex: 1 1 16rem; min-width: 0; }
 
 /* --- card --- */
 .lbr-card {
@@ -376,14 +391,14 @@ a { color: var(--color-info); }
 }
 .lbr-help-drawer__body h3 {
   margin-top: var(--sp-4);
-  font-size: var(--fs-md);
+  font-size: var(--fs-lg);
 }
 .lbr-help-drawer__body p { margin: var(--sp-2) 0; }
 .lbr-help-drawer__body ul { padding-left: var(--sp-4); }
 .lbr-help-drawer__body code {
   font-family: var(--font-mono);
   font-size: 0.9em;
-  background: var(--color-bg-muted);
+  background: var(--color-surface-muted);
   padding: 0 4px;
   border-radius: var(--radius-sm);
 }
@@ -409,8 +424,8 @@ a { color: var(--color-info); }
 
 /* --- destructive-confirm modal extras --- */
 .lbr-confirm-destructive__warning {
-  background: var(--color-bg-muted);
-  border-left: 3px solid var(--color-status-critical);
+  background: var(--color-surface-muted);
+  border-left: 3px solid var(--color-danger);
   padding: var(--sp-2) var(--sp-3);
   margin-bottom: var(--sp-3);
   font-size: var(--fs-sm);
@@ -422,7 +437,7 @@ a { color: var(--color-info); }
 }
 .lbr-confirm-destructive__type-hint code {
   font-family: var(--font-mono);
-  background: var(--color-bg-muted);
+  background: var(--color-surface-muted);
   padding: 2px 6px;
   border-radius: var(--radius-sm);
 }
@@ -565,7 +580,7 @@ a { color: var(--color-info); }
   max-width: 460px;
   background: var(--color-surface);
   border-radius: var(--radius-lg);
-  padding: var(--sp-7);
+  padding: var(--sp-8);
   box-shadow: 0 16px 32px rgba(15, 23, 42, 0.1);
 }
 .lbr-auth-card__brand {

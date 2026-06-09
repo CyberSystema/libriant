@@ -44,7 +44,7 @@ export function SystemModeTakeover({ mode }: Props) {
         alignItems: 'center',
         justifyContent: 'center',
         padding: 'var(--sp-6)',
-        background: 'var(--color-bg)',
+        background: 'var(--color-surface)',
       }}
     >
       <div style={{ maxWidth: 560, textAlign: 'center' }}>
@@ -74,7 +74,7 @@ export function SystemModeTakeover({ mode }: Props) {
           <div
             style={{
               padding: 'var(--sp-3)',
-              background: 'var(--color-bg-muted)',
+              background: 'var(--color-surface-muted)',
               borderRadius: 'var(--radius-md)',
               whiteSpace: 'pre-wrap',
               textAlign: 'left',

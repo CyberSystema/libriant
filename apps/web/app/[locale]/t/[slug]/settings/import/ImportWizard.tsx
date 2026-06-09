@@ -763,7 +763,7 @@ const thStyle: React.CSSProperties = {
 };
 const tdStyle: React.CSSProperties = {
   padding: 'var(--sp-2)',
-  borderBottom: '1px solid var(--color-border-subtle, #eee)',
+  borderBottom: '1px solid var(--color-border-muted, #eee)',
   verticalAlign: 'top',
 };
 const statStyle: React.CSSProperties = {

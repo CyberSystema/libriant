@@ -108,7 +108,7 @@ export function MfaEnrollForm({ initialEnabled, initialError }: Props) {
             Paste this provisioning URL (or scan as a QR code in apps that support it):
             <pre
               style={{
-                background: 'var(--color-bg-muted)',
+                background: 'var(--color-surface-muted)',
                 padding: 'var(--sp-2)',
                 borderRadius: 'var(--radius-sm)',
                 fontSize: 'var(--fs-xs)',

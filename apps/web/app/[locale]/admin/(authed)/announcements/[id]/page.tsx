@@ -74,7 +74,7 @@ export default async function AnnouncementDetailPage(props: {
           <CardBody>
             <pre
               style={{
-                background: 'var(--color-bg-muted)',
+                background: 'var(--color-surface-muted)',
                 padding: 'var(--sp-3)',
                 borderRadius: 'var(--radius-sm)',
                 overflowX: 'auto',
