@@ -33,7 +33,9 @@ export async function currentAdminSession(): Promise<AdminProfile | null> {
     const res = await api<{ admin: AdminProfile }>('/admin/auth/me', { cookie });
     return res.admin;
   } catch (err) {
-    if (err instanceof ApiError && (err.status === 401 || err.status === 403)) return null;
+    // 401/403 → not signed in. 404 → the cookie points at an admin that no
+    // longer exists. Both mean "show the login form", not an error page.
+    if (err instanceof ApiError && [401, 403, 404].includes(err.status)) return null;
     throw err;
   }
 }

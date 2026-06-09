@@ -37,7 +37,11 @@ export async function currentSession(): Promise<AuthMeResponse | null> {
   try {
     return await api<AuthMeResponse>('/auth/me', { cookie });
   } catch (err) {
-    if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+    // 401/403 → not authenticated. 404 → the session cookie points at a user
+    // or tenant that no longer exists (e.g. the library was deleted), which is
+    // also just "logged out" — not a page error. Treat all three as null so
+    // the visitor sees the login form instead of an error.
+    if (err instanceof ApiError && [401, 403, 404].includes(err.status)) {
       return null;
     }
     throw err;
