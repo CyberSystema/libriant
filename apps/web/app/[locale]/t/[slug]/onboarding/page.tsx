@@ -102,14 +102,45 @@ export default async function OnboardingPage(props: {
           <CardHeader title={t('onboarding.welcome.cardTitle', { name: session.tenant.name })} />
           <CardBody>
             <p style={{ marginTop: 0 }}>{t('onboarding.welcome.body1')}</p>
-            <p>{t('onboarding.welcome.body2')}</p>
-            <div style={{ display: 'flex', gap: 'var(--sp-2)', marginTop: 'var(--sp-4)' }}>
-              <Link
-                href={`${base}?step=${nextStep('welcome')}`}
-                className="lbr-btn lbr-btn--primary lbr-btn--md"
-              >
-                {t('onboarding.welcome.start')}
-              </Link>
+            <p style={{ fontWeight: 600, margin: '0 0 var(--sp-3) 0' }}>
+              {t('onboarding.choose.intro')}
+            </p>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                gap: 'var(--sp-4)',
+              }}
+            >
+              <Card variant="outlined" style={{ display: 'flex', flexDirection: 'column' }}>
+                <h3 style={{ marginTop: 0 }}>{t('onboarding.choose.scratch.title')}</h3>
+                <p style={{ color: 'var(--color-text-muted)', flex: 1 }}>
+                  {t('onboarding.choose.scratch.body')}
+                </p>
+                <Link
+                  href={`${base}?step=${nextStep('welcome')}`}
+                  className="lbr-btn lbr-btn--primary lbr-btn--md"
+                  style={{ width: '100%' }}
+                >
+                  {t('onboarding.choose.scratch.cta')}
+                </Link>
+              </Card>
+
+              <Card variant="outlined" style={{ display: 'flex', flexDirection: 'column' }}>
+                <h3 style={{ marginTop: 0 }}>{t('onboarding.choose.import.title')}</h3>
+                <p style={{ color: 'var(--color-text-muted)', flex: 1 }}>
+                  {t('onboarding.choose.import.body')}
+                </p>
+                <Link
+                  href={`/${params.locale}/t/${params.slug}/settings/import`}
+                  className="lbr-btn lbr-btn--secondary lbr-btn--md"
+                  style={{ width: '100%' }}
+                >
+                  {t('onboarding.choose.import.cta')}
+                </Link>
+              </Card>
+            </div>
+            <div style={{ marginTop: 'var(--sp-4)' }}>
               <Link href={dashboard} className="lbr-btn lbr-btn--ghost lbr-btn--md">
                 {t('onboarding.skipAll')}
               </Link>
