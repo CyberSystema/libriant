@@ -90,7 +90,13 @@ export function OpenGlobalModeForm(_props: { locale: string }) {
         />
       </FormField>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-2)' }}>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+          gap: 'var(--sp-2)',
+        }}
+      >
         <FormField id="startsAt" label="Starts at" hint="Blank = now.">
           <Input
             type="datetime-local"

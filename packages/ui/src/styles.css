@@ -157,6 +157,10 @@ a { color: var(--color-info); }
 /* --- input / form field --- */
 .lbr-input {
   width: 100%;
+  /* Allow the control to shrink inside a flex/grid column. Native date/time
+     inputs have a wide intrinsic min-width; without this they overflow narrow
+     columns (e.g. side-by-side "Starts at"/"Ends at"). */
+  min-width: 0;
   font-family: inherit;
   font-size: var(--fs-base);
   color: var(--color-text);
@@ -187,6 +191,9 @@ a { color: var(--color-info); }
   flex-direction: column;
   gap: var(--sp-1);
   margin-bottom: var(--sp-4);
+  /* Shrink when used as a flex/grid item (multi-column form rows) so a wide
+     child input can't force the column past its track. */
+  min-width: 0;
 }
 .lbr-field__label {
   font-weight: 500;
