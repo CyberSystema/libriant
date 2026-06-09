@@ -94,10 +94,7 @@ export default async function AdminSupportHome(props: { params: Promise<{ locale
             need a fresh 6-digit code from your authenticator.
           </p>
           {mfaEnabled ? (
-            <Link
-              href={`/admin/support/redeem`}
-              className="lbr-btn lbr-btn--primary"
-            >
+            <Link href={`/admin/support/redeem`} className="lbr-btn lbr-btn--primary">
               Redeem a key
             </Link>
           ) : (

@@ -96,10 +96,7 @@ export default async function AdminAnnouncementsPage(props: {
           </HelpButton>
         }
         actions={
-          <Link
-            href={`/admin/announcements/new`}
-            className="lbr-btn lbr-btn--primary lbr-btn--md"
-          >
+          <Link href={`/admin/announcements/new`} className="lbr-btn lbr-btn--primary lbr-btn--md">
             New announcement
           </Link>
         }
