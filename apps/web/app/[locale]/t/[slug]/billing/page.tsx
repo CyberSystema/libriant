@@ -1,6 +1,6 @@
 import { Banner, Card, CardBody, CardHeader, PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
 import { ApiError, api, type BillingSnapshot } from '@/lib/api';
@@ -37,24 +37,11 @@ export default async function BillingPage(props: {
   const fmtDate = (iso: string | null) =>
     iso ? new Date(iso).toLocaleDateString(params.locale) : null;
 
-  // Subscriptions turned off globally → every feature is free; show a simple
-  // notice instead of the plan status, upgrade actions, and plan grid.
-  const billingDisabled = snapshot?.billingEnabled === false;
-
-  if (billingDisabled) {
-    return (
-      <>
-        <PageHeader title={t('billing.title')} subtitle={t('billing.subtitle')} />
-        <Card style={{ marginTop: 'var(--sp-4)' }}>
-          <CardHeader title={t('billing.freeMode.title')} />
-          <CardBody>
-            <p style={{ margin: 0, color: 'var(--color-text-muted)' }}>
-              {t('billing.freeMode.body')}
-            </p>
-          </CardBody>
-        </Card>
-      </>
-    );
+  // Subscriptions turned off globally → there's nothing to manage and we don't
+  // want to imply a plan exists. The Billing nav item is hidden too; if someone
+  // reaches this URL directly, send them back to the library home.
+  if (snapshot?.billingEnabled === false) {
+    redirect(`/${params.locale}/t/${params.slug}`);
   }
 
   return (

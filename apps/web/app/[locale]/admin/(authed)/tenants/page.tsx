@@ -36,13 +36,22 @@ export default async function AdminTenantsPage(props: {
   if (searchParams.planSlug) qs.set('planSlug', searchParams.planSlug);
 
   let tenants: TenantRow[] = [];
+  let billingEnabled: boolean | null = null;
   let error: string | null = null;
   try {
-    const res = await api<{ tenants: TenantRow[] }>(`/admin/tenants?${qs.toString()}`, { cookie });
-    tenants = res.tenants;
+    const [tRes, sRes] = await Promise.all([
+      api<{ tenants: TenantRow[] }>(`/admin/tenants?${qs.toString()}`, { cookie }),
+      api<{ billingEnabled: boolean }>('/admin/subscriptions', { cookie }).catch(() => ({
+        billingEnabled: null as boolean | null,
+      })),
+    ]);
+    tenants = tRes.tenants;
+    billingEnabled = sRes.billingEnabled;
   } catch (err) {
     error = err instanceof ApiError ? err.message : 'Something went wrong.';
   }
+  // Treat unknown (fetch failed) as "on" so we don't hide columns on a glitch.
+  const subsOn = billingEnabled !== false;
 
   return (
     <>
@@ -54,6 +63,14 @@ export default async function AdminTenantsPage(props: {
       {error ? (
         <Banner severity="critical" style={{ marginBottom: 'var(--sp-4)' }}>
           {error}
+        </Banner>
+      ) : null}
+
+      {billingEnabled === false ? (
+        <Banner severity="info" style={{ marginBottom: 'var(--sp-4)' }}>
+          <strong>Subscriptions are off.</strong> Every library has unlimited access — no plans or
+          limits — so plan &amp; billing columns are hidden. Turn them on in{' '}
+          <Link href="/admin/subscriptions">Subscriptions</Link>.
         </Banner>
       ) : null}
 
@@ -85,19 +102,21 @@ export default async function AdminTenantsPage(props: {
           <option value="paused">Paused</option>
           <option value="archived">Archived</option>
         </select>
-        <select
-          name="planSlug"
-          defaultValue={searchParams.planSlug ?? ''}
-          className="lbr-input"
-          style={{ maxWidth: 200 }}
-        >
-          <option value="">Any plan</option>
-          <option value="starter">Starter</option>
-          <option value="community">Community</option>
-          <option value="municipal">Municipal</option>
-          <option value="institutional">Institutional</option>
-          <option value="on-prem-enterprise">On-prem / Enterprise</option>
-        </select>
+        {subsOn ? (
+          <select
+            name="planSlug"
+            defaultValue={searchParams.planSlug ?? ''}
+            className="lbr-input"
+            style={{ maxWidth: 200 }}
+          >
+            <option value="">Any plan</option>
+            <option value="starter">Starter</option>
+            <option value="community">Community</option>
+            <option value="municipal">Municipal</option>
+            <option value="institutional">Institutional</option>
+            <option value="on-prem-enterprise">On-prem / Enterprise</option>
+          </select>
+        ) : null}
         <button type="submit" className="lbr-btn lbr-btn--secondary lbr-btn--md">
           Filter
         </button>
@@ -110,8 +129,8 @@ export default async function AdminTenantsPage(props: {
           <thead>
             <tr>
               <th>Library</th>
-              <th>Plan</th>
-              <th>Billing</th>
+              {subsOn ? <th>Plan</th> : null}
+              {subsOn ? <th>Billing</th> : null}
               <th>Status</th>
               <th>Created</th>
             </tr>
@@ -127,21 +146,25 @@ export default async function AdminTenantsPage(props: {
                     {t.slug} · {t.primaryEmail ?? '—'}
                   </div>
                 </td>
-                <td>
-                  {t.plan ? (
-                    t.plan.name
-                  ) : (
-                    <span style={{ color: 'var(--color-text-muted)' }}>—</span>
-                  )}
-                </td>
-                <td>
-                  {t.billingStatus ?? '—'}
-                  {t.billingMode ? (
-                    <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>
-                      {t.billingMode === 'manual' ? 'Manual / invoice' : 'Self-serve (card)'}
-                    </div>
-                  ) : null}
-                </td>
+                {subsOn ? (
+                  <td>
+                    {t.plan ? (
+                      t.plan.name
+                    ) : (
+                      <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                    )}
+                  </td>
+                ) : null}
+                {subsOn ? (
+                  <td>
+                    {t.billingStatus ?? '—'}
+                    {t.billingMode ? (
+                      <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>
+                        {t.billingMode === 'manual' ? 'Manual / invoice' : 'Self-serve (card)'}
+                      </div>
+                    ) : null}
+                  </td>
+                ) : null}
                 <td>{t.status}</td>
                 <td>{new Date(t.createdAt).toLocaleDateString(params.locale)}</td>
               </tr>

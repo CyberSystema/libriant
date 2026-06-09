@@ -153,18 +153,6 @@ export default async function AdminTenantDetailPage(props: {
         }
       />
 
-      {billingEnabled === false ? (
-        <Banner
-          severity="info"
-          title="Subscriptions are OFF — these limits are not enforced"
-          style={{ marginBottom: 'var(--sp-4)' }}
-        >
-          The plan and the feature ceilings below describe what this library <em>would</em> get if
-          subscriptions were on. Right now nothing is enforced — every library has unlimited access.
-          Turn enforcement on globally in <Link href="/admin/subscriptions">Subscriptions</Link>.
-        </Banner>
-      ) : null}
-
       <div
         style={{
           display: 'grid',
@@ -173,90 +161,102 @@ export default async function AdminTenantDetailPage(props: {
         }}
       >
         <div>
-          <Card style={{ marginBottom: 'var(--sp-4)' }}>
-            <CardHeader title="Subscription" />
-            <CardBody>
-              {tenant.subscription ? (
-                <dl className="lbr-dl">
-                  <dt>Plan</dt>
-                  <dd>
-                    <strong>{tenant.subscription.plan.name}</strong>
-                  </dd>
-                  <dt>Billing mode</dt>
-                  <dd>
-                    {tenant.subscription.billingMode === 'manual' ? 'Manual / invoice' : 'Stripe'}
-                  </dd>
-                  <dt>Status</dt>
-                  <dd>{tenant.subscription.status}</dd>
-                  <dt>Limits enforced?</dt>
-                  <dd>
-                    {billingEnabled === false ? (
-                      <span style={{ color: 'var(--color-text-muted)' }}>
-                        No — subscriptions are off (unlimited access)
-                      </span>
-                    ) : billingEnabled === true ? (
-                      <span>Yes</span>
-                    ) : (
-                      '—'
-                    )}
-                  </dd>
-                  {tenant.subscription.currentPeriodEnd ? (
-                    <>
-                      <dt>Period ends</dt>
+          {billingEnabled === false ? (
+            <Card style={{ marginBottom: 'var(--sp-4)' }}>
+              <CardHeader title="Subscriptions are off" />
+              <CardBody>
+                <p style={{ marginTop: 0 }}>
+                  This library has <strong>unlimited access</strong> — no plan limits apply and
+                  there&apos;s no billing.
+                </p>
+                <p style={{ margin: 0, color: 'var(--color-text-muted)' }}>
+                  Plans and limits only take effect when you turn subscriptions on globally in{' '}
+                  <Link href="/admin/subscriptions">Subscriptions</Link>.
+                </p>
+              </CardBody>
+            </Card>
+          ) : (
+            <>
+              <Card style={{ marginBottom: 'var(--sp-4)' }}>
+                <CardHeader title="Subscription" />
+                <CardBody>
+                  {tenant.subscription ? (
+                    <dl className="lbr-dl">
+                      <dt>Plan</dt>
                       <dd>
-                        {new Date(tenant.subscription.currentPeriodEnd).toLocaleDateString(
-                          params.locale,
-                        )}
+                        <strong>{tenant.subscription.plan.name}</strong>
                       </dd>
-                    </>
-                  ) : null}
-                  {tenant.subscription.paidUntil ? (
-                    <>
-                      <dt>Paid until</dt>
+                      <dt>Billing mode</dt>
                       <dd>
-                        {new Date(tenant.subscription.paidUntil).toLocaleDateString(params.locale)}
+                        {tenant.subscription.billingMode === 'manual'
+                          ? 'Manual / invoice'
+                          : 'Stripe'}
                       </dd>
-                    </>
+                      <dt>Status</dt>
+                      <dd>{tenant.subscription.status}</dd>
+                      {tenant.subscription.currentPeriodEnd ? (
+                        <>
+                          <dt>Period ends</dt>
+                          <dd>
+                            {new Date(tenant.subscription.currentPeriodEnd).toLocaleDateString(
+                              params.locale,
+                            )}
+                          </dd>
+                        </>
+                      ) : null}
+                      {tenant.subscription.paidUntil ? (
+                        <>
+                          <dt>Paid until</dt>
+                          <dd>
+                            {new Date(tenant.subscription.paidUntil).toLocaleDateString(
+                              params.locale,
+                            )}
+                          </dd>
+                        </>
+                      ) : null}
+                      {tenant.subscription.graceUntil ? (
+                        <>
+                          <dt>Grace ends</dt>
+                          <dd>
+                            {new Date(tenant.subscription.graceUntil).toLocaleDateString(
+                              params.locale,
+                            )}
+                          </dd>
+                        </>
+                      ) : null}
+                    </dl>
+                  ) : (
+                    <p>No subscription on file.</p>
+                  )}
+                  {tenant.subscription ? (
+                    <div style={{ marginTop: 'var(--sp-4)' }}>
+                      <AdminBillingActions
+                        tenantId={tenant.id}
+                        plans={plans}
+                        billingMode={tenant.subscription.billingMode}
+                      />
+                    </div>
                   ) : null}
-                  {tenant.subscription.graceUntil ? (
-                    <>
-                      <dt>Grace ends</dt>
-                      <dd>
-                        {new Date(tenant.subscription.graceUntil).toLocaleDateString(params.locale)}
-                      </dd>
-                    </>
-                  ) : null}
-                </dl>
-              ) : (
-                <p>No subscription on file.</p>
-              )}
-              {tenant.subscription ? (
-                <div style={{ marginTop: 'var(--sp-4)' }}>
-                  <AdminBillingActions
-                    tenantId={tenant.id}
-                    plans={plans}
-                    billingMode={tenant.subscription.billingMode}
-                  />
-                </div>
-              ) : null}
-            </CardBody>
-          </Card>
+                </CardBody>
+              </Card>
 
-          <Card>
-            <CardHeader
-              title="Feature overrides"
-              subtitle="Per-tenant ceiling above what the plan provides. Empty rows fall back to the plan value, then the catalog default."
-            />
-            <CardBody>
-              <OverridesEditor
-                tenantId={tenant.id}
-                features={features}
-                overrides={overrides}
-                plan={currentPlan ?? null}
-                locale={params.locale}
-              />
-            </CardBody>
-          </Card>
+              <Card>
+                <CardHeader
+                  title="Feature overrides"
+                  subtitle="Per-tenant ceiling above what the plan provides. Empty rows fall back to the plan value, then the catalog default."
+                />
+                <CardBody>
+                  <OverridesEditor
+                    tenantId={tenant.id}
+                    features={features}
+                    overrides={overrides}
+                    plan={currentPlan ?? null}
+                    locale={params.locale}
+                  />
+                </CardBody>
+              </Card>
+            </>
+          )}
         </div>
 
         <div>
@@ -318,7 +318,7 @@ export default async function AdminTenantDetailPage(props: {
             </CardBody>
           </Card>
 
-          {tenant.billingAccount ? (
+          {billingEnabled !== false && tenant.billingAccount ? (
             <Card>
               <CardHeader title="Billing account" />
               <CardBody>

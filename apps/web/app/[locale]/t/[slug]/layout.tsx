@@ -76,6 +76,10 @@ export default async function TenantLayout(props: {
   // Only real librarian sessions are gated — an impersonating admin debugging
   // the library must not be forced to pick a plan on the tenant's behalf. A
   // failure to read billing state never hard-blocks the library.
+  //
+  // The same fetch tells us whether subscriptions are on at all, which we pass
+  // to the sidebar so the "Billing" item is hidden while they're off.
+  let billingEnabled = true;
   if (session && !impersonation) {
     const cookie = await requestCookieHeader();
     try {
@@ -83,6 +87,7 @@ export default async function TenantLayout(props: {
         `/t/${params.slug}/billing/gate`,
         { cookie },
       );
+      billingEnabled = gate.billingEnabled;
       if (gate.billingEnabled && !gate.planSelected) {
         const { plans } = await api<{ plans: AvailablePlan[] }>(`/t/${params.slug}/billing/plans`, {
           cookie,
@@ -121,6 +126,7 @@ export default async function TenantLayout(props: {
           slug={params.slug}
           libraryName={libraryName}
           userFullName={userFullName}
+          billingEnabled={billingEnabled}
         />
         <main className="lbr-shell__main">
           {impersonation ? (

@@ -13,6 +13,8 @@ type Props = {
   slug: string;
   libraryName: string;
   userFullName: string;
+  /** When false (subscriptions disabled globally), the Billing item is hidden. */
+  billingEnabled?: boolean;
 };
 
 /**
@@ -23,7 +25,14 @@ type Props = {
  * Next's `<Link>` (which itself emits an `<a>`) so client-side routing
  * works and we keep the design-system styling in one place.
  */
-export function SidebarNav({ catalog, locale, slug, libraryName, userFullName }: Props) {
+export function SidebarNav({
+  catalog,
+  locale,
+  slug,
+  libraryName,
+  userFullName,
+  billingEnabled = true,
+}: Props) {
   const t = createTranslator(catalog, locale);
   const pathname = usePathname() ?? '';
   const base = `/${locale}/t/${slug}`;
@@ -33,7 +42,9 @@ export function SidebarNav({ catalog, locale, slug, libraryName, userFullName }:
     { href: `${base}/members`, label: t('common.nav.members') },
     { href: `${base}/loans`, label: t('common.nav.loans') },
     { href: `${base}/reservations`, label: t('common.nav.reservations') },
-    { href: `${base}/billing`, label: 'Billing' },
+    // Billing is hidden entirely while subscriptions are off — there's nothing
+    // to manage and we don't want to imply a plan exists.
+    ...(billingEnabled ? [{ href: `${base}/billing`, label: 'Billing' }] : []),
     { href: `${base}/settings`, label: t('common.nav.settings') },
     { href: `${base}/help`, label: t('common.nav.help') },
   ];
