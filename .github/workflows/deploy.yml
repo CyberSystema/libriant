@@ -165,7 +165,13 @@ jobs:
             export LIBRIANT_DATA_ROOT=/mnt/libriant
             FILES="-f infra/compose/docker-compose.prod.yml -f infra/compose/docker-compose.volume.yml"
             docker compose \$FILES pull
-            docker compose \$FILES up -d --remove-orphans
+            # --force-recreate is deliberate: \`up -d\` alone only recreates a
+            # container when compose decides the image/config changed, and with
+            # the :latest / re-used tag that check can misfire — leaving the api
+            # (or web) running OLD code even though \`pull\` fetched the new image.
+            # Forcing recreation guarantees every deploy actually swaps in the
+            # freshly-pulled image. (Caddy is reloaded separately below.)
+            docker compose \$FILES up -d --remove-orphans --force-recreate
             # Caddy's config is a bind-mount, so \`up -d\` won't restart it when
             # only the Caddyfile content changed. Reload it explicitly (graceful,
             # zero-downtime) so Caddyfile edits actually take effect; fall back to
