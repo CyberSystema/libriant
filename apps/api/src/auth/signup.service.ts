@@ -25,7 +25,7 @@ export type SignupResult = {
   token: string;
   expiresAt: Date;
   tenant: { id: string; slug: string; name: string; defaultLocale: string };
-  user: { id: string; email: string; fullName: string; role: 'owner' };
+  user: { id: string; email: string | null; fullName: string; role: 'owner' };
 };
 
 /**

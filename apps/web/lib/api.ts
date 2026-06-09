@@ -115,7 +115,14 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
 // -- Common shapes returned by the API ---------------------------------------
 
 export type AuthMeResponse = {
-  user: { id: string; email: string; fullName: string; role: string };
+  user: {
+    id: string;
+    email: string | null;
+    username: string | null;
+    fullName: string;
+    role: 'owner' | 'admin' | 'librarian' | 'volunteer';
+    mustChangeCredentials: boolean;
+  };
   tenant: { id: string; slug: string; name: string; defaultLocale: string };
 };
 

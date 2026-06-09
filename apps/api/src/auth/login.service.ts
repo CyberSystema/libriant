@@ -9,7 +9,14 @@ export type LoginResult = {
   token: string;
   expiresAt: Date;
   /** Snapshot to return in the response body (no password fields). */
-  user: { id: string; email: string; fullName: string; role: SessionPayload['role'] };
+  user: {
+    id: string;
+    email: string | null;
+    username: string | null;
+    fullName: string;
+    role: SessionPayload['role'];
+    mustChangeCredentials: boolean;
+  };
   tenant: { id: string; slug: string; name: string; defaultLocale: string };
 };
 
@@ -24,18 +31,18 @@ export class LoginService {
   ) {}
 
   /**
-   * Authenticate a user by (tenant slug, email, password). Always
-   * uniform-time: an unknown email runs the same dummy bcrypt to prevent
-   * a timing oracle. Failed attempts increment a counter; after a
-   * threshold the account is locked for `loginLockoutMs`.
+   * Authenticate a user by (tenant slug, identifier, password). The
+   * identifier is an email (owners/admins) OR a username (admin-created
+   * staff, e.g. `staff_3`). Always uniform-time: an unknown identifier runs
+   * the same dummy bcrypt to prevent a timing oracle. Failed attempts
+   * increment a counter; after a threshold the account is locked.
    *
    * Throws 401 with a generic "invalid credentials" message in every
-   * failure case (unknown tenant, unknown email, wrong password). Lockout
-   * is reported separately so the user knows to wait.
+   * failure case. Lockout is reported separately so the user knows to wait.
    */
   async login(input: {
     tenantSlug: string;
-    email: string;
+    identifier: string;
     password: string;
   }): Promise<LoginResult> {
     const tenant = await controlDb.tenant.findUnique({
@@ -61,17 +68,22 @@ export class LoginService {
       throw this.invalidCredentials();
     }
 
-    const user = await controlDb.user.findUnique({
-      where: { tenantId_email: { tenantId: tenant.id, email: input.email } },
+    const identifier = input.identifier.trim();
+    const user = await controlDb.user.findFirst({
+      // citext columns → case-insensitive match. Identifier is an email or a
+      // staff username; both are unique per tenant.
+      where: { tenantId: tenant.id, OR: [{ email: identifier }, { username: identifier }] },
       select: {
         id: true,
         email: true,
+        username: true,
         fullName: true,
         role: true,
         status: true,
         passwordHash: true,
         failedLogins: true,
         lockedUntil: true,
+        mustChangeCredentials: true,
       },
     });
     if (!user || !user.passwordHash) {
@@ -113,8 +125,10 @@ export class LoginService {
       user: {
         id: user.id,
         email: user.email,
+        username: user.username,
         fullName: user.fullName,
         role: user.role as SessionPayload['role'],
+        mustChangeCredentials: user.mustChangeCredentials,
       },
       tenant: {
         id: tenant.id,
@@ -123,6 +137,24 @@ export class LoginService {
         defaultLocale: tenant.defaultLocale,
       },
     };
+  }
+
+  /**
+   * One-time first-login setup for admin-created staff: optionally change the
+   * display name and/or password, then clear `mustChangeCredentials`. Either
+   * field may be omitted ("keep the same"); the flag is always cleared so the
+   * forced screen doesn't reappear until an admin resets the account.
+   */
+  async completeSetup(
+    userId: string,
+    input: { fullName?: string; newPassword?: string },
+  ): Promise<void> {
+    const data: { fullName?: string; passwordHash?: string; mustChangeCredentials: boolean } = {
+      mustChangeCredentials: false,
+    };
+    if (input.fullName && input.fullName.trim()) data.fullName = input.fullName.trim();
+    if (input.newPassword) data.passwordHash = await this.passwords.hash(input.newPassword);
+    await controlDb.user.update({ where: { id: userId }, data });
   }
 
   private async recordFailure(userId: string, currentFailed: number): Promise<void> {

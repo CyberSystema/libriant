@@ -21,6 +21,8 @@ import { RequiresFeature } from '../plans/decorators.js';
 import { PlanGuard } from '../plans/plan.guard.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
+import { RolesGuard } from '../tenancy/roles.guard.js';
+import { Roles } from '../tenancy/roles.decorator.js';
 import { IMPORT_ENTITY_KINDS, mappableFields } from './mapping/entity-fields.js';
 import { IMPORT_MAX_UPLOAD_BYTES } from './import.constants.js';
 import { ImportService } from './import.service.js';
@@ -42,7 +44,8 @@ import { ImportService } from './import.service.js';
  *   DELETE /t/:slug/imports/:id                  — delete a finished/failed batch
  */
 @Controller('t/:slug/imports')
-@UseGuards(TenantGuard, PlanGuard)
+@UseGuards(TenantGuard, RolesGuard, PlanGuard)
+@Roles('owner', 'admin')
 @RequiresFeature('bulk_import_enabled')
 export class ImportController {
   constructor(@Inject(ImportService) private readonly svc: ImportService) {}

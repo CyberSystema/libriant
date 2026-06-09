@@ -293,12 +293,21 @@ model TenantDbCredential {
 model User {
   id              String     @id @default(cuid())
   tenantId        String
-  /// CITEXT-backed unique email per tenant — same human can have accounts
-  /// at multiple libraries, but each library treats emails case-insensitively.
-  email           String     @db.Citext
+  /// CITEXT email per tenant — same human can have accounts at multiple
+  /// libraries, each treating emails case-insensitively. NULL for admin-created
+  /// staff, who sign in with `username` instead (no email on file).
+  email           String?    @db.Citext
+  /// CITEXT login handle per tenant for admin-created staff (e.g. `staff_3`).
+  /// Owners/admins created via signup/invite use `email`; staff use this.
+  /// Login accepts either. NULL for email-based accounts.
+  username        String?    @db.Citext
   fullName        String
   role            UserRole   @default(librarian)
   status          UserStatus @default(invited)
+  /// When true, the user is forced through a one-time "set your name + password"
+  /// screen on next login before they can use the app. Set when an admin
+  /// creates a staff account or resets its password.
+  mustChangeCredentials Boolean @default(false)
   /// Per-user override for the tenant's default locale.
   locale          String?
   passwordHash    String?
@@ -322,6 +331,7 @@ model User {
   announcementDeliveries AnnouncementDelivery[]
 
   @@unique([tenantId, email])
+  @@unique([tenantId, username])
   @@index([tenantId, status])
   @@index([email])
   @@map("users")

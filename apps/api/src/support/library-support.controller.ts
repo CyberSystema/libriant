@@ -4,6 +4,8 @@ import { Sess } from '../auth/session-context.js';
 import type { SessionPayload } from '../auth/jwt-session.service.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
+import { RolesGuard } from '../tenancy/roles.guard.js';
+import { Roles } from '../tenancy/roles.decorator.js';
 import { SupportKeyService } from './support-key.service.js';
 import { SupportNotificationsService } from './support-notifications.service.js';
 import { SupportSessionService } from './support-session.service.js';
@@ -22,7 +24,8 @@ import { SupportSessionService } from './support-session.service.js';
  *   GET    /t/:slug/support/sessions/log        — audit log (most recent first)
  */
 @Controller('t/:slug/support')
-@UseGuards(TenantGuard)
+@UseGuards(TenantGuard, RolesGuard)
+@Roles('owner', 'admin')
 export class LibrarySupportController {
   constructor(
     @Inject(SupportKeyService) private readonly keys: SupportKeyService,

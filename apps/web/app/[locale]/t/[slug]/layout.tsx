@@ -9,6 +9,7 @@ import { currentSession, requestCookieHeader } from '@/lib/session';
 import { currentSystemMode, isTakeoverMode } from '@/lib/system-mode';
 import { AnnouncementsTopBanners } from './AnnouncementsTopBanners';
 import { ChoosePlanScreen } from './ChoosePlanScreen';
+import { FirstLoginSetup } from './FirstLoginSetup';
 import { ImpersonationBanner } from './ImpersonationBanner';
 import { type AvailablePlan } from './billing/PlanGrid';
 import { SidebarNav } from './SidebarNav';
@@ -70,6 +71,22 @@ export default async function TenantLayout(props: {
   const libraryName = session?.tenant.name ?? impersonation?.tenant.name ?? params.slug;
   const userFullName =
     session?.user.fullName ?? impersonation?.admin.fullName ?? 'Libriant support';
+  const role = session?.user.role ?? 'owner';
+  const isLibraryAdmin = role === 'owner' || role === 'admin';
+
+  // First-login setup. Admin-created staff are forced through a one-time
+  // "set your name + password (or keep them)" screen before anything else.
+  if (session && !impersonation && session.user.mustChangeCredentials) {
+    return (
+      <ToastProvider>
+        <FirstLoginSetup
+          locale={params.locale}
+          catalog={catalog}
+          currentName={session.user.fullName}
+        />
+      </ToastProvider>
+    );
+  }
 
   // Forced plan choice. When subscriptions are enabled and this library hasn't
   // picked a plan yet, every page is replaced by the chooser until they do.
@@ -89,6 +106,23 @@ export default async function TenantLayout(props: {
       );
       billingEnabled = gate.billingEnabled;
       if (gate.billingEnabled && !gate.planSelected) {
+        // Choosing a plan is an admin action. Staff just see a notice until an
+        // admin picks one (they can't reach the rest of the library yet).
+        if (!isLibraryAdmin) {
+          return (
+            <ToastProvider>
+              <main className="lbr-choose-shell">
+                <div className="lbr-choose" style={{ maxWidth: 560 }}>
+                  <h1 className="lbr-choose__title">{libraryName}</h1>
+                  <p className="lbr-choose__subtitle">
+                    Your library needs to choose a plan before you can continue. Please ask a
+                    library admin to set one up.
+                  </p>
+                </div>
+              </main>
+            </ToastProvider>
+          );
+        }
         const { plans } = await api<{ plans: AvailablePlan[] }>(`/t/${params.slug}/billing/plans`, {
           cookie,
         });
@@ -127,6 +161,7 @@ export default async function TenantLayout(props: {
           libraryName={libraryName}
           userFullName={userFullName}
           billingEnabled={billingEnabled}
+          role={role}
         />
         <main className="lbr-shell__main">
           {impersonation ? (

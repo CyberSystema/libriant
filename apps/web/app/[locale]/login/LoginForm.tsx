@@ -13,19 +13,18 @@ type Props = {
 
 type Errors = {
   slug?: string;
-  email?: string;
+  identifier?: string;
   password?: string;
   form?: string;
 };
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/;
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function LoginForm({ catalog, locale }: Props) {
   const t = createTranslator(catalog, locale);
   const router = useRouter();
   const [slug, setSlug] = React.useState('');
-  const [email, setEmail] = React.useState('');
+  const [identifier, setIdentifier] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [errors, setErrors] = React.useState<Errors>({});
   const [submitting, setSubmitting] = React.useState(false);
@@ -33,10 +32,11 @@ export function LoginForm({ catalog, locale }: Props) {
   function validate(): Errors {
     const next: Errors = {};
     if (!SLUG_RE.test(slug)) next.slug = t('auth.errors.slugInvalid');
-    if (!EMAIL_RE.test(email)) next.email = t('auth.errors.emailInvalid');
-    if (password.length < 12) {
-      next.password = t('auth.errors.passwordTooShort', { min: 12 });
-    }
+    // Identifier may be an email or a staff username — just require something.
+    if (identifier.trim().length === 0) next.identifier = t('auth.errors.emailInvalid');
+    // Staff use short admin-set passwords, so we don't enforce a minimum here;
+    // the server is the authority.
+    if (password.length < 1) next.password = t('auth.errors.passwordTooShort', { min: 1 });
     return next;
   }
 
@@ -52,7 +52,7 @@ export function LoginForm({ catalog, locale }: Props) {
     try {
       await api<{ ok: true; tenant: { slug: string } }>('/auth/login', {
         method: 'POST',
-        body: { slug, email, password },
+        body: { slug, identifier, password },
       });
       // Redirect to the tenant home. The cookie is set by the API and
       // travels back through the same-origin proxy.
@@ -92,13 +92,19 @@ export function LoginForm({ catalog, locale }: Props) {
         />
       </FormField>
 
-      <FormField id="login-email" label={t('auth.signIn.email')} required error={errors.email}>
+      <FormField
+        id="login-identifier"
+        label={t('auth.signIn.identifier')}
+        hint={t('auth.signIn.identifierHint')}
+        required
+        error={errors.identifier}
+      >
         <Input
-          type="email"
-          name="email"
-          autoComplete="email"
-          value={email}
-          onChange={(e) => setEmail(e.currentTarget.value)}
+          name="identifier"
+          autoComplete="username"
+          spellCheck={false}
+          value={identifier}
+          onChange={(e) => setIdentifier(e.currentTarget.value)}
         />
       </FormField>
 

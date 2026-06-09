@@ -19,7 +19,7 @@ import { PasswordResetService } from './password-reset.service.js';
 import { Sess } from './session-context.js';
 import { SignupService } from './signup.service.js';
 import { SignupDto } from './dto/signup.dto.js';
-import { LoginDto } from './dto/login.dto.js';
+import { CompleteSetupDto, LoginDto } from './dto/login.dto.js';
 import { PasswordResetCompleteDto, PasswordResetRequestDto } from './dto/password-reset.dto.js';
 import type { SessionPayload } from './jwt-session.service.js';
 import { TenantResolverService } from '../tenancy/tenant-resolver.service.js';
@@ -63,11 +63,27 @@ export class AuthController {
     const dto = await validateDto(LoginDto, raw);
     const result = await this.loginSvc.login({
       tenantSlug: dto.slug,
-      email: dto.email,
+      identifier: dto.identifier,
       password: dto.password,
     });
     this.cookies.setSession(res, result.token, result.expiresAt);
     return { tenant: result.tenant, user: result.user };
+  }
+
+  /**
+   * First-login setup for admin-created staff: optionally set name + password,
+   * then clear the forced-change flag. Requires a live session.
+   */
+  @Post('complete-setup')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthGuard)
+  async completeSetup(@Sess() session: SessionPayload, @Body() raw: unknown) {
+    const dto = await validateDto(CompleteSetupDto, raw);
+    await this.loginSvc.completeSetup(session.sub, {
+      fullName: dto.fullName,
+      newPassword: dto.newPassword,
+    });
+    return { ok: true };
   }
 
   @Post('logout')
@@ -82,7 +98,15 @@ export class AuthController {
     const [user, tenant] = await Promise.all([
       controlDb.user.findUnique({
         where: { id: session.sub },
-        select: { id: true, email: true, fullName: true, role: true, locale: true },
+        select: {
+          id: true,
+          email: true,
+          username: true,
+          fullName: true,
+          role: true,
+          locale: true,
+          mustChangeCredentials: true,
+        },
       }),
       controlDb.tenant.findUnique({
         where: { id: session.tid },

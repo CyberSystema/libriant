@@ -15,6 +15,9 @@ type Props = {
   userFullName: string;
   /** When false (subscriptions disabled globally), the Billing item is hidden. */
   billingEnabled?: boolean;
+  /** Library role of the signed-in user. Admin-only items (Team, Settings,
+   *  Billing) are hidden from librarian/volunteer. */
+  role?: 'owner' | 'admin' | 'librarian' | 'volunteer';
 };
 
 /**
@@ -32,20 +35,23 @@ export function SidebarNav({
   libraryName,
   userFullName,
   billingEnabled = true,
+  role = 'owner',
 }: Props) {
   const t = createTranslator(catalog, locale);
   const pathname = usePathname() ?? '';
   const base = `/${locale}/t/${slug}`;
+  const isAdmin = role === 'owner' || role === 'admin';
   const links = [
     { href: base, label: t('common.app.name') },
     { href: `${base}/catalog`, label: t('common.nav.catalog') },
     { href: `${base}/members`, label: t('common.nav.members') },
     { href: `${base}/loans`, label: t('common.nav.loans') },
     { href: `${base}/reservations`, label: t('common.nav.reservations') },
-    // Billing is hidden entirely while subscriptions are off — there's nothing
-    // to manage and we don't want to imply a plan exists.
-    ...(billingEnabled ? [{ href: `${base}/billing`, label: 'Billing' }] : []),
-    { href: `${base}/settings`, label: t('common.nav.settings') },
+    // Admin-only "control the library" areas — hidden from librarian/volunteer,
+    // and Billing is also hidden while subscriptions are off.
+    ...(isAdmin && billingEnabled ? [{ href: `${base}/billing`, label: 'Billing' }] : []),
+    ...(isAdmin ? [{ href: `${base}/staff`, label: t('common.nav.staff') }] : []),
+    ...(isAdmin ? [{ href: `${base}/settings`, label: t('common.nav.settings') }] : []),
     { href: `${base}/help`, label: t('common.nav.help') },
   ];
 
