@@ -22,6 +22,7 @@ export function AdminSidebar({ admin }: Props) {
     { href: `${base}/tenants`, label: 'Tenants' },
     { href: `${base}/fleet`, label: 'Capacity' },
     { href: `${base}/plans`, label: 'Plans' },
+    { href: `${base}/subscriptions`, label: 'Subscriptions' },
     { href: `${base}/announcements`, label: 'Announcements' },
     { href: `${base}/system-mode`, label: 'System mode' },
     { href: `${base}/support`, label: 'Support access' },

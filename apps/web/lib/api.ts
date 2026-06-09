@@ -136,6 +136,9 @@ export type BillingSnapshot = {
   driver: 'real' | 'fake';
   /** When false, plan/quota enforcement is off — all features are free. */
   billingEnabled: boolean;
+  /** Whether the library has explicitly chosen a plan. When billingEnabled is
+   *  true and this is false, the library is shown the forced plan chooser. */
+  planSelected: boolean;
 };
 
 export type ListResponse<T> = { items: T[]; nextCursor: string | null };

@@ -2,6 +2,7 @@ import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { BillingService } from '../billing/billing.service.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { FakeStripeDriver } from '../billing/stripe-fake.driver.js';
 import { RealStripeDriver } from '../billing/stripe-real.driver.js';
 import { loadEnv } from '../config/env.js';
@@ -43,11 +44,12 @@ export async function sweepFailedStripeWebhooks(): Promise<JobResult> {
   // Build the same collaborators the runtime uses. Direct construction
   // (no Nest DI) — these classes don't depend on framework features.
   const redis = new RedisService();
-  const effective = new EffectivePlanService(redis);
+  const settings = new PlatformSettingsService(redis);
+  const effective = new EffectivePlanService(redis, settings);
   const driver: StripeDriver =
     env.stripeDriver === 'real' ? new RealStripeDriver() : new FakeStripeDriver();
-  // BillingService constructor: (effectivePlan, stripe) — see billing.service.ts.
-  const billing = new BillingService(effective, driver);
+  // BillingService constructor: (effectivePlan, stripe, settings) — see billing.service.ts.
+  const billing = new BillingService(effective, driver, settings);
 
   let succeeded = 0;
   let stillFailing = 0;

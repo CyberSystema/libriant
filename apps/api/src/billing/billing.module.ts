@@ -2,6 +2,7 @@ import { Module, type Provider } from '@nestjs/common';
 import { loadEnv } from '../config/env.js';
 import { AdminModule } from '../admin/admin.module.js';
 import { PlansModule } from '../plans/plans.module.js';
+import { PlatformSettingsModule } from '../platform-settings/platform-settings.module.js';
 import { RedisModule } from '../platform/redis.module.js';
 import { TenantModule } from '../tenancy/tenant.module.js';
 import { BillingAdminController } from './billing-admin.controller.js';
@@ -27,7 +28,7 @@ const stripeDriverProvider: Provider = {
 };
 
 @Module({
-  imports: [RedisModule, TenantModule, PlansModule, AdminModule],
+  imports: [RedisModule, TenantModule, PlansModule, AdminModule, PlatformSettingsModule],
   providers: [BillingService, FakeStripeDriver, stripeDriverProvider],
   controllers: [BillingController, BillingAdminController, StripeWebhookController],
   exports: [BillingService, STRIPE_DRIVER],

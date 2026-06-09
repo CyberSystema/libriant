@@ -18,6 +18,7 @@ import type { FeatureKey } from '@libriant/shared';
 import { disconnectTenantClient, makeTenantPrismaClient } from '@libriant/db-tenant';
 import { loadEnv } from '../config/env.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { RedisService } from '../platform/redis.service.js';
 import { executeImport } from './engine/runner.js';
 import type { EngineContext, EngineRowResult } from './engine/import-engine.js';
@@ -269,5 +270,5 @@ export async function startImportWorker(deps: ImportWorkerDeps): Promise<ImportW
 
 /** Convenience for the worker process: build deps from a shared Redis. */
 export function makeImportWorkerDeps(redis: RedisService): ImportWorkerDeps {
-  return { effective: new EffectivePlanService(redis) };
+  return { effective: new EffectivePlanService(redis, new PlatformSettingsService(redis)) };
 }

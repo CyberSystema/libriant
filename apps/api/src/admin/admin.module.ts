@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { PlansModule } from '../plans/plans.module.js';
+import { PlatformSettingsModule } from '../platform-settings/platform-settings.module.js';
+import { AdminSubscriptionsController } from '../platform-settings/admin-subscriptions.controller.js';
 import { PasswordService } from '../auth/password.service.js';
 import { AdminAuthController } from './admin-auth.controller.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
@@ -22,7 +24,7 @@ import { FleetService } from './fleet.service.js';
  * controller does this).
  */
 @Module({
-  imports: [PlansModule],
+  imports: [PlansModule, PlatformSettingsModule],
   providers: [
     PasswordService,
     AdminSessionService,
@@ -36,6 +38,7 @@ import { FleetService } from './fleet.service.js';
     AdminTenantsController,
     AdminPlansController,
     AdminOverridesController,
+    AdminSubscriptionsController,
     FleetController,
   ],
   exports: [AdminSessionService, AdminCookieService, AdminAuthGuard],

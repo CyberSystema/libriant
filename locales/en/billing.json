@@ -27,5 +27,12 @@
   "nextInvoice": "Next invoice on {date} for {amount}.",
   "perMonth": "/ month",
   "free": "Free",
-  "errors.paymentFailed": "Your last payment didn't go through. Please update your payment details to keep your access."
+  "errors.paymentFailed": "Your last payment didn't go through. Please update your payment details to keep your access.",
+  "chooser.title": "Choose your plan",
+  "chooser.subtitle": "To continue using {library}, pick the plan that fits your library. You can change it later in Plan & billing.",
+  "chooser.choose": "Choose {plan}",
+  "chooser.subscribe": "Subscribe to {plan}",
+  "chooser.notBookable": "Not available yet",
+  "chooser.paidHint": "Paid plans take you to secure checkout to add a payment method.",
+  "chooser.empty": "No plans are available right now. Please contact us so we can set you up."
 }

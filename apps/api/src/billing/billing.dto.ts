@@ -26,6 +26,17 @@ export class OpenPortalDto {
 }
 
 /**
+ * Library-side: record the library's explicit plan choice (the chooser shown
+ * when subscriptions are enabled but no plan was picked yet). Only valid for
+ * free plans — paid plans must go through Stripe Checkout (`/checkout`).
+ */
+export class SelectPlanDto {
+  @IsString()
+  @Matches(PLAN_SLUG_RE)
+  planSlug!: string;
+}
+
+/**
  * Admin-side: force a tenant onto a specific plan without payment. Used
  * for support sessions, on-prem contracts, and the manual-billing flow.
  */

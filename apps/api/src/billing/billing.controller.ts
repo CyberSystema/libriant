@@ -3,7 +3,7 @@ import { validateDto } from '../auth/validate-dto.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { BillingService } from './billing.service.js';
-import { OpenPortalDto, StartCheckoutDto } from './billing.dto.js';
+import { OpenPortalDto, SelectPlanDto, StartCheckoutDto } from './billing.dto.js';
 
 /**
  * Library-facing billing endpoints.
@@ -29,6 +29,11 @@ export class BillingController {
     return this.svc.getSnapshot(tenant.id);
   }
 
+  @Get('gate')
+  async gate(@TenantCtx() tenant: TenantContext) {
+    return this.svc.getGate(tenant.id);
+  }
+
   @Get('plans')
   async availablePlans(@TenantCtx() tenant: TenantContext) {
     return { plans: await this.svc.listAvailablePlans(tenant.id) };
@@ -38,6 +43,12 @@ export class BillingController {
   async checkout(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const dto = await validateDto(StartCheckoutDto, raw);
     return this.svc.startCheckout(tenant.id, dto);
+  }
+
+  @Post('select')
+  async select(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
+    const dto = await validateDto(SelectPlanDto, raw);
+    return this.svc.selectPlan(tenant.id, dto);
   }
 
   @Post('portal')

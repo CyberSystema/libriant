@@ -91,7 +91,10 @@ describe('EffectivePlanService.getEffectivePlan', () => {
     queryRawUnsafe.mockReset();
     env.billingEnabled = true;
     redis = makeFakeRedis();
-    service = new EffectivePlanService({ client: redis.client } as never);
+    service = new EffectivePlanService(
+      { client: redis.client } as never,
+      { billingEnabled: async () => env.billingEnabled } as never,
+    );
   });
 
   it('resolves override > plan > default for an int feature and records the source', async () => {
@@ -188,7 +191,10 @@ describe('EffectivePlanService convenience helpers', () => {
   it('getBool returns false when the feature is missing', async () => {
     queryRawUnsafe.mockResolvedValue([]);
     const redis = makeFakeRedis();
-    const service = new EffectivePlanService({ client: redis.client } as never);
+    const service = new EffectivePlanService(
+      { client: redis.client } as never,
+      { billingEnabled: async () => env.billingEnabled } as never,
+    );
 
     expect(await service.getBool('tnt-1', 'nope_enabled')).toBe(false);
   });
@@ -198,7 +204,10 @@ describe('EffectivePlanService convenience helpers', () => {
       row({ key: 'reservations_enabled', type: 'bool', def: true }),
     ]);
     const redis = makeFakeRedis();
-    const service = new EffectivePlanService({ client: redis.client } as never);
+    const service = new EffectivePlanService(
+      { client: redis.client } as never,
+      { billingEnabled: async () => env.billingEnabled } as never,
+    );
 
     await expect(service.getInt('tnt-1', 'reservations_enabled')).rejects.toThrow(/not an integer/);
   });
@@ -220,7 +229,10 @@ describe('EffectivePlanService with BILLING_ENABLED=false (everything free)', ()
       row({ key: 'priority_support', type: 'text', def: 'none' }),
     ]);
     const redis = makeFakeRedis();
-    const service = new EffectivePlanService({ client: redis.client } as never);
+    const service = new EffectivePlanService(
+      { client: redis.client } as never,
+      { billingEnabled: async () => env.billingEnabled } as never,
+    );
 
     const plan = await service.getEffectivePlan('tnt-1');
     expect(plan.features.max_books).toMatchObject({ value: Number.MAX_SAFE_INTEGER });

@@ -9,6 +9,7 @@ import type {
 } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import {
   STRIPE_DRIVER,
   type StripeDriver,
@@ -39,6 +40,9 @@ export type BillingSnapshot = {
   /** When false, plan/quota enforcement is off — every feature is free and
    *  the UI hides plans / upgrade actions. */
   billingEnabled: boolean;
+  /** Whether the library has explicitly chosen a plan. When billing is
+   *  enabled and this is false, the full-page chooser is forced. */
+  planSelected: boolean;
 };
 
 @Injectable()
@@ -48,6 +52,7 @@ export class BillingService {
   constructor(
     @Inject(EffectivePlanService) private readonly effectivePlan: EffectivePlanService,
     @Inject(STRIPE_DRIVER) private readonly stripe: StripeDriver,
+    @Inject(PlatformSettingsService) private readonly settings: PlatformSettingsService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -100,6 +105,22 @@ export class BillingService {
     }));
   }
 
+  /**
+   * Cheap check for the tenant layout's forced-chooser gate. Runs on every
+   * tenant page load, so it does ZERO database work while subscriptions are
+   * disabled (the common case) — just the cached toggle read — and a single
+   * tiny query when they're enabled.
+   */
+  async getGate(tenantId: string): Promise<{ billingEnabled: boolean; planSelected: boolean }> {
+    const billingEnabled = await this.settings.billingEnabled();
+    if (!billingEnabled) return { billingEnabled: false, planSelected: true };
+    const sub = await controlDb.subscription.findUnique({
+      where: { tenantId },
+      select: { planSelectedAt: true },
+    });
+    return { billingEnabled: true, planSelected: sub?.planSelectedAt != null };
+  }
+
   /** Plain-shape snapshot of where this tenant stands billing-wise. */
   async getSnapshot(tenantId: string): Promise<BillingSnapshot> {
     const sub = await controlDb.subscription.findUnique({
@@ -123,7 +144,8 @@ export class BillingService {
       stripeCustomerId: billing?.stripeCustomerId ?? null,
       stripeSubscriptionId: sub.stripeSubscriptionId,
       driver: this.stripe.isReal ? 'real' : 'fake',
-      billingEnabled: loadEnv().billingEnabled,
+      billingEnabled: await this.settings.billingEnabled(),
+      planSelected: sub.planSelectedAt !== null,
     };
   }
 
@@ -138,19 +160,52 @@ export class BillingService {
    * once one succeeds the webhook reconciles state.
    */
   /** Self-serve billing flows are unavailable while subscriptions are disabled. */
-  private assertBillingEnabled(): void {
-    if (!loadEnv().billingEnabled) {
+  private async assertBillingEnabled(): Promise<void> {
+    if (!(await this.settings.billingEnabled())) {
       throw new BadRequestException(
         'Subscriptions are currently disabled — every feature is already included for free.',
       );
     }
   }
 
+  /**
+   * Record the library's explicit choice of a FREE plan (the chooser path).
+   * Paid plans never reach here — the chooser routes those to Stripe Checkout,
+   * and `startCheckout` stamps the choice. Stamping `planSelectedAt` is what
+   * clears the forced full-page chooser.
+   */
+  async selectPlan(tenantId: string, input: { planSlug: string }): Promise<BillingSnapshot> {
+    await this.assertBillingEnabled();
+    const sub = await controlDb.subscription.findUnique({ where: { tenantId } });
+    if (!sub) throw new NotFoundException('No subscription on file.');
+    const plan = await controlDb.plan.findUnique({ where: { slug: input.planSlug } });
+    if (!plan || !plan.isActive || !plan.isPublic || plan.archivedAt) {
+      throw new NotFoundException(`Plan "${input.planSlug}" isn't available.`);
+    }
+    if (plan.billingMode === 'stripe' && plan.monthlyPriceCents > 0) {
+      throw new BadRequestException(
+        'That plan requires payment — start checkout to add a payment method.',
+      );
+    }
+    await controlDb.subscription.update({
+      where: { tenantId },
+      data: {
+        planId: plan.id,
+        billingMode: plan.billingMode,
+        status: 'active',
+        graceUntil: null,
+        planSelectedAt: sub.planSelectedAt ?? new Date(),
+      },
+    });
+    await this.effectivePlan.invalidate(tenantId);
+    return this.getSnapshot(tenantId);
+  }
+
   async startCheckout(
     tenantId: string,
     input: { planSlug: string; returnPath?: string },
   ): Promise<{ url: string; sessionId: string }> {
-    this.assertBillingEnabled();
+    await this.assertBillingEnabled();
     const env = loadEnv();
     const sub = await controlDb.subscription.findUnique({
       where: { tenantId },
@@ -178,6 +233,17 @@ export class BillingService {
 
     const customerId = await this.ensureStripeCustomer(tenantId);
 
+    // Starting paid checkout counts as making a choice — stamp it now so the
+    // library isn't bounced back to the chooser in the window between the
+    // Stripe success redirect and the confirming webhook. (If they abandon
+    // checkout, they simply stay on their current free plan, un-gated.)
+    if (!sub.planSelectedAt) {
+      await controlDb.subscription.update({
+        where: { tenantId },
+        data: { planSelectedAt: new Date() },
+      });
+    }
+
     const base = env.billingReturnUrl.replace(/\/$/, '');
     const returnPath = input.returnPath?.startsWith('/')
       ? input.returnPath
@@ -199,7 +265,7 @@ export class BillingService {
     tenantId: string,
     input: { returnPath?: string },
   ): Promise<{ url: string }> {
-    this.assertBillingEnabled();
+    await this.assertBillingEnabled();
     const env = loadEnv();
     const sub = await controlDb.subscription.findUnique({
       where: { tenantId },
@@ -227,7 +293,7 @@ export class BillingService {
    * second call before the period ends just re-confirms the cancellation.
    */
   async cancelAtPeriodEnd(tenantId: string): Promise<BillingSnapshot> {
-    this.assertBillingEnabled();
+    await this.assertBillingEnabled();
     const sub = await controlDb.subscription.findUnique({ where: { tenantId } });
     if (!sub) throw new NotFoundException('No subscription on file.');
     if (sub.billingMode !== 'stripe') {
@@ -250,7 +316,7 @@ export class BillingService {
   }
 
   async resumeSubscription(tenantId: string): Promise<BillingSnapshot> {
-    this.assertBillingEnabled();
+    await this.assertBillingEnabled();
     const sub = await controlDb.subscription.findUnique({ where: { tenantId } });
     if (!sub) throw new NotFoundException('No subscription on file.');
     if (sub.billingMode !== 'stripe' || !sub.stripeSubscriptionId) {
@@ -405,6 +471,13 @@ export class BillingService {
             ? new Date(Date.now() + loadEnv().billingGracePeriodDays * MS_PER_DAY)
             : null,
       },
+    });
+    // An active Stripe subscription is an explicit choice — stamp it if it
+    // wasn't already (covers subs created outside our checkout flow, e.g. the
+    // Stripe dashboard). `updateMany` keeps the original timestamp intact.
+    await controlDb.subscription.updateMany({
+      where: { tenantId: billing.tenantId, planSelectedAt: null },
+      data: { planSelectedAt: new Date() },
     });
     await this.effectivePlan.invalidate(billing.tenantId);
   }

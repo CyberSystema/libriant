@@ -2,12 +2,15 @@ import { notFound, redirect } from 'next/navigation';
 import { Banner, ToastProvider } from '@libriant/ui';
 import { isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
+import { ApiError, api } from '@/lib/api';
 import { currentAnnouncements } from '@/lib/announcements';
 import { currentImpersonation } from '@/lib/impersonation';
-import { currentSession } from '@/lib/session';
+import { currentSession, requestCookieHeader } from '@/lib/session';
 import { currentSystemMode, isTakeoverMode } from '@/lib/system-mode';
 import { AnnouncementsTopBanners } from './AnnouncementsTopBanners';
+import { ChoosePlanScreen } from './ChoosePlanScreen';
 import { ImpersonationBanner } from './ImpersonationBanner';
+import { type AvailablePlan } from './billing/PlanGrid';
 import { SidebarNav } from './SidebarNav';
 import { SystemModeTakeover } from './SystemModeTakeover';
 
@@ -67,6 +70,41 @@ export default async function TenantLayout(props: {
   const libraryName = session?.tenant.name ?? impersonation?.tenant.name ?? params.slug;
   const userFullName =
     session?.user.fullName ?? impersonation?.admin.fullName ?? 'Libriant support';
+
+  // Forced plan choice. When subscriptions are enabled and this library hasn't
+  // picked a plan yet, every page is replaced by the chooser until they do.
+  // Only real librarian sessions are gated — an impersonating admin debugging
+  // the library must not be forced to pick a plan on the tenant's behalf. A
+  // failure to read billing state never hard-blocks the library.
+  if (session && !impersonation) {
+    const cookie = await requestCookieHeader();
+    try {
+      const gate = await api<{ billingEnabled: boolean; planSelected: boolean }>(
+        `/t/${params.slug}/billing/gate`,
+        { cookie },
+      );
+      if (gate.billingEnabled && !gate.planSelected) {
+        const { plans } = await api<{ plans: AvailablePlan[] }>(`/t/${params.slug}/billing/plans`, {
+          cookie,
+        });
+        return (
+          <ToastProvider>
+            <ChoosePlanScreen
+              slug={params.slug}
+              locale={params.locale}
+              catalog={catalog}
+              plans={plans}
+              libraryName={libraryName}
+            />
+          </ToastProvider>
+        );
+      }
+    } catch (err) {
+      if (!(err instanceof ApiError)) throw err;
+      // ApiError (e.g. billing snapshot unavailable) — fall through and let the
+      // library render rather than locking the user out on a transient error.
+    }
+  }
 
   // Announcement banners only render for real librarian sessions — admins
   // under impersonation neither own nor need to act on the tenant's

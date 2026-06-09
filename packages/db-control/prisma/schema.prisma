@@ -443,6 +443,12 @@ model Subscription {
   graceUntil           DateTime?
   canceledAt           DateTime?
   cancelAtPeriodEnd    Boolean            @default(false)
+  /// When the tenant *explicitly* chose this plan. NULL = never chosen — a
+  /// fresh signup, or a tenant that signed up while subscriptions were
+  /// disabled (the planId then is just the Starter placeholder). When billing
+  /// is enabled, a NULL here forces the full-page plan chooser before the
+  /// library can be used; choosing any plan (even free) stamps it.
+  planSelectedAt       DateTime?
   createdAt            DateTime           @default(now())
   updatedAt            DateTime           @updatedAt
 
@@ -476,6 +482,21 @@ model BillingAccount {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("billing_accounts")
+}
+
+/// Global, owner-controlled runtime settings — toggled from the admin panel
+/// without a redeploy. A simple typed-as-text key/value store (parse on read).
+/// Current keys:
+///   - `billing.enabled` ("true" | "false") — master subscriptions switch.
+/// When a key is absent the reader falls back to the matching env var
+/// (`BILLING_ENABLED`), so behaviour is unchanged until the owner sets it once.
+model PlatformSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@map("platform_settings")
 }
 
 /// Idempotency log for Stripe webhooks. Insert-once-per-event; the unique

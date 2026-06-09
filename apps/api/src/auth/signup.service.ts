@@ -142,6 +142,11 @@ export class SignupService {
             billingMode: starterPlan.billingMode,
             status: 'active',
             // Starter is free — no Stripe period, no paid_until.
+            // planSelectedAt stays NULL: the library hasn't *chosen* a plan,
+            // it's just the placeholder. While subscriptions are disabled this
+            // is invisible (everything's free); the moment the owner enables
+            // subscriptions, a NULL here routes the library to the chooser.
+            planSelectedAt: null,
           },
         });
         // Bootstrap an empty billing account so the billing flow has a row

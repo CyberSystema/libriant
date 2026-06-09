@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import type { FeatureKey } from '@libriant/shared';
 import { RedisService } from '../platform/redis.service.js';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { loadEnv } from '../config/env.js';
 import type { EffectivePlan, EffectiveSource, EffectiveValue } from './effective-plan.types.js';
 
@@ -73,12 +74,12 @@ function unlimitedPlan(plan: EffectivePlan): EffectivePlan {
 export class EffectivePlanService {
   private readonly logger = new Logger(EffectivePlanService.name);
   private readonly ttlSec: number;
-  private readonly billingEnabled: boolean;
 
-  constructor(@Inject(RedisService) private readonly redis: RedisService) {
-    const env = loadEnv();
-    this.ttlSec = env.tenantCacheTtlSec;
-    this.billingEnabled = env.billingEnabled;
+  constructor(
+    @Inject(RedisService) private readonly redis: RedisService,
+    @Inject(PlatformSettingsService) private readonly settings: PlatformSettingsService,
+  ) {
+    this.ttlSec = loadEnv().tenantCacheTtlSec;
   }
 
   /** Full effective plan for the tenant. Cached. */
@@ -89,9 +90,11 @@ export class EffectivePlanService {
       await this.writeCache(tenantId, plan);
     }
     // Subscriptions disabled → every tenant gets everything. Applied at read
-    // time (the cache keeps the real plan) so flipping BILLING_ENABLED takes
-    // effect on the next request, not after the cache TTL.
-    return this.billingEnabled ? plan : unlimitedPlan(plan);
+    // time (the per-tenant cache keeps the real plan) so flipping the master
+    // switch in the admin panel takes effect within the toggle's own short
+    // cache window, not after each tenant's plan TTL.
+    const billingEnabled = await this.settings.billingEnabled();
+    return billingEnabled ? plan : unlimitedPlan(plan);
   }
 
   /** Convenience: read one feature as a boolean. False if missing/not-bool. */
