@@ -103,8 +103,8 @@ export function ConfirmDestructive({
       <div className="lbr-confirm-destructive__warning" role="note">
         This cannot be undone.
       </div>
-      <label className="lbr-form-field">
-        <span className="lbr-form-field__label">
+      <label className="lbr-field">
+        <span className="lbr-field__label">
           Type <code>{confirmText}</code> to confirm
         </span>
         <input

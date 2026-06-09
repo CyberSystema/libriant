@@ -178,7 +178,7 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
               <pre
                 style={{
                   fontSize: 'var(--fs-xl)',
-                  background: 'var(--color-bg-muted)',
+                  background: 'var(--color-surface-muted)',
                   padding: 'var(--sp-3)',
                   borderRadius: 'var(--radius-md)',
                   letterSpacing: '0.1em',
@@ -253,7 +253,7 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
                         — ended {fmt(s.endedAt)} ({s.endedReason ?? 'unknown'})
                       </span>
                     ) : (
-                      <span style={{ color: 'var(--color-status-warning)' }}>— still active</span>
+                      <span style={{ color: 'var(--color-warning)' }}>— still active</span>
                     )}
                   </summary>
                   {s.actions.length === 0 ? (

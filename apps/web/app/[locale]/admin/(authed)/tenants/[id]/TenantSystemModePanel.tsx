@@ -105,7 +105,7 @@ export function TenantSystemModePanel({ tenantId, initialActive }: Props) {
             <pre
               style={{
                 whiteSpace: 'pre-wrap',
-                background: 'var(--color-bg-muted)',
+                background: 'var(--color-surface-muted)',
                 padding: 'var(--sp-2)',
                 borderRadius: 'var(--radius-sm)',
                 marginBottom: 'var(--sp-3)',
