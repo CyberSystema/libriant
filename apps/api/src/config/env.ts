@@ -81,6 +81,14 @@ export type AppEnv = {
    * quickstart works without Stripe credentials; production must opt in.
    */
   stripeDriver: 'real' | 'fake';
+  /**
+   * Master switch for plan/quota enforcement. When `false`, EVERY tenant gets
+   * unrestricted access to all features and limits (the whole product is free)
+   * — useful for a pre-monetization launch. The admin panel is unaffected
+   * (it has its own auth). Separate from `stripeDriver`, which only controls
+   * whether real charges happen. Default `true`.
+   */
+  billingEnabled: boolean;
   /** Stripe secret key (`sk_test_…` / `sk_live_…`). Required for `real`. */
   stripeApiKey: string | null;
   /** Webhook signing secret (`whsec_…`). Required for `real`. */
@@ -212,6 +220,9 @@ export function loadEnv(): AppEnv {
       // happens in the real driver constructor (see stripe-real.driver.ts).
       return nodeEnv === 'development' ? 'fake' : 'real';
     })(),
+    // Enforcement is ON unless explicitly set to "false". Anything else
+    // (unset, "true", "1") keeps plan/quota gates active.
+    billingEnabled: (process.env.BILLING_ENABLED ?? 'true').toLowerCase().trim() !== 'false',
     stripeApiKey: process.env.STRIPE_API_KEY?.length ? process.env.STRIPE_API_KEY : null,
     stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET?.length
       ? process.env.STRIPE_WEBHOOK_SECRET

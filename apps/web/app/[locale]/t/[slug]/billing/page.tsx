@@ -37,6 +37,26 @@ export default async function BillingPage(props: {
   const fmtDate = (iso: string | null) =>
     iso ? new Date(iso).toLocaleDateString(params.locale) : null;
 
+  // Subscriptions turned off globally → every feature is free; show a simple
+  // notice instead of the plan status, upgrade actions, and plan grid.
+  const billingDisabled = snapshot?.billingEnabled === false;
+
+  if (billingDisabled) {
+    return (
+      <>
+        <PageHeader title={t('billing.title')} subtitle={t('billing.subtitle')} />
+        <Card style={{ marginTop: 'var(--sp-4)' }}>
+          <CardHeader title={t('billing.freeMode.title')} />
+          <CardBody>
+            <p style={{ margin: 0, color: 'var(--color-text-muted)' }}>
+              {t('billing.freeMode.body')}
+            </p>
+          </CardBody>
+        </Card>
+      </>
+    );
+  }
+
   return (
     <>
       <PageHeader title={t('billing.title')} subtitle={t('billing.subtitle')} />

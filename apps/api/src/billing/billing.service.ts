@@ -36,6 +36,9 @@ export type BillingSnapshot = {
   stripeSubscriptionId: string | null;
   /** Driver kind so the UI can decide whether to show "Open portal". */
   driver: 'real' | 'fake';
+  /** When false, plan/quota enforcement is off — every feature is free and
+   *  the UI hides plans / upgrade actions. */
+  billingEnabled: boolean;
 };
 
 @Injectable()
@@ -120,6 +123,7 @@ export class BillingService {
       stripeCustomerId: billing?.stripeCustomerId ?? null,
       stripeSubscriptionId: sub.stripeSubscriptionId,
       driver: this.stripe.isReal ? 'real' : 'fake',
+      billingEnabled: loadEnv().billingEnabled,
     };
   }
 
@@ -133,10 +137,20 @@ export class BillingService {
    * just creates a second session; both reference the same customer id and
    * once one succeeds the webhook reconciles state.
    */
+  /** Self-serve billing flows are unavailable while subscriptions are disabled. */
+  private assertBillingEnabled(): void {
+    if (!loadEnv().billingEnabled) {
+      throw new BadRequestException(
+        'Subscriptions are currently disabled — every feature is already included for free.',
+      );
+    }
+  }
+
   async startCheckout(
     tenantId: string,
     input: { planSlug: string; returnPath?: string },
   ): Promise<{ url: string; sessionId: string }> {
+    this.assertBillingEnabled();
     const env = loadEnv();
     const sub = await controlDb.subscription.findUnique({
       where: { tenantId },
@@ -185,6 +199,7 @@ export class BillingService {
     tenantId: string,
     input: { returnPath?: string },
   ): Promise<{ url: string }> {
+    this.assertBillingEnabled();
     const env = loadEnv();
     const sub = await controlDb.subscription.findUnique({
       where: { tenantId },
@@ -212,6 +227,7 @@ export class BillingService {
    * second call before the period ends just re-confirms the cancellation.
    */
   async cancelAtPeriodEnd(tenantId: string): Promise<BillingSnapshot> {
+    this.assertBillingEnabled();
     const sub = await controlDb.subscription.findUnique({ where: { tenantId } });
     if (!sub) throw new NotFoundException('No subscription on file.');
     if (sub.billingMode !== 'stripe') {
@@ -234,6 +250,7 @@ export class BillingService {
   }
 
   async resumeSubscription(tenantId: string): Promise<BillingSnapshot> {
+    this.assertBillingEnabled();
     const sub = await controlDb.subscription.findUnique({ where: { tenantId } });
     if (!sub) throw new NotFoundException('No subscription on file.');
     if (sub.billingMode !== 'stripe' || !sub.stripeSubscriptionId) {

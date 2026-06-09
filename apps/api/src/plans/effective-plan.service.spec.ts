@@ -1,11 +1,14 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { queryRawUnsafe } = vi.hoisted(() => ({ queryRawUnsafe: vi.fn() }));
+const { queryRawUnsafe, env } = vi.hoisted(() => ({
+  queryRawUnsafe: vi.fn(),
+  env: { tenantCacheTtlSec: 60, billingEnabled: true },
+}));
 vi.mock('@libriant/db-control', () => ({
   controlDb: { $queryRawUnsafe: queryRawUnsafe },
 }));
 vi.mock('../config/env.js', () => ({
-  loadEnv: () => ({ tenantCacheTtlSec: 60 }),
+  loadEnv: () => env,
 }));
 
 import type { Redis } from 'ioredis';
@@ -86,6 +89,7 @@ describe('EffectivePlanService.getEffectivePlan', () => {
 
   beforeEach(() => {
     queryRawUnsafe.mockReset();
+    env.billingEnabled = true;
     redis = makeFakeRedis();
     service = new EffectivePlanService({ client: redis.client } as never);
   });
@@ -197,5 +201,34 @@ describe('EffectivePlanService convenience helpers', () => {
     const service = new EffectivePlanService({ client: redis.client } as never);
 
     await expect(service.getInt('tnt-1', 'reservations_enabled')).rejects.toThrow(/not an integer/);
+  });
+});
+
+describe('EffectivePlanService with BILLING_ENABLED=false (everything free)', () => {
+  beforeEach(() => {
+    queryRawUnsafe.mockReset();
+    env.billingEnabled = false;
+  });
+  afterEach(() => {
+    env.billingEnabled = true;
+  });
+
+  it('turns on every gate and lifts every limit for all tenants', async () => {
+    queryRawUnsafe.mockResolvedValue([
+      row({ key: 'max_books', type: 'int', def: 100, plan: 500, planSlug: 'community' }),
+      row({ key: 'reservations_enabled', type: 'bool', def: false, plan: false }),
+      row({ key: 'priority_support', type: 'text', def: 'none' }),
+    ]);
+    const redis = makeFakeRedis();
+    const service = new EffectivePlanService({ client: redis.client } as never);
+
+    const plan = await service.getEffectivePlan('tnt-1');
+    expect(plan.features.max_books).toMatchObject({ value: Number.MAX_SAFE_INTEGER });
+    expect(plan.features.reservations_enabled).toMatchObject({ value: true });
+    // text features are untouched
+    expect(plan.features.priority_support).toMatchObject({ value: 'none' });
+    // convenience accessors agree
+    expect(await service.getBool('tnt-1', 'reservations_enabled')).toBe(true);
+    expect(await service.getInt('tnt-1', 'max_books')).toBe(Number.MAX_SAFE_INTEGER);
   });
 });

@@ -30,6 +30,29 @@ type Row = {
 
 const CACHE_KEY = (tenantId: string) => `plan:effective:${tenantId}`;
 
+/** Effectively-infinite ceiling for every int limit when billing is off. */
+const UNLIMITED_INT = Number.MAX_SAFE_INTEGER;
+const FREE_NOTE = 'Included — subscriptions are currently disabled.';
+
+/**
+ * Copy of `plan` with every gate on and every limit lifted — returned for all
+ * tenants when `BILLING_ENABLED=false`, so the whole product is free. Bool
+ * features become true, int limits become unlimited; text values pass through.
+ */
+function unlimitedPlan(plan: EffectivePlan): EffectivePlan {
+  const features: Record<string, EffectiveValue> = {};
+  for (const [key, v] of Object.entries(plan.features)) {
+    if (v.type === 'bool') {
+      features[key] = { ...v, value: true, source: 'override', note: FREE_NOTE };
+    } else if (v.type === 'int') {
+      features[key] = { ...v, value: UNLIMITED_INT, source: 'override', note: FREE_NOTE };
+    } else {
+      features[key] = v;
+    }
+  }
+  return { ...plan, features };
+}
+
 /**
  * Resolves the effective plan for a tenant by walking the three layers:
  *
@@ -50,18 +73,25 @@ const CACHE_KEY = (tenantId: string) => `plan:effective:${tenantId}`;
 export class EffectivePlanService {
   private readonly logger = new Logger(EffectivePlanService.name);
   private readonly ttlSec: number;
+  private readonly billingEnabled: boolean;
 
   constructor(@Inject(RedisService) private readonly redis: RedisService) {
-    this.ttlSec = loadEnv().tenantCacheTtlSec;
+    const env = loadEnv();
+    this.ttlSec = env.tenantCacheTtlSec;
+    this.billingEnabled = env.billingEnabled;
   }
 
   /** Full effective plan for the tenant. Cached. */
   async getEffectivePlan(tenantId: string): Promise<EffectivePlan> {
-    const cached = await this.readCache(tenantId);
-    if (cached) return cached;
-    const fresh = await this.loadFromDb(tenantId);
-    await this.writeCache(tenantId, fresh);
-    return fresh;
+    let plan = await this.readCache(tenantId);
+    if (!plan) {
+      plan = await this.loadFromDb(tenantId);
+      await this.writeCache(tenantId, plan);
+    }
+    // Subscriptions disabled → every tenant gets everything. Applied at read
+    // time (the cache keeps the real plan) so flipping BILLING_ENABLED takes
+    // effect on the next request, not after the cache TTL.
+    return this.billingEnabled ? plan : unlimitedPlan(plan);
   }
 
   /** Convenience: read one feature as a boolean. False if missing/not-bool. */
