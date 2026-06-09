@@ -193,7 +193,7 @@ http:// {
 	# so the "/" redirect is matched before the catch-all proxy.
 	@bare path /
 	route {
-		redir @bare /en/admin/login 302
+		redir @bare /admin/login 302
 		reverse_proxy web:3000
 	}
 }

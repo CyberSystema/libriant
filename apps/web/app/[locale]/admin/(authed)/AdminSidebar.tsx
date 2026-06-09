@@ -7,17 +7,16 @@ import { ApiError, api } from '@/lib/api';
 import type { AdminProfile } from '@/lib/admin-session';
 
 type Props = {
-  locale: string;
   admin: AdminProfile;
 };
 
 /** Persistent sidebar for the admin shell — distinct from the tenant sidebar. */
-export function AdminSidebar({ locale, admin }: Props) {
+export function AdminSidebar({ admin }: Props) {
   const pathname = usePathname() ?? '';
   const router = useRouter();
   const toast = useToast();
   const [signingOut, setSigningOut] = React.useState(false);
-  const base = `/${locale}/admin`;
+  const base = '/admin';
 
   const links = [
     { href: `${base}/tenants`, label: 'Tenants' },
@@ -39,7 +38,7 @@ export function AdminSidebar({ locale, admin }: Props) {
         toast.show({ severity: 'critical', title: err.message });
       }
     }
-    router.push(`/${locale}/admin/login`);
+    router.push(`/admin/login`);
     router.refresh();
   }
 

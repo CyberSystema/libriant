@@ -4,11 +4,9 @@ import { useRouter } from 'next/navigation';
 import { Banner, Button, FormField, Input } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
 
-type Props = { locale: string };
-
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-export function AdminLoginForm({ locale }: Props) {
+export function AdminLoginForm() {
   const router = useRouter();
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
@@ -30,7 +28,7 @@ export function AdminLoginForm({ locale }: Props) {
     setBusy(true);
     try {
       await api('/admin/auth/login', { method: 'POST', body: { email, password } });
-      router.push(`/${locale}/admin/tenants`);
+      router.push(`/admin/tenants`);
       router.refresh();
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {

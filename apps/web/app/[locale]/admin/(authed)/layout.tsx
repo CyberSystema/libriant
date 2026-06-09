@@ -21,11 +21,11 @@ export default async function AuthedAdminLayout(props: {
 
   if (!isLocale(params.locale)) notFound();
   const admin = await currentAdminSession();
-  if (!admin) redirect(`/${params.locale}/admin/login`);
+  if (!admin) redirect(`/admin/login`);
 
   return (
     <div className="lbr-shell">
-      <AdminSidebar locale={params.locale} admin={admin} />
+      <AdminSidebar admin={admin} />
       <main className="lbr-shell__main">{children}</main>
     </div>
   );

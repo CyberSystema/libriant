@@ -11,7 +11,7 @@ export default async function AdminLoginPage(props: { params: Promise<{ locale: 
   const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const admin = await currentAdminSession();
-  if (admin) redirect(`/${params.locale}/admin/tenants`);
+  if (admin) redirect(`/admin/tenants`);
 
   return (
     <main className="lbr-auth-shell">
@@ -23,7 +23,7 @@ export default async function AdminLoginPage(props: { params: Promise<{ locale: 
         <p className="lbr-auth-card__subtitle">
           For Libriant staff only. Tenant librarians use the regular sign-in.
         </p>
-        <AdminLoginForm locale={params.locale} />
+        <AdminLoginForm />
       </div>
     </main>
   );

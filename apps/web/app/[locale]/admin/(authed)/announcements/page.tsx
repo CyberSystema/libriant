@@ -97,7 +97,7 @@ export default async function AdminAnnouncementsPage(props: {
         }
         actions={
           <Link
-            href={`/${params.locale}/admin/announcements/new`}
+            href={`/admin/announcements/new`}
             className="lbr-btn lbr-btn--primary lbr-btn--md"
           >
             New announcement
@@ -128,7 +128,7 @@ export default async function AdminAnnouncementsPage(props: {
           return (
             <Link
               key={t}
-              href={`/${params.locale}/admin/announcements?status=${t}`}
+              href={`/admin/announcements?status=${t}`}
               className={classes.join(' ')}
               aria-current={active ? 'page' : undefined}
             >
@@ -159,7 +159,7 @@ export default async function AdminAnnouncementsPage(props: {
             {announcements.map((a) => (
               <tr key={a.id}>
                 <td>
-                  <Link href={`/${params.locale}/admin/announcements/${a.id}`}>
+                  <Link href={`/admin/announcements/${a.id}`}>
                     <strong>{a.title}</strong>
                   </Link>
                   <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--color-text-muted)' }}>

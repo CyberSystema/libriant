@@ -60,7 +60,7 @@ export default async function TenantLayout(props: {
   if (impersonation && impersonation.tenant.slug !== params.slug) {
     // The admin's impersonation cookie covers a different tenant. Send
     // them back to their support home to redeem the right key.
-    redirect(`/${params.locale}/admin/support`);
+    redirect(`/admin/support`);
   }
 
   const catalog = await loadCatalog(params.locale);
@@ -87,7 +87,6 @@ export default async function TenantLayout(props: {
         <main className="lbr-shell__main">
           {impersonation ? (
             <ImpersonationBanner
-              locale={params.locale}
               tenantName={impersonation.tenant.name}
               expiresAt={impersonation.expiresAt}
             />

@@ -21,8 +21,24 @@ const nextConfig = {
       beforeFiles: [
         { source: '/_assets/:path*', destination: '/api/assets/:path*' },
         { source: '/lbr-api/:path*', destination: `${apiTarget}/:path*` },
+        // The admin panel is English-only and locale-free in the URL. Serve
+        // `/admin/*` from the `en` route internally — the pages live under
+        // app/[locale]/admin, so locale resolves to 'en' and the URL stays
+        // `/admin/*`.
+        { source: '/admin/:path*', destination: '/en/admin/:path*' },
       ],
     };
+  },
+  // Canonicalise any locale-prefixed admin URL (stale links / bookmarks) to the
+  // locale-free path. Runs before the rewrite above, so there's no loop.
+  async redirects() {
+    return [
+      {
+        source: '/:locale(en|el)/admin/:path*',
+        destination: '/admin/:path*',
+        permanent: false,
+      },
+    ];
   },
 };
 

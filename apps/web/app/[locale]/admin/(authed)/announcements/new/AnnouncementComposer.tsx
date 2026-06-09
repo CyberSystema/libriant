@@ -19,7 +19,6 @@ type TenantRow = { id: string; slug: string; name: string };
 type PlanRow = { slug: string; name: string };
 
 type Props = {
-  locale: string;
   tenants: TenantRow[];
   plans: PlanRow[];
   knownTags: string[];
@@ -27,7 +26,7 @@ type Props = {
 
 const SEVERITIES: Severity[] = ['info', 'warning', 'critical'];
 
-export function AnnouncementComposer({ locale, tenants, plans, knownTags }: Props) {
+export function AnnouncementComposer({ tenants, plans, knownTags }: Props) {
   const router = useRouter();
   const toast = useToast();
   const [title, setTitle] = React.useState('');
@@ -113,7 +112,7 @@ export function AnnouncementComposer({ locale, tenants, plans, knownTags }: Prop
         severity: 'success',
         title: `Announcement "${res.announcement.title}" created.`,
       });
-      router.push(`/${locale}/admin/announcements/${res.announcement.id}`);
+      router.push(`/admin/announcements/${res.announcement.id}`);
       router.refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong.');

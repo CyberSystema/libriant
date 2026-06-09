@@ -140,7 +140,7 @@ export default async function AdminTenantDetailPage(props: {
         title={tenant.name}
         subtitle={`${tenant.slug} · ${tenant.cellId}`}
         trail={
-          <Link href={`/${params.locale}/admin/tenants`} style={{ color: 'inherit' }}>
+          <Link href={`/admin/tenants`} style={{ color: 'inherit' }}>
             ← Tenants
           </Link>
         }

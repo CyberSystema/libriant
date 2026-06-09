@@ -52,12 +52,7 @@ export default async function NewAnnouncementPage(props: { params: Promise<{ loc
           {error}
         </Banner>
       ) : null}
-      <AnnouncementComposer
-        locale={params.locale}
-        tenants={tenants}
-        plans={plans}
-        knownTags={allTags}
-      />
+      <AnnouncementComposer tenants={tenants} plans={plans} knownTags={allTags} />
     </>
   );
 }

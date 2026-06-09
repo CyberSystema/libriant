@@ -9,10 +9,9 @@ type Props = {
   title: string;
   isExpired: boolean;
   isArchived: boolean;
-  locale: string;
 };
 
-export function AnnouncementActions({ id, title, isExpired, isArchived, locale }: Props) {
+export function AnnouncementActions({ id, title, isExpired, isArchived }: Props) {
   const router = useRouter();
   const toast = useToast();
   const [busy, setBusy] = React.useState(false);
@@ -41,7 +40,7 @@ export function AnnouncementActions({ id, title, isExpired, isArchived, locale }
     try {
       await api(`/admin/announcements/${id}`, { method: 'DELETE' });
       toast.show({ severity: 'success', title: 'Announcement archived.' });
-      router.push(`/${locale}/admin/announcements?status=archived`);
+      router.push(`/admin/announcements?status=archived`);
       router.refresh();
     } catch (err) {
       toast.show({

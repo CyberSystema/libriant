@@ -50,7 +50,7 @@ export default async function AdminSupportHome(props: { params: Promise<{ locale
       {!mfaEnabled ? (
         <Banner severity="warning" style={{ marginBottom: 'var(--sp-4)' }}>
           You need an authenticator before you can redeem a key.{' '}
-          <Link href={`/${params.locale}/admin/mfa`}>Set one up →</Link>
+          <Link href={`/admin/mfa`}>Set one up →</Link>
         </Banner>
       ) : null}
 
@@ -95,7 +95,7 @@ export default async function AdminSupportHome(props: { params: Promise<{ locale
           </p>
           {mfaEnabled ? (
             <Link
-              href={`/${params.locale}/admin/support/redeem`}
+              href={`/admin/support/redeem`}
               className="lbr-btn lbr-btn--primary"
             >
               Redeem a key

@@ -137,12 +137,7 @@ export default async function SystemModePage(props: { params: Promise<{ locale: 
             subtitle="Anything currently in effect — global or per-tenant."
           />
           <CardBody>
-            <EventTable
-              rows={active}
-              emptyMessage="No active windows."
-              showEndAction
-              locale={params.locale}
-            />
+            <EventTable rows={active} emptyMessage="No active windows." showEndAction />
           </CardBody>
         </Card>
 
@@ -157,19 +152,14 @@ export default async function SystemModePage(props: { params: Promise<{ locale: 
       <Card style={{ marginBottom: 'var(--sp-4)' }}>
         <CardHeader title="Scheduled" subtitle="Windows that haven't started yet." />
         <CardBody>
-          <EventTable
-            rows={scheduled}
-            emptyMessage="Nothing scheduled."
-            showCancelAction
-            locale={params.locale}
-          />
+          <EventTable rows={scheduled} emptyMessage="Nothing scheduled." showCancelAction />
         </CardBody>
       </Card>
 
       <Card>
         <CardHeader title="History" subtitle="Last 25 ended or expired events." />
         <CardBody>
-          <EventTable rows={history} emptyMessage="No history yet." locale={params.locale} />
+          <EventTable rows={history} emptyMessage="No history yet." />
         </CardBody>
       </Card>
     </>

@@ -79,7 +79,7 @@ export default async function AdminPlanDetailPage(props: {
         title={plan.name}
         subtitle={plan.description ?? plan.slug}
         trail={
-          <Link href={`/${params.locale}/admin/plans`} style={{ color: 'inherit' }}>
+          <Link href={`/admin/plans`} style={{ color: 'inherit' }}>
             ← Plans
           </Link>
         }

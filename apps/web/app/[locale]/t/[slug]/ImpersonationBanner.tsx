@@ -5,7 +5,6 @@ import { Banner, Button, useToast } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
 
 type Props = {
-  locale: string;
   tenantName: string;
   expiresAt: string;
 };
@@ -15,7 +14,7 @@ type Props = {
  * holds an active impersonation cookie. Provides one-click "End session"
  * and a non-fluffy reminder that every action is being audited.
  */
-export function ImpersonationBanner({ locale, tenantName, expiresAt }: Props) {
+export function ImpersonationBanner({ tenantName, expiresAt }: Props) {
   const router = useRouter();
   const toast = useToast();
   const [busy, setBusy] = React.useState(false);
@@ -25,7 +24,7 @@ export function ImpersonationBanner({ locale, tenantName, expiresAt }: Props) {
     try {
       await api('/admin/support/sessions/me/end', { method: 'POST', body: {} });
       toast.show({ severity: 'success', title: 'Support session ended.' });
-      router.push(`/${locale}/admin/support`);
+      router.push(`/admin/support`);
       router.refresh();
     } catch (err) {
       toast.show({

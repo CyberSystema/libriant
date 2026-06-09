@@ -53,10 +53,7 @@ export default async function AnnouncementDetailPage(props: {
         title={ann.title}
         subtitle={`${severityLabel(ann.severity)} — ${announcementStatus(ann)}`}
         actions={
-          <Link
-            href={`/${params.locale}/admin/announcements`}
-            className="lbr-btn lbr-btn--ghost lbr-btn--md"
-          >
+          <Link href={`/admin/announcements`} className="lbr-btn lbr-btn--ghost lbr-btn--md">
             Back to list
           </Link>
         }
@@ -146,7 +143,6 @@ export default async function AnnouncementDetailPage(props: {
                 title={ann.title}
                 isExpired={!!ann.expiresAt && new Date(ann.expiresAt) <= new Date()}
                 isArchived={!!ann.archivedAt}
-                locale={params.locale}
               />
             </CardBody>
           </Card>

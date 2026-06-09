@@ -66,7 +66,7 @@ export default async function AdminPlansPage(props: { params: Promise<{ locale: 
           {plans.map((p) => (
             <tr key={p.id}>
               <td>
-                <Link href={`/${params.locale}/admin/plans/${p.slug}`}>
+                <Link href={`/admin/plans/${p.slug}`}>
                   <strong>{p.name}</strong>
                 </Link>
                 <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>

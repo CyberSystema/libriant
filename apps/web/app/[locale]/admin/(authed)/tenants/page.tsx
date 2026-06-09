@@ -120,7 +120,7 @@ export default async function AdminTenantsPage(props: {
             {tenants.map((t) => (
               <tr key={t.id}>
                 <td>
-                  <Link href={`/${params.locale}/admin/tenants/${t.id}`}>
+                  <Link href={`/admin/tenants/${t.id}`}>
                     <strong>{t.name}</strong>
                   </Link>
                   <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>

@@ -11,12 +11,11 @@ type Props = {
   emptyMessage: string;
   showEndAction?: boolean;
   showCancelAction?: boolean;
-  locale: string;
 };
 
 const fmt = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString() : '—');
 
-export function EventTable({ rows, emptyMessage, showEndAction, showCancelAction, locale }: Props) {
+export function EventTable({ rows, emptyMessage, showEndAction, showCancelAction }: Props) {
   const router = useRouter();
   const toast = useToast();
   const [pending, setPending] = React.useState<string | null>(null);
@@ -76,7 +75,7 @@ export function EventTable({ rows, emptyMessage, showEndAction, showCancelAction
               {r.scope === 'global' ? (
                 <strong>Global</strong>
               ) : r.tenant ? (
-                <Link href={`/${locale}/admin/tenants/${r.tenant.id}`}>{r.tenant.name}</Link>
+                <Link href={`/admin/tenants/${r.tenant.id}`}>{r.tenant.name}</Link>
               ) : (
                 'tenant (deleted)'
               )}
