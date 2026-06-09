@@ -8,6 +8,7 @@ import { OverridesEditor } from './OverridesEditor';
 import { AdminBillingActions } from './AdminBillingActions';
 import { TenantTagsEditor } from './TenantTagsEditor';
 import { TenantSystemModePanel } from './TenantSystemModePanel';
+import { DeleteTenantButton } from './DeleteTenantButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -318,6 +319,16 @@ export default async function AdminTenantDetailPage(props: {
           ) : null}
         </div>
       </div>
+
+      <Card style={{ marginTop: 'var(--sp-6)', borderColor: 'var(--color-danger)' }}>
+        <CardHeader
+          title="Danger zone"
+          subtitle="Permanently delete this library. This drops its database and every record it holds — there is no undo."
+        />
+        <CardBody>
+          <DeleteTenantButton tenantId={tenant.id} slug={tenant.slug} name={tenant.name} />
+        </CardBody>
+      </Card>
     </>
   );
 }

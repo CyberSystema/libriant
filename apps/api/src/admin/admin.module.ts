@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PlansModule } from '../plans/plans.module.js';
 import { PlatformSettingsModule } from '../platform-settings/platform-settings.module.js';
 import { AdminSubscriptionsController } from '../platform-settings/admin-subscriptions.controller.js';
+import { TenantProvisioningService } from '../provisioning/tenant-provisioning.service.js';
 import { PasswordService } from '../auth/password.service.js';
 import { AdminAuthController } from './admin-auth.controller.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
@@ -32,6 +33,7 @@ import { FleetService } from './fleet.service.js';
     AdminAuthService,
     AdminAuthGuard,
     FleetService,
+    TenantProvisioningService,
   ],
   controllers: [
     AdminAuthController,

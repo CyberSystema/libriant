@@ -17,6 +17,15 @@ export default async function SettingsPage(props: {
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);
 
+  // A library can't self-delete — deletion is owner break-glass. The librarian
+  // requests it by email; we pre-fill subject + body with the slug so the
+  // Libriant team can find and confirm the right library.
+  const deletionEmail = 'hello@libriant.com';
+  const deletionMailto =
+    `mailto:${deletionEmail}` +
+    `?subject=${encodeURIComponent(t('settings.sections.delete.emailSubject', { slug: params.slug }))}` +
+    `&body=${encodeURIComponent(t('settings.sections.delete.emailBody', { slug: params.slug }))}`;
+
   return (
     <>
       <PageHeader
@@ -107,6 +116,19 @@ export default async function SettingsPage(props: {
           </CardBody>
         </Card>
       </div>
+
+      <Card style={{ marginTop: 'var(--sp-6)', borderColor: 'var(--color-danger)' }}>
+        <CardHeader
+          title={t('settings.sections.delete.title')}
+          subtitle={t('settings.sections.delete.description')}
+        />
+        <CardBody>
+          <p style={{ marginTop: 0 }}>{t('settings.sections.delete.body')}</p>
+          <a href={deletionMailto} className="lbr-btn lbr-btn--danger lbr-btn--md">
+            {t('settings.sections.delete.cta')}
+          </a>
+        </CardBody>
+      </Card>
     </>
   );
 }
