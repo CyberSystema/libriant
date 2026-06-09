@@ -60,7 +60,7 @@ export default async function TenantHome(props: {
     <>
       <PageHeader title={t('common.app.name')} subtitle={t('onboarding.welcome.subtitle')} />
 
-      {billing && billing.status === 'past_due' ? (
+      {billing && billing.billingEnabled && billing.status === 'past_due' ? (
         <Banner
           severity="warning"
           title="Payment retry needed"
@@ -111,34 +111,42 @@ export default async function TenantHome(props: {
         </section>
       ) : null}
 
-      <Card>
-        <CardHeader title="Current plan" subtitle="Your library's active subscription." />
-        <CardBody>
-          {billing ? (
-            <>
-              <p style={{ margin: '0 0 var(--sp-2) 0' }}>
-                <strong>{billing.plan.name}</strong> ·{' '}
-                <span style={{ color: 'var(--color-text-muted)' }}>
-                  {billing.billingMode === 'manual' ? 'invoice billing' : 'self-serve (Stripe)'}
-                </span>
-              </p>
+      {/* The plan card is billing-only. When subscriptions are disabled the
+          whole product is free, so there's no plan to manage — hide it
+          entirely (the Billing page shows the "everything's included" notice
+          for anyone who still navigates there). */}
+      {billing?.billingEnabled === false ? null : (
+        <Card>
+          <CardHeader title="Current plan" subtitle="Your library's active subscription." />
+          <CardBody>
+            {billing ? (
+              <>
+                <p style={{ margin: '0 0 var(--sp-2) 0' }}>
+                  <strong>{billing.plan.name}</strong> ·{' '}
+                  <span style={{ color: 'var(--color-text-muted)' }}>
+                    {billing.billingMode === 'manual' ? 'invoice billing' : 'self-serve (Stripe)'}
+                  </span>
+                </p>
+                <p style={{ color: 'var(--color-text-muted)', margin: 0 }}>
+                  Status: <strong>{billing.status}</strong>
+                  {billing.currentPeriodEnd
+                    ? ` · renews ${fmtDate(billing.currentPeriodEnd)}`
+                    : null}
+                  {billing.cancelAtPeriodEnd ? ' · scheduled to cancel at period end' : null}
+                </p>
+                <p style={{ marginTop: 'var(--sp-3)' }}>
+                  <Link href={`/${params.locale}/t/${params.slug}/billing`}>Manage billing →</Link>
+                </p>
+              </>
+            ) : (
               <p style={{ color: 'var(--color-text-muted)', margin: 0 }}>
-                Status: <strong>{billing.status}</strong>
-                {billing.currentPeriodEnd ? ` · renews ${fmtDate(billing.currentPeriodEnd)}` : null}
-                {billing.cancelAtPeriodEnd ? ' · scheduled to cancel at period end' : null}
+                We couldn't reach the billing service. Try refreshing — if it keeps happening, get
+                in touch.
               </p>
-              <p style={{ marginTop: 'var(--sp-3)' }}>
-                <Link href={`/${params.locale}/t/${params.slug}/billing`}>Manage billing →</Link>
-              </p>
-            </>
-          ) : (
-            <p style={{ color: 'var(--color-text-muted)', margin: 0 }}>
-              We couldn't reach the billing service. Try refreshing — if it keeps happening, get in
-              touch.
-            </p>
-          )}
-        </CardBody>
-      </Card>
+            )}
+          </CardBody>
+        </Card>
+      )}
     </>
   );
 }
