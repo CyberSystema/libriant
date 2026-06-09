@@ -499,6 +499,58 @@ model PlatformSetting {
   @@map("platform_settings")
 }
 
+// ---------------------------------------------------------------------------
+// Operator maintenance — admin-launched, worker-run jobs over the control DB
+// and/or tenant DBs (diagnostics, migrations, integrity fixers, VACUUM).
+// One row per launched run; the worker streams progress + a structured result.
+// ---------------------------------------------------------------------------
+
+enum MaintenanceKind {
+  diagnostics // read-only health + issue scan
+  migrate // apply pending Prisma migrations
+  fix // data-integrity repairs (reseed settings, rebuild caches)
+  vacuum // VACUUM (ANALYZE) for bloat/perf
+}
+
+enum MaintenanceScope {
+  tenant // a single tenant DB (targetTenantId set)
+  control // the control-plane DB
+  all // every tenant DB (and control, where the kind applies)
+}
+
+enum MaintenanceStatus {
+  queued
+  running
+  completed
+  failed
+}
+
+model MaintenanceRun {
+  id             String            @id @default(cuid())
+  kind           MaintenanceKind
+  scope          MaintenanceScope
+  /// Set when scope = tenant.
+  targetTenantId String?
+  status         MaintenanceStatus @default(queued)
+  /// Progress counters the UI polls (e.g. tenant DBs processed / total).
+  progressDone   Int               @default(0)
+  progressTotal  Int               @default(0)
+  /// Structured outcome: per-target results and, for diagnostics, the list of
+  /// issues found (with severity). Shape is owned by the worker processors.
+  resultJson     Json?
+  error          String?
+  /// AdminUser.id that launched it (plain column — no FK, audit log covers who).
+  createdByAdminId String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@index([kind, createdAt])
+  @@index([status])
+  @@map("maintenance_runs")
+}
+
 /// Idempotency log for Stripe webhooks. Insert-once-per-event; the unique
 /// constraint on the event id means re-deliveries are no-ops.
 model StripeWebhookEvent {

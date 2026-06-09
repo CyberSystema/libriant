@@ -13,6 +13,7 @@ import { EmailModule } from './email/email.module.js';
 import { HelpModule } from './help/help.module.js';
 import { ImportModule } from './import/import.module.js';
 import { LoansModule } from './loans/loans.module.js';
+import { MaintenanceModule } from './maintenance/maintenance.module.js';
 import { MembersModule } from './members/members.module.js';
 import { ReservationsModule } from './reservations/reservations.module.js';
 import { PlansModule } from './plans/plans.module.js';
@@ -57,6 +58,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     SupportModule,
     AnnouncementsModule,
     SystemModeModule,
+    MaintenanceModule,
   ],
   providers: [
     {

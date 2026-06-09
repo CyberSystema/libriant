@@ -26,6 +26,9 @@ export {
   ImportSourceFormat,
   ImportStatus,
   ImportDuplicateMode,
+  MaintenanceKind,
+  MaintenanceScope,
+  MaintenanceStatus,
 } from '@prisma/client';
 
 export type {
@@ -52,4 +55,6 @@ export type {
   EmailOutbox,
   ImportBatch,
   ImportRowIssue,
+  PlatformSetting,
+  MaintenanceRun,
 } from '@prisma/client';

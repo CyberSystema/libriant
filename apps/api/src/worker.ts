@@ -28,6 +28,10 @@ import {
   startImportWorker,
   type ImportWorkerHandle,
 } from './import/import-worker.js';
+import {
+  startMaintenanceWorker,
+  type MaintenanceWorkerHandle,
+} from './maintenance/maintenance-worker.js';
 import { RedisService } from './platform/redis.service.js';
 import { SCHEDULED_JOBS } from './jobs/registry.js';
 import { startScheduledJobs, type ScheduledJobsHandle } from './jobs/scheduled-jobs.runner.js';
@@ -40,6 +44,7 @@ let shuttingDown = false;
 let emailWorker: EmailWorkerHandle | null = null;
 let scheduledJobs: ScheduledJobsHandle | null = null;
 let importWorker: ImportWorkerHandle | null = null;
+let maintenanceWorker: MaintenanceWorkerHandle | null = null;
 
 const server = createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
@@ -54,6 +59,7 @@ const server = createServer((req, res) => {
           'email-outbox': emailWorker ? 'running' : 'starting',
           scheduled: scheduledJobs ? 'running' : 'starting',
           import: importWorker ? 'running' : 'starting',
+          maintenance: maintenanceWorker ? 'running' : 'starting',
         },
         scheduledLastResults: scheduledJobs?.lastResults() ?? {},
       }),
@@ -78,6 +84,7 @@ const server = createServer((req, res) => {
     const emailInFlight = emailWorker?.inFlight() ?? 0;
     const scheduledInFlight = scheduledJobs?.inFlight() ?? 0;
     const importInFlight = importWorker?.inFlight() ?? 0;
+    const maintenanceInFlight = maintenanceWorker?.inFlight() ?? 0;
     res.setHeader('Content-Type', 'text/plain; version=0.0.4');
     res.end(
       [
@@ -89,6 +96,7 @@ const server = createServer((req, res) => {
         `libriant_worker_jobs_running{queue="email-outbox"} ${emailInFlight}`,
         `libriant_worker_jobs_running{queue="scheduled"} ${scheduledInFlight}`,
         `libriant_worker_jobs_running{queue="import"} ${importInFlight}`,
+        `libriant_worker_jobs_running{queue="maintenance"} ${maintenanceInFlight}`,
         '',
       ].join('\n'),
     );
@@ -140,6 +148,16 @@ startImportWorker(makeImportWorkerDeps(sharedRedis))
     console.error(`[worker] failed to start import worker: ${(err as Error).message}`);
   });
 
+// Operator maintenance consumer (diagnostics / migrate / fix / vacuum). Shares
+// the process Redis for cache busting; BullMQ gets its own socket inside.
+startMaintenanceWorker({ redis: sharedRedis })
+  .then((handle) => {
+    maintenanceWorker = handle;
+  })
+  .catch((err) => {
+    console.error(`[worker] failed to start maintenance worker: ${(err as Error).message}`);
+  });
+
 async function shutdown(signal: NodeJS.Signals) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -157,6 +175,9 @@ async function shutdown(signal: NodeJS.Signals) {
     }),
     importWorker?.stop().catch((err) => {
       console.warn(`[worker] import-worker stop: ${(err as Error).message}`);
+    }),
+    maintenanceWorker?.stop().catch((err) => {
+      console.warn(`[worker] maintenance-worker stop: ${(err as Error).message}`);
     }),
   ]);
   // Close the standalone Redis connection the scheduled-jobs EmailService
