@@ -93,7 +93,10 @@ export function OpenGlobalModeForm(_props: { locale: string }) {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+          // Side-by-side when there's room for a full date+time field (~15rem),
+          // otherwise stack so neither the day nor the time picker is clipped.
+          // `min(100%, …)` keeps it from overflowing on very narrow screens.
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 15rem), 1fr))',
           gap: 'var(--sp-2)',
         }}
       >
