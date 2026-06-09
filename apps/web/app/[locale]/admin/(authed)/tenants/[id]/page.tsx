@@ -103,22 +103,28 @@ export default async function AdminTenantDetailPage(props: {
     endedAt: string | null;
     allowAdminBypass: boolean;
   };
-  // Fetch features + overrides + plans + tags + active system mode windows.
-  const [{ features }, { overrides }, { plans }, tagsPayload, currentMode] = await Promise.all([
-    api<{ features: Feature[] }>('/admin/feature-keys', { cookie }).catch(() => ({
-      features: [] as Feature[],
-    })),
-    api<{ overrides: Override[] }>(`/admin/tenants/${params.id}/overrides`, { cookie }).catch(
-      () => ({ overrides: [] as Override[] }),
-    ),
-    api<{ plans: Plan[] }>('/admin/plans', { cookie }).catch(() => ({ plans: [] as Plan[] })),
-    api<{ tags: string[]; knownTags: string[] }>(`/admin/tenants/${params.id}/tags`, {
-      cookie,
-    }).catch(() => ({ tags: [], knownTags: [] })),
-    api<{ active: ActiveModeRow[] }>('/admin/system-mode/current', { cookie }).catch(() => ({
-      active: [] as ActiveModeRow[],
-    })),
-  ]);
+  // Fetch features + overrides + plans + tags + active system mode windows +
+  // the global subscriptions switch (so we can say whether limits are enforced).
+  const [{ features }, { overrides }, { plans }, tagsPayload, currentMode, subsStatus] =
+    await Promise.all([
+      api<{ features: Feature[] }>('/admin/feature-keys', { cookie }).catch(() => ({
+        features: [] as Feature[],
+      })),
+      api<{ overrides: Override[] }>(`/admin/tenants/${params.id}/overrides`, { cookie }).catch(
+        () => ({ overrides: [] as Override[] }),
+      ),
+      api<{ plans: Plan[] }>('/admin/plans', { cookie }).catch(() => ({ plans: [] as Plan[] })),
+      api<{ tags: string[]; knownTags: string[] }>(`/admin/tenants/${params.id}/tags`, {
+        cookie,
+      }).catch(() => ({ tags: [], knownTags: [] })),
+      api<{ active: ActiveModeRow[] }>('/admin/system-mode/current', { cookie }).catch(() => ({
+        active: [] as ActiveModeRow[],
+      })),
+      api<{ billingEnabled: boolean }>('/admin/subscriptions', { cookie }).catch(() => ({
+        billingEnabled: null as boolean | null,
+      })),
+    ]);
+  const billingEnabled = subsStatus.billingEnabled;
   const tenantSystemEvent =
     currentMode.active.find((e) => e.scope === 'tenant' && e.tenant?.id === params.id) ?? null;
 
@@ -147,6 +153,18 @@ export default async function AdminTenantDetailPage(props: {
         }
       />
 
+      {billingEnabled === false ? (
+        <Banner
+          severity="info"
+          title="Subscriptions are OFF — these limits are not enforced"
+          style={{ marginBottom: 'var(--sp-4)' }}
+        >
+          The plan and the feature ceilings below describe what this library <em>would</em> get if
+          subscriptions were on. Right now nothing is enforced — every library has unlimited access.
+          Turn enforcement on globally in <Link href="/admin/subscriptions">Subscriptions</Link>.
+        </Banner>
+      ) : null}
+
       <div
         style={{
           display: 'grid',
@@ -170,6 +188,18 @@ export default async function AdminTenantDetailPage(props: {
                   </dd>
                   <dt>Status</dt>
                   <dd>{tenant.subscription.status}</dd>
+                  <dt>Limits enforced?</dt>
+                  <dd>
+                    {billingEnabled === false ? (
+                      <span style={{ color: 'var(--color-text-muted)' }}>
+                        No — subscriptions are off (unlimited access)
+                      </span>
+                    ) : billingEnabled === true ? (
+                      <span>Yes</span>
+                    ) : (
+                      '—'
+                    )}
+                  </dd>
                   {tenant.subscription.currentPeriodEnd ? (
                     <>
                       <dt>Period ends</dt>
