@@ -35,6 +35,12 @@ a { color: var(--color-info); }
   border-radius: var(--radius-md);
   font-family: inherit;
   font-weight: 500;
+  /* Default to the `md` size + no underline so a button works even without a
+     size modifier — e.g. `<a>`/`<Link className="lbr-btn lbr-btn--primary">`,
+     which can't use the <Button> component. --sm/--lg override these. */
+  font-size: var(--fs-base);
+  padding: var(--sp-2) var(--sp-4);
+  text-decoration: none;
   cursor: pointer;
   transition: background-color 120ms, border-color 120ms, color 120ms;
 }
