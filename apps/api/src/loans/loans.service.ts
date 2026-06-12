@@ -365,8 +365,7 @@ export class LoansService {
       settings.fineCapCents > 0 ? Math.min(rawFine, settings.fineCapCents) : rawFine;
     // The overdue-fines switch is the master gate: off ⇒ never bill, whatever
     // the rate says.
-    const shouldCreateFine =
-      settings.overdueFinesEnabled && daysOverdue > 0 && fineAmountCents > 0;
+    const shouldCreateFine = settings.overdueFinesEnabled && daysOverdue > 0 && fineAmountCents > 0;
 
     type ReturnTxResult = {
       fineId: string | null;
