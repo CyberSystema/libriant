@@ -11,10 +11,9 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { LoanStatus } from '@libriant/db-tenant';
-import { Sess } from '../auth/session-context.js';
-import type { SessionPayload } from '../auth/jwt-session.service.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
+import { TenantActor } from '../tenancy/tenant-actor.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { parseLimit } from '../platform/query.js';
 import {
@@ -80,11 +79,11 @@ export class LoansController {
   @Post()
   async checkout(
     @TenantCtx() tenant: TenantContext,
-    @Sess() session: SessionPayload,
+    @TenantActor() actor: TenantActor,
     @Body() raw: unknown,
   ) {
     const dto = await validateDto(CheckoutDto, raw);
-    return this.svc.checkout(tenant, dto, session.sub);
+    return this.svc.checkout(tenant, dto, actor);
   }
 
   @Get(':id')
@@ -101,33 +100,33 @@ export class LoansController {
   @Post(':id/return')
   async returnLoan(
     @TenantCtx() tenant: TenantContext,
-    @Sess() session: SessionPayload,
+    @TenantActor() actor: TenantActor,
     @Param('id') id: string,
     @Body() raw: unknown,
   ) {
     const dto = await validateDto(ReturnLoanDto, raw ?? {});
-    return this.svc.returnLoan(tenant, id, dto, session.sub);
+    return this.svc.returnLoan(tenant, id, dto, actor);
   }
 
   @Post(':id/renew')
   async renew(
     @TenantCtx() tenant: TenantContext,
-    @Sess() session: SessionPayload,
+    @TenantActor() actor: TenantActor,
     @Param('id') id: string,
     @Body() raw: unknown,
   ) {
     const dto = await validateDto(RenewLoanDto, raw ?? {});
-    return this.svc.renew(tenant, id, dto, session.sub);
+    return this.svc.renew(tenant, id, dto, actor);
   }
 
   @Post(':id/mark-lost')
   async markLost(
     @TenantCtx() tenant: TenantContext,
-    @Sess() session: SessionPayload,
+    @TenantActor() actor: TenantActor,
     @Param('id') id: string,
     @Body() raw: unknown,
   ) {
     const dto = await validateDto(MarkLostDto, raw ?? {});
-    return this.svc.markLost(tenant, id, dto, session.sub);
+    return this.svc.markLost(tenant, id, dto, actor);
   }
 }

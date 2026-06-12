@@ -1,28 +1,25 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import type { AuditActorType, Prisma } from '@libriant/db-tenant';
+import type { Prisma } from '@libriant/db-tenant';
 import { TenantPrismaService } from './tenant-prisma.service.js';
 import type { TenantContext } from './tenant-context.js';
+import type { TenantActor } from './tenant-actor.js';
 
 /**
  * One tenant-side audit entry. `before`/`after` are small, JSON-safe snapshots
  * of the changed fields (Dates already stringified) — a focused diff, not a
  * dump of the whole row. Omit `before` for creates and `after` for hard
  * deletes; the column stays NULL.
+ *
+ * Actor attribution (who/admin-vs-user/support-session) is derived from the
+ * {@link TenantActor} passed to `record()`, not duplicated here.
  */
 export type AuditEntry = {
   /** Dot-namespaced verb, e.g. `member.archived`, `loan.checked_out`. */
   action: string;
-  /** Control-plane User.id of whoever acted; null for system jobs. */
-  actorId?: string | null;
-  /** Defaults to `user`. `admin` is reserved for support-session actions. */
-  actorType?: AuditActorType;
   targetType?: string;
   targetId?: string;
   before?: Record<string, unknown>;
   after?: Record<string, unknown>;
-  ip?: string | null;
-  userAgent?: string | null;
-  supportSessionId?: string | null;
 };
 
 /**
@@ -45,13 +42,13 @@ export class TenantAuditService {
 
   constructor(@Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService) {}
 
-  async record(tenant: TenantContext, entry: AuditEntry): Promise<void> {
+  async record(tenant: TenantContext, actor: TenantActor, entry: AuditEntry): Promise<void> {
     try {
       const client = this.tenantPrisma.getClient(tenant);
       await client.auditEvent.create({
         data: {
-          actorType: entry.actorType ?? 'user',
-          actorId: entry.actorId ?? null,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
           action: entry.action,
           targetType: entry.targetType ?? null,
           targetId: entry.targetId ?? null,
@@ -59,9 +56,7 @@ export class TenantAuditService {
           // which Prisma rejects for Json fields.
           beforeJson: entry.before as Prisma.InputJsonValue | undefined,
           afterJson: entry.after as Prisma.InputJsonValue | undefined,
-          ip: entry.ip ?? null,
-          userAgent: entry.userAgent ?? null,
-          supportSessionId: entry.supportSessionId ?? null,
+          supportSessionId: actor.supportSessionId,
         },
       });
     } catch (err) {

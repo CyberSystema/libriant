@@ -19,6 +19,7 @@ import { LoansService } from '../loans/loans.service.js';
 import { RequiresFeature } from '../plans/decorators.js';
 import { PlanGuard } from '../plans/plan.guard.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
+import { TenantActor } from '../tenancy/tenant-actor.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { parseLimit } from '../platform/query.js';
 import {
@@ -125,7 +126,7 @@ export class ReservationsController {
   @RequiresFeature('reservations_enabled')
   async fulfill(
     @TenantCtx() tenant: TenantContext,
-    @Sess() session: SessionPayload,
+    @TenantActor() actor: TenantActor,
     @Param('id') id: string,
     @Body() raw: unknown,
   ) {
@@ -148,7 +149,7 @@ export class ReservationsController {
         customFields: dto.customFields,
         reservationId: id,
       },
-      session.sub,
+      actor,
     );
   }
 }

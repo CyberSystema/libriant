@@ -14,9 +14,8 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import type { MemberStatus } from '@libriant/db-tenant';
-import { Sess } from '../auth/session-context.js';
-import type { SessionPayload } from '../auth/jwt-session.service.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
+import { TenantActor } from '../tenancy/tenant-actor.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { RequiresQuota } from '../plans/decorators.js';
 import { QuotaInterceptor } from '../plans/quota.interceptor.js';
@@ -77,11 +76,11 @@ export class MembersController {
   @RequiresQuota('max_members')
   async create(
     @TenantCtx() tenant: TenantContext,
-    @Sess() session: SessionPayload,
+    @TenantActor() actor: TenantActor,
     @Body() raw: unknown,
   ) {
     const dto = await validateDto(CreateMemberDto, raw);
-    return this.svc.create(tenant, dto, session.sub);
+    return this.svc.create(tenant, dto, actor);
   }
 
   @Get(':id')
@@ -92,31 +91,31 @@ export class MembersController {
   @Patch(':id')
   async update(
     @TenantCtx() tenant: TenantContext,
-    @Sess() session: SessionPayload,
+    @TenantActor() actor: TenantActor,
     @Param('id') id: string,
     @Body() raw: unknown,
   ) {
     const dto = await validateDto(UpdateMemberDto, raw);
-    return this.svc.update(tenant, id, dto, session.sub);
+    return this.svc.update(tenant, id, dto, actor);
   }
 
   @Put(':id/status')
   async setStatus(
     @TenantCtx() tenant: TenantContext,
-    @Sess() session: SessionPayload,
+    @TenantActor() actor: TenantActor,
     @Param('id') id: string,
     @Body() raw: unknown,
   ) {
     const dto = await validateDto(SetMemberStatusDto, raw);
-    return this.svc.setStatus(tenant, id, dto, session.sub);
+    return this.svc.setStatus(tenant, id, dto, actor);
   }
 
   @Delete(':id')
   async archive(
     @TenantCtx() tenant: TenantContext,
-    @Sess() session: SessionPayload,
+    @TenantActor() actor: TenantActor,
     @Param('id') id: string,
   ) {
-    return this.svc.archive(tenant, id, session.sub);
+    return this.svc.archive(tenant, id, actor);
   }
 }

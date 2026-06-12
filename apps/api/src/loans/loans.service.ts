@@ -14,6 +14,7 @@ import type {
   TenantPrismaClient,
 } from '@libriant/db-tenant';
 import type { TenantContext } from '../tenancy/tenant-context.js';
+import type { TenantActor } from '../tenancy/tenant-actor.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import { FieldDefinitionsService } from '../customization/field-definitions.service.js';
@@ -131,7 +132,7 @@ export class LoansService {
        */
       reservationId?: string;
     },
-    actingUserId: string,
+    actor: TenantActor,
   ): Promise<CheckoutResult> {
     const client = this.tenantPrisma.getClient(tenant);
 
@@ -275,7 +276,7 @@ export class LoansService {
             loanedAt,
             dueAt,
             notes: input.notes ?? null,
-            checkedOutByUserId: actingUserId,
+            checkedOutByUserId: actor.userId,
             customFields: cleanedCustom as Prisma.InputJsonValue,
           },
           select: { id: true },
@@ -300,9 +301,8 @@ export class LoansService {
       throw this.translate(err);
     }
 
-    await this.audit.record(tenant, {
+    await this.audit.record(tenant, actor, {
       action: 'loan.checked_out',
-      actorId: actingUserId,
       targetType: 'loan',
       targetId: createdId,
       after: {
@@ -324,7 +324,7 @@ export class LoansService {
     tenant: TenantContext,
     loanId: string,
     input: { returnedAt?: string; condition?: ReturnCondition; notes?: string },
-    actingUserId: string,
+    actor: TenantActor,
   ): Promise<ReturnResult> {
     const client = this.tenantPrisma.getClient(tenant);
     const loan = await client.loan.findUnique({
@@ -430,7 +430,7 @@ export class LoansService {
           data: {
             returnedAt,
             status: 'returned',
-            returnedByUserId: actingUserId,
+            returnedByUserId: actor.userId,
             notes: this.appendNote(loan.notes, input.notes),
           },
         });
@@ -489,9 +489,8 @@ export class LoansService {
       throw this.translate(err);
     }
 
-    await this.audit.record(tenant, {
+    await this.audit.record(tenant, actor, {
       action: 'loan.returned',
-      actorId: actingUserId,
       targetType: 'loan',
       targetId: loanId,
       before: { status: loan.status, dueAt: loan.dueAt.toISOString() },
@@ -528,7 +527,7 @@ export class LoansService {
     tenant: TenantContext,
     loanId: string,
     input: { periods?: number },
-    actingUserId: string,
+    actor: TenantActor,
   ): Promise<LoanWithJoinsDto> {
     const client = this.tenantPrisma.getClient(tenant);
     const loan = await client.loan.findUnique({
@@ -586,9 +585,8 @@ export class LoansService {
       data: { dueAt: newDueAt, renewedCount: { increment: periods } },
     });
 
-    await this.audit.record(tenant, {
+    await this.audit.record(tenant, actor, {
       action: 'loan.renewed',
-      actorId: actingUserId,
       targetType: 'loan',
       targetId: loanId,
       before: { dueAt: loan.dueAt.toISOString(), renewedCount: loan.renewedCount },
@@ -606,7 +604,7 @@ export class LoansService {
     tenant: TenantContext,
     loanId: string,
     input: { replacementCostCents?: number; notes?: string },
-    actingUserId: string,
+    actor: TenantActor,
   ): Promise<MarkLostResult> {
     const client = this.tenantPrisma.getClient(tenant);
     const loan = await client.loan.findUnique({
@@ -640,7 +638,7 @@ export class LoansService {
           data: {
             status: 'lost',
             notes: this.appendNote(loan.notes, input.notes),
-            returnedByUserId: actingUserId,
+            returnedByUserId: actor.userId,
           },
         });
         if (updated.count === 0) {
@@ -673,9 +671,8 @@ export class LoansService {
       throw this.translate(err);
     }
 
-    await this.audit.record(tenant, {
+    await this.audit.record(tenant, actor, {
       action: 'loan.marked_lost',
-      actorId: actingUserId,
       targetType: 'loan',
       targetId: loanId,
       before: { status: loan.status },
