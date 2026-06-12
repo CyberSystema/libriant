@@ -29,6 +29,10 @@ export {
   MaintenanceKind,
   MaintenanceScope,
   MaintenanceStatus,
+  ExportFormat,
+  ExportScope,
+  ExportStatus,
+  ExportRequesterKind,
 } from '@prisma/client';
 
 export type {
@@ -57,4 +61,5 @@ export type {
   ImportRowIssue,
   PlatformSetting,
   MaintenanceRun,
+  ExportJob,
 } from '@prisma/client';

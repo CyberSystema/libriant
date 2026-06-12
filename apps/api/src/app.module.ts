@@ -15,6 +15,7 @@ import { ImportModule } from './import/import.module.js';
 import { LoansModule } from './loans/loans.module.js';
 import { MaintenanceModule } from './maintenance/maintenance.module.js';
 import { StaffModule } from './staff/staff.module.js';
+import { ExportModule } from './export/export.module.js';
 import { MembersModule } from './members/members.module.js';
 import { ReservationsModule } from './reservations/reservations.module.js';
 import { PlansModule } from './plans/plans.module.js';
@@ -61,6 +62,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     SystemModeModule,
     MaintenanceModule,
     StaffModule,
+    ExportModule,
   ],
   providers: [
     {

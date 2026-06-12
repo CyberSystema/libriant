@@ -91,6 +91,21 @@ export default async function SettingsPage(props: {
 
         <Card>
           <CardHeader
+            title={t('settings.sections.export.title')}
+            subtitle={t('settings.sections.export.description')}
+          />
+          <CardBody>
+            <Link
+              href={`/${params.locale}/t/${params.slug}/settings/export`}
+              className="lbr-btn lbr-btn--primary lbr-btn--md"
+            >
+              {t('settings.sections.export.cta')}
+            </Link>
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader
             title="Get help from Libriant"
             subtitle="Give our team time-limited access to your library so we can help you fix something."
           />

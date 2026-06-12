@@ -26,6 +26,7 @@ export function AdminSidebar({ admin }: Props) {
     { href: `${base}/announcements`, label: 'Announcements' },
     { href: `${base}/system-mode`, label: 'System mode' },
     { href: `${base}/maintenance`, label: 'Maintenance' },
+    { href: `${base}/export`, label: 'Export' },
     { href: `${base}/support`, label: 'Support access' },
     { href: `${base}/mfa`, label: 'Authenticator' },
   ];

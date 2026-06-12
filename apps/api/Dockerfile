@@ -18,7 +18,8 @@
 # everything below that re-fetches in seconds.
 
 FROM node:24-alpine AS base
-RUN apk add --no-cache openssl tini
+# postgresql-client provides pg_dump for the SQL-format database export.
+RUN apk add --no-cache openssl tini postgresql-client
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 WORKDIR /app
 

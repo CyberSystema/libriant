@@ -32,6 +32,7 @@ import {
   startMaintenanceWorker,
   type MaintenanceWorkerHandle,
 } from './maintenance/maintenance-worker.js';
+import { startExportWorker, type ExportWorkerHandle } from './export/export-worker.js';
 import { RedisService } from './platform/redis.service.js';
 import { SCHEDULED_JOBS } from './jobs/registry.js';
 import { startScheduledJobs, type ScheduledJobsHandle } from './jobs/scheduled-jobs.runner.js';
@@ -45,6 +46,7 @@ let emailWorker: EmailWorkerHandle | null = null;
 let scheduledJobs: ScheduledJobsHandle | null = null;
 let importWorker: ImportWorkerHandle | null = null;
 let maintenanceWorker: MaintenanceWorkerHandle | null = null;
+let exportWorker: ExportWorkerHandle | null = null;
 
 const server = createServer((req, res) => {
   res.setHeader('Content-Type', 'application/json');
@@ -60,6 +62,7 @@ const server = createServer((req, res) => {
           scheduled: scheduledJobs ? 'running' : 'starting',
           import: importWorker ? 'running' : 'starting',
           maintenance: maintenanceWorker ? 'running' : 'starting',
+          export: exportWorker ? 'running' : 'starting',
         },
         scheduledLastResults: scheduledJobs?.lastResults() ?? {},
       }),
@@ -85,6 +88,7 @@ const server = createServer((req, res) => {
     const scheduledInFlight = scheduledJobs?.inFlight() ?? 0;
     const importInFlight = importWorker?.inFlight() ?? 0;
     const maintenanceInFlight = maintenanceWorker?.inFlight() ?? 0;
+    const exportInFlight = exportWorker?.inFlight() ?? 0;
     res.setHeader('Content-Type', 'text/plain; version=0.0.4');
     res.end(
       [
@@ -97,6 +101,7 @@ const server = createServer((req, res) => {
         `libriant_worker_jobs_running{queue="scheduled"} ${scheduledInFlight}`,
         `libriant_worker_jobs_running{queue="import"} ${importInFlight}`,
         `libriant_worker_jobs_running{queue="maintenance"} ${maintenanceInFlight}`,
+        `libriant_worker_jobs_running{queue="export"} ${exportInFlight}`,
         '',
       ].join('\n'),
     );
@@ -158,6 +163,15 @@ startMaintenanceWorker({ redis: sharedRedis })
     console.error(`[worker] failed to start maintenance worker: ${(err as Error).message}`);
   });
 
+// Database-export consumer (csv/json/xlsx/sql → file on the shared storage volume).
+startExportWorker()
+  .then((handle) => {
+    exportWorker = handle;
+  })
+  .catch((err) => {
+    console.error(`[worker] failed to start export worker: ${(err as Error).message}`);
+  });
+
 async function shutdown(signal: NodeJS.Signals) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -178,6 +192,9 @@ async function shutdown(signal: NodeJS.Signals) {
     }),
     maintenanceWorker?.stop().catch((err) => {
       console.warn(`[worker] maintenance-worker stop: ${(err as Error).message}`);
+    }),
+    exportWorker?.stop().catch((err) => {
+      console.warn(`[worker] export-worker stop: ${(err as Error).message}`);
     }),
   ]);
   // Close the standalone Redis connection the scheduled-jobs EmailService

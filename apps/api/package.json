@@ -20,6 +20,7 @@
     "@nestjs/common": "^11.1.24",
     "@nestjs/core": "^11.1.24",
     "@nestjs/platform-express": "^11.1.24",
+    "archiver": "^7.0.1",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.34.0",
     "class-transformer": "^0.5.1",
@@ -43,6 +44,7 @@
     "stripe": "^22.2.0"
   },
   "devDependencies": {
+    "@types/archiver": "^6.0.3",
     "@types/cookie-parser": "^1.4.7",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.7",

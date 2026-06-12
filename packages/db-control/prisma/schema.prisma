@@ -561,6 +561,66 @@ model MaintenanceRun {
   @@map("maintenance_runs")
 }
 
+// ---------------------------------------------------------------------------
+// Database export — admin/library-admin launched, worker-run dumps of a tenant
+// DB, the control DB, or everything, into a downloadable file.
+// ---------------------------------------------------------------------------
+
+enum ExportFormat {
+  csv // zip of one CSV per table
+  json // one JSON file: { table: rows }
+  xlsx // one Excel workbook, a sheet per table
+  sql // pg_dump (full-fidelity, restorable)
+}
+
+enum ExportScope {
+  tenant // a single library's DB
+  control // the control-plane DB (owner only)
+  all // control + every tenant DB, bundled (owner only)
+}
+
+enum ExportStatus {
+  queued
+  running
+  completed
+  failed
+}
+
+enum ExportRequesterKind {
+  admin // owner-admin (AdminUser)
+  user // a library admin (tenant User)
+}
+
+model ExportJob {
+  id              String              @id @default(cuid())
+  format          ExportFormat
+  scope           ExportScope
+  /// Set when scope = tenant.
+  targetTenantId  String?
+  requestedByKind ExportRequesterKind
+  /// AdminUser.id or User.id (plain column — no FK across the kinds).
+  requestedById   String
+  status          ExportStatus        @default(queued)
+  progressDone    Int                 @default(0)
+  progressTotal   Int                 @default(0)
+  /// Produced artifact: download filename + absolute path under STORAGE_ROOT.
+  fileName        String?
+  filePath        String?
+  fileBytes       Int?
+  error           String?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  /// When the file may be purged by a cleanup sweep.
+  expiresAt       DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([targetTenantId, createdAt])
+  @@index([requestedByKind, requestedById, createdAt])
+  @@index([status])
+  @@map("export_jobs")
+}
+
 /// Idempotency log for Stripe webhooks. Insert-once-per-event; the unique
 /// constraint on the event id means re-deliveries are no-ops.
 model StripeWebhookEvent {
