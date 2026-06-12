@@ -178,35 +178,40 @@ model Author {
 /// A bibliographic record (one row per work/edition the library catalogs).
 /// Physical copies are tracked in `book_copies`.
 model Book {
-  id              String    @id @default(cuid())
-  title           String
-  subtitle        String?
+  id                  String    @id @default(cuid())
+  title               String
+  subtitle            String?
   /// Lowercased + accent-folded title used for sorting.
-  sortTitle       String
+  sortTitle           String
   /// Concatenated title + subtitle + authors + publisher + isbn, lowercased
   /// and accent-folded, used for fuzzy search (GIN trigram index).
-  searchText      String
+  searchText          String
   /// ISBN-13 with hyphens stripped. Stored even when missing for old books.
-  isbn13          String?
+  isbn13              String?
   /// Legacy ISBN-10, also normalized.
-  isbn10          String?
-  publisher       String?
-  publicationYear Int?
+  isbn10              String?
+  publisher           String?
+  publicationYear     Int?
   /// BCP-47 language tag of the book's content (e.g. "el", "en-US").
-  language        String?
-  edition         String?
-  numPages        Int?
-  description     String?
+  language            String?
+  edition             String?
+  numPages            Int?
+  description         String?
   /// Slot name in the asset manifest (e.g. "covers/placeholder-book") OR
   /// a storage-driver URL ("file://covers/<id>.jpg"). The storage layer
   /// resolves on read.
-  coverAssetRef   String?
+  coverAssetRef       String?
   /// Free-form classification (Dewey, BISAC, library-specific shelf code).
-  classification  String?
-  customFields    Json      @default("{}")
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  archivedAt      DateTime?
+  classification      String?
+  customFields        Json      @default("{}")
+  /// When the `book-metadata-refresh` job last attempted to backfill this
+  /// book's metadata from OpenLibrary — set on every attempt (found or not) so
+  /// the sweep walks the whole catalog instead of re-hitting the same rows.
+  /// NULL = never attempted.
+  metadataRefreshedAt DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  archivedAt          DateTime?
 
   authors      BookAuthor[]
   copies       BookCopy[]
@@ -216,6 +221,7 @@ model Book {
   @@index([isbn13])
   @@index([isbn10])
   @@index([publicationYear])
+  @@index([metadataRefreshedAt])
   @@map("books")
 }
 

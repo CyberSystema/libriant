@@ -4,6 +4,7 @@ import { sweepFailedStripeWebhooks } from './stripe-retry.job.js';
 import { sweepFineAccrual } from './fine-accrual.job.js';
 import { sweepExpiredExports } from './export-cleanup.job.js';
 import { publishDueAnnouncements } from './announcement-publish.job.js';
+import { refreshBookMetadata } from './book-metadata-refresh.job.js';
 import type { ScheduledJob } from './jobs.types.js';
 
 /**
@@ -50,5 +51,12 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     name: 'announcement-publish',
     intervalMs: 60_000,
     handler: () => publishDueAnnouncements(),
+  },
+  {
+    // 6h: book metadata is near-static, so this is a slow backfill — fill the
+    // gaps OpenLibrary can cover without hammering their free API.
+    name: 'book-metadata-refresh',
+    intervalMs: 6 * 60 * 60_000,
+    handler: () => refreshBookMetadata(),
   },
 ];
