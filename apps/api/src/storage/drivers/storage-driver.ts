@@ -17,7 +17,7 @@
  * `local-driver.ts` provide a safe-resolve. New drivers should mirror it.
  */
 
-export type ResourceType = 'covers' | 'members' | 'attachments' | 'marc';
+export type ResourceType = 'covers' | 'members' | 'attachments' | 'marc' | 'branding';
 
 export type PutOptions = {
   resourceType: ResourceType;

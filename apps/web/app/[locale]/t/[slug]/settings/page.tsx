@@ -99,6 +99,21 @@ export default async function SettingsPage(props: {
 
         <Card>
           <CardHeader
+            title={t('settings.sections.branding.title')}
+            subtitle={t('settings.sections.branding.description')}
+          />
+          <CardBody>
+            <Link
+              href={`/${params.locale}/t/${params.slug}/settings/branding`}
+              className="lbr-btn lbr-btn--primary lbr-btn--md"
+            >
+              {t('settings.sections.branding.cta')}
+            </Link>
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader
             title={t('settings.sections.dataModel.title')}
             subtitle={t('settings.sections.dataModel.description')}
           />

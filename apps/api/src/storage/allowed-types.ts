@@ -14,6 +14,7 @@ export const ALLOWED_TYPES: Record<ResourceType, readonly string[]> = {
   members: ['image/jpeg', 'image/png', 'image/webp'],
   attachments: ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'text/plain'],
   marc: ['application/marc', 'application/marcxml+xml', 'text/plain'],
+  branding: ['image/jpeg', 'image/png', 'image/webp'],
 };
 
 /** Friendly human message when a type is rejected. */

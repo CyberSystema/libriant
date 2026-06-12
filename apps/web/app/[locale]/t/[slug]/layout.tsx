@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { notFound, redirect } from 'next/navigation';
 import { Banner, ToastProvider } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
@@ -151,14 +152,26 @@ export default async function TenantLayout(props: {
   // doesn't exist for AdminUsers.
   const announcements = session && !impersonation ? await currentAnnouncements(params.slug) : [];
 
+  // Per-library branding (real sessions only; admins-under-impersonation see
+  // the default theme). `brandColor` recolors the shell via --color-primary;
+  // the logo, if set, replaces the wordmark in the header.
+  const brandColor = session?.tenant.brandColor ?? null;
+  const brandLogoUrl = session?.tenant.brandLogoRef
+    ? `/lbr-api/t/${params.slug}/storage/${session.tenant.brandLogoRef}`
+    : null;
+  const shellStyle = brandColor
+    ? ({ ['--color-primary']: brandColor } as CSSProperties)
+    : undefined;
+
   return (
     <ToastProvider>
-      <div className="lbr-shell">
+      <div className="lbr-shell" style={shellStyle}>
         <SidebarNav
           catalog={catalog}
           locale={params.locale}
           slug={params.slug}
           libraryName={libraryName}
+          brandLogoUrl={brandLogoUrl}
           userFullName={userFullName}
           billingEnabled={billingEnabled}
           role={role}

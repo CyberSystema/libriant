@@ -20,6 +20,7 @@ import { MembersModule } from './members/members.module.js';
 import { ReservationsModule } from './reservations/reservations.module.js';
 import { TenantSettingsModule } from './tenant-settings/tenant-settings.module.js';
 import { AuditModule } from './audit/audit.module.js';
+import { BrandingModule } from './branding/branding.module.js';
 import { PlansModule } from './plans/plans.module.js';
 import { PlatformModule } from './platform/platform.module.js';
 import { RedisModule } from './platform/redis.module.js';
@@ -57,6 +58,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     ReservationsModule,
     TenantSettingsModule,
     AuditModule,
+    BrandingModule,
     ImportModule,
     BillingModule,
     HelpModule,

@@ -12,6 +12,8 @@ type Props = {
   locale: Locale;
   slug: string;
   libraryName: string;
+  /** Per-library logo URL; when set, replaces the Libriant wordmark. */
+  brandLogoUrl?: string | null;
   userFullName: string;
   /** When false (subscriptions disabled globally), the Billing item is hidden. */
   billingEnabled?: boolean;
@@ -33,6 +35,7 @@ export function SidebarNav({
   locale,
   slug,
   libraryName,
+  brandLogoUrl,
   userFullName,
   billingEnabled = true,
   role = 'owner',
@@ -62,7 +65,16 @@ export function SidebarNav({
         className="lbr-shell__brand"
         style={{ textDecoration: 'none', color: 'inherit' }}
       >
-        <Asset name="brand/logo-square" width={28} height={28} />
+        {brandLogoUrl ? (
+          <img
+            src={brandLogoUrl}
+            alt={libraryName}
+            height={28}
+            style={{ maxHeight: 28, maxWidth: 120, objectFit: 'contain' }}
+          />
+        ) : (
+          <Asset name="brand/logo-square" width={28} height={28} />
+        )}
         <span className="lbr-shell__brand-name">{libraryName}</span>
       </Link>
       <Nav ariaLabel="Sections">

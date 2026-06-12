@@ -242,6 +242,12 @@ model Tenant {
   storageUsedBytes BigInt       @default(0)
   /// Contact email for billing / urgent platform notices.
   primaryEmail     String       @db.Citext
+  /// Per-library branding (admin-set). `brandColor` is a hex string applied
+  /// as the app's primary colour; `brandLogoRef` is a tenant-storage ref
+  /// (served via /t/:slug/storage/<ref>) shown in the app header. Both NULL
+  /// fall back to the default Libriant theme + wordmark.
+  brandColor       String?
+  brandLogoRef     String?
 
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt

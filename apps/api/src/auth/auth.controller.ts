@@ -110,7 +110,15 @@ export class AuthController {
       }),
       controlDb.tenant.findUnique({
         where: { id: session.tid },
-        select: { id: true, slug: true, name: true, defaultLocale: true, status: true },
+        select: {
+          id: true,
+          slug: true,
+          name: true,
+          defaultLocale: true,
+          status: true,
+          brandColor: true,
+          brandLogoRef: true,
+        },
       }),
     ]);
     if (!user || !tenant) {

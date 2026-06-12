@@ -213,5 +213,21 @@
   "templates.defaultPlaceholder": "Leave blank to use the default",
   "templates.save": "Save templates",
   "templates.saved": "Templates saved.",
-  "templates.saveError": "Couldn't save templates."
+  "templates.saveError": "Couldn't save templates.",
+  "sections.branding.title": "Branding",
+  "sections.branding.description": "Set your library's accent colour and header logo.",
+  "sections.branding.cta": "Customize",
+  "branding.title": "Branding",
+  "branding.subtitle": "Make Libriant look like your library — for your staff.",
+  "branding.color.title": "Accent colour",
+  "branding.color.desc": "Used for buttons, links and highlights across the app.",
+  "branding.color.save": "Save colour",
+  "branding.color.reset": "Reset to default",
+  "branding.logo.title": "Logo",
+  "branding.logo.desc": "Shown in the app header. PNG, JPEG or WebP.",
+  "branding.logo.upload": "Upload logo",
+  "branding.logo.remove": "Remove",
+  "branding.logoUploaded": "Logo updated.",
+  "branding.logoRemoved": "Logo removed.",
+  "branding.saved": "Branding saved."
 }

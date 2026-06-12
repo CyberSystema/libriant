@@ -123,7 +123,14 @@ export type AuthMeResponse = {
     role: 'owner' | 'admin' | 'librarian' | 'volunteer';
     mustChangeCredentials: boolean;
   };
-  tenant: { id: string; slug: string; name: string; defaultLocale: string };
+  tenant: {
+    id: string;
+    slug: string;
+    name: string;
+    defaultLocale: string;
+    brandColor?: string | null;
+    brandLogoRef?: string | null;
+  };
 };
 
 export type BillingSnapshot = {

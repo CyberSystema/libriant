@@ -213,5 +213,21 @@
   "templates.defaultPlaceholder": "Αφήστε κενό για το προεπιλεγμένο",
   "templates.save": "Αποθήκευση προτύπων",
   "templates.saved": "Τα πρότυπα αποθηκεύτηκαν.",
-  "templates.saveError": "Δεν ήταν δυνατή η αποθήκευση των προτύπων."
+  "templates.saveError": "Δεν ήταν δυνατή η αποθήκευση των προτύπων.",
+  "sections.branding.title": "Επωνυμία",
+  "sections.branding.description": "Ορίστε το χρώμα και το λογότυπο της βιβλιοθήκης σας.",
+  "sections.branding.cta": "Προσαρμογή",
+  "branding.title": "Επωνυμία",
+  "branding.subtitle": "Κάντε το Libriant να μοιάζει με τη βιβλιοθήκη σας — για το προσωπικό σας.",
+  "branding.color.title": "Χρώμα επωνυμίας",
+  "branding.color.desc": "Χρησιμοποιείται για κουμπιά, συνδέσμους και επισημάνσεις σε όλη την εφαρμογή.",
+  "branding.color.save": "Αποθήκευση χρώματος",
+  "branding.color.reset": "Επαναφορά προεπιλογής",
+  "branding.logo.title": "Λογότυπο",
+  "branding.logo.desc": "Εμφανίζεται στην κεφαλίδα της εφαρμογής. PNG, JPEG ή WebP.",
+  "branding.logo.upload": "Μεταφόρτωση λογότυπου",
+  "branding.logo.remove": "Αφαίρεση",
+  "branding.logoUploaded": "Το λογότυπο ενημερώθηκε.",
+  "branding.logoRemoved": "Το λογότυπο αφαιρέθηκε.",
+  "branding.saved": "Η επωνυμία αποθηκεύτηκε."
 }
