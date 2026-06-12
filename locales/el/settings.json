@@ -167,5 +167,11 @@
   "dataModel.removeOption": "Αφαίρεση επιλογής",
   "sections.supportAccess.title": "Βοήθεια από το Libriant",
   "sections.supportAccess.description": "Δώστε στην ομάδα μας προσωρινή πρόσβαση στη βιβλιοθήκη σας ώστε να σας βοηθήσουμε να διορθώσετε κάτι.",
-  "sections.supportAccess.cta": "Διαχείριση πρόσβασης υποστήριξης"
+  "sections.supportAccess.cta": "Διαχείριση πρόσβασης υποστήριξης",
+  "library.notifications.title": "Ειδοποιήσεις email μελών",
+  "library.notifications.desc": "Προαιρετικά αυτόματα email προς τα μέλη. Εξ ορισμού όλα ανενεργά — ειδοποιούνται μόνο μέλη με διεύθυνση email.",
+  "library.field.notifyDueSoon": "Αποστολή υπενθύμισης «λήγει σύντομα»",
+  "library.field.dueSoonDays": "Ημέρες πριν τη λήξη",
+  "library.field.notifyOverdue": "Αποστολή ειδοποίησης εκπρόθεσμου",
+  "library.field.notifyHoldReady": "Email όταν μια κράτηση είναι έτοιμη προς παραλαβή"
 }

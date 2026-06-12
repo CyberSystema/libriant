@@ -76,4 +76,23 @@ export class UpdateTenantSettingsDto {
   @Min(0, { message: 'Max active loans cannot be negative (use 0 for unlimited).' })
   @Max(100_000)
   maxActiveLoans?: number;
+
+  // --- Member email reminders (opt-in) -------------------------------------
+  @IsOptional()
+  @IsBoolean()
+  notifyDueSoon?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1, { message: 'Due-soon lead time must be at least 1 day.' })
+  @Max(60)
+  dueSoonDays?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  notifyOverdue?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  notifyHoldReady?: boolean;
 }

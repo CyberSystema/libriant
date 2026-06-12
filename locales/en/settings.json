@@ -167,5 +167,11 @@
   "dataModel.removeOption": "Remove option",
   "sections.supportAccess.title": "Get help from Libriant",
   "sections.supportAccess.description": "Give our team time-limited access to your library so we can help you fix something.",
-  "sections.supportAccess.cta": "Manage support access"
+  "sections.supportAccess.cta": "Manage support access",
+  "library.notifications.title": "Member email reminders",
+  "library.notifications.desc": "Optional automated emails to patrons. All off by default — only members with an email address are contacted.",
+  "library.field.notifyDueSoon": "Send a “due soon” reminder",
+  "library.field.dueSoonDays": "Days before due date",
+  "library.field.notifyOverdue": "Send an overdue notice",
+  "library.field.notifyHoldReady": "Email when a hold is ready for pickup"
 }

@@ -22,6 +22,10 @@ export type TenantSettingsView = {
   reservationsEnabled: boolean;
   holdPickupHours: number;
   maxActiveLoans: number;
+  notifyDueSoon: boolean;
+  dueSoonDays: number;
+  notifyOverdue: boolean;
+  notifyHoldReady: boolean;
   /** Whether the subscription permits reservations at all. When false, the
    *  reservations switch can't be turned on and the UI should say so. */
   reservationsAllowedByPlan: boolean;
@@ -41,6 +45,10 @@ const EDITABLE_KEYS = [
   'reservationsEnabled',
   'holdPickupHours',
   'maxActiveLoans',
+  'notifyDueSoon',
+  'dueSoonDays',
+  'notifyOverdue',
+  'notifyHoldReady',
 ] as const;
 
 @Injectable()
@@ -126,6 +134,10 @@ export class TenantSettingsService {
       reservationsEnabled: boolean;
       holdPickupHours: number;
       maxActiveLoans: number;
+      notifyDueSoon: boolean;
+      dueSoonDays: number;
+      notifyOverdue: boolean;
+      notifyHoldReady: boolean;
     },
     reservationsAllowedByPlan: boolean,
   ): TenantSettingsView {
@@ -142,6 +154,10 @@ export class TenantSettingsService {
       reservationsEnabled: s.reservationsEnabled,
       holdPickupHours: s.holdPickupHours,
       maxActiveLoans: s.maxActiveLoans,
+      notifyDueSoon: s.notifyDueSoon,
+      dueSoonDays: s.dueSoonDays,
+      notifyOverdue: s.notifyOverdue,
+      notifyHoldReady: s.notifyHoldReady,
       reservationsAllowedByPlan,
     };
   }

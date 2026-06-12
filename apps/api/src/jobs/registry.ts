@@ -5,6 +5,7 @@ import { sweepFineAccrual } from './fine-accrual.job.js';
 import { sweepExpiredExports } from './export-cleanup.job.js';
 import { publishDueAnnouncements } from './announcement-publish.job.js';
 import { refreshBookMetadata } from './book-metadata-refresh.job.js';
+import { sendMemberNotifications } from './member-notifications.job.js';
 import type { ScheduledJob } from './jobs.types.js';
 
 /**
@@ -58,5 +59,13 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     name: 'book-metadata-refresh',
     intervalMs: 6 * 60 * 60_000,
     handler: () => refreshBookMetadata(),
+  },
+  {
+    // Hourly: prompt enough for hold-ready pickups, and due-soon/overdue are
+    // day-grained so re-runs within a day are idempotent no-ops (the email
+    // pipeline dedups on idempotencyKey).
+    name: 'member-notifications',
+    intervalMs: 60 * 60_000,
+    handler: () => sendMemberNotifications(),
   },
 ];

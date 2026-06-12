@@ -153,6 +153,14 @@ model TenantSetting {
   holdPickupHours         Int      @default(48)
   /// Maximum simultaneous active loans per member; 0 = uncapped.
   maxActiveLoans          Int      @default(0)
+  /// Member email reminders — all opt-in (default OFF) so a library never
+  /// auto-emails its patrons until an admin turns them on. Only members with
+  /// an email address are contacted.
+  notifyDueSoon           Boolean  @default(false)
+  /// How many days before the due date a "due soon" reminder goes out.
+  dueSoonDays             Int      @default(2)
+  notifyOverdue           Boolean  @default(false)
+  notifyHoldReady         Boolean  @default(false)
   /// Default locale for the library — kept here as well as in the control
   /// plane so reports / emails generated tenant-side can localize even when
   /// no control-plane lookup is convenient.

@@ -18,6 +18,10 @@ export type TenantSettingsView = {
   reservationsEnabled: boolean;
   holdPickupHours: number;
   maxActiveLoans: number;
+  notifyDueSoon: boolean;
+  dueSoonDays: number;
+  notifyOverdue: boolean;
+  notifyHoldReady: boolean;
   reservationsAllowedByPlan: boolean;
 };
 
@@ -35,6 +39,10 @@ type FormState = {
   reservationsEnabled: boolean;
   holdPickupHours: string;
   maxActiveLoans: string;
+  notifyDueSoon: boolean;
+  dueSoonDays: string;
+  notifyOverdue: boolean;
+  notifyHoldReady: boolean;
 };
 
 const toMajor = (cents: number): string => (cents / 100).toString();
@@ -55,6 +63,10 @@ function fromView(v: TenantSettingsView): FormState {
     reservationsEnabled: v.reservationsEnabled,
     holdPickupHours: String(v.holdPickupHours),
     maxActiveLoans: String(v.maxActiveLoans),
+    notifyDueSoon: v.notifyDueSoon,
+    dueSoonDays: String(v.dueSoonDays),
+    notifyOverdue: v.notifyOverdue,
+    notifyHoldReady: v.notifyHoldReady,
   };
 }
 
@@ -73,6 +85,10 @@ function toPayload(f: FormState) {
     reservationsEnabled: f.reservationsEnabled,
     holdPickupHours: toInt(f.holdPickupHours),
     maxActiveLoans: toInt(f.maxActiveLoans),
+    notifyDueSoon: f.notifyDueSoon,
+    dueSoonDays: toInt(f.dueSoonDays),
+    notifyOverdue: f.notifyOverdue,
+    notifyHoldReady: f.notifyHoldReady,
   };
 }
 
@@ -319,6 +335,37 @@ export function LibraryPolicyForm({
               disabled: !form.reservationsEnabled || !baseline.reservationsAllowedByPlan,
             })}
           </div>
+        </CardBody>
+      </Card>
+
+      {/* Member email reminders */}
+      <Card>
+        <CardHeader
+          title={t('settings.library.notifications.title')}
+          subtitle={t('settings.library.notifications.desc')}
+        />
+        <CardBody>
+          <SwitchRow
+            id="lib-notifyDueSoon"
+            label={t('settings.library.field.notifyDueSoon')}
+            checked={form.notifyDueSoon}
+            onChange={(v) => set('notifyDueSoon', v)}
+          />
+          <div style={sectionGrid}>
+            {num('dueSoonDays', 'library.field.dueSoonDays', { disabled: !form.notifyDueSoon })}
+          </div>
+          <SwitchRow
+            id="lib-notifyOverdue"
+            label={t('settings.library.field.notifyOverdue')}
+            checked={form.notifyOverdue}
+            onChange={(v) => set('notifyOverdue', v)}
+          />
+          <SwitchRow
+            id="lib-notifyHoldReady"
+            label={t('settings.library.field.notifyHoldReady')}
+            checked={form.notifyHoldReady}
+            onChange={(v) => set('notifyHoldReady', v)}
+          />
         </CardBody>
       </Card>
 

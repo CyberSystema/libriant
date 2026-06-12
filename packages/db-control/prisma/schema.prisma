@@ -119,6 +119,10 @@ enum EmailMessageKind {
   announcement
   // Step 7 — auth
   password_reset
+  // Member circulation reminders (per-library opt-in)
+  member_due_soon
+  member_overdue
+  member_hold_ready
   // Generic catch-all for ad-hoc admin-composed mail
   transactional
 }
@@ -291,40 +295,40 @@ model TenantDbCredential {
 // ---------------------------------------------------------------------------
 
 model User {
-  id              String     @id @default(cuid())
-  tenantId        String
+  id                    String     @id @default(cuid())
+  tenantId              String
   /// CITEXT email per tenant — same human can have accounts at multiple
   /// libraries, each treating emails case-insensitively. NULL for admin-created
   /// staff, who sign in with `username` instead (no email on file).
-  email           String?    @db.Citext
+  email                 String?    @db.Citext
   /// CITEXT login handle per tenant for admin-created staff (e.g. `staff_3`).
   /// Owners/admins created via signup/invite use `email`; staff use this.
   /// Login accepts either. NULL for email-based accounts.
-  username        String?    @db.Citext
-  fullName        String
-  role            UserRole   @default(librarian)
-  status          UserStatus @default(invited)
+  username              String?    @db.Citext
+  fullName              String
+  role                  UserRole   @default(librarian)
+  status                UserStatus @default(invited)
   /// When true, the user is forced through a one-time "set your name + password"
   /// screen on next login before they can use the app. Set when an admin
   /// creates a staff account or resets its password.
-  mustChangeCredentials Boolean @default(false)
+  mustChangeCredentials Boolean    @default(false)
   /// Per-user override for the tenant's default locale.
-  locale          String?
-  passwordHash    String?
+  locale                String?
+  passwordHash          String?
   /// AES-GCM ciphertext of the TOTP secret (when enabled).
-  mfaSecretCipher Bytes?
-  mfaNonce        Bytes?
-  mfaKeyId        String?
-  mfaEnabled      Boolean    @default(false)
+  mfaSecretCipher       Bytes?
+  mfaNonce              Bytes?
+  mfaKeyId              String?
+  mfaEnabled            Boolean    @default(false)
   /// One-shot token consumed during onboarding to set password.
-  inviteToken     String?
-  inviteExpires   DateTime?
-  lastLoginAt     DateTime?
-  failedLogins    Int        @default(0)
-  lockedUntil     DateTime?
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-  archivedAt      DateTime?
+  inviteToken           String?
+  inviteExpires         DateTime?
+  lastLoginAt           DateTime?
+  failedLogins          Int        @default(0)
+  lockedUntil           DateTime?
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+  archivedAt            DateTime?
 
   tenant                 Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   supportKeysCreated     SupportKey[]
@@ -536,25 +540,25 @@ enum MaintenanceStatus {
 }
 
 model MaintenanceRun {
-  id             String            @id @default(cuid())
-  kind           MaintenanceKind
-  scope          MaintenanceScope
+  id               String            @id @default(cuid())
+  kind             MaintenanceKind
+  scope            MaintenanceScope
   /// Set when scope = tenant.
-  targetTenantId String?
-  status         MaintenanceStatus @default(queued)
+  targetTenantId   String?
+  status           MaintenanceStatus @default(queued)
   /// Progress counters the UI polls (e.g. tenant DBs processed / total).
-  progressDone   Int               @default(0)
-  progressTotal  Int               @default(0)
+  progressDone     Int               @default(0)
+  progressTotal    Int               @default(0)
   /// Structured outcome: per-target results and, for diagnostics, the list of
   /// issues found (with severity). Shape is owned by the worker processors.
-  resultJson     Json?
-  error          String?
+  resultJson       Json?
+  error            String?
   /// AdminUser.id that launched it (plain column — no FK, audit log covers who).
   createdByAdminId String?
-  startedAt      DateTime?
-  finishedAt     DateTime?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 
   @@index([kind, createdAt])
   @@index([status])
@@ -655,44 +659,44 @@ model StripeWebhookEvent {
 // ---------------------------------------------------------------------------
 
 model EmailOutbox {
-  id String @id @default(cuid())
+  id             String            @id @default(cuid())
   /// Free-form key the producer chooses so re-runs don't double-send. For
   /// 18b: `announcement:<id>:tenant:<tenantId>`. For 18a support events:
   /// `support.key.generated:<keyId>`. NULL means "send unconditionally".
-  idempotencyKey  String?           @unique
-  kind            EmailMessageKind
+  idempotencyKey String?           @unique
+  kind           EmailMessageKind
   /// Envelope. `fromEmail` is rendered with `EMAIL_FROM` when null.
-  toEmail         String            @db.Citext
-  fromEmail       String?           @db.Citext
-  replyToEmail    String?           @db.Citext
-  subject         String
+  toEmail        String            @db.Citext
+  fromEmail      String?           @db.Citext
+  replyToEmail   String?           @db.Citext
+  subject        String
   /// Plain-text body. The driver may also render a sanitized HTML version
   /// from the markdown captured in `bodyMarkdown`. We keep both so the
   /// worker can fall back to plain text on SMTP servers that reject HTML.
-  bodyMarkdown    String
+  bodyMarkdown   String
   /// What this email is "about" — used by stats + admin search. Mirrors
   /// the (tenantId, kind, …) the producer cares about.
-  tenantId        String?
+  tenantId       String?
   /// Per-row metadata the producer wants to surface in admin UI (e.g.
   /// `{ announcementId, deliveryId }` for 18b). Opaque to the worker.
-  metadataJson    Json              @default("{}")
-  status          EmailOutboxStatus @default(pending)
-  attempts        Int               @default(0)
-  maxAttempts     Int               @default(5)
+  metadataJson   Json              @default("{}")
+  status         EmailOutboxStatus @default(pending)
+  attempts       Int               @default(0)
+  maxAttempts    Int               @default(5)
   /// Earliest time the worker may try this row. Producer sets it when
   /// scheduling a future send (defaults to NOW for "send asap"). BullMQ
   /// re-enqueues with backoff; this column is the source-of-truth.
-  scheduledFor    DateTime          @default(now())
+  scheduledFor   DateTime          @default(now())
   /// Set on `delivered`. Driver's identifier (Message-ID, etc.).
-  providerId      String?
+  providerId     String?
   /// Set on a transient failure that will be retried.
-  lastError       String?
-  deliveredAt     DateTime?
-  failedAt        DateTime?
+  lastError      String?
+  deliveredAt    DateTime?
+  failedAt       DateTime?
   /// Set on a permanent abandonment (>= maxAttempts).
-  abandonedAt     DateTime?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  abandonedAt    DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
 
   tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
 
@@ -1010,53 +1014,53 @@ model HelpArticle {
 // ---------------------------------------------------------------------------
 
 model ImportBatch {
-  id         String             @id @default(cuid())
-  tenantId   String
-  entityKind ImportEntityKind
-  format     ImportSourceFormat
-  status     ImportStatus       @default(uploaded)
+  id            String              @id @default(cuid())
+  tenantId      String
+  entityKind    ImportEntityKind
+  format        ImportSourceFormat
+  status        ImportStatus        @default(uploaded)
   /// Original client filename (display only).
-  originalName String
+  originalName  String
   /// Path to the staged raw upload under STORAGE_ROOT/_imports — shared
   /// across the api + worker containers so the worker can re-read it for
   /// the validate + commit passes. Cleaned up after the batch finishes.
-  stagingPath  String
-  sizeBytes    Int              @default(0)
+  stagingPath   String
+  sizeBytes     Int                 @default(0)
   /// Detected/declared character encoding (`utf-8`, `windows-1253`, …).
-  encoding     String?
+  encoding      String?
   /// Field delimiter for csv/tsv (`,` `\t` `;` `|`).
-  delimiter    String?
+  delimiter     String?
   /// Worksheet name for xlsx imports.
-  sheetName    String?
-  hasHeaderRow Boolean          @default(true)
+  sheetName     String?
+  hasHeaderRow  Boolean             @default(true)
   /// Detected source columns + a few sample rows, surfaced in the mapping UI.
-  columnsJson  Json             @default("{}")
+  columnsJson   Json                @default("{}")
   /// Column→field mapping + per-column transforms + custom-field targets.
-  mappingJson  Json?
+  mappingJson   Json?
   /// Run options: static defaults, skipInvalidRows, etc.
-  optionsJson  Json             @default("{}")
+  optionsJson   Json                @default("{}")
   duplicateMode ImportDuplicateMode @default(skip)
 
-  totalRows    Int              @default(0)
-  validRows    Int              @default(0)
-  errorRows    Int              @default(0)
-  warningRows  Int              @default(0)
-  importedRows Int              @default(0)
-  updatedRows  Int              @default(0)
-  skippedRows  Int              @default(0)
+  totalRows       Int     @default(0)
+  validRows       Int     @default(0)
+  errorRows       Int     @default(0)
+  warningRows     Int     @default(0)
+  importedRows    Int     @default(0)
+  updatedRows     Int     @default(0)
+  skippedRows     Int     @default(0)
   /// True when the per-row issue list was capped (a very dirty file).
-  issuesTruncated Boolean       @default(false)
+  issuesTruncated Boolean @default(false)
 
   /// Control-plane User.id of the librarian who started the import. Stored as
   /// a plain id (not a FK) — it's an audit pointer, mirroring how cross-record
   /// actor ids are kept elsewhere (e.g. audit_log.actorId).
   createdByUserId String?
   /// Fatal error summary when status = failed.
-  error        String?
-  startedAt    DateTime?
-  finishedAt   DateTime?
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+  error           String?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   tenant Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   issues ImportRowIssue[]

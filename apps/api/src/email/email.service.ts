@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import { controlDb, type EmailMessageKind, type Prisma } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
@@ -54,7 +54,7 @@ export type EnqueueResult = {
 };
 
 @Injectable()
-export class EmailService {
+export class EmailService implements OnModuleDestroy {
   private readonly logger = new Logger(EmailService.name);
   private readonly queue: Queue;
   private readonly defaultMaxAttempts: number;
@@ -140,5 +140,11 @@ export class EmailService {
       `enqueued ${input.kind} → ${input.toEmail} outbox=${row.id} dup=${alreadyExisted}`,
     );
     return { outboxId: row.id, alreadyExisted };
+  }
+
+  /** Close the producer queue — Nest calls this on shutdown, and the
+   *  DI-free notification cron calls it after a one-off batch enqueue. */
+  async onModuleDestroy(): Promise<void> {
+    await this.queue.close();
   }
 }
