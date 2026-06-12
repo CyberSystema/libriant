@@ -439,20 +439,34 @@ export class LoansService {
             "Couldn't free the copy because its status changed. Check the copy's record and contact a librarian.",
           );
         }
-        // Issue the overdue fine if any.
+        // Issue the overdue fine if any. The accrual sweep may have already
+        // opened an outstanding fine for this loan while it was overdue —
+        // finalise that one instead of creating a duplicate.
         let fineId: string | null = null;
         if (shouldCreateFine) {
-          const fine = await tx.fine.create({
-            data: {
-              memberId: loan.memberId,
-              loanId: loanId,
-              amountCents: fineAmountCents,
-              currency: settings.currency,
-              reason: `${daysOverdue} day(s) overdue`,
-            },
+          const existing = await tx.fine.findFirst({
+            where: { loanId, status: 'outstanding' },
             select: { id: true },
           });
-          fineId = fine.id;
+          if (existing) {
+            await tx.fine.update({
+              where: { id: existing.id },
+              data: { amountCents: fineAmountCents, reason: `${daysOverdue} day(s) overdue` },
+            });
+            fineId = existing.id;
+          } else {
+            const fine = await tx.fine.create({
+              data: {
+                memberId: loan.memberId,
+                loanId: loanId,
+                amountCents: fineAmountCents,
+                currency: settings.currency,
+                reason: `${daysOverdue} day(s) overdue`,
+              },
+              select: { id: true },
+            });
+            fineId = fine.id;
+          }
         }
         return { fineId, promotedHold: promoted };
       });
