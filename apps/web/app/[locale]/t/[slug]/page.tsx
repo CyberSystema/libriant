@@ -55,6 +55,7 @@ export default async function TenantHome(props: {
   ]);
 
   const isEmpty = books.count === 0 && members.count === 0;
+  const off = t('common.dashboard.offline');
 
   return (
     <>
@@ -63,12 +64,12 @@ export default async function TenantHome(props: {
       {billing && billing.billingEnabled && billing.status === 'past_due' ? (
         <Banner
           severity="warning"
-          title="Payment retry needed"
+          title={t('billing.retry.title')}
           style={{ marginBottom: 'var(--sp-4)' }}
         >
-          Your last invoice didn't go through. Your plan stays active until{' '}
-          {fmtDate(billing.graceUntil)} — please update your card from the{' '}
-          <Link href={`/${params.locale}/t/${params.slug}/billing`}>billing page</Link>.
+          {t('billing.retry.body', { date: fmtDate(billing.graceUntil) ?? '' })}{' '}
+          <Link href={`/${params.locale}/t/${params.slug}/billing`}>{t('billing.retry.link')}</Link>
+          .
         </Banner>
       ) : null}
 
@@ -103,11 +104,11 @@ export default async function TenantHome(props: {
 
       {!isEmpty ? (
         <section className="lbr-stat-grid" style={{ marginBottom: 'var(--sp-6)' }}>
-          <Tile label={t('common.nav.catalog')} value={books} />
-          <Tile label={t('common.nav.members')} value={members} />
-          <Tile label="Active loans" value={activeLoans} />
-          <Tile label="Overdue loans" value={overdueLoans} />
-          <Tile label="Queued holds" value={queuedHolds} />
+          <Tile label={t('common.nav.catalog')} value={books} offline={off} />
+          <Tile label={t('common.nav.members')} value={members} offline={off} />
+          <Tile label={t('common.dashboard.activeLoans')} value={activeLoans} offline={off} />
+          <Tile label={t('common.dashboard.overdueLoans')} value={overdueLoans} offline={off} />
+          <Tile label={t('common.dashboard.queuedHolds')} value={queuedHolds} offline={off} />
         </section>
       ) : null}
 
@@ -117,31 +118,37 @@ export default async function TenantHome(props: {
           for anyone who still navigates there). */}
       {billing?.billingEnabled === false ? null : (
         <Card>
-          <CardHeader title="Current plan" subtitle="Your library's active subscription." />
+          <CardHeader
+            title={t('common.dashboard.currentPlan')}
+            subtitle={t('common.dashboard.currentPlanSub')}
+          />
           <CardBody>
             {billing ? (
               <>
                 <p style={{ margin: '0 0 var(--sp-2) 0' }}>
                   <strong>{billing.plan.name}</strong> ·{' '}
                   <span style={{ color: 'var(--color-text-muted)' }}>
-                    {billing.billingMode === 'manual' ? 'invoice billing' : 'self-serve (Stripe)'}
+                    {billing.billingMode === 'manual'
+                      ? t('billing.billingMode.manual')
+                      : t('billing.billingMode.stripe')}
                   </span>
                 </p>
                 <p style={{ color: 'var(--color-text-muted)', margin: 0 }}>
-                  Status: <strong>{billing.status}</strong>
+                  {t('billing.statusLabel')}: <strong>{billing.status}</strong>
                   {billing.currentPeriodEnd
-                    ? ` · renews ${fmtDate(billing.currentPeriodEnd)}`
+                    ? ` · ${t('billing.renewsOn', { date: fmtDate(billing.currentPeriodEnd) ?? '' })}`
                     : null}
-                  {billing.cancelAtPeriodEnd ? ' · scheduled to cancel at period end' : null}
+                  {billing.cancelAtPeriodEnd ? ` · ${t('billing.cancelScheduled')}` : null}
                 </p>
                 <p style={{ marginTop: 'var(--sp-3)' }}>
-                  <Link href={`/${params.locale}/t/${params.slug}/billing`}>Manage billing →</Link>
+                  <Link href={`/${params.locale}/t/${params.slug}/billing`}>
+                    {t('billing.manage')} →
+                  </Link>
                 </p>
               </>
             ) : (
               <p style={{ color: 'var(--color-text-muted)', margin: 0 }}>
-                We couldn't reach the billing service. Try refreshing — if it keeps happening, get
-                in touch.
+                {t('billing.unreachable')}
               </p>
             )}
           </CardBody>
@@ -154,9 +161,11 @@ export default async function TenantHome(props: {
 function Tile({
   label,
   value,
+  offline,
 }: {
   label: string;
   value: { count: number | null; error: boolean };
+  offline: string;
 }) {
   return (
     <Card>
@@ -165,7 +174,7 @@ function Tile({
         <span className="lbr-stat__value">
           {value.error ? '—' : value.count === null ? '—' : value.count.toString()}
         </span>
-        {value.error ? <span className="lbr-stat__caption">offline — try refresh</span> : null}
+        {value.error ? <span className="lbr-stat__caption">{offline}</span> : null}
       </div>
     </Card>
   );

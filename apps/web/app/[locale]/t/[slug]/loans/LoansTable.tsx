@@ -121,6 +121,7 @@ export function LoansTable({ catalog, locale, slug, status, overdue, initial }: 
       columns={columns}
       emptyTitle={t('loans.empty.title')}
       emptyDescription={t('loans.empty.description')}
+      loadMoreLabel={t('common.actions.loadMore')}
       emptyIllustration="illustrations/empty-catalog"
     />
   );

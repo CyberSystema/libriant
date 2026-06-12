@@ -29,5 +29,19 @@
   "states.error": "Something went wrong.",
   "states.errorRecovery": "Please try again. If the problem keeps happening, copy this code and send it to Libriant support: {code}.",
   "language.en": "English",
-  "language.el": "Ελληνικά"
+  "language.el": "Ελληνικά",
+  "table.noMatches": "No matches",
+  "table.noMatchesHint": "Nothing matches your search. Try a different word — searches are accent-insensitive.",
+  "combobox.clear": "Clear selection",
+  "combobox.noMatches": "No matches.",
+  "dashboard.activeLoans": "Active loans",
+  "dashboard.overdueLoans": "Overdue loans",
+  "dashboard.queuedHolds": "Queued holds",
+  "dashboard.currentPlan": "Current plan",
+  "dashboard.currentPlanSub": "Your library's active subscription.",
+  "dashboard.offline": "offline — try refresh",
+  "announcements.dismiss": "Dismiss",
+  "announcements.ack": "I understand",
+  "announcements.ackNote": "You'll see this every time you sign in until you acknowledge it.",
+  "actions.loadMore": "Load more"
 }

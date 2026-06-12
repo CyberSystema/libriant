@@ -34,5 +34,18 @@
   "chooser.subscribe": "Subscribe to {plan}",
   "chooser.notBookable": "Not available yet",
   "chooser.paidHint": "Paid plans take you to secure checkout to add a payment method.",
-  "chooser.empty": "No plans are available right now. Please contact us so we can set you up."
+  "chooser.empty": "No plans are available right now. Please contact us so we can set you up.",
+  "retry.title": "Payment retry needed",
+  "retry.body": "Your last invoice didn't go through. Your plan stays active until {date} — please update your card from the",
+  "retry.link": "billing page",
+  "paidUntil": "Paid until",
+  "graceEnds": "Grace ends",
+  "statusLabel": "Status",
+  "renewsOn": "renews {date}",
+  "manage": "Manage billing",
+  "unreachable": "We couldn't reach the billing service. Try refreshing — if it keeps happening, get in touch.",
+  "renewsLabel": "Renews",
+  "noPlans": "No plans are configured yet. Ask an admin to seed the plan catalog.",
+  "contractPricing": "Contract pricing",
+  "choosePlanGate": "Your library needs to choose a plan before you can continue. Please ask a library admin to set one up."
 }

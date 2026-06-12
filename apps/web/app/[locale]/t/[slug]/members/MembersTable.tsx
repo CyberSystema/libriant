@@ -91,8 +91,12 @@ export function MembersTable({ catalog, locale, slug, status, initial }: Props) 
       columns={columns}
       searchParam="q"
       searchPlaceholder={t('members.search')}
+      searchLabel={t('common.actions.search')}
+      noMatchesTitle={t('common.table.noMatches')}
+      noMatchesDescription={t('common.table.noMatchesHint')}
       emptyTitle={t('members.empty.title')}
       emptyDescription={t('members.empty.description')}
+      loadMoreLabel={t('common.actions.loadMore')}
       emptyIllustration="illustrations/empty-members"
       rowHref={(m) => `/${locale}/t/${slug}/members/${m.id}`}
     />

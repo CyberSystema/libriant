@@ -6,9 +6,12 @@ import { loadCatalog } from '@/lib/locale-loader';
 import { currentSession } from '@/lib/session';
 import { LoginForm } from './LoginForm';
 
-export const metadata = {
-  title: 'Sign in · Libriant',
-};
+export async function generateMetadata(props: { params: Promise<{ locale: string }> }) {
+  const { locale } = await props.params;
+  const lc = isLocale(locale) ? locale : 'en';
+  const t = createTranslator(await loadCatalog(lc), lc);
+  return { title: `${t('common.actions.signIn')} · Libriant` };
+}
 
 export default async function LoginPage(props: { params: Promise<{ locale: string }> }) {
   const params = await props.params;

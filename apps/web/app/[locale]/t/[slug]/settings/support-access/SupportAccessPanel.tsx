@@ -10,6 +10,7 @@ import {
   ConfirmDestructive,
   useToast,
 } from '@libriant/ui';
+import { createTranslator, type Catalog, type Locale } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
 
 type PendingKey = {
@@ -46,6 +47,8 @@ type SessionLogEntry = {
 
 type Props = {
   slug: string;
+  catalog: Catalog;
+  locale: Locale;
   initialPending: PendingKey;
   initialActive: ActiveSession;
   initialHistory: SessionLogEntry[];
@@ -58,7 +61,15 @@ type GenerateResponse = {
   expiresAt: string;
 };
 
-export function SupportAccessPanel({ slug, initialPending, initialActive, initialHistory }: Props) {
+export function SupportAccessPanel({
+  slug,
+  catalog,
+  locale,
+  initialPending,
+  initialActive,
+  initialHistory,
+}: Props) {
+  const t = createTranslator(catalog, locale);
   const router = useRouter();
   const toast = useToast();
   const [pending, setPending] = React.useState(initialPending);
@@ -67,6 +78,9 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
   const [busy, setBusy] = React.useState(false);
   const [revokeOpen, setRevokeOpen] = React.useState(false);
   const [endSessionOpen, setEndSessionOpen] = React.useState(false);
+
+  const errTitle = (err: unknown) =>
+    err instanceof ApiError ? err.message : t('errors.generic.title');
 
   async function generate() {
     setBusy(true);
@@ -84,10 +98,7 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
       setRevealedCode(res.code);
       router.refresh();
     } catch (err) {
-      toast.show({
-        severity: 'critical',
-        title: err instanceof ApiError ? err.message : 'Something went wrong.',
-      });
+      toast.show({ severity: 'critical', title: errTitle(err) });
     } finally {
       setBusy(false);
     }
@@ -100,13 +111,10 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
       setPending(null);
       setRevealedCode(null);
       setRevokeOpen(false);
-      toast.show({ severity: 'success', title: 'Code revoked.' });
+      toast.show({ severity: 'success', title: t('support.access.revoked') });
       router.refresh();
     } catch (err) {
-      toast.show({
-        severity: 'critical',
-        title: err instanceof ApiError ? err.message : 'Something went wrong.',
-      });
+      toast.show({ severity: 'critical', title: errTitle(err) });
     } finally {
       setBusy(false);
     }
@@ -118,13 +126,10 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
       await api(`/t/${slug}/support/sessions/active`, { method: 'DELETE' });
       setActive(null);
       setEndSessionOpen(false);
-      toast.show({ severity: 'success', title: 'Support access ended.' });
+      toast.show({ severity: 'success', title: t('support.access.ended') });
       router.refresh();
     } catch (err) {
-      toast.show({
-        severity: 'critical',
-        title: err instanceof ApiError ? err.message : 'Something went wrong.',
-      });
+      toast.show({ severity: 'critical', title: errTitle(err) });
     } finally {
       setBusy(false);
     }
@@ -134,12 +139,9 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
     if (!revealedCode) return;
     try {
       await navigator.clipboard.writeText(revealedCode);
-      toast.show({ severity: 'success', title: 'Code copied to clipboard.' });
+      toast.show({ severity: 'success', title: t('support.grant.copied') });
     } catch {
-      toast.show({
-        severity: 'warning',
-        title: "Couldn't copy automatically. Select + copy by hand.",
-      });
+      toast.show({ severity: 'warning', title: t('support.access.copyFailed') });
     }
   }
 
@@ -149,31 +151,31 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
     <>
       {active ? (
         <Card style={{ marginBottom: 'var(--sp-4)' }}>
-          <CardHeader title="Libriant support is in your library right now" />
+          <CardHeader title={t('support.activeSession.title')} />
           <CardBody>
             <Banner severity="warning" style={{ marginBottom: 'var(--sp-3)' }}>
-              <strong>{active.admin.fullName}</strong> ({active.admin.email}) opened this support
-              session at <time>{fmt(active.startedAt)}</time>. It ends automatically at{' '}
-              <time>{fmt(active.expiresAt)}</time>.
+              {t('support.access.activeBanner', {
+                admin: active.admin.fullName,
+                email: active.admin.email,
+                start: fmt(active.startedAt),
+                end: fmt(active.expiresAt),
+              })}
             </Banner>
-            <p style={{ marginTop: 0 }}>
-              You can end this access at any time — Libriant will lose their session immediately.
-            </p>
+            <p style={{ marginTop: 0 }}>{t('support.access.endAnytime')}</p>
             <Button variant="secondary" onClick={() => setEndSessionOpen(true)}>
-              End support access
+              {t('support.activeSession.endNow')}
             </Button>
           </CardBody>
         </Card>
       ) : null}
 
       <Card style={{ marginBottom: 'var(--sp-4)' }}>
-        <CardHeader title="One-time support code" />
+        <CardHeader title={t('support.grant.codeLabel')} />
         <CardBody>
           {revealedCode ? (
             <>
               <Banner severity="info" style={{ marginBottom: 'var(--sp-3)' }}>
-                Share this code with your Libriant support contact. It can only be used once and
-                expires in about an hour.
+                {t('support.grant.codeShownOnce')}
               </Banner>
               <pre
                 style={{
@@ -197,40 +199,38 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
                 }}
               >
                 <Button variant="primary" onClick={copyCode}>
-                  Copy code
+                  {t('support.grant.copy')}
                 </Button>
                 <Button variant="ghost" onClick={() => setRevealedCode(null)}>
-                  Hide
+                  {t('support.access.hide')}
                 </Button>
               </div>
             </>
           ) : pending ? (
             <>
               <p style={{ marginTop: 0 }}>
-                A code starting with <strong>{pending.prefix}</strong> is waiting to be used. It
-                expires at <time>{fmt(pending.expiresAt)}</time>.
+                {t('support.access.pendingInfo', {
+                  prefix: pending.prefix,
+                  time: fmt(pending.expiresAt),
+                })}
               </p>
               <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-sm)' }}>
-                If you didn't share it yet — or you don't recognise it — revoke it. You can generate
-                a new one anytime.
+                {t('support.access.pendingHint')}
               </p>
               <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
                 <Button variant="secondary" loading={busy} onClick={generate}>
-                  Generate new code (replaces this one)
+                  {t('support.access.generateNew')}
                 </Button>
                 <Button variant="ghost" onClick={() => setRevokeOpen(true)}>
-                  Revoke
+                  {t('support.access.revoke')}
                 </Button>
               </div>
             </>
           ) : (
             <>
-              <p style={{ marginTop: 0 }}>
-                Click below to generate a code. Share it with your Libriant support contact. They'll
-                redeem it and get read/write access to your library for up to 4 hours.
-              </p>
+              <p style={{ marginTop: 0 }}>{t('support.grant.intro')}</p>
               <Button variant="primary" loading={busy} onClick={generate}>
-                Allow Libriant support to help us
+                {t('support.grant.cta')}
               </Button>
             </>
           )}
@@ -238,10 +238,10 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
       </Card>
 
       <Card>
-        <CardHeader title="Support session history" />
+        <CardHeader title={t('support.log.title')} />
         <CardBody>
           {initialHistory.length === 0 ? (
-            <p style={{ color: 'var(--color-text-muted)', margin: 0 }}>No support sessions yet.</p>
+            <p style={{ color: 'var(--color-text-muted)', margin: 0 }}>{t('support.log.empty')}</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
               {initialHistory.map((s) => (
@@ -250,29 +250,29 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
                     {s.admin.fullName} ({s.admin.email}) — <time>{fmt(s.startedAt)}</time>{' '}
                     {s.endedAt ? (
                       <span style={{ color: 'var(--color-text-muted)' }}>
-                        — ended {fmt(s.endedAt)} ({s.endedReason ?? 'unknown'})
+                        {t('support.access.endedSuffix', {
+                          time: fmt(s.endedAt),
+                          reason: s.endedReason ?? t('support.access.unknownReason'),
+                        })}
                       </span>
                     ) : (
-                      <span style={{ color: 'var(--color-warning)' }}>— still active</span>
+                      <span style={{ color: 'var(--color-warning)' }}>
+                        {t('support.access.stillActive')}
+                      </span>
                     )}
                   </summary>
                   {s.actions.length === 0 ? (
-                    <p
-                      style={{
-                        color: 'var(--color-text-muted)',
-                        marginTop: 'var(--sp-2)',
-                      }}
-                    >
-                      No actions recorded.
+                    <p style={{ color: 'var(--color-text-muted)', marginTop: 'var(--sp-2)' }}>
+                      {t('support.access.noActions')}
                     </p>
                   ) : (
                     <table className="lbr-table" style={{ marginTop: 'var(--sp-2)' }}>
                       <thead>
                         <tr>
-                          <th>Time</th>
-                          <th>Method</th>
-                          <th>Path</th>
-                          <th>Status</th>
+                          <th>{t('support.access.col.time')}</th>
+                          <th>{t('support.access.col.method')}</th>
+                          <th>{t('support.access.col.path')}</th>
+                          <th>{t('support.access.col.status')}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -305,15 +305,12 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
         onClose={() => setRevokeOpen(false)}
         onConfirm={revokeKey}
         busy={busy}
-        title="Revoke this code?"
+        title={t('support.access.revokeTitle')}
         confirmText={pending?.prefix ?? slug}
-        confirmLabel="Revoke code"
-        cancelLabel="Keep it"
+        confirmLabel={t('support.access.revokeConfirm')}
+        cancelLabel={t('support.access.revokeCancel')}
       >
-        <p>
-          The unused code starting with <strong>{pending?.prefix}</strong> will stop working
-          immediately. Nobody will be able to redeem it.
-        </p>
+        <p>{t('support.access.revokeBody', { prefix: pending?.prefix ?? '' })}</p>
       </ConfirmDestructive>
 
       <ConfirmDestructive
@@ -321,15 +318,12 @@ export function SupportAccessPanel({ slug, initialPending, initialActive, initia
         onClose={() => setEndSessionOpen(false)}
         onConfirm={endActive}
         busy={busy}
-        title="End Libriant's support access?"
+        title={t('support.access.endTitle')}
         confirmText={slug}
-        confirmLabel="End access now"
-        cancelLabel="Keep access"
+        confirmLabel={t('support.access.endConfirm')}
+        cancelLabel={t('support.access.endCancel')}
       >
-        <p>
-          Libriant support will lose access to your library immediately. You can grant access again
-          later if you need help.
-        </p>
+        <p>{t('support.access.endBody')}</p>
       </ConfirmDestructive>
     </>
   );

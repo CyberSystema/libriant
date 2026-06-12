@@ -29,5 +29,19 @@
   "states.error": "Κάτι πήγε στραβά.",
   "states.errorRecovery": "Παρακαλούμε δοκιμάστε ξανά. Αν το πρόβλημα επιμένει, αντιγράψτε αυτόν τον κωδικό και στείλτε τον στην υποστήριξη του Libriant: {code}.",
   "language.en": "English",
-  "language.el": "Ελληνικά"
+  "language.el": "Ελληνικά",
+  "table.noMatches": "Καμία αντιστοίχιση",
+  "table.noMatchesHint": "Τίποτα δεν ταιριάζει με την αναζήτησή σας. Δοκιμάστε διαφορετική λέξη — η αναζήτηση αγνοεί τους τόνους.",
+  "combobox.clear": "Καθαρισμός επιλογής",
+  "combobox.noMatches": "Καμία αντιστοίχιση.",
+  "dashboard.activeLoans": "Ενεργά δάνεια",
+  "dashboard.overdueLoans": "Εκπρόθεσμα δάνεια",
+  "dashboard.queuedHolds": "Κρατήσεις σε αναμονή",
+  "dashboard.currentPlan": "Τρέχον πρόγραμμα",
+  "dashboard.currentPlanSub": "Η ενεργή συνδρομή της βιβλιοθήκης σας.",
+  "dashboard.offline": "εκτός σύνδεσης — δοκιμάστε ανανέωση",
+  "announcements.dismiss": "Απόρριψη",
+  "announcements.ack": "Κατάλαβα",
+  "announcements.ackNote": "Θα το βλέπετε κάθε φορά που συνδέεστε μέχρι να το επιβεβαιώσετε.",
+  "actions.loadMore": "Φόρτωση περισσότερων"
 }

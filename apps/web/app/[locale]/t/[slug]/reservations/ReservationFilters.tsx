@@ -28,7 +28,7 @@ export function ReservationFilters({ catalog, locale }: Props) {
   return (
     <div
       role="group"
-      aria-label="Filter reservations"
+      aria-label={t('reservations.filterAria')}
       style={{
         display: 'flex',
         gap: 'var(--sp-2)',

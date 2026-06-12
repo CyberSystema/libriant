@@ -46,5 +46,6 @@
   "nudge.memberMissing": "Add your first member so you can start lending.",
   "nudge.cta": "Continue setup →",
   "progress": "Step {current} of {total}",
-  "saveAndContinueLater": "Save and continue later"
+  "saveAndContinueLater": "Save and continue later",
+  "progressAria": "Onboarding progress"
 }

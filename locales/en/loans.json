@@ -64,5 +64,6 @@
   "actions.fineCreated": "Fine of {amount} {currency} created",
   "actions.holdPromoted": "Hold for {name} promoted to ready",
   "actions.closedReturned": "This loan was already returned — nothing more to do here.",
-  "actions.closedLost": "This loan is closed (lost) — see the fine below if there is one."
+  "actions.closedLost": "This loan is closed (lost) — see the fine below if there is one.",
+  "filterAria": "Filter loans"
 }

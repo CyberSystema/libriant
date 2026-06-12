@@ -72,5 +72,13 @@
   "book.detailActions": "Actions",
   "book.errors.titleRequired": "Every book needs a title.",
   "book.errors.checkFields": "Some fields need a closer look — see the messages below.",
-  "book.errors.barcodeRequired": "Every copy needs a barcode."
+  "book.errors.barcodeRequired": "Every copy needs a barcode.",
+  "help.title": "About the catalog",
+  "help.intro": "The catalog is every book your library owns. Each row is one title; click into it to see the individual copies you have on the shelf.",
+  "help.doTitle": "What you can do here",
+  "help.do1": "Search by title, author, or ISBN — the search is accent-insensitive, so “πατωντας” finds “Πατώντας”.",
+  "help.do2": "Click “Add a book” to enter one by hand or look it up by ISBN.",
+  "help.do3": "Click any title to edit, add custom fields, or manage copies.",
+  "help.countsTitle": "Counts on the table",
+  "help.countsBody": "The “Available” column shows how many copies aren't currently checked out or reserved. The plan you're on caps the total titles in your catalog — you can see your current usage from the Billing page."
 }

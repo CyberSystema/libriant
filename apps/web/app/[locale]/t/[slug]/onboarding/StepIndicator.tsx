@@ -12,13 +12,15 @@ type Step = {
 type Props = {
   steps: Step[];
   current: string;
+  /** Localized aria-label for the progress strip. */
+  ariaLabel?: string;
 };
 
 /** Numbered progress strip above the wizard. */
-export function StepIndicator({ steps, current }: Props) {
+export function StepIndicator({ steps, current, ariaLabel = 'Onboarding progress' }: Props) {
   return (
     <ol
-      aria-label="Onboarding progress"
+      aria-label={ariaLabel}
       style={{
         display: 'flex',
         gap: 'var(--sp-2)',

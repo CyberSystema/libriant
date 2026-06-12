@@ -118,7 +118,7 @@ export function OptionsEditor({ catalog, locale, value, onChange }: Props) {
                   type="button"
                   size="sm"
                   variant="ghost"
-                  aria-label="Remove option"
+                  aria-label={t('settings.dataModel.removeOption')}
                   onClick={() => remove(ix)}
                 >
                   ×

@@ -32,22 +32,15 @@ export default async function SettingsPage(props: {
         title={t('settings.title')}
         subtitle={t('settings.subtitle')}
         help={
-          <HelpButton title="About settings">
-            <p>This is the home for everything that changes how your library behaves.</p>
-            <h3>What lives here today</h3>
+          <HelpButton title={t('settings.help.title')}>
+            <p>{t('settings.help.intro')}</p>
+            <h3>{t('settings.help.todayTitle')}</h3>
             <ul>
-              <li>
-                <strong>Data model</strong> — add custom fields to books / members / loans, or whole
-                new collection types (DVDs, Board games, …). Changes take effect on next page load,
-                no migration needed.
-              </li>
-              <li>
-                <strong>Get help from Libriant</strong> — generate a one-time code so our team can
-                debug something in your library. End access at any time.
-              </li>
+              <li>{t('settings.help.dataModel')}</li>
+              <li>{t('settings.help.support')}</li>
             </ul>
-            <h3>Coming soon</h3>
-            <p>Notification templates, branding.</p>
+            <h3>{t('settings.help.comingSoonTitle')}</h3>
+            <p>{t('settings.help.comingSoon')}</p>
           </HelpButton>
         }
       />
@@ -121,15 +114,15 @@ export default async function SettingsPage(props: {
 
         <Card>
           <CardHeader
-            title="Get help from Libriant"
-            subtitle="Give our team time-limited access to your library so we can help you fix something."
+            title={t('settings.sections.supportAccess.title')}
+            subtitle={t('settings.sections.supportAccess.description')}
           />
           <CardBody>
             <Link
               href={`/${params.locale}/t/${params.slug}/settings/support-access`}
               className="lbr-btn lbr-btn--primary lbr-btn--md"
             >
-              Manage support access
+              {t('settings.sections.supportAccess.cta')}
             </Link>
           </CardBody>
         </Card>

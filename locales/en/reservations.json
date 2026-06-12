@@ -37,5 +37,6 @@
   "actions.cancel": "Cancel hold",
   "actions.fulfill": "Hand over",
   "actions.cancelSuccess": "Hold canceled.",
-  "actions.fulfillSuccess": "Hold fulfilled — loan created."
+  "actions.fulfillSuccess": "Hold fulfilled — loan created.",
+  "filterAria": "Filter reservations"
 }

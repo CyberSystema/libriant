@@ -1,28 +1,11 @@
-import { Asset, Banner } from '@libriant/ui';
+import { Asset } from '@libriant/ui';
+import { createTranslator, type Catalog, type Locale } from '@libriant/i18n';
 import type { ResolvedSystemMode, SystemModeKind } from '@/lib/system-mode';
 
 type Props = {
   mode: ResolvedSystemMode;
-};
-
-const COPY: Record<
-  'maintenance' | 'out_of_order',
-  {
-    title: string;
-    lead: string;
-    illustration: 'illustrations/maintenance' | 'illustrations/outage';
-  }
-> = {
-  maintenance: {
-    title: "We're upgrading Libriant",
-    lead: "We're making things better behind the scenes. Your library will be back shortly.",
-    illustration: 'illustrations/maintenance',
-  },
-  out_of_order: {
-    title: 'Libriant is temporarily unavailable',
-    lead: 'Something unexpected came up. Our team is on it.',
-    illustration: 'illustrations/outage',
-  },
+  catalog: Catalog;
+  locale: Locale;
 };
 
 /**
@@ -30,11 +13,17 @@ const COPY: Record<
  * maintenance or out-of-order mode. Renders BEFORE any tenant data
  * fetch — no `/auth/me`, no API calls beyond `/system-mode/current`
  * which is exempt from the middleware blocker.
+ *
+ * Copy comes from the shared `system` namespace (reused with the public
+ * system pages) so it stays bilingual and consistent.
  */
-export function SystemModeTakeover({ mode }: Props) {
+export function SystemModeTakeover({ mode, catalog, locale }: Props) {
+  const t = createTranslator(catalog, locale);
   const kind = mode.mode as Exclude<SystemModeKind, 'normal' | 'read_only' | 'under_construction'>;
-  const copy = COPY[kind];
+  const ns = kind === 'maintenance' ? 'maintenance' : 'outage';
   const endsAt = mode.endsAt ? new Date(mode.endsAt) : null;
+  const illustration =
+    kind === 'maintenance' ? 'illustrations/maintenance' : 'illustrations/outage';
 
   return (
     <div
@@ -49,9 +38,11 @@ export function SystemModeTakeover({ mode }: Props) {
     >
       <div style={{ maxWidth: 560, textAlign: 'center' }}>
         <div style={{ marginBottom: 'var(--sp-4)' }}>
-          <Asset name={copy.illustration} width={240} height={180} />
+          <Asset name={illustration} width={240} height={180} />
         </div>
-        <h1 style={{ fontSize: 'var(--fs-2xl)', marginBottom: 'var(--sp-2)' }}>{copy.title}</h1>
+        <h1 style={{ fontSize: 'var(--fs-2xl)', marginBottom: 'var(--sp-2)' }}>
+          {t(`system.${ns}.title`)}
+        </h1>
         <p
           style={{
             fontSize: 'var(--fs-lg)',
@@ -59,17 +50,10 @@ export function SystemModeTakeover({ mode }: Props) {
             marginBottom: 'var(--sp-4)',
           }}
         >
-          {copy.lead}
+          {t(`system.${ns}.description`, {
+            time: endsAt ? endsAt.toLocaleString() : t('system.takeover.soon'),
+          })}
         </p>
-        {endsAt ? (
-          <Banner severity="info" style={{ marginBottom: 'var(--sp-3)' }}>
-            Expected back online by{' '}
-            <strong>
-              <time dateTime={endsAt.toISOString()}>{endsAt.toLocaleString()}</time>
-            </strong>
-            .
-          </Banner>
-        ) : null}
         {mode.messageMarkdown ? (
           <div
             style={{
@@ -91,7 +75,7 @@ export function SystemModeTakeover({ mode }: Props) {
             color: 'var(--color-text-muted)',
           }}
         >
-          Status reference: <code>{mode.eventId ?? 'global'}</code> · {mode.source}
+          {t('system.takeover.statusRef')}: <code>{mode.eventId ?? 'global'}</code> · {mode.source}
         </p>
       </div>
     </div>

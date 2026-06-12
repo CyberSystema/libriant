@@ -57,11 +57,7 @@ export function PlanGrid({ plans, slug, catalog, locale }: Props) {
   }
 
   if (!plans.length) {
-    return (
-      <p style={{ color: 'var(--color-text-muted)' }}>
-        No plans are configured yet. Ask an admin to seed the plan catalog.
-      </p>
-    );
+    return <p style={{ color: 'var(--color-text-muted)' }}>{t('billing.noPlans')}</p>;
   }
 
   return (
@@ -95,7 +91,7 @@ export function PlanGrid({ plans, slug, catalog, locale }: Props) {
             >
               {isManual ? (
                 <span style={{ fontSize: 'var(--fs-lg)', color: 'var(--color-text-muted)' }}>
-                  Contract pricing
+                  {t('billing.contractPricing')}
                 </span>
               ) : isFree ? (
                 <>{t('billing.free')}</>
@@ -141,7 +137,7 @@ export function PlanGrid({ plans, slug, catalog, locale }: Props) {
                 </a>
               ) : !plan.hasStripePrice ? (
                 <Button variant="secondary" disabled style={{ width: '100%' }}>
-                  Not bookable yet
+                  {t('billing.chooser.notBookable')}
                 </Button>
               ) : (
                 <Button

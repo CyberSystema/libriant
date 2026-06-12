@@ -1,6 +1,6 @@
 import { notFound, redirect } from 'next/navigation';
 import { Banner, ToastProvider } from '@libriant/ui';
-import { isLocale } from '@libriant/i18n';
+import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { ApiError, api } from '@/lib/api';
 import { currentAnnouncements } from '@/lib/announcements';
@@ -35,6 +35,10 @@ export default async function TenantLayout(props: {
 
   if (!isLocale(params.locale)) notFound();
 
+  // Catalog loads first so even the pre-auth takeover screen is localized.
+  const catalog = await loadCatalog(params.locale);
+  const t = createTranslator(catalog, params.locale);
+
   // System mode resolves first. A maintenance / out_of_order takeover
   // renders before any auth fetch (the API blocks those anyway, but we
   // also don't want to bounce the user to /login during an outage).
@@ -45,7 +49,7 @@ export default async function TenantLayout(props: {
     currentImpersonation(),
   ]);
   if (isTakeoverMode(systemMode.mode) && !impersonation) {
-    return <SystemModeTakeover mode={systemMode} />;
+    return <SystemModeTakeover mode={systemMode} catalog={catalog} locale={params.locale} />;
   }
 
   const session = await currentSession();
@@ -67,7 +71,6 @@ export default async function TenantLayout(props: {
     redirect(`/admin/support`);
   }
 
-  const catalog = await loadCatalog(params.locale);
   const libraryName = session?.tenant.name ?? impersonation?.tenant.name ?? params.slug;
   const userFullName =
     session?.user.fullName ?? impersonation?.admin.fullName ?? 'Libriant support';
@@ -114,10 +117,7 @@ export default async function TenantLayout(props: {
               <main className="lbr-choose-shell">
                 <div className="lbr-choose" style={{ maxWidth: 560 }}>
                   <h1 className="lbr-choose__title">{libraryName}</h1>
-                  <p className="lbr-choose__subtitle">
-                    Your library needs to choose a plan before you can continue. Please ask a
-                    library admin to set one up.
-                  </p>
+                  <p className="lbr-choose__subtitle">{t('billing.choosePlanGate')}</p>
                 </div>
               </main>
             </ToastProvider>
@@ -172,20 +172,23 @@ export default async function TenantLayout(props: {
           ) : null}
           {systemMode.mode === 'under_construction' ? (
             <Banner severity="info" style={{ marginBottom: 'var(--sp-3)' }}>
-              <strong>Heads-up:</strong>{' '}
-              {systemMode.messageMarkdown ??
-                'Some Libriant features are still rolling out. If you hit something odd, refresh and try again.'}
+              <strong>{t('system.underConstruction.title')}</strong>{' '}
+              {systemMode.messageMarkdown ?? t('system.underConstruction.description')}
             </Banner>
           ) : null}
           {systemMode.mode === 'read_only' ? (
             <Banner severity="warning" style={{ marginBottom: 'var(--sp-3)' }}>
-              <strong>Read-only mode.</strong>{' '}
-              {systemMode.messageMarkdown ??
-                "We're not accepting changes right now. You can still browse, but saves will fail until we're back."}
+              <strong>{t('system.readOnly.title')}</strong>{' '}
+              {systemMode.messageMarkdown ?? t('system.readOnly.body')}
             </Banner>
           ) : null}
           {announcements.length > 0 ? (
-            <AnnouncementsTopBanners slug={params.slug} initial={announcements} />
+            <AnnouncementsTopBanners
+              slug={params.slug}
+              catalog={catalog}
+              locale={params.locale}
+              initial={announcements}
+            />
           ) : null}
           {children}
         </main>

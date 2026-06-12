@@ -5,5 +5,9 @@
   "outage.title": "Sorry — something's broken on our side",
   "outage.description": "Our team is already working on it. Please try again in a few minutes.",
   "underConstruction.title": "This part of Libriant is coming soon",
-  "underConstruction.description": "We're still putting the finishing touches on this section. It should be ready very soon."
+  "underConstruction.description": "We're still putting the finishing touches on this section. It should be ready very soon.",
+  "takeover.soon": "shortly",
+  "takeover.statusRef": "Status reference",
+  "readOnly.title": "Read-only mode.",
+  "readOnly.body": "We're not accepting changes right now. You can still browse, but saves will fail until we're back."
 }

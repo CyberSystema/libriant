@@ -75,8 +75,12 @@ export function CatalogTable({ catalog, locale, slug, initial }: Props) {
       columns={columns}
       searchParam="q"
       searchPlaceholder={t('catalog.search')}
+      searchLabel={t('common.actions.search')}
+      noMatchesTitle={t('common.table.noMatches')}
+      noMatchesDescription={t('common.table.noMatchesHint')}
       emptyTitle={t('catalog.empty.title')}
       emptyDescription={t('catalog.empty.description')}
+      loadMoreLabel={t('common.actions.loadMore')}
       emptyIllustration="illustrations/empty-catalog"
       rowHref={(b) => `/${locale}/t/${slug}/catalog/${b.id}`}
     />

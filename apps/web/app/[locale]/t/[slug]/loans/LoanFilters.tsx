@@ -32,7 +32,7 @@ export function LoanFilters({ catalog, locale }: Props) {
   return (
     <div
       role="group"
-      aria-label="Filter loans"
+      aria-label={t('loans.filterAria')}
       style={{
         display: 'flex',
         gap: 'var(--sp-2)',

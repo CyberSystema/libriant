@@ -27,6 +27,10 @@ type Props<T extends { id: string }> = {
   minQueryChars?: number;
   /** Optional disabled flag. */
   disabled?: boolean;
+  /** Localized aria-label for the clear (×) button. */
+  clearLabel?: string;
+  /** Localized text shown when a query returns no rows. */
+  noMatchesText?: string;
 };
 
 /**
@@ -49,6 +53,8 @@ export function Combobox<T extends { id: string }>({
   renderSelected,
   minQueryChars = 1,
   disabled,
+  clearLabel = 'Clear selection',
+  noMatchesText = 'No matches.',
 }: Props<T>) {
   const [query, setQuery] = React.useState('');
   const [open, setOpen] = React.useState(false);
@@ -123,7 +129,7 @@ export function Combobox<T extends { id: string }>({
         <button
           type="button"
           className="lbr-combobox__clear"
-          aria-label="Clear selection"
+          aria-label={clearLabel}
           onClick={() => onChange(null)}
           disabled={disabled}
         >
@@ -166,7 +172,7 @@ export function Combobox<T extends { id: string }>({
               {error}
             </li>
           ) : items.length === 0 ? (
-            <li className="lbr-combobox__option lbr-combobox__option--inert">No matches.</li>
+            <li className="lbr-combobox__option lbr-combobox__option--inert">{noMatchesText}</li>
           ) : (
             items.map((item, ix) => (
               <li

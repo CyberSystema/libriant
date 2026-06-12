@@ -92,6 +92,8 @@ export function PlaceHoldForm({ slug, catalog, locale }: Props) {
             <Combobox<BookOption>
               id="hold-book"
               placeholder={t('reservations.placeHold.bookPlaceholder')}
+              clearLabel={t('common.combobox.clear')}
+              noMatchesText={t('common.combobox.noMatches')}
               value={book}
               onChange={setBook}
               endpoint={(q) => `/t/${slug}/catalog/books?q=${encodeURIComponent(q)}&limit=8`}
@@ -117,6 +119,8 @@ export function PlaceHoldForm({ slug, catalog, locale }: Props) {
             <Combobox<MemberOption>
               id="hold-member"
               placeholder={t('reservations.placeHold.memberPlaceholder')}
+              clearLabel={t('common.combobox.clear')}
+              noMatchesText={t('common.combobox.noMatches')}
               value={member}
               onChange={setMember}
               endpoint={(q) =>

@@ -121,6 +121,8 @@ export function AuthorPicker({ slug, catalog, locale, value, onChange }: Props) 
       <Combobox<Author>
         id="book-author-picker"
         placeholder={t('catalog.book.authorPlaceholder')}
+        clearLabel={t('common.combobox.clear')}
+        noMatchesText={t('common.combobox.noMatches')}
         value={null}
         onChange={(a) => {
           if (a) {

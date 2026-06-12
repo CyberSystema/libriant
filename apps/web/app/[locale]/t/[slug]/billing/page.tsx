@@ -100,19 +100,19 @@ export default async function BillingPage(props: {
                 </dd>
                 {snapshot.currentPeriodEnd ? (
                   <>
-                    <dt style={{ color: 'var(--color-text-muted)' }}>Renews</dt>
+                    <dt style={{ color: 'var(--color-text-muted)' }}>{t('billing.renewsLabel')}</dt>
                     <dd style={{ margin: 0 }}>{fmtDate(snapshot.currentPeriodEnd)}</dd>
                   </>
                 ) : null}
                 {snapshot.paidUntil ? (
                   <>
-                    <dt style={{ color: 'var(--color-text-muted)' }}>Paid until</dt>
+                    <dt style={{ color: 'var(--color-text-muted)' }}>{t('billing.paidUntil')}</dt>
                     <dd style={{ margin: 0 }}>{fmtDate(snapshot.paidUntil)}</dd>
                   </>
                 ) : null}
                 {snapshot.graceUntil ? (
                   <>
-                    <dt style={{ color: 'var(--color-text-muted)' }}>Grace ends</dt>
+                    <dt style={{ color: 'var(--color-text-muted)' }}>{t('billing.graceEnds')}</dt>
                     <dd style={{ margin: 0 }}>{fmtDate(snapshot.graceUntil)}</dd>
                   </>
                 ) : null}

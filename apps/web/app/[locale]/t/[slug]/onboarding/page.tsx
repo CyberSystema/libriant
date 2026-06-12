@@ -95,7 +95,11 @@ export default async function OnboardingPage(props: {
         title={t('onboarding.welcome.title')}
         subtitle={t('onboarding.welcome.subtitle')}
       />
-      <StepIndicator steps={indicatorSteps} current={stepParam} />
+      <StepIndicator
+        steps={indicatorSteps}
+        current={stepParam}
+        ariaLabel={t('onboarding.progressAria')}
+      />
 
       {stepParam === 'welcome' ? (
         <Card>

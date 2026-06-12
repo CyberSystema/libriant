@@ -40,6 +40,13 @@ type DataTableProps<T extends { id: string }> = {
    */
   searchParam?: string;
   searchPlaceholder?: string;
+  /** Localized label for the search action (button text + aria-label). */
+  searchLabel?: string;
+  /** Localized empty state when a search yields nothing. */
+  noMatchesTitle?: string;
+  noMatchesDescription?: string;
+  /** Localized "load more" button. */
+  loadMoreLabel?: string;
   /** Optional row → URL function; rows become clickable. */
   rowHref?: (row: T) => string;
   /** Optional toolbar slot rendered next to the search box. */
@@ -61,6 +68,10 @@ export function DataTable<T extends { id: string }>({
   emptyIllustration,
   searchParam,
   searchPlaceholder,
+  searchLabel = 'Search',
+  noMatchesTitle = 'No matches',
+  noMatchesDescription,
+  loadMoreLabel = 'Load more',
   rowHref,
   toolbar,
 }: DataTableProps<T>) {
@@ -147,11 +158,11 @@ export function DataTable<T extends { id: string }>({
             onKeyDown={(e) => {
               if (e.key === 'Enter') commitSearch();
             }}
-            aria-label="Search"
+            aria-label={searchLabel}
             style={{ maxWidth: 360 }}
           />
           <Button variant="secondary" onClick={commitSearch}>
-            Search
+            {searchLabel}
           </Button>
           {toolbar ? <div style={{ marginLeft: 'auto' }}>{toolbar}</div> : null}
         </div>
@@ -170,8 +181,11 @@ export function DataTable<T extends { id: string }>({
       ) : noMatches ? (
         <EmptyState
           illustration={emptyIllustration ?? 'illustrations/empty-catalog'}
-          title="No matches"
-          description={`Nothing matches "${currentQ}". Try a different word — searches are accent-insensitive.`}
+          title={noMatchesTitle}
+          description={
+            noMatchesDescription ??
+            `Nothing matches "${currentQ}". Try a different word — searches are accent-insensitive.`
+          }
         />
       ) : (
         <>
@@ -211,7 +225,7 @@ export function DataTable<T extends { id: string }>({
           {nextCursor ? (
             <div style={{ textAlign: 'center', marginTop: 'var(--sp-4)' }}>
               <Button variant="secondary" onClick={loadMore} loading={loading}>
-                Load more
+                {loadMoreLabel}
               </Button>
             </div>
           ) : null}

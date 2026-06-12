@@ -43,28 +43,16 @@ export default async function CatalogPage(props: {
         title={t('common.nav.catalog')}
         subtitle={t('catalog.subtitle')}
         help={
-          <HelpButton title="About the catalog">
-            <p>
-              The catalog is every book your library owns. Each row is one <em>title</em>; click
-              into it to see the individual <em>copies</em> you have on the shelf.
-            </p>
-            <h3>What you can do here</h3>
+          <HelpButton title={t('catalog.help.title')}>
+            <p>{t('catalog.help.intro')}</p>
+            <h3>{t('catalog.help.doTitle')}</h3>
             <ul>
-              <li>
-                Search by title, author, or ISBN — the search is accent-insensitive, so{' '}
-                <code>πατωντας</code> finds <code>Πατώντας</code>.
-              </li>
-              <li>
-                Click <strong>Add a book</strong> to enter one by hand or look it up by ISBN.
-              </li>
-              <li>Click any title to edit, add custom fields, or manage copies.</li>
+              <li>{t('catalog.help.do1')}</li>
+              <li>{t('catalog.help.do2')}</li>
+              <li>{t('catalog.help.do3')}</li>
             </ul>
-            <h3>Counts on the table</h3>
-            <p>
-              The “Available” column shows how many copies aren’t currently checked out or reserved.
-              The plan you’re on caps the total titles in your catalog — you can see your current
-              usage from the Billing page.
-            </p>
+            <h3>{t('catalog.help.countsTitle')}</h3>
+            <p>{t('catalog.help.countsBody')}</p>
           </HelpButton>
         }
         actions={

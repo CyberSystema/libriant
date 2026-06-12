@@ -2,11 +2,14 @@
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { Banner, Button, Modal, useToast } from '@libriant/ui';
+import { createTranslator, type Catalog, type Locale } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
 import { type ActiveAnnouncement } from '@/lib/announcements';
 
 type Props = {
   slug: string;
+  catalog: Catalog;
+  locale: Locale;
   initial: ActiveAnnouncement[];
 };
 
@@ -31,7 +34,8 @@ const SEVERITY_TO_BANNER: Record<ActiveAnnouncement['severity'], 'info' | 'warni
  * the UI is instantly responsive without waiting for the 60 s cache to
  * lapse. A page reload would also reflect the new state.
  */
-export function AnnouncementsTopBanners({ slug, initial }: Props) {
+export function AnnouncementsTopBanners({ slug, catalog, locale, initial }: Props) {
+  const t = createTranslator(catalog, locale);
   const router = useRouter();
   const toast = useToast();
   const [items, setItems] = React.useState(initial);
@@ -50,7 +54,7 @@ export function AnnouncementsTopBanners({ slug, initial }: Props) {
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : 'Something went wrong.',
+        title: err instanceof ApiError ? err.message : t('errors.generic.title'),
       });
     } finally {
       setPending(null);
@@ -66,7 +70,7 @@ export function AnnouncementsTopBanners({ slug, initial }: Props) {
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : 'Something went wrong.',
+        title: err instanceof ApiError ? err.message : t('errors.generic.title'),
       });
     } finally {
       setPending(null);
@@ -111,7 +115,7 @@ export function AnnouncementsTopBanners({ slug, initial }: Props) {
                     loading={pending === a.id}
                     onClick={() => dismiss(a.id)}
                   >
-                    Dismiss
+                    {t('common.announcements.dismiss')}
                   </Button>
                 ) : null}
               </div>
@@ -133,7 +137,7 @@ export function AnnouncementsTopBanners({ slug, initial }: Props) {
               loading={pending === blocking.id}
               onClick={() => acknowledge(blocking.id)}
             >
-              I understand
+              {t('common.announcements.ack')}
             </Button>
           }
         >
@@ -145,7 +149,7 @@ export function AnnouncementsTopBanners({ slug, initial }: Props) {
               marginTop: 'var(--sp-3)',
             }}
           >
-            You'll see this every time you sign in until you acknowledge it.
+            {t('common.announcements.ackNote')}
           </p>
         </Modal>
       ) : null}

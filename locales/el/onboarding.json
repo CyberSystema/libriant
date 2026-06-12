@@ -46,5 +46,6 @@
   "nudge.memberMissing": "Προσθέστε το πρώτο σας μέλος για να αρχίσετε δανεισμούς.",
   "nudge.cta": "Συνεχίστε το στήσιμο →",
   "progress": "Βήμα {current} από {total}",
-  "saveAndContinueLater": "Αποθήκευση και συνέχεια αργότερα"
+  "saveAndContinueLater": "Αποθήκευση και συνέχεια αργότερα",
+  "progressAria": "Πρόοδος ρύθμισης"
 }

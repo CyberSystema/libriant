@@ -156,5 +156,16 @@
   "library.field.lostItemDefaultFeeCents": "Default replacement cost",
   "library.field.reservationsEnabled": "Enable reservations / holds",
   "library.field.holdPickupHours": "Hold pickup window (hours)",
-  "library.reservationsPlanLocked": "Your plan doesn't include reservations. Upgrade to turn this on."
+  "library.reservationsPlanLocked": "Your plan doesn't include reservations. Upgrade to turn this on.",
+  "help.title": "About settings",
+  "help.intro": "This is the home for everything that changes how your library behaves.",
+  "help.todayTitle": "What lives here today",
+  "help.dataModel": "Data model — add custom fields to books / members / loans, or whole new collection types (DVDs, Board games, …). Changes take effect on next page load, no migration needed.",
+  "help.support": "Get help from Libriant — generate a one-time code so our team can debug something in your library. End access at any time.",
+  "help.comingSoonTitle": "Coming soon",
+  "help.comingSoon": "Notification templates, branding.",
+  "dataModel.removeOption": "Remove option",
+  "sections.supportAccess.title": "Get help from Libriant",
+  "sections.supportAccess.description": "Give our team time-limited access to your library so we can help you fix something.",
+  "sections.supportAccess.cta": "Manage support access"
 }

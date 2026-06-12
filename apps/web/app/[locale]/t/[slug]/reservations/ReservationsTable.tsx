@@ -115,6 +115,7 @@ export function ReservationsTable({
       columns={columns}
       emptyTitle={t('reservations.empty.title')}
       emptyDescription={t('reservations.empty.description')}
+      loadMoreLabel={t('common.actions.loadMore')}
       emptyIllustration="illustrations/empty-catalog"
     />
   );

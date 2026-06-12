@@ -164,6 +164,8 @@ export function CheckoutForm({
             <Combobox<MemberOption>
               id="checkout-member"
               placeholder={t('loans.checkout.memberPlaceholder')}
+              clearLabel={t('common.combobox.clear')}
+              noMatchesText={t('common.combobox.noMatches')}
               value={member}
               onChange={setMember}
               endpoint={(q) =>
@@ -197,6 +199,8 @@ export function CheckoutForm({
             <Combobox<BookOption>
               id="checkout-book"
               placeholder={t('loans.checkout.bookPlaceholder')}
+              clearLabel={t('common.combobox.clear')}
+              noMatchesText={t('common.combobox.noMatches')}
               value={book}
               onChange={(b) => {
                 setBook(b);
