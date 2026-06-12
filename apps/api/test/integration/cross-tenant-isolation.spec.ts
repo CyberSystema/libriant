@@ -56,7 +56,7 @@ async function signup(slug: string) {
 function loginAs(slug: string) {
   return request(app.getHttpServer())
     .post('/auth/login')
-    .send({ slug, email: `owner@${slug}.test`, password })
+    .send({ slug, identifier: `owner@${slug}.test`, password })
     .expect(200);
 }
 

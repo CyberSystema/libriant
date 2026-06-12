@@ -22,7 +22,13 @@ import { ROLES_KEY } from './roles.decorator.js';
  */
 @Injectable()
 export class RolesGuard implements CanActivate {
-  constructor(private readonly reflector: Reflector) {}
+  // `Reflector` is stateless (it just reads metadata via `Reflect.getMetadata`),
+  // so we construct it directly instead of relying on DI. NestJS instantiates a
+  // `@UseGuards(RolesGuard)` standalone when the guard isn't in the controller
+  // module's provider graph — and a standalone instance would get no injected
+  // Reflector, making every role-guarded route 500. This keeps it dep-free,
+  // exactly like TenantGuard.
+  private readonly reflector = new Reflector();
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const roles = this.reflector.getAllAndOverride<UserRole[]>(ROLES_KEY, [

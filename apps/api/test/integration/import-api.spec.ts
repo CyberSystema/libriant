@@ -81,7 +81,7 @@ beforeAll(async () => {
 
   const login = await request(app.getHttpServer())
     .post('/auth/login')
-    .send({ slug, email: `owner@${slug}.test`, password })
+    .send({ slug, identifier: `owner@${slug}.test`, password })
     .expect(200);
   const raw = login.headers['set-cookie'] as unknown as string[] | string;
   const cookies = Array.isArray(raw) ? raw : [raw];
