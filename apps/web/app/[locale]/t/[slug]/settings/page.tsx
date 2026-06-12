@@ -69,6 +69,21 @@ export default async function SettingsPage(props: {
 
         <Card>
           <CardHeader
+            title={t('settings.sections.activity.title')}
+            subtitle={t('settings.sections.activity.description')}
+          />
+          <CardBody>
+            <Link
+              href={`/${params.locale}/t/${params.slug}/settings/activity`}
+              className="lbr-btn lbr-btn--primary lbr-btn--md"
+            >
+              {t('settings.sections.activity.cta')}
+            </Link>
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader
             title={t('settings.sections.dataModel.title')}
             subtitle={t('settings.sections.dataModel.description')}
           />
