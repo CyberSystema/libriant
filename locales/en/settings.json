@@ -197,5 +197,21 @@
   "activity.actions.loan.returned": "Returned",
   "activity.actions.loan.renewed": "Renewed",
   "activity.actions.loan.marked_lost": "Marked lost",
-  "activity.actions.settings.updated": "Settings updated"
+  "activity.actions.settings.updated": "Settings updated",
+  "sections.templates.title": "Email templates",
+  "sections.templates.description": "Customize the wording of your member reminder emails.",
+  "sections.templates.cta": "Edit templates",
+  "templates.title": "Member email templates",
+  "templates.subtitle": "Override the wording of your reminder emails. Leave a field blank to use the built-in default.",
+  "templates.hint": "Use the placeholders shown under each subject — they're filled in per email.",
+  "templates.kind.dueSoon": "Due-soon reminder",
+  "templates.kind.overdue": "Overdue notice",
+  "templates.kind.holdReady": "Hold ready for pickup",
+  "templates.subject": "Subject",
+  "templates.body": "Body",
+  "templates.placeholders": "Placeholders",
+  "templates.defaultPlaceholder": "Leave blank to use the default",
+  "templates.save": "Save templates",
+  "templates.saved": "Templates saved.",
+  "templates.saveError": "Couldn't save templates."
 }

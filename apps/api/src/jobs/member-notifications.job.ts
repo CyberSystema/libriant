@@ -97,6 +97,24 @@ function holdReadyTpl(
   };
 }
 
+/** Per-library overrides, keyed by reminder kind. */
+type TemplateMap = Record<string, { subject?: string; body?: string } | undefined>;
+
+const substitute = (tpl: string, vars: Record<string, string>): string =>
+  tpl.replace(/\{(member|book|due|by|library)\}/g, (_, k: string) => vars[k] ?? '');
+
+/** Use the admin's custom subject/body when set (non-empty), else the default. */
+function pickTemplate(
+  custom: { subject?: string; body?: string } | undefined,
+  def: Tpl,
+  vars: Record<string, string>,
+): Tpl {
+  return {
+    subject: custom?.subject?.trim() ? substitute(custom.subject, vars) : def.subject,
+    body: custom?.body?.trim() ? substitute(custom.body, vars) : def.body,
+  };
+}
+
 export async function sendMemberNotifications(): Promise<JobResult> {
   const tenants = await controlDb.tenant.findMany({
     where: { status: 'active' },
@@ -160,6 +178,7 @@ async function notifyOneTenant(
   }
 
   const loc = localeOf(ctx.defaultLocale);
+  const templates = (settings.notificationTemplates ?? {}) as TemplateMap;
   const now = new Date();
   let dueSoon = 0;
   let overdue = 0;
@@ -182,12 +201,13 @@ async function notifyOneTenant(
     });
     for (const loan of loans) {
       if (!loan.member.email) continue;
-      const tpl = dueSoonTpl(loc, {
+      const vars = {
         member: loan.member.fullName,
         book: loan.copy.book.title,
         due: fmtDate(loan.dueAt, loc),
         library: ctx.name,
-      });
+      };
+      const tpl = pickTemplate(templates.dueSoon, dueSoonTpl(loc, vars), vars);
       const res = await emails.enqueue({
         kind: 'member_due_soon',
         toEmail: loan.member.email,
@@ -217,12 +237,13 @@ async function notifyOneTenant(
     });
     for (const loan of loans) {
       if (!loan.member.email) continue;
-      const tpl = overdueTpl(loc, {
+      const vars = {
         member: loan.member.fullName,
         book: loan.copy.book.title,
         due: fmtDate(loan.dueAt, loc),
         library: ctx.name,
-      });
+      };
+      const tpl = pickTemplate(templates.overdue, overdueTpl(loc, vars), vars);
       const res = await emails.enqueue({
         kind: 'member_overdue',
         toEmail: loan.member.email,
@@ -252,12 +273,13 @@ async function notifyOneTenant(
     });
     for (const hold of holds) {
       if (!hold.member.email) continue;
-      const tpl = holdReadyTpl(loc, {
-        member: hold.member.fullName,
-        book: hold.book.title,
-        library: ctx.name,
-        by: hold.expiresAt ? fmtDate(hold.expiresAt, loc) : null,
-      });
+      const by = hold.expiresAt ? fmtDate(hold.expiresAt, loc) : '';
+      const vars = { member: hold.member.fullName, book: hold.book.title, library: ctx.name, by };
+      const tpl = pickTemplate(
+        templates.holdReady,
+        holdReadyTpl(loc, { ...vars, by: by || null }),
+        vars,
+      );
       const res = await emails.enqueue({
         kind: 'member_hold_ready',
         toEmail: hold.member.email,

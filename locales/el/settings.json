@@ -197,5 +197,21 @@
   "activity.actions.loan.returned": "Επιστροφή",
   "activity.actions.loan.renewed": "Ανανέωση",
   "activity.actions.loan.marked_lost": "Σήμανση ως χαμένο",
-  "activity.actions.settings.updated": "Ενημέρωση ρυθμίσεων"
+  "activity.actions.settings.updated": "Ενημέρωση ρυθμίσεων",
+  "sections.templates.title": "Πρότυπα email",
+  "sections.templates.description": "Προσαρμόστε το κείμενο των email υπενθύμισης προς τα μέλη.",
+  "sections.templates.cta": "Επεξεργασία προτύπων",
+  "templates.title": "Πρότυπα email μελών",
+  "templates.subtitle": "Αντικαταστήστε το κείμενο των email υπενθύμισης. Αφήστε ένα πεδίο κενό για να χρησιμοποιηθεί το προεπιλεγμένο.",
+  "templates.hint": "Χρησιμοποιήστε τα σύμβολα κράτησης θέσης που εμφανίζονται κάτω από κάθε θέμα — συμπληρώνονται ανά email.",
+  "templates.kind.dueSoon": "Υπενθύμιση «λήγει σύντομα»",
+  "templates.kind.overdue": "Ειδοποίηση εκπρόθεσμου",
+  "templates.kind.holdReady": "Κράτηση έτοιμη προς παραλαβή",
+  "templates.subject": "Θέμα",
+  "templates.body": "Κείμενο",
+  "templates.placeholders": "Σύμβολα κράτησης θέσης",
+  "templates.defaultPlaceholder": "Αφήστε κενό για το προεπιλεγμένο",
+  "templates.save": "Αποθήκευση προτύπων",
+  "templates.saved": "Τα πρότυπα αποθηκεύτηκαν.",
+  "templates.saveError": "Δεν ήταν δυνατή η αποθήκευση των προτύπων."
 }

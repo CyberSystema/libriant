@@ -5,7 +5,31 @@ import type { TenantActor } from '../tenancy/tenant-actor.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
-import type { UpdateTenantSettingsDto } from './tenant-settings.dto.js';
+import type { NotificationTemplate, UpdateTenantSettingsDto } from './tenant-settings.dto.js';
+
+/** Reminder kinds that can carry a custom template. */
+const TEMPLATE_KINDS = ['dueSoon', 'overdue', 'holdReady'] as const;
+const SUBJECT_MAX = 200;
+const BODY_MAX = 4000;
+
+/** Whitelist kinds, keep only string subject/body, trim + cap length. */
+function sanitizeTemplates(input: unknown): Record<string, NotificationTemplate> {
+  const out: Record<string, NotificationTemplate> = {};
+  if (!input || typeof input !== 'object') return out;
+  const obj = input as Record<string, unknown>;
+  for (const kind of TEMPLATE_KINDS) {
+    const v = obj[kind];
+    if (!v || typeof v !== 'object') continue;
+    const entry: NotificationTemplate = {};
+    const subject = (v as Record<string, unknown>).subject;
+    const body = (v as Record<string, unknown>).body;
+    if (typeof subject === 'string' && subject.trim())
+      entry.subject = subject.trim().slice(0, SUBJECT_MAX);
+    if (typeof body === 'string' && body.trim()) entry.body = body.trim().slice(0, BODY_MAX);
+    if (entry.subject || entry.body) out[kind] = entry;
+  }
+  return out;
+}
 
 /** The settings + feature switches the tenant admin controls, plus the one
  *  capability that's gated by the subscription rather than the library. */
@@ -26,6 +50,7 @@ export type TenantSettingsView = {
   dueSoonDays: number;
   notifyOverdue: boolean;
   notifyHoldReady: boolean;
+  notificationTemplates: Record<string, NotificationTemplate>;
   /** Whether the subscription permits reservations at all. When false, the
    *  reservations switch can't be turned on and the UI should say so. */
   reservationsAllowedByPlan: boolean;
@@ -105,6 +130,17 @@ export class TenantSettingsService {
       after[key] = next;
     }
 
+    // notificationTemplates is JSON, so it can't ride the scalar === diff above.
+    if (patch.notificationTemplates !== undefined) {
+      const sanitized = sanitizeTemplates(patch.notificationTemplates);
+      const existingTemplates = (existing.notificationTemplates ?? {}) as Record<string, unknown>;
+      if (JSON.stringify(sanitized) !== JSON.stringify(existingTemplates)) {
+        data.notificationTemplates = sanitized as Prisma.InputJsonValue;
+        before.notificationTemplates = existingTemplates;
+        after.notificationTemplates = sanitized;
+      }
+    }
+
     if (Object.keys(data).length === 0) {
       return this.toView(existing, reservationsAllowedByPlan);
     }
@@ -138,6 +174,7 @@ export class TenantSettingsService {
       dueSoonDays: number;
       notifyOverdue: boolean;
       notifyHoldReady: boolean;
+      notificationTemplates: unknown;
     },
     reservationsAllowedByPlan: boolean,
   ): TenantSettingsView {
@@ -158,6 +195,7 @@ export class TenantSettingsService {
       dueSoonDays: s.dueSoonDays,
       notifyOverdue: s.notifyOverdue,
       notifyHoldReady: s.notifyHoldReady,
+      notificationTemplates: sanitizeTemplates(s.notificationTemplates),
       reservationsAllowedByPlan,
     };
   }

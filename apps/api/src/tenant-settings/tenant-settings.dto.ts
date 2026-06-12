@@ -1,4 +1,17 @@
-import { IsBoolean, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsInt,
+  IsObject,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  Min,
+} from 'class-validator';
+
+/** One reminder's custom copy. Both fields optional; empty falls back to the
+ *  built-in localized template. */
+export type NotificationTemplate = { subject?: string; body?: string };
 
 /**
  * Patch for a library's circulation policy + feature switches. Every field is
@@ -95,4 +108,10 @@ export class UpdateTenantSettingsDto {
   @IsOptional()
   @IsBoolean()
   notifyHoldReady?: boolean;
+
+  /** Per-kind custom email copy. Loosely typed here; the service whitelists
+   *  known kinds and caps lengths. */
+  @IsOptional()
+  @IsObject()
+  notificationTemplates?: Record<string, NotificationTemplate>;
 }

@@ -161,6 +161,11 @@ model TenantSetting {
   dueSoonDays             Int      @default(2)
   notifyOverdue           Boolean  @default(false)
   notifyHoldReady         Boolean  @default(false)
+  /// Per-library overrides for the reminder emails, shaped
+  /// `{ dueSoon|overdue|holdReady: { subject, body } }`. Empty / missing keys
+  /// fall back to the built-in localized template. Bodies may use the
+  /// placeholders {member} {book} {due} {library}.
+  notificationTemplates   Json     @default("{}")
   /// Default locale for the library — kept here as well as in the control
   /// plane so reports / emails generated tenant-side can localize even when
   /// no control-plane lookup is convenient.

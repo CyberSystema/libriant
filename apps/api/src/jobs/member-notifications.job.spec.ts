@@ -118,6 +118,28 @@ describe('sendMemberNotifications', () => {
     expect(res.counts?.dueSoon).toBe(1);
   });
 
+  it('applies a custom template with placeholder substitution', async () => {
+    tenantGetClient.mockReturnValue(
+      makeClient({
+        settings: {
+          notifyDueSoon: true,
+          dueSoonDays: 2,
+          notifyOverdue: false,
+          notifyHoldReady: false,
+          notificationTemplates: {
+            dueSoon: { subject: 'Hi {member}', body: '{book} is due on {due} — {library}' },
+          },
+        },
+        dueSoon: [loan('l1')],
+      }),
+    );
+    await sendMemberNotifications();
+    const arg = enqueue.mock.calls[0]![0] as { subject: string; bodyMarkdown: string };
+    expect(arg.subject).toBe('Hi Pat');
+    expect(arg.bodyMarkdown).toContain('Dune is due on');
+    expect(arg.bodyMarkdown).toContain('Acme');
+  });
+
   it('respects per-type toggles (overdue off ⇒ no overdue mail)', async () => {
     tenantGetClient.mockReturnValue(
       makeClient({
