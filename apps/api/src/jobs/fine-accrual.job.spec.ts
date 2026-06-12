@@ -23,7 +23,12 @@ import { sweepFineAccrual } from './fine-accrual.job.js';
 type Fine = { id: string; loanId: string; amountCents: number; status: string; reason: string };
 
 function makeClient(opts: {
-  settings: { finePerDayCents: number; fineCapCents: number; currency: string } | null;
+  settings: {
+    overdueFinesEnabled: boolean;
+    finePerDayCents: number;
+    fineCapCents: number;
+    currency: string;
+  } | null;
   loans: Array<{ id: string; memberId: string; dueAt: Date }>;
   fines?: Fine[];
 }) {
@@ -86,7 +91,12 @@ describe('sweepFineAccrual', () => {
 
   it('opens an outstanding fine for an overdue active loan', async () => {
     const { client, created } = makeClient({
-      settings: { finePerDayCents: 10, fineCapCents: 0, currency: 'EUR' },
+      settings: {
+        overdueFinesEnabled: true,
+        finePerDayCents: 10,
+        fineCapCents: 0,
+        currency: 'EUR',
+      },
       loans: [{ id: 'loan-1', memberId: 'm1', dueAt: daysAgo(5) }],
     });
     tenantGetClient.mockReturnValue(client);
@@ -97,7 +107,12 @@ describe('sweepFineAccrual', () => {
 
   it('caps the fine at fineCapCents', async () => {
     const { client, created } = makeClient({
-      settings: { finePerDayCents: 10, fineCapCents: 70, currency: 'EUR' },
+      settings: {
+        overdueFinesEnabled: true,
+        finePerDayCents: 10,
+        fineCapCents: 70,
+        currency: 'EUR',
+      },
       loans: [{ id: 'loan-1', memberId: 'm1', dueAt: daysAgo(10) }],
     });
     tenantGetClient.mockReturnValue(client);
@@ -107,7 +122,12 @@ describe('sweepFineAccrual', () => {
 
   it('grows an existing outstanding fine, not a duplicate', async () => {
     const { client, created, updated } = makeClient({
-      settings: { finePerDayCents: 10, fineCapCents: 0, currency: 'EUR' },
+      settings: {
+        overdueFinesEnabled: true,
+        finePerDayCents: 10,
+        fineCapCents: 0,
+        currency: 'EUR',
+      },
       loans: [{ id: 'loan-1', memberId: 'm1', dueAt: daysAgo(5) }],
       fines: [
         {
@@ -127,7 +147,23 @@ describe('sweepFineAccrual', () => {
 
   it('skips libraries that do not charge overdue fines', async () => {
     const { client, created } = makeClient({
-      settings: { finePerDayCents: 0, fineCapCents: 0, currency: 'EUR' },
+      settings: { overdueFinesEnabled: true, finePerDayCents: 0, fineCapCents: 0, currency: 'EUR' },
+      loans: [{ id: 'loan-1', memberId: 'm1', dueAt: daysAgo(5) }],
+    });
+    tenantGetClient.mockReturnValue(client);
+    await sweepFineAccrual();
+    expect(created).toHaveLength(0);
+    expect(client.loan.findMany).not.toHaveBeenCalled();
+  });
+
+  it('skips libraries with overdue fines switched off, even with a rate set', async () => {
+    const { client, created } = makeClient({
+      settings: {
+        overdueFinesEnabled: false,
+        finePerDayCents: 10,
+        fineCapCents: 0,
+        currency: 'EUR',
+      },
       loans: [{ id: 'loan-1', memberId: 'm1', dueAt: daysAgo(5) }],
     });
     tenantGetClient.mockReturnValue(client);

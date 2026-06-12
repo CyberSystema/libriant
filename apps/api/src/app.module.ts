@@ -18,6 +18,7 @@ import { StaffModule } from './staff/staff.module.js';
 import { ExportModule } from './export/export.module.js';
 import { MembersModule } from './members/members.module.js';
 import { ReservationsModule } from './reservations/reservations.module.js';
+import { TenantSettingsModule } from './tenant-settings/tenant-settings.module.js';
 import { PlansModule } from './plans/plans.module.js';
 import { PlatformModule } from './platform/platform.module.js';
 import { RedisModule } from './platform/redis.module.js';
@@ -53,6 +54,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     MembersModule,
     LoansModule,
     ReservationsModule,
+    TenantSettingsModule,
     ImportModule,
     BillingModule,
     HelpModule,

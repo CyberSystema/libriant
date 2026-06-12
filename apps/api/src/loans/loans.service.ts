@@ -363,7 +363,10 @@ export class LoansService {
     const rawFine = daysOverdue * settings.finePerDayCents;
     const fineAmountCents =
       settings.fineCapCents > 0 ? Math.min(rawFine, settings.fineCapCents) : rawFine;
-    const shouldCreateFine = daysOverdue > 0 && fineAmountCents > 0;
+    // The overdue-fines switch is the master gate: off ⇒ never bill, whatever
+    // the rate says.
+    const shouldCreateFine =
+      settings.overdueFinesEnabled && daysOverdue > 0 && fineAmountCents > 0;
 
     type ReturnTxResult = {
       fineId: string | null;
@@ -549,6 +552,9 @@ export class LoansService {
     }
 
     const settings = await this.requireSettings(client);
+    if (!settings.renewalsEnabled) {
+      throw new BadRequestException('Loan renewals are turned off for this library.');
+    }
     const periods = input.periods ?? 1;
     const remaining = Math.max(0, settings.maxRenewals - loan.renewedCount);
     if (remaining === 0) {
@@ -627,7 +633,11 @@ export class LoansService {
     }
 
     const settings = await this.requireSettings(client);
-    const cost = input.replacementCostCents ?? 0;
+    // Staff can always pass an explicit amount; otherwise fall back to the
+    // library's default replacement fee, but only when lost-item fees are on.
+    const cost =
+      input.replacementCostCents ??
+      (settings.lostItemFeesEnabled ? settings.lostItemDefaultFeeCents : 0);
     const shouldCreateFine = cost > 0;
 
     let fineId: string | null = null;
@@ -788,9 +798,13 @@ export class LoansService {
 
   private async requireSettings(client: TenantPrismaClient): Promise<{
     loanPeriodDays: number;
+    renewalsEnabled: boolean;
     maxRenewals: number;
+    overdueFinesEnabled: boolean;
     finePerDayCents: number;
     fineCapCents: number;
+    lostItemFeesEnabled: boolean;
+    lostItemDefaultFeeCents: number;
     maxActiveLoans: number;
     holdPickupHours: number;
     currency: string;

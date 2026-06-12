@@ -73,7 +73,8 @@ async function accrueOneTenant(
   const client = tenantPrisma.getClient(ctx);
   const settings = await client.tenantSetting.findUnique({ where: { id: 1 } });
   const perDay = settings?.finePerDayCents ?? 0;
-  if (perDay <= 0) return 0; // this library doesn't charge overdue fines
+  // Skip libraries that switched overdue fines off, or charge nothing per day.
+  if (!settings?.overdueFinesEnabled || perDay <= 0) return 0;
   const cap = settings?.fineCapCents ?? 0;
   const currency = settings?.currency ?? 'EUR';
   const now = new Date();

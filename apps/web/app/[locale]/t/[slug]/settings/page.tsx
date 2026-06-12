@@ -6,7 +6,7 @@ import { loadCatalog } from '@/lib/locale-loader';
 
 /**
  * Settings index. Today only the data-model editor lives here; future
- * sections (loan policies, notification templates, branding) get their
+ * sections (notification templates, branding) get their
  * own card on this page.
  */
 export default async function SettingsPage(props: {
@@ -47,7 +47,7 @@ export default async function SettingsPage(props: {
               </li>
             </ul>
             <h3>Coming soon</h3>
-            <p>Loan policies, notification templates, branding.</p>
+            <p>Notification templates, branding.</p>
           </HelpButton>
         }
       />
@@ -59,6 +59,21 @@ export default async function SettingsPage(props: {
           gap: 'var(--sp-4)',
         }}
       >
+        <Card>
+          <CardHeader
+            title={t('settings.sections.library.title')}
+            subtitle={t('settings.sections.library.description')}
+          />
+          <CardBody>
+            <Link
+              href={`/${params.locale}/t/${params.slug}/settings/library`}
+              className="lbr-btn lbr-btn--primary lbr-btn--md"
+            >
+              {t('settings.sections.library.cta')}
+            </Link>
+          </CardBody>
+        </Card>
+
         <Card>
           <CardHeader
             title={t('settings.sections.dataModel.title')}

@@ -163,6 +163,9 @@ export class ReservationsService {
     }
 
     const settings = await this.requireSettings(client);
+    if (!settings.reservationsEnabled) {
+      throw new BadRequestException('Reservations are turned off for this library.');
+    }
     const baseData = {
       bookId: input.bookId,
       memberId: input.memberId,
@@ -543,6 +546,7 @@ export class ReservationsService {
   }
 
   private async requireSettings(client: TenantPrismaClient): Promise<{
+    reservationsEnabled: boolean;
     holdPickupHours: number;
     loanPeriodDays: number;
     currency: string;

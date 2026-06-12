@@ -120,28 +120,45 @@ enum FieldType {
 
 model TenantSetting {
   /// Always 1. Enforced by a CHECK constraint.
-  id              Int      @id @default(1)
+  id                      Int      @id @default(1)
   /// ISO 4217 currency for fines.
-  currency        String   @default("EUR")
+  currency                String   @default("EUR")
   /// Default lending period in days.
-  loanPeriodDays  Int      @default(14)
+  loanPeriodDays          Int      @default(14)
+  /// Feature switch: whether members' loans can be renewed at all. When
+  /// false, the renew endpoint refuses regardless of `maxRenewals`.
+  renewalsEnabled         Boolean  @default(true)
   /// Maximum number of times a member can renew an active loan.
-  maxRenewals     Int      @default(2)
+  maxRenewals             Int      @default(2)
+  /// Feature switch: whether this library charges overdue fines. When false,
+  /// no fine accrues and none is charged on return, whatever the rate says.
+  overdueFinesEnabled     Boolean  @default(false)
   /// Fine accrued per overdue day, in subunits of the currency (e.g. cents).
-  finePerDayCents Int      @default(0)
+  finePerDayCents         Int      @default(0)
   /// Maximum cap on a single fine; 0 = uncapped.
-  fineCapCents    Int      @default(0)
+  fineCapCents            Int      @default(0)
+  /// Feature switch: whether marking a copy lost auto-bills a replacement
+  /// fee. Staff can always override the amount per item at mark-lost time.
+  lostItemFeesEnabled     Boolean  @default(false)
+  /// Default replacement fee applied when a copy is marked lost and no
+  /// explicit amount is given, in currency subunits. Only used when
+  /// `lostItemFeesEnabled`.
+  lostItemDefaultFeeCents Int      @default(0)
+  /// Feature switch: whether the holds/reservations queue is offered. Layered
+  /// UNDER the plan's `reservations_enabled` capability — this can only turn
+  /// the feature on when the subscription already permits it.
+  reservationsEnabled     Boolean  @default(true)
   /// After a reservation becomes "ready for pickup", how many hours the
   /// member has before it expires and the next person in the queue gets it.
-  holdPickupHours Int      @default(48)
+  holdPickupHours         Int      @default(48)
   /// Maximum simultaneous active loans per member; 0 = uncapped.
-  maxActiveLoans  Int      @default(0)
+  maxActiveLoans          Int      @default(0)
   /// Default locale for the library — kept here as well as in the control
   /// plane so reports / emails generated tenant-side can localize even when
   /// no control-plane lookup is convenient.
-  defaultLocale   String   @default("el")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  defaultLocale           String   @default("el")
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
 
   @@map("tenant_settings")
 }
