@@ -110,9 +110,14 @@ export class LoansController {
   }
 
   @Post(':id/renew')
-  async renew(@TenantCtx() tenant: TenantContext, @Param('id') id: string, @Body() raw: unknown) {
+  async renew(
+    @TenantCtx() tenant: TenantContext,
+    @Sess() session: SessionPayload,
+    @Param('id') id: string,
+    @Body() raw: unknown,
+  ) {
     const dto = await validateDto(RenewLoanDto, raw ?? {});
-    return this.svc.renew(tenant, id, dto);
+    return this.svc.renew(tenant, id, dto, session.sub);
   }
 
   @Post(':id/mark-lost')

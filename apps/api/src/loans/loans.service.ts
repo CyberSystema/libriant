@@ -15,6 +15,7 @@ import type {
 } from '@libriant/db-tenant';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
+import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import { FieldDefinitionsService } from '../customization/field-definitions.service.js';
 import { validateRecordOrThrow } from '../customization/dynamic-validator.js';
 import type { ReturnCondition } from './loans.dto.js';
@@ -106,6 +107,7 @@ export class LoansService {
   constructor(
     @Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService,
     @Inject(FieldDefinitionsService) private readonly fieldDefs: FieldDefinitionsService,
+    @Inject(TenantAuditService) private readonly audit: TenantAuditService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -298,6 +300,19 @@ export class LoansService {
       throw this.translate(err);
     }
 
+    await this.audit.record(tenant, {
+      action: 'loan.checked_out',
+      actorId: actingUserId,
+      targetType: 'loan',
+      targetId: createdId,
+      after: {
+        copyId: input.copyId,
+        memberId: input.memberId,
+        dueAt: dueAt.toISOString(),
+        viaReservation: input.reservationId ?? null,
+      },
+    });
+
     return { loan: await this.getInternal(client, createdId) };
   }
 
@@ -474,6 +489,21 @@ export class LoansService {
       throw this.translate(err);
     }
 
+    await this.audit.record(tenant, {
+      action: 'loan.returned',
+      actorId: actingUserId,
+      targetType: 'loan',
+      targetId: loanId,
+      before: { status: loan.status, dueAt: loan.dueAt.toISOString() },
+      after: {
+        status: 'returned',
+        returnedAt: returnedAt.toISOString(),
+        condition,
+        fineId: txResult.fineId,
+        daysOverdue,
+      },
+    });
+
     const fullLoan = await this.getInternal(client, loanId);
     return {
       loan: fullLoan,
@@ -498,6 +528,7 @@ export class LoansService {
     tenant: TenantContext,
     loanId: string,
     input: { periods?: number },
+    actingUserId: string,
   ): Promise<LoanWithJoinsDto> {
     const client = this.tenantPrisma.getClient(tenant);
     const loan = await client.loan.findUnique({
@@ -554,6 +585,16 @@ export class LoansService {
       where: { id: loanId },
       data: { dueAt: newDueAt, renewedCount: { increment: periods } },
     });
+
+    await this.audit.record(tenant, {
+      action: 'loan.renewed',
+      actorId: actingUserId,
+      targetType: 'loan',
+      targetId: loanId,
+      before: { dueAt: loan.dueAt.toISOString(), renewedCount: loan.renewedCount },
+      after: { dueAt: newDueAt.toISOString(), renewedCount: loan.renewedCount + periods },
+    });
+
     return this.getInternal(client, loanId);
   }
 
@@ -631,6 +672,15 @@ export class LoansService {
     } catch (err) {
       throw this.translate(err);
     }
+
+    await this.audit.record(tenant, {
+      action: 'loan.marked_lost',
+      actorId: actingUserId,
+      targetType: 'loan',
+      targetId: loanId,
+      before: { status: loan.status },
+      after: { status: 'lost', fineId, replacementCostCents: cost },
+    });
 
     const full = await this.getInternal(client, loanId);
     return {

@@ -10,6 +10,7 @@ import {
 import type { MemberStatus, Prisma } from '@libriant/db-tenant';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
+import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import { FieldDefinitionsService } from '../customization/field-definitions.service.js';
 import { QuotaService } from '../customization/quota.service.js';
 import { validateRecordOrThrow } from '../customization/dynamic-validator.js';
@@ -63,7 +64,41 @@ export class MembersService {
     @Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService,
     @Inject(FieldDefinitionsService) private readonly fieldDefs: FieldDefinitionsService,
     @Inject(QuotaService) private readonly quota: QuotaService,
+    @Inject(TenantAuditService) private readonly audit: TenantAuditService,
   ) {}
+
+  /** Small JSON-safe snapshot of a member for audit before/after diffs. */
+  private memberSnapshot(m: {
+    memberNumber: string;
+    fullName: string;
+    status: MemberStatus;
+    email: string | null;
+    archivedAt: Date | null;
+  }): Record<string, unknown> {
+    return {
+      memberNumber: m.memberNumber,
+      fullName: m.fullName,
+      status: m.status,
+      email: m.email,
+      archivedAt: m.archivedAt ? m.archivedAt.toISOString() : null,
+    };
+  }
+
+  /** Audit a freshly-created member, then return its DTO (single create exit). */
+  private async auditCreated(
+    tenant: TenantContext,
+    actorId: string,
+    created: Parameters<MembersService['toDto']>[0],
+  ): Promise<MemberDto> {
+    await this.audit.record(tenant, {
+      action: 'member.created',
+      actorId,
+      targetType: 'member',
+      targetId: created.id,
+      after: this.memberSnapshot(created),
+    });
+    return this.toDto(created);
+  }
 
   async list(
     tenant: TenantContext,
@@ -132,6 +167,7 @@ export class MembersService {
       staffNotes?: string;
       customFields?: Record<string, unknown>;
     },
+    actorId: string,
   ): Promise<MemberDto> {
     // 1. Custom fields validation.
     const defs = await this.fieldDefs.loadActiveForValidation(tenant, 'member');
@@ -189,7 +225,7 @@ export class MembersService {
     if (input.memberNumber) {
       try {
         const created = await createWithQuota(input.memberNumber);
-        return this.toDto(created);
+        return this.auditCreated(tenant, actorId, created);
       } catch (err) {
         throw this.translateCreateError(err);
       }
@@ -201,7 +237,7 @@ export class MembersService {
       const memberNumber = buildMemberNumber(year, seq);
       try {
         const created = await createWithQuota(memberNumber);
-        return this.toDto(created);
+        return this.auditCreated(tenant, actorId, created);
       } catch (err) {
         lastErr = err;
         if (!this.isUniqueViolation(err)) {
@@ -234,6 +270,7 @@ export class MembersService {
       customFields?: Record<string, unknown>;
       archived?: boolean;
     },
+    actorId: string,
   ): Promise<MemberDto> {
     const client = this.tenantPrisma.getClient(tenant);
     const existing = await client.member.findUnique({ where: { id } });
@@ -304,6 +341,14 @@ export class MembersService {
 
     try {
       const updated = await client.member.update({ where: { id }, data });
+      await this.audit.record(tenant, {
+        action: 'member.updated',
+        actorId,
+        targetType: 'member',
+        targetId: id,
+        before: this.memberSnapshot(existing),
+        after: this.memberSnapshot(updated),
+      });
       return this.toDto(updated);
     } catch (err) {
       throw this.translateCreateError(err);
@@ -319,6 +364,7 @@ export class MembersService {
     tenant: TenantContext,
     id: string,
     input: { status: 'active' | 'suspended'; reason?: string },
+    actorId: string,
   ): Promise<MemberDto> {
     const client = this.tenantPrisma.getClient(tenant);
     const existing = await client.member.findUnique({ where: { id } });
@@ -339,6 +385,14 @@ export class MembersService {
         staffNotes: noteAddition ? (existing.staffNotes ?? '') + noteAddition : undefined,
       },
     });
+    await this.audit.record(tenant, {
+      action: 'member.status_changed',
+      actorId,
+      targetType: 'member',
+      targetId: id,
+      before: { status: existing.status },
+      after: { status: updated.status, reason: input.reason?.trim() || null },
+    });
     return this.toDto(updated);
   }
 
@@ -348,7 +402,7 @@ export class MembersService {
    * are flagged but do not block archive — collecting them is a separate
    * back-office flow.
    */
-  async archive(tenant: TenantContext, id: string): Promise<MemberDto> {
+  async archive(tenant: TenantContext, id: string, actorId: string): Promise<MemberDto> {
     const client = this.tenantPrisma.getClient(tenant);
     const existing = await client.member.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('Member not found.');
@@ -374,6 +428,14 @@ export class MembersService {
     const updated = await client.member.update({
       where: { id },
       data: { archivedAt: new Date(), status: 'archived' },
+    });
+    await this.audit.record(tenant, {
+      action: 'member.archived',
+      actorId,
+      targetType: 'member',
+      targetId: id,
+      before: this.memberSnapshot(existing),
+      after: this.memberSnapshot(updated),
     });
     return this.toDto(updated);
   }

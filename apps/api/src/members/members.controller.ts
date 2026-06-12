@@ -14,6 +14,8 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import type { MemberStatus } from '@libriant/db-tenant';
+import { Sess } from '../auth/session-context.js';
+import type { SessionPayload } from '../auth/jwt-session.service.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { RequiresQuota } from '../plans/decorators.js';
@@ -73,9 +75,13 @@ export class MembersController {
 
   @Post()
   @RequiresQuota('max_members')
-  async create(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
+  async create(
+    @TenantCtx() tenant: TenantContext,
+    @Sess() session: SessionPayload,
+    @Body() raw: unknown,
+  ) {
     const dto = await validateDto(CreateMemberDto, raw);
-    return this.svc.create(tenant, dto);
+    return this.svc.create(tenant, dto, session.sub);
   }
 
   @Get(':id')
@@ -84,23 +90,33 @@ export class MembersController {
   }
 
   @Patch(':id')
-  async update(@TenantCtx() tenant: TenantContext, @Param('id') id: string, @Body() raw: unknown) {
+  async update(
+    @TenantCtx() tenant: TenantContext,
+    @Sess() session: SessionPayload,
+    @Param('id') id: string,
+    @Body() raw: unknown,
+  ) {
     const dto = await validateDto(UpdateMemberDto, raw);
-    return this.svc.update(tenant, id, dto);
+    return this.svc.update(tenant, id, dto, session.sub);
   }
 
   @Put(':id/status')
   async setStatus(
     @TenantCtx() tenant: TenantContext,
+    @Sess() session: SessionPayload,
     @Param('id') id: string,
     @Body() raw: unknown,
   ) {
     const dto = await validateDto(SetMemberStatusDto, raw);
-    return this.svc.setStatus(tenant, id, dto);
+    return this.svc.setStatus(tenant, id, dto, session.sub);
   }
 
   @Delete(':id')
-  async archive(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
-    return this.svc.archive(tenant, id);
+  async archive(
+    @TenantCtx() tenant: TenantContext,
+    @Sess() session: SessionPayload,
+    @Param('id') id: string,
+  ) {
+    return this.svc.archive(tenant, id, session.sub);
   }
 }
