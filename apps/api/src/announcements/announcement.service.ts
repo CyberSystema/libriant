@@ -32,9 +32,9 @@ export class AnnouncementService {
   async create(input: CreateInput) {
     validateAudience(input.audience);
     // If publishAt is null or in the past, the announcement goes live
-    // immediately — we stamp publishedAt now. Otherwise the scheduled
-    // job will flip publishedAt at publishAt time (out of MVP — for now
-    // we just compare publishAt at read time so live behavior matches).
+    // immediately — we stamp publishedAt now. Otherwise it stays NULL and the
+    // `announcement-publish` cron (jobs/announcement-publish.job.ts) flips
+    // publishedAt once publishAt is due.
     const now = new Date();
     const publishesNow = !input.publishAt || input.publishAt <= now;
     return controlDb.announcement.create({

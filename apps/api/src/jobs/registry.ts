@@ -3,6 +3,7 @@ import { sweepExpiredSupportSessions } from './support-session-expiry.job.js';
 import { sweepFailedStripeWebhooks } from './stripe-retry.job.js';
 import { sweepFineAccrual } from './fine-accrual.job.js';
 import { sweepExpiredExports } from './export-cleanup.job.js';
+import { publishDueAnnouncements } from './announcement-publish.job.js';
 import type { ScheduledJob } from './jobs.types.js';
 
 /**
@@ -43,5 +44,11 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     name: 'export-file-cleanup',
     intervalMs: 60 * 60_000,
     handler: () => sweepExpiredExports(),
+  },
+  {
+    // 60s: scheduled announcements should go live promptly at publishAt.
+    name: 'announcement-publish',
+    intervalMs: 60_000,
+    handler: () => publishDueAnnouncements(),
   },
 ];
