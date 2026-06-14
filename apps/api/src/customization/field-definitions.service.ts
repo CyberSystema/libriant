@@ -14,6 +14,7 @@ import {
   type FieldDef,
   type FieldOptions,
   type FieldValidation,
+  patternLooksCatastrophic,
   validateOptions,
 } from './field-types.js';
 
@@ -116,6 +117,22 @@ export class FieldDefinitionsService {
       if (errs.length) throw new BadRequestException(errs.join(' '));
       if (!input.optionsJson?.options?.length) {
         throw new BadRequestException('Select fields need at least one option.');
+      }
+    }
+    // Reject a validation pattern at save time if it doesn't compile or looks
+    // catastrophic (ReDoS) — it would otherwise run on the event loop for every
+    // record write of this entity. See patternLooksCatastrophic.
+    const pattern = input.validationJson?.pattern;
+    if (typeof pattern === 'string' && pattern.length > 0) {
+      if (patternLooksCatastrophic(pattern)) {
+        throw new BadRequestException(
+          'That validation pattern is too complex / risky (possible catastrophic backtracking). Simplify it.',
+        );
+      }
+      try {
+        new RegExp(pattern);
+      } catch {
+        throw new BadRequestException('That validation pattern is not a valid regular expression.');
       }
     }
 

@@ -91,7 +91,30 @@ async function readArticles(locale: string): Promise<ParsedArticle[]> {
 
 function renderHtml(markdown: string): string {
   marked.setOptions({ gfm: true, breaks: false });
-  return marked.parse(markdown, { async: false }) as string;
+  const html = marked.parse(markdown, { async: false }) as string;
+  // The rendered HTML is stored and later injected via dangerouslySetInnerHTML
+  // in the tenant shell, so it MUST be sanitized — `marked` passes raw HTML
+  // (incl. <script>) straight through. Help articles are authored markdown with
+  // no legitimate need for scripts/iframes/event handlers, so we strip those
+  // dangerous constructs. (For richer, user-authored help, swap this for an
+  // allowlist sanitizer like sanitize-html/DOMPurify.)
+  return sanitizeHtml(html);
+}
+
+/**
+ * Strip the XSS-bearing bits of rendered HTML: active-content elements, inline
+ * event handlers, and dangerous URI schemes. Defense-in-depth so a future
+ * content edit (or an admin-authored-help feature) can't introduce stored XSS.
+ */
+function sanitizeHtml(html: string): string {
+  return html
+    .replace(
+      /<\s*(script|style|iframe|object|embed|link|meta|base|form)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi,
+      '',
+    )
+    .replace(/<\s*(script|style|iframe|object|embed|link|meta|base|form)\b[^>]*\/?>/gi, '')
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src)\s*=\s*("|')\s*(?:javascript|data|vbscript):/gi, '$1=$2#blocked:');
 }
 
 async function ingestLocale(locale: string): Promise<{ upserted: number; archived: number }> {
@@ -104,7 +127,10 @@ async function ingestLocale(locale: string): Promise<{ upserted: number; archive
 
   let upserted = 0;
   for (const a of articles) {
-    const hash = createHash('sha256').update(a.body).digest('hex');
+    // Hash the WHOLE article (frontmatter + body + sortOrder), not just the
+    // body — otherwise a title/summary/tags/sortOrder-only edit hashes the same
+    // and is silently skipped on re-ingest.
+    const hash = createHash('sha256').update(JSON.stringify(a)).digest('hex');
     const prev = existingBySlug.get(a.slug);
     if (prev && prev.sourceHash === hash && prev.archivedAt === null) {
       // Unchanged + active: skip the round-trip entirely.

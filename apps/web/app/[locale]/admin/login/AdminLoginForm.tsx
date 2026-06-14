@@ -10,9 +10,16 @@ export function AdminLoginForm() {
   const router = useRouter();
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
-  const [errors, setErrors] = React.useState<{ email?: string; password?: string; form?: string }>(
-    {},
-  );
+  const [totp, setTotp] = React.useState('');
+  // Becomes true after the server replies that this admin has MFA enabled and
+  // a code is required — then we reveal the authenticator-code field.
+  const [mfaRequired, setMfaRequired] = React.useState(false);
+  const [errors, setErrors] = React.useState<{
+    email?: string;
+    password?: string;
+    totp?: string;
+    form?: string;
+  }>({});
   const [busy, setBusy] = React.useState(false);
 
   async function onSubmit(e: React.FormEvent) {
@@ -20,6 +27,7 @@ export function AdminLoginForm() {
     const next: typeof errors = {};
     if (!EMAIL_RE.test(email)) next.email = 'That email address looks wrong.';
     if (password.length < 1) next.password = 'Enter your password.';
+    if (mfaRequired && !/^\d{6}$/.test(totp)) next.totp = 'Enter the 6-digit code.';
     if (Object.keys(next).length) {
       setErrors(next);
       return;
@@ -27,12 +35,24 @@ export function AdminLoginForm() {
     setErrors({});
     setBusy(true);
     try {
-      await api('/admin/auth/login', { method: 'POST', body: { email, password } });
+      await api('/admin/auth/login', {
+        method: 'POST',
+        body: { email, password, ...(mfaRequired ? { totp } : {}) },
+      });
       router.push(`/admin/tenants`);
       router.refresh();
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
-        setErrors({ form: 'Email or password is wrong.' });
+        const code = err.body?.code;
+        if (code === 'mfa_required') {
+          setMfaRequired(true);
+          setErrors({ form: 'Enter the code from your authenticator app to finish signing in.' });
+        } else if (code === 'mfa_invalid') {
+          setMfaRequired(true);
+          setErrors({ totp: 'That code is wrong or was already used.' });
+        } else {
+          setErrors({ form: 'Email or password is wrong.' });
+        }
       } else if (err instanceof ApiError) {
         setErrors({ form: err.message });
       } else {
@@ -65,6 +85,17 @@ export function AdminLoginForm() {
           onChange={(e) => setPassword(e.currentTarget.value)}
         />
       </FormField>
+      {mfaRequired ? (
+        <FormField id="admin-totp" label="Authenticator code" required error={errors.totp}>
+          <Input
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            maxLength={6}
+            value={totp}
+            onChange={(e) => setTotp(e.currentTarget.value.replace(/\D/g, ''))}
+          />
+        </FormField>
+      ) : null}
       <Button type="submit" variant="primary" size="lg" loading={busy} style={{ width: '100%' }}>
         Sign in
       </Button>

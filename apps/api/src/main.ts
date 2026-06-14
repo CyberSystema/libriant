@@ -19,6 +19,13 @@ async function bootstrap() {
   });
   app.useLogger(app.get(Logger));
 
+  // We run behind Cloudflare → Caddy. Trust the proxy so `req.protocol` /
+  // `req.secure` reflect the original HTTPS request. NOTE: the real client IP
+  // is read from the `X-Real-IP` header (Caddy sets it from CF-Connecting-IP)
+  // via `platform/client-ip.ts` — not from `req.ip` / X-Forwarded-For, which
+  // in this topology carry the Cloudflare edge address, not the end user.
+  app.set('trust proxy', true);
+
   // Parse Cookie header into req.cookies — required by SessionMiddleware.
   app.use(cookieParser());
 

@@ -222,6 +222,21 @@ export class LoansService {
     let createdId: string;
     try {
       createdId = await client.$transaction(async (tx) => {
+        // Serialize against member archive (members-1): take a member-scoped
+        // advisory lock and re-confirm the member is still active inside the
+        // tx, so a concurrent archive can't slip a loan onto an archived
+        // member after its safety check passed.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`member:${input.memberId}`}, 0))`;
+        const liveMember = await tx.member.findUnique({
+          where: { id: input.memberId },
+          select: { status: true, archivedAt: true },
+        });
+        if (!liveMember || liveMember.archivedAt || liveMember.status !== 'active') {
+          throw new ConflictException(
+            'That member was just archived or deactivated. Refresh and try again.',
+          );
+        }
+
         // Fulfillment path: validate the reservation is in a state we can
         // close (status='ready', member match, copy match, not expired).
         if (input.reservationId) {
@@ -661,6 +676,21 @@ export class LoansService {
           throw new ConflictException("Couldn't mark the copy lost because its status changed.");
         }
         if (shouldCreateFine) {
+          // An overdue book may already carry an outstanding fine from the
+          // accrual sweep. Finalise that one as the replacement fee rather than
+          // inserting a second (the fines_one_outstanding_per_loan unique index
+          // would reject the duplicate with P2002).
+          const existing = await tx.fine.findFirst({
+            where: { loanId, status: 'outstanding' },
+            select: { id: true },
+          });
+          if (existing) {
+            await tx.fine.update({
+              where: { id: existing.id },
+              data: { amountCents: cost, reason: 'Lost book replacement' },
+            });
+            return existing.id;
+          }
           const fine = await tx.fine.create({
             data: {
               memberId: loan.memberId,
@@ -842,6 +872,16 @@ export class LoansService {
   private translate(err: unknown): Error {
     if (err instanceof BadRequestException || err instanceof ConflictException) return err;
     if (typeof err === 'object' && err !== null) {
+      const code = (err as { code?: string }).code;
+      // Unique-constraint violation — e.g. a second open loan on the same copy
+      // (loans_one_active_per_copy) or a duplicate outstanding fine
+      // (fines_one_outstanding_per_loan) lost a race. The state changed under
+      // us; a refresh + retry resolves it.
+      if (code === 'P2002') {
+        return new ConflictException(
+          'That changed while you were working on it (the copy or fine was updated by someone else). Please refresh and try again.',
+        );
+      }
       const message = (err as { message?: string }).message ?? '';
       const m = message.match(/violates check constraint "([^"]+)"/);
       if (m) {

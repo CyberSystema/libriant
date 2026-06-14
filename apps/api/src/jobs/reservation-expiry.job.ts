@@ -106,8 +106,11 @@ async function expireOneTenant(
         if (upd.count === 0) return; // race with admin expire
 
         if (r.fulfilledByCopyId) {
+          // Guard on status: only free a copy that's actually held for this
+          // pickup. Without the guard a copy a librarian just marked lost /
+          // damaged would be clobbered back to 'available'.
           await tx.bookCopy.updateMany({
-            where: { id: r.fulfilledByCopyId },
+            where: { id: r.fulfilledByCopyId, status: 'reserved' },
             data: { status: 'available' },
           });
         }
@@ -131,18 +134,30 @@ async function expireOneTenant(
           expired++;
           return;
         }
+        // Claim the copy with a compare-and-swap so a concurrent checkout or
+        // promotion can't double-allocate the same physical copy.
+        const claimed = await tx.bookCopy.updateMany({
+          where: { id: copy.id, status: 'available' },
+          data: { status: 'reserved' },
+        });
+        if (claimed.count === 0) {
+          // Lost the race for this copy — leave the queue intact for the next
+          // sweep rather than marking a hold ready against a copy we don't own.
+          expired++;
+          return;
+        }
         await tx.reservation.update({
           where: { id: next.id },
           data: {
             status: 'ready',
             fulfilledByCopyId: copy.id,
+            // MUST set readyAt — the hold-ready notification job only emails
+            // reservations with readyAt != null. Without it the promoted
+            // patron is never told their hold is waiting.
+            readyAt: now,
             expiresAt: new Date(now.getTime() + holdPickupHours * MS_PER_HOUR),
             queuePosition: null,
           },
-        });
-        await tx.bookCopy.update({
-          where: { id: copy.id },
-          data: { status: 'reserved' },
         });
         expired++;
         promoted++;

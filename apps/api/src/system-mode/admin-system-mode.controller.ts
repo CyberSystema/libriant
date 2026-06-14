@@ -11,6 +11,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AdminAuthGuard, AdminSess } from '../admin/admin-auth.guard.js';
+import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
+import { AdminRoles } from '../admin/admin-roles.decorator.js';
 import type { AdminSessionPayload } from '../admin/admin-session.service.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { OpenSystemModeDto } from './system-mode.dto.js';
@@ -31,7 +33,7 @@ import { SystemModeService } from './system-mode.service.js';
  *   DELETE /admin/system-mode/events/:id                  — cancel a SCHEDULED window
  */
 @Controller('admin/system-mode')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, AdminRolesGuard)
 export class AdminSystemModeController {
   constructor(@Inject(SystemModeService) private readonly modes: SystemModeService) {}
 
@@ -97,6 +99,7 @@ export class AdminSystemModeController {
   }
 
   @Post('global')
+  @AdminRoles('owner')
   @HttpCode(201)
   async openGlobal(@AdminSess() admin: AdminSessionPayload, @Body() raw: unknown) {
     const dto = await validateDto(OpenSystemModeDto, raw);
@@ -112,6 +115,7 @@ export class AdminSystemModeController {
   }
 
   @Post('tenants/:tenantId')
+  @AdminRoles('owner')
   @HttpCode(201)
   async openTenant(
     @AdminSess() admin: AdminSessionPayload,
@@ -132,6 +136,7 @@ export class AdminSystemModeController {
   }
 
   @Post('events/:id/end')
+  @AdminRoles('owner')
   @HttpCode(200)
   async end(@Param('id') id: string) {
     const event = await this.modes.endNow(id);
@@ -139,6 +144,7 @@ export class AdminSystemModeController {
   }
 
   @Delete('events/:id')
+  @AdminRoles('owner')
   @HttpCode(204)
   async cancel(@Param('id') id: string) {
     await this.modes.cancelScheduled(id);

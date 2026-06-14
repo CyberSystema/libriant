@@ -14,6 +14,8 @@ import { IsBoolean, IsInt, IsOptional, IsString } from 'class-validator';
 import { controlDb } from '@libriant/db-control';
 import { validateDto } from '../auth/validate-dto.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
+import { AdminRolesGuard } from './admin-roles.guard.js';
+import { AdminRoles } from './admin-roles.decorator.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 
 class UpdatePlanDto {
@@ -80,7 +82,7 @@ class SetPlanFeatureDto {
  * seeing the old values until their cache row expires.
  */
 @Controller('admin')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, AdminRolesGuard)
 export class AdminPlansController {
   constructor(@Inject(EffectivePlanService) private readonly effectivePlan: EffectivePlanService) {}
 
@@ -112,6 +114,7 @@ export class AdminPlansController {
   }
 
   @Patch('plans/:slug')
+  @AdminRoles('owner')
   async update(@Param('slug') slug: string, @Body() raw: unknown) {
     const dto = await validateDto(UpdatePlanDto, raw);
     const existing = await controlDb.plan.findUnique({ where: { slug } });
@@ -135,6 +138,7 @@ export class AdminPlansController {
   }
 
   @Put('plans/:slug/features')
+  @AdminRoles('owner')
   async setFeature(@Param('slug') slug: string, @Body() raw: unknown) {
     const dto = await validateDto(SetPlanFeatureDto, raw);
     const plan = await controlDb.plan.findUnique({ where: { slug } });

@@ -38,7 +38,14 @@ function makeClient(opts: {
   const updated: Array<{ id: string; amountCents: number }> = [];
   const client = {
     tenantSetting: { findUnique: vi.fn(async () => opts.settings) },
-    loan: { findMany: vi.fn(async () => opts.loans) },
+    loan: {
+      findMany: vi.fn(async () => opts.loans),
+      // Accrual re-reads the loan to skip ones a return just closed; all
+      // fixture loans are active overdue.
+      findUnique: vi.fn(async (args: { where: { id: string } }) =>
+        opts.loans.find((l) => l.id === args.where.id) ? { status: 'active' } : null,
+      ),
+    },
     fine: {
       findFirst: vi.fn(
         async (args: { where: { loanId: string; status: string } }) =>
@@ -59,12 +66,19 @@ function makeClient(opts: {
           return f;
         },
       ),
-      update: vi.fn(async (args: { where: { id: string }; data: { amountCents: number } }) => {
-        const f = fines.find((x) => x.id === args.where.id)!;
-        f.amountCents = args.data.amountCents;
-        updated.push({ id: f.id, amountCents: args.data.amountCents });
-        return f;
-      }),
+      updateMany: vi.fn(
+        async (args: { where: { id: string; status?: string }; data: { amountCents: number } }) => {
+          let count = 0;
+          for (const f of fines) {
+            if (f.id === args.where.id && (!args.where.status || f.status === args.where.status)) {
+              f.amountCents = args.data.amountCents;
+              updated.push({ id: f.id, amountCents: args.data.amountCents });
+              count++;
+            }
+          }
+          return { count };
+        },
+      ),
     },
   };
   return { client, created, updated };

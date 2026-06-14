@@ -31,6 +31,33 @@ const DEFAULT_MAX_LENGTH: Partial<Record<FieldType, number>> = {
   long_text: 10_000,
 };
 
+/** Hard cap on the input length a user-supplied regex is allowed to evaluate. */
+export const REGEX_INPUT_CAP = 4000;
+
+/**
+ * Heuristic ReDoS screen for admin-authored validation patterns. JavaScript's
+ * regex engine is backtracking, so a pattern with a quantifier applied to a
+ * group/class that itself contains a quantifier (e.g. `(a+)+`, `(.*)*`,
+ * `(a+)*`, `[ab]+*`) can blow up exponentially and freeze the single event
+ * loop. We can't safely time-box a synchronous regex without a worker thread
+ * and we avoid a native RE2 dependency, so instead we REFUSE patterns that
+ * exhibit the classic catastrophic shapes (at save time and, as a safety net,
+ * at match time). Conservative: it may reject some safe patterns, but it never
+ * lets a known-dangerous one run on the request path.
+ */
+export function patternLooksCatastrophic(pattern: string): boolean {
+  if (typeof pattern !== 'string') return true;
+  if (pattern.length > 200) return true; // unreasonably long → reject
+  // Quantifier ( * + {n,} ) applied to a group whose body contains a
+  // quantifier — nested quantification, the dominant ReDoS class.
+  if (/\([^)]*[*+][^)]*\)\s*[*+]/.test(pattern)) return true;
+  if (/\([^)]*[*+][^)]*\)\s*\{\d*,?\d*\}/.test(pattern)) return true;
+  // Quantifier applied directly to another quantifier's output via a char
+  // class, e.g. `[a-z]+*` / `\w*+`.
+  if (/[*+]\s*[*+]/.test(pattern)) return true;
+  return false;
+}
+
 /**
  * Shape of `optionsJson` on a select_one / select_many field.
  * `labelJson` is the same i18n bag used elsewhere.
@@ -104,6 +131,20 @@ export function validateField(def: FieldDef, raw: unknown): FieldCheck {
       if (raw.length < min) return err(def.fieldKey, `Must be at least ${min} characters.`);
       if (raw.length > max) return err(def.fieldKey, `Must be at most ${max} characters.`);
       if (def.validationJson?.pattern) {
+        // ReDoS guard: an admin-authored pattern runs on the shared event loop
+        // for EVERY record write, so a catastrophic-backtracking pattern would
+        // freeze the API for all tenants. Refuse to execute a dangerous-looking
+        // pattern (and bound the input length the engine sees) rather than risk
+        // the freeze; the admin must fix the pattern (also rejected at save).
+        if (patternLooksCatastrophic(def.validationJson.pattern)) {
+          return err(
+            def.fieldKey,
+            `Field's validation pattern is invalid; ask an admin to fix it.`,
+          );
+        }
+        if (raw.length > REGEX_INPUT_CAP) {
+          return err(def.fieldKey, `Value is too long to validate against the field's pattern.`);
+        }
         try {
           const re = new RegExp(def.validationJson.pattern);
           if (!re.test(raw)) return err(def.fieldKey, `Doesn't match the expected pattern.`);

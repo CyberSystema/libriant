@@ -132,6 +132,15 @@ export class CopiesService {
       }
     }
 
+    // Archiving bypasses the status-transition guard above, so block it
+    // explicitly for an on-loan copy — otherwise a copy could be soft-deleted
+    // while its loan stays active, leaving the loan permanently un-returnable.
+    if (input.archived === true && existing.status === 'on_loan') {
+      throw new BadRequestException(
+        'This copy is currently checked out — return it through Loans before archiving.',
+      );
+    }
+
     let cleanedCustom: Record<string, unknown> | undefined;
     if (input.customFields !== undefined) {
       const defs = await this.fieldDefs.loadActiveForValidation(tenant, 'book_copy');
@@ -160,7 +169,25 @@ export class CopiesService {
       data.archivedAt = input.archived ? new Date() : null;
     }
 
+    // Restoring a lost copy to available must also close the still-open lost
+    // loan. The lost loan has returnedAt = NULL, so it occupies the "one active
+    // loan per copy" slot — leaving it open makes the next checkout fail with a
+    // P2002. (loans_status_returned_consistency forces status='returned' when
+    // returnedAt is set.)
+    const restoringFromLost = existing.status === 'lost' && input.status === 'available';
+
     try {
+      if (restoringFromLost) {
+        const updated = await client.$transaction(async (tx) => {
+          const u = await tx.bookCopy.update({ where: { id }, data });
+          await tx.loan.updateMany({
+            where: { copyId: id, status: 'lost', returnedAt: null },
+            data: { status: 'returned', returnedAt: new Date() },
+          });
+          return u;
+        });
+        return this.toDto(updated);
+      }
       const updated = await client.bookCopy.update({ where: { id }, data });
       return this.toDto(updated);
     } catch (err) {

@@ -61,6 +61,29 @@ set_quoted() {
 ensure_rand()    { local k="$1" b="$2"; [ -n "$(getv "${k}")" ] || { setv "${k}" "$(openssl rand -hex "${b}")"; echo "  generated ${k}"; }; }
 ensure_default() { local k="$1" d="$2"; [ -n "$(getv "${k}")" ] || { setv "${k}" "${d}"; echo "  set ${k}=${d}"; }; }
 
+# True if the Postgres data volume already holds an initialized cluster.
+# Used to refuse minting a fresh POSTGRES_PASSWORD over a surviving DB (which
+# would lock the app out of its own database — see the guard below).
+pg_data_initialized() {
+  command -v docker >/dev/null 2>&1 || return 1
+  local vol mp
+  vol="${COMPOSE_PROJECT_NAME:-libriant}_pg_data"
+  mp="$(docker volume inspect --format '{{.Mountpoint}}' "${vol}" 2>/dev/null)" || return 1
+  [ -n "${mp}" ] && [ -f "${mp}/PG_VERSION" ]
+}
+
+# CRITICAL guard: never regenerate the DB password when the DB already exists
+# but the env file lost it (e.g. boot-disk rebuild while the data volume
+# survived). Minting a new one here desyncs from the password baked into the
+# existing cluster and locks the app out. Fail loud so the operator restores
+# the real value from their .env.prod backup first.
+if [ -z "$(getv POSTGRES_PASSWORD)" ] && pg_data_initialized; then
+  echo "  ! POSTGRES_PASSWORD is missing but an initialized Postgres data volume exists." >&2
+  echo "  ! Refusing to mint a new password (it would lock the app out of the surviving DB)." >&2
+  echo "  ! Restore POSTGRES_PASSWORD from your .env.prod backup, then re-run." >&2
+  exit 3
+fi
+
 echo "Ensuring secrets in ${ENV_FILE} ..."
 ensure_rand SESSION_SECRET 32
 ensure_rand ADMIN_SESSION_SECRET 32

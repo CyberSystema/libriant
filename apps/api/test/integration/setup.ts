@@ -6,3 +6,10 @@
 // environment already pins it. Keeping this here (rather than in the CI
 // workflow env) means the suite is self-describing and runs the same locally.
 process.env.BILLING_ENABLED ||= 'true';
+
+// The suite performs many signups/logins from a single loopback IP against a
+// shared Redis, which would trip the production edge rate limits (5 signups /
+// 10 min / IP). Disable the counter for integration runs; the controller still
+// invokes RateLimitService (wiring stays covered) and the limiter's own logic
+// is unit-tested in src/platform/rate-limit.service.spec.ts.
+process.env.RATE_LIMIT_DISABLED ||= 'true';

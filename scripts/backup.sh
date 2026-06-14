@@ -91,6 +91,26 @@ if [ -n "$RCLONE_REMOTE" ]; then
   else
     log "WARN: RCLONE_REMOTE set but rclone is not installed"
   fi
+else
+  # Loud, not silent: a backup that exists only on the same host as the data
+  # is not a disaster-recovery backup. Surface this every run so it can't be
+  # missed (set RCLONE_REMOTE to push off-site, or BACKUP_ALLOW_LOCAL_ONLY=1
+  # to acknowledge a deliberately local-only setup).
+  if [ "${BACKUP_ALLOW_LOCAL_ONLY:-0}" = "1" ]; then
+    log "WARN: RCLONE_REMOTE unset — backup is LOCAL-ONLY (acknowledged via BACKUP_ALLOW_LOCAL_ONLY=1)"
+  else
+    log "WARN: RCLONE_REMOTE unset — NO OFF-SITE COPY. This backup lives only on this host."
+    log "WARN: Set RCLONE_REMOTE to a remote, or BACKUP_ALLOW_LOCAL_ONLY=1 to silence this."
+  fi
+fi
+
+# ---------- 6. Success heartbeat -------------------------------------------
+# Ping a dead-man's-switch URL (e.g. healthchecks.io) so a silently failing or
+# never-running cron is detected. Optional; skipped if unset.
+if [ -n "${BACKUP_HEARTBEAT_URL:-}" ] && command -v curl >/dev/null; then
+  curl -fsS -m 10 "$BACKUP_HEARTBEAT_URL" >/dev/null 2>&1 \
+    && log "heartbeat pinged" \
+    || log "WARN: heartbeat ping failed"
 fi
 
 log "done → $dest"

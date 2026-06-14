@@ -23,7 +23,15 @@ import { StorageService } from './storage.service.js';
 import { SignedUrlService } from './signed-url.service.js';
 import type { ResourceType } from './drivers/storage-driver.js';
 
-const RESOURCE_TYPES: readonly ResourceType[] = ['covers', 'members', 'attachments', 'marc'];
+const RESOURCE_TYPES: readonly ResourceType[] = [
+  'covers',
+  'members',
+  'attachments',
+  'marc',
+  // Without this, signed downloads of per-library logos (commit d01f7f7) 400
+  // and every header logo / branded asset renders broken.
+  'branding',
+];
 
 /**
  * End-to-end exercise of the storage layer. The real catalog/members

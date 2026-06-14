@@ -41,6 +41,7 @@ function makeTenantClient(
     expiresAt: Date | null;
     queuePosition: number | null;
     fulfilledByCopyId: string | null;
+    readyAt?: Date | null;
   }>,
   bookCopies: Array<{ id: string; bookId: string; status: string }>,
 ) {
@@ -97,7 +98,10 @@ function makeTenantClient(
         async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
           let count = 0;
           for (const c of bookCopies) {
-            if (c.id === args.where.id) {
+            // Honor the status guard so compare-and-swap claims + the
+            // status-guarded free are modeled accurately (the production code
+            // relies on `where: { id, status }` to avoid clobbering copies).
+            if (c.id === args.where.id && (!args.where.status || c.status === args.where.status)) {
               Object.assign(c, args.data);
               count++;
             }
@@ -182,6 +186,7 @@ describe('sweepExpiredReservationPickups', () => {
         expiresAt: past,
         queuePosition: null,
         fulfilledByCopyId: 'c-1',
+        readyAt: past,
       },
       {
         id: 'r-2',
@@ -190,10 +195,12 @@ describe('sweepExpiredReservationPickups', () => {
         expiresAt: null,
         queuePosition: 1,
         fulfilledByCopyId: null,
+        readyAt: null,
       },
     ];
+    // A 'ready' hold's copy is 'reserved' (held for pickup), not 'on_loan'.
     const copies = [
-      { id: 'c-1', bookId: 'b-1', status: 'on_loan' },
+      { id: 'c-1', bookId: 'b-1', status: 'reserved' },
       { id: 'c-2', bookId: 'b-1', status: 'available' },
     ];
     tenantGetClient.mockReturnValue(makeTenantClient(reservations, copies));
@@ -204,8 +211,10 @@ describe('sweepExpiredReservationPickups', () => {
     expect(result.counts?.promoted).toBe(1);
     // r-1 → expired
     expect(reservations[0]!.status).toBe('expired');
-    // r-2 promoted to ready
+    // r-2 promoted to ready — and readyAt MUST be set or the hold-ready
+    // notification job will never email the patron.
     expect(reservations[1]!.status).toBe('ready');
+    expect(reservations[1]!.readyAt).toBeInstanceOf(Date);
     // The just-freed c-1 gets snapped back up by the promotion (it
     // shows up in findFirst before c-2), and c-2 stays available
     // for the next library-side hold.
@@ -213,7 +222,7 @@ describe('sweepExpiredReservationPickups', () => {
     expect(copies[1]!.status).toBe('available');
   });
 
-  it('expires the pickup but does not promote when no copy is available', async () => {
+  it('expires the pickup and frees its copy when nothing is queued (no promotion)', async () => {
     tenantFindMany.mockResolvedValue([
       {
         id: 't-1',
@@ -237,25 +246,18 @@ describe('sweepExpiredReservationPickups', () => {
         queuePosition: null,
         fulfilledByCopyId: 'c-1',
       },
-      {
-        id: 'r-2',
-        bookId: 'b-1',
-        status: 'queued',
-        expiresAt: null,
-        queuePosition: 1,
-        fulfilledByCopyId: null,
-      },
     ];
-    // c-1 will be marked available by the expire step; sweeper finds it
-    // again as the available copy candidate to promote r-2 onto.
-    const copies = [{ id: 'c-1', bookId: 'b-1', status: 'on_loan' }];
+    // The held copy is 'reserved'; with no one queued it should be freed to
+    // 'available' and nothing promoted.
+    const copies = [{ id: 'c-1', bookId: 'b-1', status: 'reserved' }];
     tenantGetClient.mockReturnValue(makeTenantClient(reservations, copies));
 
     const result = await sweepExpiredReservationPickups();
 
     expect(result.counts?.expired).toBe(1);
-    // c-1 got freed → then immediately rebound to r-2.
-    expect(result.counts?.promoted).toBe(1);
+    // Nothing queued → no promotion; the held copy is released to available.
+    expect(result.counts?.promoted).toBe(0);
+    expect(copies[0]!.status).toBe('available');
   });
 
   it('continues to the next tenant when one tenant blows up', async () => {

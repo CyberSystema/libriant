@@ -133,7 +133,9 @@ describe('StripeWebhookController.handle', () => {
 
     expect(out).toEqual({ received: true, deduped: true });
     expect(billing.syncStripeSubscription).not.toHaveBeenCalled();
-    expect(stripeUpsert).not.toHaveBeenCalled();
+    // The durable row is now persisted BEFORE the Redis dedupe lock (audit
+    // billing-3), so the upsert still runs even when this delivery is a dup.
+    expect(stripeUpsert).toHaveBeenCalledTimes(1);
   });
 
   it('drops the Redis lock when dispatch throws so Stripe retries can re-attempt', async () => {

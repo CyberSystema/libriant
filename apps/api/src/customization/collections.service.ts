@@ -175,11 +175,23 @@ export class CollectionsService {
     if (input.sortOrder !== undefined) data.sortOrder = input.sortOrder;
     if (input.archived !== undefined) data.archivedAt = input.archived ? new Date() : null;
 
-    const updated = await client.collection.update({
-      where: { id },
-      data,
-      include: { fields: { orderBy: [{ sortOrder: 'asc' }, { fieldKey: 'asc' }] } },
-    });
+    const include = {
+      fields: { orderBy: [{ sortOrder: 'asc' as const }, { fieldKey: 'asc' as const }] },
+    };
+
+    // Un-archiving consumes a max_custom_collections seat exactly like a create
+    // — enforce it inside the same tx (archive → create → un-archive would
+    // otherwise be an unlimited bypass).
+    const updated = isRestore
+      ? await client.$transaction(async (tx) => {
+          await this.quota.enforceWithinTx(tx, {
+            tenantId: tenant.id,
+            featureKey: 'max_custom_collections',
+            count: () => tx.collection.count({ where: { archivedAt: null } }),
+          });
+          return tx.collection.update({ where: { id }, data, include });
+        })
+      : await client.collection.update({ where: { id }, data, include });
     return this.toCollectionDto(updated);
   }
 

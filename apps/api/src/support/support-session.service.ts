@@ -30,10 +30,13 @@ export class SupportSessionService {
     const expiresAt = new Date(Date.now() + env.supportSessionTtlSec * 1000);
 
     return controlDb.$transaction(async (tx) => {
-      // End any still-active session for this tenant. The plan: one
-      // active session per tenant at a time.
+      // End any still-active session for this tenant AND any other still-active
+      // session held by this admin. The impersonation cookie tracks exactly one
+      // session, so redeeming a second key would otherwise orphan the first as
+      // 'active' for its full TTL (it could never be ended from the UI).
+      // Invariant: one active session per tenant, and one per admin.
       await tx.supportSession.updateMany({
-        where: { tenantId: input.tenantId, endedAt: null },
+        where: { endedAt: null, OR: [{ tenantId: input.tenantId }, { adminId: input.adminId }] },
         data: { endedAt: new Date(), endedReason: 'admin_ended' },
       });
 

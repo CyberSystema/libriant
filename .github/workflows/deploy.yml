@@ -36,10 +36,49 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------
+  # verify — gate the whole deploy on the same checks CI runs. Required
+  # status checks aren't available on this GitHub plan, so a red build must
+  # be blocked HERE rather than relying on branch protection. `build` (and
+  # therefore deploy) does not start unless this passes.
+  # ---------------------------------------------------------------------
+  verify:
+    name: Verify (typecheck + lint + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Generate Prisma clients
+        run: pnpm db:generate
+        env:
+          CONTROL_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_control
+          TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
+      - name: Translation parity
+        run: pnpm check:translations
+      - name: Asset manifest integrity
+        run: pnpm check:assets
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: ESLint
+        run: pnpm lint
+      - name: Prettier
+        run: pnpm format:check
+      - name: Unit tests
+        run: pnpm --filter @libriant/api exec vitest run --project unit
+
+  # ---------------------------------------------------------------------
   # build — produce api + web images, push to GHCR
   # ---------------------------------------------------------------------
   build:
     name: Build & push images
+    needs: verify
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
@@ -131,10 +170,20 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
-      - name: Add host to known_hosts
+      - name: Pin host key (no trust-on-first-use)
         run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -H "${{ matrix.host.ssh }}" >> ~/.ssh/known_hosts
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          # Use PINNED host keys from a secret. `ssh-keyscan` blindly trusts
+          # whatever key answers, so a MITM of the runner→host path could
+          # intercept a root-equivalent session that sources all prod secrets.
+          # Capture the real keys once out-of-band (`ssh-keyscan host`) and store
+          # them in the DEPLOY_KNOWN_HOSTS secret.
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            echo "DEPLOY_KNOWN_HOSTS secret is empty — set it to the pinned SSH host keys." >&2
+            exit 1
+          fi
 
       - name: Deploy (git sync + compose up)
         env:
@@ -149,7 +198,7 @@ jobs:
           # keeps all data on /mnt/libriant. The heredoc is UNQUOTED so only
           # ${GIT_SHA}/${IMAGE_TAG} expand on the runner; remote `$`-vars are
           # escaped.
-          ssh "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<EOF
+          ssh -o StrictHostKeyChecking=yes "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<EOF
             set -euo pipefail
             cd /srv/libriant/app
             git fetch --quiet origin
@@ -191,7 +240,7 @@ jobs:
           # immune to how the edge firewall is locked down. Quoted heredoc, so
           # everything evaluates on the host. (Public reachability is a separate
           # concern, monitored by uptime checks — not the deploy gate.)
-          ssh "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<'REMOTE'
+          ssh -o StrictHostKeyChecking=yes "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<'REMOTE'
             set -euo pipefail
             deadline=$(( $(date +%s) + 150 ))
             while [ "$(date +%s)" -lt "$deadline" ]; do

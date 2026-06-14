@@ -1,7 +1,8 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { generateSecret, generateURI, verifySync } from 'otplib';
 import { loadEnv } from '../config/env.js';
+import { RedisService } from '../platform/redis.service.js';
 
 /**
  * AES-256-GCM at-rest encryption for admin TOTP secrets.
@@ -24,7 +25,7 @@ export class MfaService {
   /** TOTP issuer name shown in the authenticator app. */
   private readonly issuer = 'Libriant Admin';
 
-  constructor() {
+  constructor(@Inject(RedisService) private readonly redis: RedisService) {
     const env = loadEnv();
     const hex = env.mfaMasterKey;
     if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
@@ -86,5 +87,28 @@ export class MfaService {
   verifyToken(secret: string, token: string): boolean {
     if (!/^\d{6}$/.test(token)) return false;
     return verifySync({ token, secret, epochTolerance: 30 }).valid;
+  }
+
+  /**
+   * Replay-protected verification for the authentication paths (admin login,
+   * support-key redemption). A TOTP is valid for ~60–90s, long enough for a
+   * sniffed/shoulder-surfed code to be reused. After a successful check we burn
+   * the exact code for this admin in Redis (TTL covering the validity window),
+   * so the same code can't be presented twice.
+   *
+   * Returns false if the code is invalid OR has already been consumed. Fails
+   * CLOSED if Redis is unreachable (a security path, unlike the edge limiter):
+   * we'd rather reject a legitimate login than allow a replay.
+   */
+  async verifyTokenOnce(adminId: string, secret: string, token: string): Promise<boolean> {
+    if (!this.verifyToken(secret, token)) return false;
+    const key = `mfa:used:${adminId}:${token}`;
+    try {
+      // 120s comfortably outlives the ±1-step validity window.
+      const res = await this.redis.client.set(key, '1', 'EX', 120, 'NX');
+      return res === 'OK';
+    } catch {
+      return false;
+    }
   }
 }

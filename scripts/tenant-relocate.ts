@@ -56,9 +56,19 @@ const args = parseArgs({
     'to-cell': { type: 'string' },
     'dry-run': { type: 'boolean' },
     'drop-source': { type: 'boolean' },
+    // Explicit OLD host for --drop-source (overrides the recorded source).
+    'from-db-url': { type: 'string' },
+    // Required confirmation for the destructive --drop-source.
+    yes: { type: 'boolean' },
+    // Seconds to wait after opening read_only for in-flight writers to drain
+    // before pg_dump (must exceed the system-mode cache TTL of 30s).
+    'drain-seconds': { type: 'string' },
   },
   required: ['tenant'] as const,
 });
+
+/** System-mode cache TTL is 30s; default drain margin gives headroom. */
+const DEFAULT_DRAIN_SECONDS = 35;
 
 async function main() {
   const v = args.values as Record<string, string | boolean | undefined>;
@@ -73,7 +83,7 @@ async function main() {
   if (!tenant) die(SCRIPT, `tenant "${slug}" not found.`);
 
   if (dropSourceMode) {
-    return dropSource(tenant);
+    return dropSource(tenant, v);
   }
 
   const targetHostUrl = v['to-db-url']
@@ -104,6 +114,19 @@ async function main() {
   const adminId = await firstOwnerAdminId();
   const modeEvent = await openReadOnly(tenant.id, adminId);
   log(SCRIPT, `opened read_only window event=${modeEvent.id}`);
+
+  // CRITICAL: the read_only system mode is only honored once API processes
+  // re-read it. They cache the mode for 30s, so without busting the cache (and
+  // waiting for stragglers) writes accepted in that window are excluded from
+  // the snapshot and silently lost on cutover. Belt-and-braces, we also fence
+  // the SOURCE database read-only at the Postgres level so admin/impersonation
+  // routes and background workers — which bypass the HTTP middleware — can't
+  // write during the dump either.
+  await bustSystemModeCache(tenant.id);
+  await fenceSourceReadOnly(tenant.dbUrl, dbName);
+  const drainSeconds = v['drain-seconds'] ? Number(v['drain-seconds']) : DEFAULT_DRAIN_SECONDS;
+  log(SCRIPT, `draining in-flight writers for ${drainSeconds}s before snapshot…`);
+  await sleep(drainSeconds * 1000);
 
   const tmp = await mkdtemp(path.join(tmpdir(), `lbr-relocate-${tenant.slug}-`));
   const dumpFile = path.join(tmp, 'tenant.dump');
@@ -159,7 +182,24 @@ async function main() {
     log(SCRIPT, 'done. Probe the new home, then re-run with --drop-source to delete the old DB.');
   } catch (err) {
     log(SCRIPT, `failed: ${(err as Error).message}`);
-    log(SCRIPT, 'tenant left on source DB; read_only window stays open for inspection.');
+    // The tenant stays on the source DB, so lift the DB-level read-only fence
+    // we set before the dump — otherwise the live tenant would be stuck
+    // read-only. The system-mode read_only window is deliberately left OPEN
+    // for an admin to inspect (close it manually once resolved).
+    await unfenceSource(tenant.dbUrl, dbName).catch((e) =>
+      log(SCRIPT, `warning: could not lift source read-only fence: ${(e as Error).message}`),
+    );
+    // Bound the read_only window so a failed relocate can't strand the tenant
+    // in 503-for-writes forever if nobody closes it. It stays open ~30min for
+    // an admin to inspect, then auto-expires.
+    await controlDb.systemModeEvent
+      .update({ where: { id: modeEvent.id }, data: { endsAt: new Date(Date.now() + 30 * 60_000) } })
+      .then(() => bustSystemModeCache(tenant.id))
+      .catch(() => undefined);
+    log(
+      SCRIPT,
+      'tenant left on source DB (writable again); read_only window stays open ~30min for inspection, then auto-expires.',
+    );
     throw err;
   } finally {
     await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
@@ -167,16 +207,63 @@ async function main() {
   }
 }
 
-async function dropSource(tenant: { id: string; slug: string; dbUrl: string }) {
-  // After --drop-source we expect tenants.db_url to already point at the
-  // NEW home; the SOURCE we drop is computed by name from the tenant id.
-  const sourceUrl = tenant.dbUrl;
-  log(SCRIPT, `--drop-source: this will DROP the database named ${dbNameForTenant(tenant.id)}`);
-  log(SCRIPT, `              on host ${new URL(sourceUrl).host}.`);
+async function dropSource(
+  tenant: { id: string; slug: string; dbUrl: string },
+  v: Record<string, string | boolean | undefined>,
+) {
   const dbName = dbNameForTenant(tenant.id);
   if (!/^tenant_[a-z0-9_]+$/.test(dbName)) {
     die(SCRIPT, `refusing to drop unsafe name: ${dbName}`);
   }
+
+  // Determine the OLD host to drop. We must NOT default to tenant.dbUrl: after
+  // a successful cutover that points at the tenant's NEW, LIVE home — dropping
+  // it would destroy the tenant (this was the original critical bug). Resolve
+  // the source host from, in order:
+  //   1. an explicit --from-db-url, or
+  //   2. the dbUrl recorded as beforeJson.dbUrl on the most recent
+  //      `tenant.relocated` audit event (the host we migrated AWAY from).
+  let sourceUrl = v['from-db-url'] ? String(v['from-db-url']) : undefined;
+  if (!sourceUrl) {
+    const ev = await controlDb.auditEvent.findFirst({
+      where: { tenantId: tenant.id, action: 'tenant.relocated' },
+      orderBy: { occurredAt: 'desc' },
+      select: { beforeJson: true },
+    });
+    const before = ev?.beforeJson as { dbUrl?: string } | null;
+    sourceUrl = before?.dbUrl;
+  }
+  if (!sourceUrl) {
+    die(
+      SCRIPT,
+      'cannot determine the source DB to drop — no prior relocation on record. ' +
+        'Pass the old host explicitly with --from-db-url, and double-check it.',
+    );
+  }
+
+  // SAFETY NET: never drop the host the tenant currently lives on. This blocks
+  // the post-cutover footgun, a failed relocation (tenant still on source), and
+  // a same-host relocation — in all of which sourceHost == currentHost.
+  const currentHost = new URL(tenant.dbUrl).host;
+  const sourceHost = new URL(sourceUrl).host;
+  if (sourceHost === currentHost) {
+    die(
+      SCRIPT,
+      `refusing to drop: the resolved source host (${sourceHost}) is the tenant's CURRENT live ` +
+        `host. Dropping it would destroy the live database. (The relocation may have failed, not ` +
+        `changed hosts, or --from-db-url is wrong.)`,
+    );
+  }
+
+  log(SCRIPT, `--drop-source: will DROP DATABASE "${dbName}" on host ${sourceHost}`);
+  log(SCRIPT, `              (tenant "${tenant.slug}" now lives on ${currentHost}).`);
+  if (!isYes(v.yes)) {
+    die(
+      SCRIPT,
+      'refusing to drop without confirmation. Re-run with --yes once you have verified the host above.',
+    );
+  }
+
   const u = new URL(sourceUrl);
   u.pathname = '/postgres'; // need a real DB to issue DROP against
   const admin = new PgClient({ connectionString: u.toString() });
@@ -187,7 +274,7 @@ async function dropSource(tenant: { id: string; slug: string; dbUrl: string }) {
       [dbName],
     );
     await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
-    log(SCRIPT, `dropped ${dbName}.`);
+    log(SCRIPT, `dropped ${dbName} on ${sourceHost}.`);
   } finally {
     await admin.end();
     await controlDb.$disconnect();
@@ -211,10 +298,68 @@ async function openReadOnly(tenantId: string, adminId: string) {
 }
 
 async function closeEvent(eventId: string) {
-  await controlDb.systemModeEvent.update({
+  const ended = await controlDb.systemModeEvent.update({
     where: { id: eventId },
     data: { endedAt: new Date() },
+    select: { tenantId: true },
   });
+  // Bust the cache so the read_only window lifts promptly instead of lingering
+  // for up to the 30s cache TTL.
+  if (ended.tenantId) await bustSystemModeCache(ended.tenantId);
+}
+
+/** ms sleep. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** DEL the per-tenant system-mode cache key so a mode change is seen at once. */
+async function bustSystemModeCache(tenantId: string): Promise<void> {
+  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
+  const redis = new Redis(url, { lazyConnect: true, keyPrefix: 'lbr:' });
+  try {
+    await redis.connect();
+    await redis.del(`system_mode:tenant:${tenantId}`);
+  } finally {
+    redis.disconnect();
+  }
+}
+
+/**
+ * Fence a database read-only at the Postgres level so even writers that bypass
+ * the HTTP read_only middleware (admin/impersonation routes, background
+ * workers) cannot mutate it during the snapshot. `ALTER DATABASE ... SET`
+ * only affects NEW sessions, so we also terminate existing backends to force
+ * them to reconnect under the read-only default.
+ */
+async function fenceSourceReadOnly(sourceUrl: string, dbName: string): Promise<void> {
+  if (!/^tenant_[a-z0-9_]+$/.test(dbName)) {
+    throw new Error(`refusing to fence unsafe db name: ${dbName}`);
+  }
+  const admin = new PgClient({ connectionString: urlForDb(sourceUrl, 'postgres') });
+  await admin.connect();
+  try {
+    await admin.query(`ALTER DATABASE "${dbName}" SET default_transaction_read_only = on`);
+    await admin.query(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+       WHERE datname = $1 AND pid <> pg_backend_pid()`,
+      [dbName],
+    );
+  } finally {
+    await admin.end();
+  }
+}
+
+/** Lift the read-only fence set by fenceSourceReadOnly. */
+async function unfenceSource(sourceUrl: string, dbName: string): Promise<void> {
+  if (!/^tenant_[a-z0-9_]+$/.test(dbName)) return;
+  const admin = new PgClient({ connectionString: urlForDb(sourceUrl, 'postgres') });
+  await admin.connect();
+  try {
+    await admin.query(`ALTER DATABASE "${dbName}" RESET default_transaction_read_only`);
+  } finally {
+    await admin.end();
+  }
 }
 
 async function firstOwnerAdminId(): Promise<string> {

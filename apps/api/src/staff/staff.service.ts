@@ -2,17 +2,23 @@ import { randomInt } from 'node:crypto';
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { controlDb } from '@libriant/db-control';
+import { controlDb, Prisma } from '@libriant/db-control';
 import { PasswordService } from '../auth/password.service.js';
+import { EffectivePlanService } from '../plans/effective-plan.service.js';
 import type { StaffRole } from './staff.dto.js';
 
 @Injectable()
 export class StaffService {
-  constructor(@Inject(PasswordService) private readonly passwords: PasswordService) {}
+  constructor(
+    @Inject(PasswordService) private readonly passwords: PasswordService,
+    @Inject(EffectivePlanService) private readonly effective: EffectivePlanService,
+  ) {}
 
   /** Non-archived users of a library, owner first. */
   async list(tenantId: string) {
@@ -40,21 +46,50 @@ export class StaffService {
    * credential change. No email on file — they sign in with the username.
    */
   async create(tenantId: string, input: { role: StaffRole; fullName?: string }) {
-    const username = await this.nextUsername(tenantId);
     const tempPassword = String(randomInt(1000, 10000));
     const passwordHash = await this.passwords.hash(tempPassword);
-    const user = await controlDb.user.create({
-      data: {
-        tenantId,
-        username,
-        email: null,
-        fullName: input.fullName?.trim() || username,
-        role: input.role,
-        status: 'active',
-        passwordHash,
-        mustChangeCredentials: true,
-      },
-      select: { id: true, username: true, fullName: true, role: true, status: true },
+
+    // Race-safe staff_seats enforcement. Staff users live on the control DB,
+    // so we serialize concurrent creates with a control-plane transaction-
+    // scoped advisory lock keyed on (tenant, staff_seats), count active seats,
+    // and only then insert. The QuotaInterceptor is a fast pre-check; this is
+    // the authority that closes the count-then-insert TOCTOU window.
+    const lockKey = `quota:${tenantId}:staff_seats`;
+    const user = await controlDb.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+      const [limit, used] = await Promise.all([
+        this.effective.getInt(tenantId, 'staff_seats'),
+        tx.user.count({ where: { tenantId, status: 'active' } }),
+      ]);
+      if (used >= limit) {
+        const plan = await this.effective.getEffectivePlan(tenantId);
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.PAYMENT_REQUIRED,
+            error: 'Payment Required',
+            message: "You've reached your library's staff-seat limit for this plan.",
+            feature: 'staff_seats',
+            limit,
+            used,
+            currentPlan: plan.plan?.slug ?? null,
+          },
+          HttpStatus.PAYMENT_REQUIRED,
+        );
+      }
+      const username = await this.nextUsername(tenantId, tx);
+      return tx.user.create({
+        data: {
+          tenantId,
+          username,
+          email: null,
+          fullName: input.fullName?.trim() || username,
+          role: input.role,
+          status: 'active',
+          passwordHash,
+          mustChangeCredentials: true,
+        },
+        select: { id: true, username: true, fullName: true, role: true, status: true },
+      });
     });
     return { user, tempPassword };
   }
@@ -93,8 +128,11 @@ export class StaffService {
   // --- internals -----------------------------------------------------------
 
   /** Next free `staff_N` for the tenant (max existing suffix + 1). */
-  private async nextUsername(tenantId: string): Promise<string> {
-    const rows = await controlDb.user.findMany({
+  private async nextUsername(
+    tenantId: string,
+    db: Prisma.TransactionClient | typeof controlDb = controlDb,
+  ): Promise<string> {
+    const rows = await db.user.findMany({
       where: { tenantId, username: { startsWith: 'staff_' } },
       select: { username: true },
     });

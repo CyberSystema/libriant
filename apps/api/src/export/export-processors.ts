@@ -254,13 +254,24 @@ function buildWorkbook(data: TableData[]): ExcelJS.Workbook {
   return wb;
 }
 
+/**
+ * Neutralize spreadsheet formula injection: Excel/Sheets execute a cell whose
+ * text begins with = + - @ (or a leading tab/CR). Member/book free-text flows
+ * into exports, so prefix such values with an apostrophe to force literal text.
+ * Applied to STRING values only — real numbers/dates stay typed.
+ */
+function neutralizeFormula(s: string): string {
+  return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+}
+
 function cellValue(v: unknown): string | number | boolean | Date | null {
   if (v === null || v === undefined) return null;
   if (Buffer.isBuffer(v)) return `[binary ${v.length} bytes]`;
   if (v instanceof Date) return v;
-  if (typeof v === 'object') return JSON.stringify(v);
-  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') return v;
-  return String(v);
+  if (typeof v === 'number' || typeof v === 'boolean') return v;
+  if (typeof v === 'object') return neutralizeFormula(JSON.stringify(v));
+  if (typeof v === 'string') return neutralizeFormula(v);
+  return neutralizeFormula(String(v));
 }
 
 function toCsv(table: TableData): string {
@@ -269,8 +280,9 @@ function toCsv(table: TableData): string {
     let s: string;
     if (Buffer.isBuffer(v)) s = v.toString('base64');
     else if (v instanceof Date) s = v.toISOString();
-    else if (typeof v === 'object') s = JSON.stringify(v);
-    else s = String(v);
+    else if (typeof v === 'object') s = neutralizeFormula(JSON.stringify(v));
+    else if (typeof v === 'string') s = neutralizeFormula(v);
+    else s = String(v); // number/boolean — safe, no neutralization needed
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = [table.columns.map(esc).join(',')];

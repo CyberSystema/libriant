@@ -21,6 +21,7 @@ import type { Request, Response } from 'express';
 import { AdminAuthGuard, AdminSess } from '../admin/admin-auth.guard.js';
 import type { AdminSessionPayload } from '../admin/admin-session.service.js';
 import { validateDto } from '../auth/validate-dto.js';
+import { clientIp } from '../platform/client-ip.js';
 import { ImpersonationCookieService } from './impersonation-cookie.service.js';
 import { ImpersonationSessionService } from './impersonation-session.service.js';
 import { MfaService } from './mfa.service.js';
@@ -85,9 +86,12 @@ export class AdminSupportController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const dto = await validateDto(RedeemDto, raw);
+    // Real client IP comes from X-Real-IP (Caddy/Cloudflare); req.ip is the
+    // proxy peer and would collapse every admin into one bucket.
+    const ip = clientIp(req);
 
     // 0. Brute-force defense — throttle before any bcrypt/MFA work.
-    await this.enforceRedeemRateLimit(admin.sub, req.ip);
+    await this.enforceRedeemRateLimit(admin.sub, ip);
 
     // 1. Admin must have MFA enabled. The plan: hard rule.
     const adminRow = await controlDb.adminUser.findUnique({
@@ -100,10 +104,10 @@ export class AdminSupportController {
       );
     }
     const secret = this.mfa.decrypt(adminRow.mfaSecretCipher, adminRow.mfaNonce);
-    if (!this.mfa.verifyToken(secret, dto.totp)) {
-      // Log the attempt + bail.
-      await this.recordAttempt(admin.sub, req, false, dto.code);
-      throw new UnauthorizedException('That authenticator code is wrong.');
+    if (!(await this.mfa.verifyTokenOnce(admin.sub, secret, dto.totp))) {
+      // Wrong OR already-used code (replay). Log the attempt + bail.
+      await this.recordAttempt(admin.sub, ip, false, dto.code);
+      throw new UnauthorizedException('That authenticator code is wrong or has already been used.');
     }
 
     // 2. Verify the support key.
@@ -112,10 +116,10 @@ export class AdminSupportController {
       matched = await this.keys.verifyAndConsume({
         code: dto.code,
         adminId: admin.sub,
-        redeemedFromIp: req.ip,
+        redeemedFromIp: ip,
       });
     } catch (err) {
-      await this.recordAttempt(admin.sub, req, false, dto.code);
+      await this.recordAttempt(admin.sub, ip, false, dto.code);
       throw err;
     }
 
@@ -124,7 +128,7 @@ export class AdminSupportController {
       keyId: matched.keyId,
       tenantId: matched.tenantId,
       adminId: admin.sub,
-      ipAddress: req.ip,
+      ipAddress: ip,
       userAgent: req.headers['user-agent'],
     });
 
@@ -136,7 +140,7 @@ export class AdminSupportController {
     });
     this.impCookies.set(res, token, expiresAt);
 
-    await this.recordAttempt(admin.sub, req, true, dto.code);
+    await this.recordAttempt(admin.sub, ip, true, dto.code);
 
     // 5. Notify the library the session is now open. Pull the admin's
     // identity in the same query so the email shows who's working.
@@ -151,7 +155,7 @@ export class AdminSupportController {
         adminEmail: adminRecord.email,
         adminFullName: adminRecord.fullName,
         expiresAt,
-        ipAddress: req.ip ?? null,
+        ipAddress: ip ?? null,
       });
     }
 
@@ -285,7 +289,7 @@ export class AdminSupportController {
 
   private async recordAttempt(
     adminId: string,
-    req: Request,
+    ip: string | undefined,
     success: boolean,
     code: string,
   ): Promise<void> {
@@ -295,7 +299,7 @@ export class AdminSupportController {
       .create({
         data: {
           adminId,
-          ipAddress: req.ip ?? null,
+          ipAddress: ip ?? null,
           success,
           codePrefix: prefix,
         },

@@ -54,11 +54,24 @@ export type StripeSubscriptionShape = {
   id: string;
   customer: string;
   status: 'trialing' | 'active' | 'past_due' | 'canceled' | 'paused' | 'incomplete' | string;
-  current_period_start: number;
-  current_period_end: number;
   cancel_at_period_end: boolean;
   canceled_at: number | null;
-  items: { data: Array<{ price: { id: string } }> };
+  items: {
+    data: Array<{
+      price: { id: string };
+      // As of Stripe API 2025-03-31 (`basil`) the billing period moved from
+      // the top-level Subscription onto each SubscriptionItem. We pin the
+      // SDK's API version (see RealStripeDriver), so this is where the
+      // period actually lives on every event we receive.
+      current_period_start?: number;
+      current_period_end?: number;
+    }>;
+  };
+  // Legacy (pre-`basil`) top-level period fields. Kept optional purely as a
+  // fallback for an account pinned to an older API version — current events
+  // carry the period on `items.data[]` above, not here.
+  current_period_start?: number;
+  current_period_end?: number;
 };
 
 export type StripeInvoiceShape = {

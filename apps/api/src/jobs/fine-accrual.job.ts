@@ -93,31 +93,53 @@ async function accrueOneTenant(
     if (amount <= 0) continue;
     const reason = `${daysOverdue} day(s) overdue`;
 
+    // Re-read the loan: a concurrent return/lost flow may have just closed it
+    // and finalised its fine. Don't resurrect or overwrite a fine for a loan
+    // that's no longer active (that would revert the return-flow amount).
+    const fresh = await client.loan.findUnique({
+      where: { id: loan.id },
+      select: { status: true },
+    });
+    if (!fresh || fresh.status !== 'active') continue;
+
     const existing = await client.fine.findFirst({
       where: { loanId: loan.id, status: 'outstanding' },
       select: { id: true, amountCents: true },
     });
     if (existing) {
       if (existing.amountCents !== amount) {
-        await client.fine.update({
-          where: { id: existing.id },
+        // Status-guarded so we never touch a fine the return flow just resolved.
+        const upd = await client.fine.updateMany({
+          where: { id: existing.id, status: 'outstanding' },
           data: { amountCents: amount, reason },
         });
-        touched++;
+        if (upd.count > 0) touched++;
       }
     } else {
-      await client.fine.create({
-        data: {
-          memberId: loan.memberId,
-          loanId: loan.id,
-          amountCents: amount,
-          currency,
-          reason,
-          status: 'outstanding',
-        },
-      });
-      touched++;
+      try {
+        await client.fine.create({
+          data: {
+            memberId: loan.memberId,
+            loanId: loan.id,
+            amountCents: amount,
+            currency,
+            reason,
+            status: 'outstanding',
+          },
+        });
+        touched++;
+      } catch (err) {
+        // A concurrent return/accrual won the race and created the outstanding
+        // fine first (unique index fines_one_outstanding_per_loan). That's the
+        // desired single fine — nothing to do.
+        if (!isUniqueViolation(err)) throw err;
+      }
     }
   }
   return touched;
+}
+
+/** Prisma unique-constraint violation (P2002). */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002';
 }

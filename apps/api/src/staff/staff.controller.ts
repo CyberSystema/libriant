@@ -8,11 +8,14 @@ import {
   Patch,
   Post,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { RolesGuard } from '../tenancy/roles.guard.js';
 import { Roles } from '../tenancy/roles.decorator.js';
+import { QuotaInterceptor } from '../plans/quota.interceptor.js';
+import { RequiresQuota } from '../plans/decorators.js';
 import { Sess } from '../auth/session-context.js';
 import type { SessionPayload } from '../auth/jwt-session.service.js';
 import { validateDto } from '../auth/validate-dto.js';
@@ -30,6 +33,7 @@ import { CreateStaffDto, SetStaffRoleDto } from './staff.dto.js';
  */
 @Controller('t/:slug/staff')
 @UseGuards(TenantGuard, RolesGuard)
+@UseInterceptors(QuotaInterceptor)
 @Roles('owner', 'admin')
 export class StaffController {
   constructor(@Inject(StaffService) private readonly svc: StaffService) {}
@@ -41,6 +45,7 @@ export class StaffController {
 
   @Post()
   @HttpCode(201)
+  @RequiresQuota('staff_seats')
   async create(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const dto = await validateDto(CreateStaffDto, raw);
     return this.svc.create(tenant.id, { role: dto.role, fullName: dto.fullName });

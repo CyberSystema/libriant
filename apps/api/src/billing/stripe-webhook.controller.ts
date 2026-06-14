@@ -65,21 +65,11 @@ export class StripeWebhookController {
       throw new BadRequestException('Invalid signature.');
     }
 
-    // Redis SETNX gives us O(1) dedupe; the DB row gives us a durable audit
-    // log + replay buffer. Redis wins races by ~1 ms so we never double-
-    // process; the DB row is the source of truth for "have we seen this?".
-    const setRes = await this.redis.client.set(
-      EVENT_KEY(event.id),
-      '1',
-      'EX',
-      EVENT_TTL_SECONDS,
-      'NX',
-    );
-    if (setRes !== 'OK') {
-      return { received: true, deduped: true };
-    }
-    // Best-effort persistence — Stripe will retry on 5xx, so even if this
-    // upsert races a peer it's fine.
+    // Persist the durable record FIRST. If the process crashes between the
+    // Redis lock and the end of dispatch, the row still exists with
+    // processedAt = null and the retry sweep rescues it (it now also picks up
+    // never-processed rows, not just errored ones). Idempotent upsert, so a
+    // racing peer is harmless.
     await controlDb.stripeWebhookEvent
       .upsert({
         where: { id: event.id },
@@ -93,6 +83,20 @@ export class StripeWebhookController {
       .catch((err: Error) => {
         this.logger.warn(`Could not persist stripe_webhook_events row: ${err.message}`);
       });
+
+    // Redis SETNX gives us O(1) dedupe so concurrent deliveries / Stripe
+    // retries don't double-process. The DB row above is the durable source of
+    // truth; this lock just serializes the in-flight attempt.
+    const setRes = await this.redis.client.set(
+      EVENT_KEY(event.id),
+      '1',
+      'EX',
+      EVENT_TTL_SECONDS,
+      'NX',
+    );
+    if (setRes !== 'OK') {
+      return { received: true, deduped: true };
+    }
 
     try {
       await this.dispatch(event);

@@ -19,6 +19,15 @@ import {
 
 const MS_PER_DAY = 86_400_000;
 
+/**
+ * Convert a Stripe epoch-seconds timestamp to a Date, or null when absent.
+ * Guards against `new Date(undefined * 1000)` → Invalid Date, which Prisma
+ * rejects when writing a DateTime column.
+ */
+function epochSecsToDate(secs: number | null | undefined): Date | null {
+  return typeof secs === 'number' && Number.isFinite(secs) ? new Date(secs * 1000) : null;
+}
+
 export type BillingSnapshot = {
   tenantId: string;
   tenantSlug: string;
@@ -214,7 +223,9 @@ export class BillingService {
     if (!sub) throw new NotFoundException('No subscription on file.');
 
     const plan = await controlDb.plan.findUnique({ where: { slug: input.planSlug } });
-    if (!plan || !plan.isActive || plan.archivedAt) {
+    // A hidden/legacy/experimental plan must not be subscribable by guessing
+    // its slug — unless the tenant is already on it (a grandfathered renewal).
+    if (!plan || !plan.isActive || plan.archivedAt || (!plan.isPublic && plan.id !== sub.planId)) {
       throw new NotFoundException(`Plan "${input.planSlug}" isn't available.`);
     }
     if (plan.billingMode !== 'stripe') {
@@ -453,6 +464,14 @@ export class BillingService {
       unpaid: 'past_due',
     };
     const localStatus = mapStatus[payload.status] ?? 'past_due';
+    // The billing period lives on the SubscriptionItem as of Stripe API
+    // `basil` (2025-03-31); fall back to the legacy top-level fields for an
+    // account pinned to an older version. NEVER build a Date from undefined —
+    // `new Date(undefined * 1000)` is an Invalid Date and Prisma throws on it,
+    // which would fail every real subscription webhook.
+    const item = payload.items.data[0];
+    const periodStart = item?.current_period_start ?? payload.current_period_start;
+    const periodEnd = item?.current_period_end ?? payload.current_period_end;
     await controlDb.subscription.update({
       where: { tenantId: billing.tenantId },
       data: {
@@ -460,10 +479,10 @@ export class BillingService {
         billingMode: 'stripe',
         status: localStatus,
         stripeSubscriptionId: payload.id,
-        currentPeriodStart: new Date(payload.current_period_start * 1000),
-        currentPeriodEnd: new Date(payload.current_period_end * 1000),
+        currentPeriodStart: epochSecsToDate(periodStart),
+        currentPeriodEnd: epochSecsToDate(periodEnd),
         cancelAtPeriodEnd: payload.cancel_at_period_end,
-        canceledAt: payload.canceled_at ? new Date(payload.canceled_at * 1000) : null,
+        canceledAt: epochSecsToDate(payload.canceled_at),
         // Stripe's own retry policy moved us to past_due; arm the grace
         // window so feature access continues until the deadline.
         graceUntil:
@@ -505,7 +524,7 @@ export class BillingService {
         currentPeriodEnd: null,
         graceUntil: null,
         cancelAtPeriodEnd: false,
-        canceledAt: payload.canceled_at ? new Date(payload.canceled_at * 1000) : new Date(),
+        canceledAt: epochSecsToDate(payload.canceled_at) ?? new Date(),
       },
     });
     await this.effectivePlan.invalidate(billing.tenantId);

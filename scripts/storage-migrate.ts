@@ -29,7 +29,8 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { stat } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
+import path from 'node:path';
 import { Redis } from 'ioredis';
 import { controlDb, type Prisma } from '@libriant/db-control';
 import { die, isYes, log, parseArgs } from './_lib/cli.js';
@@ -85,6 +86,11 @@ async function main() {
   if (!sourceStat) die(SCRIPT, `source path "${from.path}" does not exist.`);
   if (!sourceStat.isDirectory()) die(SCRIPT, `source path "${from.path}" is not a directory.`);
 
+  // rsync --delete mirrors source→dest, deleting anything else in dest. A
+  // mistyped --to-storage-url could therefore wipe an unrelated directory, so
+  // refuse a destination that overlaps the source or already has contents.
+  await assertSafeDestination(from.path, to.path);
+
   const adminId = await firstOwnerAdminId();
   const modeEvent = await openReadOnly(tenant.id, adminId);
   log(SCRIPT, `opened read_only window event=${modeEvent.id}`);
@@ -95,13 +101,28 @@ async function main() {
       maxBuffer: 64 * 1024 * 1024,
     });
 
-    log(SCRIPT, 'verifying byte counts match…');
-    const [fromSize, toSize] = await Promise.all([dirSize(from.path), dirSize(to.path)]);
-    if (fromSize !== toSize) {
+    // Verify by content equivalence, NOT byte totals: `du`-style block
+    // accounting differs across filesystems (BSD/macOS vs Linux) and produces
+    // false mismatches. A second rsync in dry-run + itemize mode reports any
+    // file that still differs; zero pending changes ⇒ identical trees.
+    log(SCRIPT, 'verifying source and destination are identical (rsync dry-run)…');
+    const { stdout: itemized } = await execFileP(
+      'rsync',
+      ['-an', '--delete', '--itemize-changes', ensureTrailingSlash(from.path), to.path],
+      { maxBuffer: 64 * 1024 * 1024 },
+    );
+    const pending = itemized
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (pending.length > 0) {
       throw new Error(
-        `byte-count mismatch after rsync: source=${fromSize}B destination=${toSize}B`,
+        `destination still differs from source after rsync (${pending.length} pending change(s)): ` +
+          pending.slice(0, 5).join(' | '),
       );
     }
+    // Informational size for the audit record (not a pass/fail gate).
+    const fromSize = await dirSize(from.path).catch(() => 0);
 
     log(SCRIPT, 'updating control plane (storage_url)…');
     await controlDb.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -152,6 +173,35 @@ function parseStorageUrl(raw: string): { scheme: string; path: string } {
 
 function ensureTrailingSlash(p: string): string {
   return p.endsWith('/') ? p : p + '/';
+}
+
+/**
+ * Refuse a destination that would make `rsync --delete` dangerous: it must not
+ * equal or overlap the source (which would delete live data), and it must be
+ * empty or non-existent (a populated, unrelated directory would be wiped to
+ * mirror the source). This is the guard against a mistyped --to-storage-url.
+ */
+async function assertSafeDestination(fromPath: string, toPath: string): Promise<void> {
+  const a = path.resolve(fromPath);
+  const b = path.resolve(toPath);
+  if (a === b) die(SCRIPT, 'destination equals source — nothing to migrate.');
+  if (b.startsWith(a + path.sep) || a.startsWith(b + path.sep)) {
+    die(
+      SCRIPT,
+      `destination "${toPath}" overlaps the source "${fromPath}"; refusing rsync --delete.`,
+    );
+  }
+  const existing = await readdir(b).catch((e: NodeJS.ErrnoException) =>
+    e.code === 'ENOENT' ? [] : null,
+  );
+  if (existing === null) die(SCRIPT, `cannot read destination "${toPath}".`);
+  if (existing.length > 0) {
+    die(
+      SCRIPT,
+      `destination "${toPath}" is not empty (${existing.length} entr${existing.length === 1 ? 'y' : 'ies'}). ` +
+        `rsync --delete would overwrite/remove its contents — point --to-storage-url at an empty or new directory.`,
+    );
+  }
 }
 
 async function dirSize(p: string): Promise<number> {

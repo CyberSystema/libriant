@@ -347,9 +347,19 @@ export class BooksService {
     if (input.archived !== undefined) {
       data.archivedAt = input.archived ? new Date() : null;
     }
+    // Un-archiving consumes a max_books seat just like a create — enforce it
+    // (otherwise archive → create → un-archive is an unlimited bypass).
+    const restoring = input.archived === false && existing.archivedAt != null;
 
     try {
       const updated = await client.$transaction(async (tx) => {
+        if (restoring) {
+          await this.quota.enforceWithinTx(tx, {
+            tenantId: tenant.id,
+            featureKey: 'max_books',
+            count: () => tx.book.count({ where: { archivedAt: null } }),
+          });
+        }
         // Replace author links wholesale when supplied.
         if (authorLinks) {
           await tx.bookAuthor.deleteMany({ where: { bookId: id } });

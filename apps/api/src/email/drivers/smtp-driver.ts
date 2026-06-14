@@ -66,7 +66,18 @@ function redactUrl(u: string): string {
  * actually send today.
  */
 function markdownToBasicHtml(md: string): string {
-  const escaped = md.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Escape ALL five HTML-significant characters. Crucially this includes the
+  // double quote: the auto-linker below drops the matched URL into an
+  // href="..." attribute, so an unescaped quote in attacker-influenced text
+  // (book title, member name, admin-authored template) would break out of the
+  // attribute and inject markup (link/UI spoofing in a trusted email). Escaping
+  // " → &quot; first means any quote inside a matched URL stays a literal.
+  const escaped = md
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
   const linked = escaped.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>');
   const paragraphs = linked
     .split(/\n\s*\n/)

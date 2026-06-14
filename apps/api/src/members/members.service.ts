@@ -324,6 +324,7 @@ export class MembersService {
         ...cleanedCustom,
       } as Prisma.InputJsonValue;
     }
+    let restoring = false;
     if (input.archived !== undefined) {
       if (input.archived) {
         // Restore-only via this flag (legacy path); the dedicated archive()
@@ -336,11 +337,24 @@ export class MembersService {
       if (existing.archivedAt) {
         data.archivedAt = null;
         data.status = 'active';
+        restoring = true;
       }
     }
 
     try {
-      const updated = await client.member.update({ where: { id }, data });
+      const updated = restoring
+        ? await client.$transaction(async (tx) => {
+            // Un-archiving consumes a max_members seat exactly like a create —
+            // enforce it so archive → create → un-archive isn't a free bypass.
+            await this.quota.enforceWithinTx(tx, {
+              tenantId: tenant.id,
+              featureKey: 'max_members',
+              count: () =>
+                tx.member.count({ where: { archivedAt: null, status: { not: 'archived' } } }),
+            });
+            return tx.member.update({ where: { id }, data });
+          })
+        : await client.member.update({ where: { id }, data });
       await this.audit.record(tenant, actor, {
         action: 'member.updated',
         targetType: 'member',
@@ -408,24 +422,28 @@ export class MembersService {
       return this.toDto(existing);
     }
 
-    const [activeLoans, activeReservations] = await Promise.all([
-      client.loan.count({ where: { memberId: id, status: 'active' } }),
-      client.reservation.count({
+    // members-1: do the open-business check and the archive write in ONE
+    // transaction, serialized with the checkout path by a member-scoped
+    // advisory lock, so a loan can't be created between the check and the
+    // archive (which would leave an archived member holding an active loan).
+    const updated = await client.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`member:${id}`}, 0))`;
+      const activeLoans = await tx.loan.count({ where: { memberId: id, status: 'active' } });
+      const activeReservations = await tx.reservation.count({
         where: { memberId: id, status: { in: ['queued', 'ready'] } },
-      }),
-    ]);
-    if (activeLoans > 0 || activeReservations > 0) {
-      throw new BadRequestException({
-        statusCode: 400,
-        message: `Can't archive a member with open business. Resolve these first.`,
-        activeLoans,
-        activeReservations,
       });
-    }
-
-    const updated = await client.member.update({
-      where: { id },
-      data: { archivedAt: new Date(), status: 'archived' },
+      if (activeLoans > 0 || activeReservations > 0) {
+        throw new BadRequestException({
+          statusCode: 400,
+          message: `Can't archive a member with open business. Resolve these first.`,
+          activeLoans,
+          activeReservations,
+        });
+      }
+      return tx.member.update({
+        where: { id },
+        data: { archivedAt: new Date(), status: 'archived' },
+      });
     });
     await this.audit.record(tenant, actor, {
       action: 'member.archived',

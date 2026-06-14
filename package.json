@@ -34,6 +34,7 @@
     "tenant:migrate": "tsx scripts/tenant-migrate.ts",
     "tenant:relocate": "tsx scripts/tenant-relocate.ts",
     "storage:migrate": "tsx scripts/storage-migrate.ts",
+    "secrets": "tsx scripts/secrets.ts",
     "fleet:report": "tsx scripts/fleet-report.ts",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\""

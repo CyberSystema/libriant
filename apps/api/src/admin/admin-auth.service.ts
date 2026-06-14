@@ -72,9 +72,14 @@ export class AdminAuthService {
       throw new UnauthorizedException('Email or password is wrong.');
     }
 
+    // Reset status to 'active' too — a prior lockout set status:'locked', and
+    // without restoring it here the AdminAuthGuard would 403 every request
+    // forever even after a successful sign-in (the lockout was permanent). A
+    // 'disabled' account never reaches this point (it throws above), so it's
+    // safe to force 'active' on success.
     await controlDb.adminUser.update({
       where: { id: admin.id },
-      data: { failedAttempts: 0, lockedUntil: null, lastLoginAt: new Date() },
+      data: { failedAttempts: 0, lockedUntil: null, status: 'active', lastLoginAt: new Date() },
     });
 
     return {

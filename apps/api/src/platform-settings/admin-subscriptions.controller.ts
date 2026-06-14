@@ -1,6 +1,8 @@
 import { Body, Controller, Get, HttpCode, Inject, Post, UseGuards } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import { AdminAuthGuard, AdminSess } from '../admin/admin-auth.guard.js';
+import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
+import { AdminRoles } from '../admin/admin-roles.decorator.js';
 import type { AdminSessionPayload } from '../admin/admin-session.service.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { PlatformSettingsService } from './platform-settings.service.js';
@@ -18,7 +20,7 @@ import { SetSubscriptionsEnabledDto } from './subscriptions.dto.js';
  * use the app; flipping OFF makes the whole product free again.
  */
 @Controller('admin/subscriptions')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, AdminRolesGuard)
 export class AdminSubscriptionsController {
   constructor(
     @Inject(PlatformSettingsService) private readonly settings: PlatformSettingsService,
@@ -30,6 +32,7 @@ export class AdminSubscriptionsController {
   }
 
   @Post()
+  @AdminRoles('owner')
   @HttpCode(200)
   async set(@AdminSess() admin: AdminSessionPayload, @Body() raw: unknown) {
     const dto = await validateDto(SetSubscriptionsEnabledDto, raw);

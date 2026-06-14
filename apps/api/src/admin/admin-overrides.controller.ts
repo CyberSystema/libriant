@@ -14,6 +14,8 @@ import { IsBoolean, IsDateString, IsInt, IsOptional, IsString } from 'class-vali
 import { controlDb } from '@libriant/db-control';
 import { validateDto } from '../auth/validate-dto.js';
 import { AdminAuthGuard, AdminSess } from './admin-auth.guard.js';
+import { AdminRolesGuard } from './admin-roles.guard.js';
+import { AdminRoles } from './admin-roles.decorator.js';
 import type { AdminSessionPayload } from './admin-session.service.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 
@@ -51,7 +53,7 @@ class UpsertOverrideDto {
  * the next request sees the new effective values immediately.
  */
 @Controller('admin/tenants/:tenantId/overrides')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, AdminRolesGuard)
 export class AdminOverridesController {
   constructor(@Inject(EffectivePlanService) private readonly effectivePlan: EffectivePlanService) {}
 
@@ -67,6 +69,7 @@ export class AdminOverridesController {
   }
 
   @Put()
+  @AdminRoles('owner')
   async upsert(
     @Param('tenantId') tenantId: string,
     @AdminSess() admin: AdminSessionPayload,
@@ -114,6 +117,7 @@ export class AdminOverridesController {
   }
 
   @Delete(':featureKey')
+  @AdminRoles('owner')
   async remove(@Param('tenantId') tenantId: string, @Param('featureKey') featureKey: string) {
     const removed = await controlDb.tenantPlanOverride.deleteMany({
       where: { tenantId, featureKey },

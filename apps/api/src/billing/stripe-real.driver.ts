@@ -28,7 +28,20 @@ export class RealStripeDriver implements StripeDriver {
         'STRIPE_WEBHOOK_SECRET is required when STRIPE_DRIVER=real. Copy it from the Stripe Dashboard or `stripe listen`.',
       );
     }
-    this.stripe = new Stripe(env.stripeApiKey, { typescript: true });
+    this.stripe = new Stripe(env.stripeApiKey, {
+      typescript: true,
+      // Pin the API version explicitly. Without this, a Stripe SDK upgrade can
+      // silently shift webhook payload shapes (e.g. `basil` moved the billing
+      // period from Subscription onto SubscriptionItem) and break syncs at
+      // runtime with no compile-time signal. A future SDK bump that drops this
+      // literal will fail to type-check — forcing a conscious migration.
+      apiVersion: '2026-05-27.dahlia',
+      // Bound outbound latency so a Stripe incident can't tie up request
+      // workers on the default 80s-per-call budget. Retries cover transient
+      // network blips; webhooks/sweeps cover anything that still fails.
+      timeout: 10_000,
+      maxNetworkRetries: 2,
+    });
     this.webhookSecret = env.stripeWebhookSecret;
   }
 

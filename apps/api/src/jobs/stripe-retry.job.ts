@@ -18,10 +18,12 @@ import type { JobResult } from './jobs.types.js';
 /**
  * 16 deferred — "Stripe webhook retry sweep".
  *
- * Reads every `stripe_webhook_events` row where dispatch errored and
- * hasn't been processed yet (`error IS NOT NULL AND processedAt IS NULL`)
- * and re-runs the same dispatch the controller does. Rows are bounded:
- * the table is cleaned at 30 days by the retention policy.
+ * Reads every `stripe_webhook_events` row that hasn't been processed and
+ * either errored OR was received long enough ago that an in-flight attempt
+ * should have finished (covers a process crash between the Redis lock and the
+ * end of dispatch — the row exists with `processedAt IS NULL, error IS NULL`
+ * but nothing will ever retry it otherwise). Re-runs the same dispatch the
+ * controller does. Rows are bounded: the table is cleaned at 30 days.
  *
  * Why a periodic sweep and not BullMQ retries on the controller path:
  * Stripe's own delivery retries us at increasing intervals up to 3 days;
@@ -33,8 +35,14 @@ const logger = new Logger('StripeRetrySweeper');
 
 export async function sweepFailedStripeWebhooks(): Promise<JobResult> {
   const env = loadEnv();
+  // Don't pick up a row that's still within its normal in-flight window — only
+  // ones old enough that any live attempt has certainly finished/crashed.
+  const staleBefore = new Date(Date.now() - 5 * 60_000);
   const failed = await controlDb.stripeWebhookEvent.findMany({
-    where: { error: { not: null }, processedAt: null },
+    where: {
+      processedAt: null,
+      OR: [{ error: { not: null } }, { receivedAt: { lt: staleBefore } }],
+    },
     orderBy: { receivedAt: 'asc' },
     take: 50, // bound the work per tick
     select: { id: true, type: true, payloadJson: true },

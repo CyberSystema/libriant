@@ -19,6 +19,8 @@ import { TenantProvisioningService } from '../provisioning/tenant-provisioning.s
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { AdminAuthGuard, AdminSess } from './admin-auth.guard.js';
+import { AdminRolesGuard } from './admin-roles.guard.js';
+import { AdminRoles } from './admin-roles.decorator.js';
 import type { AdminSessionPayload } from './admin-session.service.js';
 import { DeleteTenantDto } from './admin-tenants.dto.js';
 
@@ -32,7 +34,7 @@ import { DeleteTenantDto } from './admin-tenants.dto.js';
  * owner break-glass and irreversible (see the method comment).
  */
 @Controller('admin/tenants')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, AdminRolesGuard)
 export class AdminTenantsController {
   private readonly logger = new Logger(AdminTenantsController.name);
 
@@ -146,6 +148,7 @@ export class AdminTenantsController {
    * The caller must echo the exact slug as a typed confirmation.
    */
   @Post(':id/delete')
+  @AdminRoles('owner')
   @HttpCode(200)
   async remove(
     @AdminSess() admin: AdminSessionPayload,

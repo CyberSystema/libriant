@@ -4,6 +4,7 @@ import { controlDb } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
 import { EmailService } from '../email/email.service.js';
 import { RedisService } from '../platform/redis.service.js';
+import { RateLimitService } from '../platform/rate-limit.service.js';
 import { PasswordService } from './password.service.js';
 
 /**
@@ -24,8 +25,13 @@ export class PasswordResetService {
   private readonly logger = new Logger(PasswordResetService.name);
   private static readonly TOKEN_TTL_SEC = 60 * 60;
 
+  /** Per-target cap: at most this many reset emails per rolling window. */
+  private static readonly PER_TARGET_LIMIT = 3;
+  private static readonly PER_TARGET_WINDOW_SEC = 15 * 60;
+
   constructor(
     @Inject(RedisService) private readonly redis: RedisService,
+    @Inject(RateLimitService) private readonly rateLimit: RateLimitService,
     @Inject(PasswordService) private readonly passwords: PasswordService,
     @Inject(EmailService) private readonly emails: EmailService,
   ) {}
@@ -46,6 +52,19 @@ export class PasswordResetService {
       select: { id: true, status: true, fullName: true },
     });
     if (!user || user.status !== 'active') return;
+
+    // Per-target throttle: bound how many reset emails a single account can be
+    // sent over a rolling window, independent of the per-minute idempotency
+    // bucket below. Over budget → return silently (preserves no-enumeration).
+    const within = await this.rateLimit.hit(
+      `pwreset:acct:${tenant.id}:${user.id}`,
+      PasswordResetService.PER_TARGET_LIMIT,
+      PasswordResetService.PER_TARGET_WINDOW_SEC,
+    );
+    if (!within.allowed) {
+      this.logger.warn(`password-reset throttled for user=${user.id} tenant=${tenant.id}`);
+      return;
+    }
 
     const token = crypto.randomBytes(32).toString('base64url');
     const key = `pwreset:${token}`;
