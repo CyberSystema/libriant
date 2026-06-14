@@ -127,49 +127,51 @@ export function ExportManager({
               {t('settings.export.none')}
             </p>
           ) : (
-            <table className="lbr-table">
-              <thead>
-                <tr>
-                  <th>{t('settings.export.cols.format')}</th>
-                  <th>{t('settings.export.cols.status')}</th>
-                  <th>{t('settings.export.cols.size')}</th>
-                  <th>{t('settings.export.cols.created')}</th>
-                  <th>{t('settings.export.cols.download')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {exports.map((e) => (
-                  <tr key={e.id}>
-                    <td style={{ textTransform: 'uppercase' }}>{e.format}</td>
-                    <td>
-                      {t(`settings.export.status.${e.status}`)}
-                      {e.status === 'running' && e.progressTotal > 0
-                        ? ` (${e.progressDone}/${e.progressTotal})`
-                        : ''}
-                      {e.status === 'failed' && e.error ? (
-                        <div style={{ color: 'var(--color-danger)', fontSize: 'var(--fs-xs)' }}>
-                          {e.error}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td>{fmtBytes(e.fileBytes)}</td>
-                    <td>{new Date(e.createdAt).toLocaleString(locale)}</td>
-                    <td>
-                      {e.status === 'completed' ? (
-                        <a
-                          href={`/lbr-api/t/${slug}/exports/${e.id}/download`}
-                          className="lbr-btn lbr-btn--secondary lbr-btn--sm"
-                        >
-                          {t('settings.export.download')}
-                        </a>
-                      ) : (
-                        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
-                      )}
-                    </td>
+            <div className="lbr-table-wrap">
+              <table className="lbr-table">
+                <thead>
+                  <tr>
+                    <th>{t('settings.export.cols.format')}</th>
+                    <th>{t('settings.export.cols.status')}</th>
+                    <th>{t('settings.export.cols.size')}</th>
+                    <th>{t('settings.export.cols.created')}</th>
+                    <th>{t('settings.export.cols.download')}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {exports.map((e) => (
+                    <tr key={e.id}>
+                      <td style={{ textTransform: 'uppercase' }}>{e.format}</td>
+                      <td>
+                        {t(`settings.export.status.${e.status}`)}
+                        {e.status === 'running' && e.progressTotal > 0
+                          ? ` (${e.progressDone}/${e.progressTotal})`
+                          : ''}
+                        {e.status === 'failed' && e.error ? (
+                          <div style={{ color: 'var(--color-danger)', fontSize: 'var(--fs-xs)' }}>
+                            {e.error}
+                          </div>
+                        ) : null}
+                      </td>
+                      <td>{fmtBytes(e.fileBytes)}</td>
+                      <td>{new Date(e.createdAt).toLocaleString(locale)}</td>
+                      <td>
+                        {e.status === 'completed' ? (
+                          <a
+                            href={`/lbr-api/t/${slug}/exports/${e.id}/download`}
+                            className="lbr-btn lbr-btn--secondary lbr-btn--sm"
+                          >
+                            {t('settings.export.download')}
+                          </a>
+                        ) : (
+                          <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </CardBody>
       </Card>

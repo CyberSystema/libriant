@@ -44,6 +44,38 @@ export function SidebarNav({
   const pathname = usePathname() ?? '';
   const base = `/${locale}/t/${slug}`;
   const isAdmin = role === 'owner' || role === 'admin';
+
+  // Off-canvas drawer state (mobile only; the sidebar is static on desktop).
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  // Close the drawer whenever the route changes (a nav link was followed).
+  React.useEffect(() => {
+    setMenuOpen(false);
+  }, [pathname]);
+  // While open: close on Escape and lock background scroll.
+  React.useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [menuOpen]);
+
+  const brandMark = brandLogoUrl ? (
+    <img
+      src={brandLogoUrl}
+      alt={libraryName}
+      height={28}
+      style={{ maxHeight: 28, maxWidth: 120, objectFit: 'contain' }}
+    />
+  ) : (
+    <Asset name="brand/logo-square" width={28} height={28} />
+  );
   const links = [
     { href: base, label: t('common.app.name') },
     { href: `${base}/catalog`, label: t('common.nav.catalog') },
@@ -59,51 +91,84 @@ export function SidebarNav({
   ];
 
   return (
-    <aside className="lbr-shell__sidebar">
-      <Link
-        href={base}
-        className="lbr-shell__brand"
-        style={{ textDecoration: 'none', color: 'inherit' }}
-      >
-        {brandLogoUrl ? (
-          <img
-            src={brandLogoUrl}
-            alt={libraryName}
-            height={28}
-            style={{ maxHeight: 28, maxWidth: 120, objectFit: 'contain' }}
-          />
-        ) : (
-          <Asset name="brand/logo-square" width={28} height={28} />
-        )}
-        <span className="lbr-shell__brand-name">{libraryName}</span>
-      </Link>
-      <Nav ariaLabel="Sections">
-        {links.map((l) => {
-          const active =
-            l.href === base
-              ? pathname === base || pathname === `${base}/`
-              : pathname === l.href || pathname.startsWith(`${l.href}/`);
-          const classes = ['lbr-nav__link'];
-          if (active) classes.push('lbr-nav__link--active');
-          return (
-            <Link
-              key={l.href}
-              href={l.href}
-              className={classes.join(' ')}
-              aria-current={active ? 'page' : undefined}
-            >
-              <span className="lbr-nav__link-label">{l.label}</span>
-            </Link>
-          );
-        })}
-      </Nav>
-      <div className="lbr-shell__footer">
-        <div style={{ marginBottom: 'var(--sp-2)' }}>{userFullName}</div>
-        <LogoutButton catalog={catalog} locale={locale} />
-        <div style={{ marginTop: 'var(--sp-3)' }}>
-          <PoweredBy />
-        </div>
+    <>
+      {/* Mobile-only top bar: brand + hamburger. Hidden on desktop via CSS. */}
+      <div className="lbr-shell__topbar">
+        <Link href={base} className="lbr-shell__topbar-brand">
+          {brandMark}
+          <span>{libraryName}</span>
+        </Link>
+        <button
+          type="button"
+          className="lbr-shell__hamburger"
+          aria-label={menuOpen ? t('common.nav.closeMenu') : t('common.nav.menu')}
+          aria-expanded={menuOpen}
+          aria-controls="lbr-tenant-sidebar"
+          onClick={() => setMenuOpen((v) => !v)}
+        >
+          {menuOpen ? (
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M6 6l12 12M18 6L6 18"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          ) : (
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M4 7h16M4 12h16M4 17h16"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          )}
+        </button>
       </div>
-    </aside>
+      <div
+        className={`lbr-shell__scrim${menuOpen ? ' is-open' : ''}`}
+        aria-hidden="true"
+        onClick={() => setMenuOpen(false)}
+      />
+      <aside id="lbr-tenant-sidebar" className={`lbr-shell__sidebar${menuOpen ? ' is-open' : ''}`}>
+        <Link
+          href={base}
+          className="lbr-shell__brand"
+          style={{ textDecoration: 'none', color: 'inherit' }}
+        >
+          {brandMark}
+          <span className="lbr-shell__brand-name">{libraryName}</span>
+        </Link>
+        <Nav ariaLabel="Sections">
+          {links.map((l) => {
+            const active =
+              l.href === base
+                ? pathname === base || pathname === `${base}/`
+                : pathname === l.href || pathname.startsWith(`${l.href}/`);
+            const classes = ['lbr-nav__link'];
+            if (active) classes.push('lbr-nav__link--active');
+            return (
+              <Link
+                key={l.href}
+                href={l.href}
+                className={classes.join(' ')}
+                aria-current={active ? 'page' : undefined}
+              >
+                <span className="lbr-nav__link-label">{l.label}</span>
+              </Link>
+            );
+          })}
+        </Nav>
+        <div className="lbr-shell__footer">
+          <div style={{ marginBottom: 'var(--sp-2)' }}>{userFullName}</div>
+          <LogoutButton catalog={catalog} locale={locale} />
+          <div style={{ marginTop: 'var(--sp-3)' }}>
+            <PoweredBy />
+          </div>
+        </div>
+      </aside>
+    </>
   );
 }

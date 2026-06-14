@@ -187,94 +187,96 @@ export function OverridesEditor({ tenantId, features, overrides, plan }: Props) 
   }
 
   return (
-    <table className="lbr-table">
-      <thead>
-        <tr>
-          <th>Feature</th>
-          <th>Type</th>
-          <th>Effective</th>
-          <th>Source</th>
-          <th>Override</th>
-          <th />
-        </tr>
-      </thead>
-      <tbody>
-        {features
-          .slice()
-          .sort((a, b) => a.sortOrder - b.sortOrder || a.key.localeCompare(b.key))
-          .map((f) => {
-            const eff = effectiveValue(f);
-            const src = source(f);
-            return (
-              <tr key={f.key}>
-                <td>
-                  <div style={{ fontWeight: 500 }}>{f.label}</div>
-                  <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>
-                    <code style={{ fontFamily: 'var(--font-mono)' }}>{f.key}</code>
-                  </div>
-                </td>
-                <td>{f.type}</td>
-                <td>
-                  {eff === null || eff === undefined ? (
-                    <span style={{ color: 'var(--color-text-muted)' }}>—</span>
-                  ) : (
-                    <strong>
-                      {String(eff)}
-                      {f.unit ? (
-                        <span
-                          style={{
-                            color: 'var(--color-text-muted)',
-                            marginLeft: 4,
-                            fontWeight: 400,
-                          }}
-                        >
-                          {f.unit}
-                        </span>
-                      ) : null}
-                    </strong>
-                  )}
-                </td>
-                <td>
-                  <span
-                    style={{
-                      fontSize: 'var(--fs-xs)',
-                      color:
-                        src === 'override'
-                          ? 'var(--color-primary)'
-                          : src === 'plan'
-                            ? 'var(--color-info)'
-                            : 'var(--color-text-muted)',
-                    }}
-                  >
-                    {src}
-                  </span>
-                </td>
-                <td>{renderEditor(f)}</td>
-                <td style={{ whiteSpace: 'nowrap' }}>
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    loading={busy === f.key}
-                    onClick={() => save(f)}
-                  >
-                    Save
-                  </Button>
-                  {local[f.key] ? (
+    <div className="lbr-table-wrap">
+      <table className="lbr-table">
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>Type</th>
+            <th>Effective</th>
+            <th>Source</th>
+            <th>Override</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {features
+            .slice()
+            .sort((a, b) => a.sortOrder - b.sortOrder || a.key.localeCompare(b.key))
+            .map((f) => {
+              const eff = effectiveValue(f);
+              const src = source(f);
+              return (
+                <tr key={f.key}>
+                  <td>
+                    <div style={{ fontWeight: 500 }}>{f.label}</div>
+                    <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>
+                      <code style={{ fontFamily: 'var(--font-mono)' }}>{f.key}</code>
+                    </div>
+                  </td>
+                  <td>{f.type}</td>
+                  <td>
+                    {eff === null || eff === undefined ? (
+                      <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                    ) : (
+                      <strong>
+                        {String(eff)}
+                        {f.unit ? (
+                          <span
+                            style={{
+                              color: 'var(--color-text-muted)',
+                              marginLeft: 4,
+                              fontWeight: 400,
+                            }}
+                          >
+                            {f.unit}
+                          </span>
+                        ) : null}
+                      </strong>
+                    )}
+                  </td>
+                  <td>
+                    <span
+                      style={{
+                        fontSize: 'var(--fs-xs)',
+                        color:
+                          src === 'override'
+                            ? 'var(--color-primary)'
+                            : src === 'plan'
+                              ? 'var(--color-info)'
+                              : 'var(--color-text-muted)',
+                      }}
+                    >
+                      {src}
+                    </span>
+                  </td>
+                  <td>{renderEditor(f)}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
                     <Button
                       size="sm"
-                      variant="ghost"
+                      variant="primary"
                       loading={busy === f.key}
-                      onClick={() => clear(f)}
-                      style={{ marginLeft: 4 }}
+                      onClick={() => save(f)}
                     >
-                      Clear
+                      Save
                     </Button>
-                  ) : null}
-                </td>
-              </tr>
-            );
-          })}
-      </tbody>
-    </table>
+                    {local[f.key] ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        loading={busy === f.key}
+                        onClick={() => clear(f)}
+                        style={{ marginLeft: 4 }}
+                      >
+                        Clear
+                      </Button>
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+        </tbody>
+      </table>
+    </div>
   );
 }

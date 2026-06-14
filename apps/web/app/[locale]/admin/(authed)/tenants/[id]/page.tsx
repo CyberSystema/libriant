@@ -153,13 +153,7 @@ export default async function AdminTenantDetailPage(props: {
         }
       />
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)',
-          gap: 'var(--sp-4)',
-        }}
-      >
+      <div className="lbr-split">
         <div>
           {billingEnabled === false ? (
             <Card style={{ marginBottom: 'var(--sp-4)' }}>

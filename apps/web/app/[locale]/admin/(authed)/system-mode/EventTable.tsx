@@ -57,75 +57,77 @@ export function EventTable({ rows, emptyMessage, showEndAction, showCancelAction
   }
 
   return (
-    <table className="lbr-table">
-      <thead>
-        <tr>
-          <th>Scope</th>
-          <th>Mode</th>
-          <th>Window</th>
-          <th>Bypass?</th>
-          <th>By</th>
-          {showEndAction || showCancelAction ? <th>Actions</th> : null}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.id}>
-            <td>
-              {r.scope === 'global' ? (
-                <strong>Global</strong>
-              ) : r.tenant ? (
-                <Link href={`/admin/tenants/${r.tenant.id}`}>{r.tenant.name}</Link>
-              ) : (
-                'tenant (deleted)'
-              )}
-            </td>
-            <td>{MODE_LABEL[r.mode]}</td>
-            <td>
-              <div>
-                <small>starts:</small> {fmt(r.startsAt)}
-              </div>
-              <div>
-                <small>ends:</small> {r.endsAt ? fmt(r.endsAt) : 'open-ended'}
-              </div>
-              {r.endedAt ? (
-                <div style={{ color: 'var(--color-text-muted)' }}>
-                  <small>ended:</small> {fmt(r.endedAt)}
-                </div>
-              ) : null}
-            </td>
-            <td>{r.allowAdminBypass ? 'yes' : 'no'}</td>
-            <td>
-              <div>{r.createdBy.fullName}</div>
-              <small style={{ color: 'var(--color-text-muted)' }}>{r.createdBy.email}</small>
-            </td>
-            {showEndAction || showCancelAction ? (
+    <div className="lbr-table-wrap">
+      <table className="lbr-table">
+        <thead>
+          <tr>
+            <th>Scope</th>
+            <th>Mode</th>
+            <th>Window</th>
+            <th>Bypass?</th>
+            <th>By</th>
+            {showEndAction || showCancelAction ? <th>Actions</th> : null}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id}>
               <td>
-                {showEndAction ? (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    loading={pending === r.id}
-                    onClick={() => endNow(r.id)}
-                  >
-                    End now
-                  </Button>
-                ) : null}
-                {showCancelAction ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    loading={pending === r.id}
-                    onClick={() => cancel(r.id)}
-                  >
-                    Cancel
-                  </Button>
+                {r.scope === 'global' ? (
+                  <strong>Global</strong>
+                ) : r.tenant ? (
+                  <Link href={`/admin/tenants/${r.tenant.id}`}>{r.tenant.name}</Link>
+                ) : (
+                  'tenant (deleted)'
+                )}
+              </td>
+              <td>{MODE_LABEL[r.mode]}</td>
+              <td>
+                <div>
+                  <small>starts:</small> {fmt(r.startsAt)}
+                </div>
+                <div>
+                  <small>ends:</small> {r.endsAt ? fmt(r.endsAt) : 'open-ended'}
+                </div>
+                {r.endedAt ? (
+                  <div style={{ color: 'var(--color-text-muted)' }}>
+                    <small>ended:</small> {fmt(r.endedAt)}
+                  </div>
                 ) : null}
               </td>
-            ) : null}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+              <td>{r.allowAdminBypass ? 'yes' : 'no'}</td>
+              <td>
+                <div>{r.createdBy.fullName}</div>
+                <small style={{ color: 'var(--color-text-muted)' }}>{r.createdBy.email}</small>
+              </td>
+              {showEndAction || showCancelAction ? (
+                <td>
+                  {showEndAction ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      loading={pending === r.id}
+                      onClick={() => endNow(r.id)}
+                    >
+                      End now
+                    </Button>
+                  ) : null}
+                  {showCancelAction ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      loading={pending === r.id}
+                      onClick={() => cancel(r.id)}
+                    >
+                      Cancel
+                    </Button>
+                  ) : null}
+                </td>
+              ) : null}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }

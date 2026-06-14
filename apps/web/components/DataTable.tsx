@@ -189,34 +189,45 @@ export function DataTable<T extends { id: string }>({
         />
       ) : (
         <>
-          <table className="lbr-table">
-            <thead>
-              <tr>
-                {columns.map((c) => (
-                  <th key={c.key} className={c.className}>
-                    {c.header}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((row) => (
-                <tr
-                  key={row.id}
-                  onClick={rowHref ? () => router.push(rowHref(row)) : undefined}
-                  style={rowHref ? { cursor: 'pointer' } : undefined}
-                >
+          {/* Wrapper scrolls a wide table horizontally on small screens; the
+              `--cards` modifier reflows each row into a stacked label/value
+              card below the mobile breakpoint (see styles.css). Each cell
+              carries its column header as `data-label` so the card view can
+              show it. */}
+          <div className="lbr-table-wrap">
+            <table className="lbr-table lbr-table--cards">
+              <thead>
+                <tr>
                   {columns.map((c) => (
-                    <td key={c.key} className={c.className}>
-                      {c.render
-                        ? c.render(row)
-                        : String((row as Record<string, unknown>)[c.key] ?? '')}
-                    </td>
+                    <th key={c.key} className={c.className}>
+                      {c.header}
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {items.map((row) => (
+                  <tr
+                    key={row.id}
+                    onClick={rowHref ? () => router.push(rowHref(row)) : undefined}
+                    style={rowHref ? { cursor: 'pointer' } : undefined}
+                  >
+                    {columns.map((c) => (
+                      <td
+                        key={c.key}
+                        className={c.className}
+                        data-label={typeof c.header === 'string' ? c.header : ''}
+                      >
+                        {c.render
+                          ? c.render(row)
+                          : String((row as Record<string, unknown>)[c.key] ?? '')}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {error ? (
             <p role="alert" style={{ color: 'var(--color-danger)', marginTop: 'var(--sp-3)' }}>
               {error}

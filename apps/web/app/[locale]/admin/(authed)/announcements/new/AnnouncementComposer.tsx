@@ -277,7 +277,7 @@ export function AnnouncementComposer({ tenants, plans, knownTags }: Props) {
               Send email
             </label>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-3)' }}>
+          <div className="lbr-form-grid">
             <FormField id="publishAt" label="Publish at" hint="Leave blank to publish now.">
               <Input
                 type="datetime-local"

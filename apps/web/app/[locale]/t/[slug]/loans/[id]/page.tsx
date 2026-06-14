@@ -168,29 +168,31 @@ export default async function LoanDetailPage(props: {
         <Card>
           <CardHeader title={t('loans.detail.fines')} />
           <CardBody>
-            <table className="lbr-table">
-              <thead>
-                <tr>
-                  <th>{t('loans.detail.reason')}</th>
-                  <th>{t('loans.detail.amount')}</th>
-                  <th>{t('common.actions.search')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loan.fines.map((f) => (
-                  <tr key={f.id}>
-                    <td>{f.reason}</td>
-                    <td>
-                      {new Intl.NumberFormat(params.locale, {
-                        style: 'currency',
-                        currency: f.currency,
-                      }).format(f.amountCents / 100)}
-                    </td>
-                    <td>{f.status}</td>
+            <div className="lbr-table-wrap">
+              <table className="lbr-table">
+                <thead>
+                  <tr>
+                    <th>{t('loans.detail.reason')}</th>
+                    <th>{t('loans.detail.amount')}</th>
+                    <th>{t('common.actions.search')}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {loan.fines.map((f) => (
+                    <tr key={f.id}>
+                      <td>{f.reason}</td>
+                      <td>
+                        {new Intl.NumberFormat(params.locale, {
+                          style: 'currency',
+                          currency: f.currency,
+                        }).format(f.amountCents / 100)}
+                      </td>
+                      <td>{f.status}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </CardBody>
         </Card>
       ) : null}

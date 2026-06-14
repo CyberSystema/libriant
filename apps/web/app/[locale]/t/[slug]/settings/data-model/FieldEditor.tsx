@@ -178,13 +178,7 @@ export function FieldEditor({ slug, entityKind, catalog, locale, initialFields }
   });
 
   return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
-        gap: 'var(--sp-4)',
-      }}
-    >
+    <div className="lbr-split lbr-split--even" style={{ gap: 'var(--sp-4)' }}>
       <Card>
         <CardHeader
           title={t('settings.dataModel.fieldsTitle')}

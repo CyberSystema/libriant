@@ -356,7 +356,7 @@ function UploadForm(props: {
             {props.advanced ? '▾' : '▸'} {t('import.upload.advanced')}
           </button>
           {props.advanced ? (
-            <div style={{ display: 'grid', gap: 'var(--sp-2)', gridTemplateColumns: '1fr 1fr' }}>
+            <div className="lbr-form-grid" style={{ gap: 'var(--sp-2)' }}>
               <label style={labelStyle}>
                 {t('import.upload.format')}
                 <select name="format" defaultValue="" style={selectStyle}>

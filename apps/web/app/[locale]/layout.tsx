@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { notFound } from 'next/navigation';
 import { isLocale, SUPPORTED_LOCALES } from '@libriant/i18n';
 import { AssetProvider, tokensToCssVars } from '@libriant/ui';
@@ -9,6 +9,18 @@ export const metadata: Metadata = {
   title: 'Libriant',
   description: 'Library management, made simple.',
   icons: { icon: '/_assets/brand/favicon.svg' },
+};
+
+/**
+ * Mobile-first viewport. `width=device-width, initial-scale=1` is what makes
+ * the responsive layout actually apply on phones; `viewport-fit=cover` lets
+ * content extend under iOS notches (we pair this with safe-area-aware padding
+ * where it matters). Explicit so it can never regress to a desktop-width page.
+ */
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
 };
 
 export function generateStaticParams() {

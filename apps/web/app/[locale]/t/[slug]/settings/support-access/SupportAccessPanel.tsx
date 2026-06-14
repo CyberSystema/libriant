@@ -266,32 +266,34 @@ export function SupportAccessPanel({
                       {t('support.access.noActions')}
                     </p>
                   ) : (
-                    <table className="lbr-table" style={{ marginTop: 'var(--sp-2)' }}>
-                      <thead>
-                        <tr>
-                          <th>{t('support.access.col.time')}</th>
-                          <th>{t('support.access.col.method')}</th>
-                          <th>{t('support.access.col.path')}</th>
-                          <th>{t('support.access.col.status')}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {s.actions.map((a) => (
-                          <tr key={a.id}>
-                            <td>
-                              <time dateTime={a.ts}>{fmt(a.ts)}</time>
-                            </td>
-                            <td>
-                              <code>{a.method}</code>
-                            </td>
-                            <td>
-                              <code>{a.path}</code>
-                            </td>
-                            <td>{a.status}</td>
+                    <div className="lbr-table-wrap" style={{ marginTop: 'var(--sp-2)' }}>
+                      <table className="lbr-table">
+                        <thead>
+                          <tr>
+                            <th>{t('support.access.col.time')}</th>
+                            <th>{t('support.access.col.method')}</th>
+                            <th>{t('support.access.col.path')}</th>
+                            <th>{t('support.access.col.status')}</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {s.actions.map((a) => (
+                            <tr key={a.id}>
+                              <td>
+                                <time dateTime={a.ts}>{fmt(a.ts)}</time>
+                              </td>
+                              <td>
+                                <code>{a.method}</code>
+                              </td>
+                              <td>
+                                <code>{a.path}</code>
+                              </td>
+                              <td>{a.status}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                 </details>
               ))}

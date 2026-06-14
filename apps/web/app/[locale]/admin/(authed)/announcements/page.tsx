@@ -140,49 +140,51 @@ export default async function AdminAnnouncementsPage(props: {
       {announcements.length === 0 ? (
         <p style={{ color: 'var(--color-text-muted)' }}>No announcements in this state yet.</p>
       ) : (
-        <table className="lbr-table">
-          <thead>
-            <tr>
-              <th>Title</th>
-              <th>Severity</th>
-              <th>Audience</th>
-              <th>Channels</th>
-              <th>Published</th>
-              <th>Expires</th>
-              <th>Delivered</th>
-            </tr>
-          </thead>
-          <tbody>
-            {announcements.map((a) => (
-              <tr key={a.id}>
-                <td>
-                  <Link href={`/admin/announcements/${a.id}`}>
-                    <strong>{a.title}</strong>
-                  </Link>
-                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--color-text-muted)' }}>
-                    {announcementStatus(a)} — by {a.createdBy.fullName}
-                  </div>
-                </td>
-                <td>{severityLabel(a.severity)}</td>
-                <td>{describeAudience(a.audience)}</td>
-                <td>
-                  {[a.deliverInApp ? 'In-app' : null, a.deliverEmail ? 'Email' : null]
-                    .filter(Boolean)
-                    .join(' + ') || '—'}
-                </td>
-                <td>
-                  {a.publishedAt
-                    ? new Date(a.publishedAt).toLocaleString()
-                    : a.publishAt
-                      ? `at ${new Date(a.publishAt).toLocaleString()}`
-                      : '—'}
-                </td>
-                <td>{a.expiresAt ? new Date(a.expiresAt).toLocaleString() : 'never'}</td>
-                <td>{a.deliveryCount}</td>
+        <div className="lbr-table-wrap">
+          <table className="lbr-table">
+            <thead>
+              <tr>
+                <th>Title</th>
+                <th>Severity</th>
+                <th>Audience</th>
+                <th>Channels</th>
+                <th>Published</th>
+                <th>Expires</th>
+                <th>Delivered</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {announcements.map((a) => (
+                <tr key={a.id}>
+                  <td>
+                    <Link href={`/admin/announcements/${a.id}`}>
+                      <strong>{a.title}</strong>
+                    </Link>
+                    <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--color-text-muted)' }}>
+                      {announcementStatus(a)} — by {a.createdBy.fullName}
+                    </div>
+                  </td>
+                  <td>{severityLabel(a.severity)}</td>
+                  <td>{describeAudience(a.audience)}</td>
+                  <td>
+                    {[a.deliverInApp ? 'In-app' : null, a.deliverEmail ? 'Email' : null]
+                      .filter(Boolean)
+                      .join(' + ') || '—'}
+                  </td>
+                  <td>
+                    {a.publishedAt
+                      ? new Date(a.publishedAt).toLocaleString()
+                      : a.publishAt
+                        ? `at ${new Date(a.publishAt).toLocaleString()}`
+                        : '—'}
+                  </td>
+                  <td>{a.expiresAt ? new Date(a.expiresAt).toLocaleString() : 'never'}</td>
+                  <td>{a.deliveryCount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </>
   );

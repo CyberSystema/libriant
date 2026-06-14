@@ -85,13 +85,7 @@ export default async function AdminPlanDetailPage(props: {
         }
       />
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)',
-          gap: 'var(--sp-4)',
-        }}
-      >
+      <div className="lbr-split">
         <Card>
           <CardHeader
             title="Feature values"

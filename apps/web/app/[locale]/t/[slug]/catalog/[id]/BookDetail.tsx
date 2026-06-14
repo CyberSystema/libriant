@@ -138,10 +138,8 @@ export function BookDetail({ slug, catalog, locale, initial, customFields }: Pro
       ) : null}
 
       <div
+        className="lbr-split"
         style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)',
-          gap: 'var(--sp-4)',
           marginTop: 'var(--sp-4)',
         }}
       >
@@ -281,24 +279,26 @@ export function BookDetail({ slug, catalog, locale, initial, customFields }: Pro
                   {t('catalog.book.noCopies')}
                 </p>
               ) : (
-                <table className="lbr-table">
-                  <thead>
-                    <tr>
-                      <th>{t('catalog.book.copyBarcode')}</th>
-                      <th>{t('catalog.book.copyStatus')}</th>
-                      <th>{t('catalog.book.copyShelf')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {book.copies.map((c) => (
-                      <tr key={c.id}>
-                        <td>{c.barcode}</td>
-                        <td>{c.status}</td>
-                        <td>{c.shelfLocation ?? '—'}</td>
+                <div className="lbr-table-wrap">
+                  <table className="lbr-table">
+                    <thead>
+                      <tr>
+                        <th>{t('catalog.book.copyBarcode')}</th>
+                        <th>{t('catalog.book.copyStatus')}</th>
+                        <th>{t('catalog.book.copyShelf')}</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {book.copies.map((c) => (
+                        <tr key={c.id}>
+                          <td>{c.barcode}</td>
+                          <td>{c.status}</td>
+                          <td>{c.shelfLocation ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </CardBody>
           </Card>

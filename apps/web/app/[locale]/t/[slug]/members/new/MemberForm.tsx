@@ -255,13 +255,7 @@ export function MemberForm({
               onChange={(e) => setAddressLine1(e.currentTarget.value)}
             />
           </FormField>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr 1fr',
-              gap: 'var(--sp-3)',
-            }}
-          >
+          <div className="lbr-form-grid">
             <FormField id="member-city" label={t('members.form.city')}>
               <Input
                 autoComplete="address-level2"

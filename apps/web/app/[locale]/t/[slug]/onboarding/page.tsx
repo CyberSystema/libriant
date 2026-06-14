@@ -227,7 +227,14 @@ export default async function OnboardingPage(props: {
               <li>{t('onboarding.done.bullet2')}</li>
               <li>{t('onboarding.done.bullet3')}</li>
             </ul>
-            <div style={{ display: 'flex', gap: 'var(--sp-2)', marginTop: 'var(--sp-4)' }}>
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 'var(--sp-2)',
+                marginTop: 'var(--sp-4)',
+              }}
+            >
               <Link href={dashboard} className="lbr-btn lbr-btn--primary lbr-btn--md">
                 {t('onboarding.done.toDashboard')}
               </Link>

@@ -123,14 +123,7 @@ export default async function SystemModePage(props: { params: Promise<{ locale: 
         </CardBody>
       </Card>
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)',
-          gap: 'var(--sp-4)',
-          marginBottom: 'var(--sp-4)',
-        }}
-      >
+      <div className="lbr-split" style={{ marginBottom: 'var(--sp-4)' }}>
         <Card>
           <CardHeader
             title="Active windows"

@@ -59,13 +59,7 @@ export default async function AnnouncementDetailPage(props: {
         }
       />
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)',
-          gap: 'var(--sp-4)',
-        }}
-      >
+      <div className="lbr-split">
         <Card>
           <CardHeader title="Message" />
           <CardBody>

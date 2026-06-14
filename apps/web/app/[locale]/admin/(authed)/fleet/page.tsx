@@ -206,14 +206,7 @@ export default async function AdminFleetPage(props: { params: Promise<{ locale: 
         />
       </div>
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '1fr 1fr',
-          gap: 'var(--sp-3)',
-          marginBottom: 'var(--sp-4)',
-        }}
-      >
+      <div className="lbr-split lbr-split--even" style={{ marginBottom: 'var(--sp-4)' }}>
         <Card>
           <CardHeader title="By plan" />
           <CardBody>
@@ -234,37 +227,39 @@ export default async function AdminFleetPage(props: { params: Promise<{ locale: 
       {data.perTenant.length === 0 ? (
         <p style={{ color: muted }}>No libraries yet.</p>
       ) : (
-        <table className="lbr-table">
-          <thead>
-            <tr>
-              <th>Library</th>
-              <th>Status</th>
-              <th>Plan</th>
-              <th>Cell</th>
-              <th style={{ textAlign: 'right' }}>Database</th>
-              <th style={{ textAlign: 'right' }}>Storage</th>
-              <th style={{ textAlign: 'right' }}>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.perTenant.slice(0, 50).map((t) => (
-              <tr key={t.slug}>
-                <td>
-                  <strong>{t.name}</strong>
-                  <div style={{ color: muted, fontSize: 'var(--fs-xs)' }}>{t.slug}</div>
-                </td>
-                <td>{t.status}</td>
-                <td>{t.plan ?? '—'}</td>
-                <td>{t.cell}</td>
-                <td style={{ textAlign: 'right' }}>{fmtBytes(t.dbBytes)}</td>
-                <td style={{ textAlign: 'right' }}>{fmtBytes(t.storageBytes)}</td>
-                <td style={{ textAlign: 'right' }}>
-                  <strong>{fmtBytes(t.totalBytes)}</strong>
-                </td>
+        <div className="lbr-table-wrap">
+          <table className="lbr-table">
+            <thead>
+              <tr>
+                <th>Library</th>
+                <th>Status</th>
+                <th>Plan</th>
+                <th>Cell</th>
+                <th style={{ textAlign: 'right' }}>Database</th>
+                <th style={{ textAlign: 'right' }}>Storage</th>
+                <th style={{ textAlign: 'right' }}>Total</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {data.perTenant.slice(0, 50).map((t) => (
+                <tr key={t.slug}>
+                  <td>
+                    <strong>{t.name}</strong>
+                    <div style={{ color: muted, fontSize: 'var(--fs-xs)' }}>{t.slug}</div>
+                  </td>
+                  <td>{t.status}</td>
+                  <td>{t.plan ?? '—'}</td>
+                  <td>{t.cell}</td>
+                  <td style={{ textAlign: 'right' }}>{fmtBytes(t.dbBytes)}</td>
+                  <td style={{ textAlign: 'right' }}>{fmtBytes(t.storageBytes)}</td>
+                  <td style={{ textAlign: 'right' }}>
+                    <strong>{fmtBytes(t.totalBytes)}</strong>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </>
   );

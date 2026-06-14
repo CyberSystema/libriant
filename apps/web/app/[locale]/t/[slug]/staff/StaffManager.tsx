@@ -187,73 +187,79 @@ export function StaffManager({
       <Card>
         <CardHeader title={t('settings.staff.listTitle')} />
         <CardBody>
-          <table className="lbr-table">
-            <thead>
-              <tr>
-                <th>{t('settings.staff.cols.member')}</th>
-                <th>{t('settings.staff.cols.login')}</th>
-                <th>{t('settings.staff.cols.role')}</th>
-                <th>{t('settings.staff.cols.actions')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {staff.map((m) => {
-                const isOwner = m.role === 'owner';
-                const isSelf = m.id === currentUserId;
-                return (
-                  <tr key={m.id}>
-                    <td>
-                      <strong>{m.fullName}</strong>
-                      {m.mustChangeCredentials ? (
-                        <div style={{ color: 'var(--color-warning)', fontSize: 'var(--fs-xs)' }}>
-                          {t('settings.staff.pendingSetup')}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td style={{ fontFamily: 'var(--font-mono)' }}>
-                      {m.username ?? m.email ?? '—'}
-                    </td>
-                    <td>
-                      {isOwner ? (
-                        roleLabel('owner')
-                      ) : (
-                        <select
-                          value={m.role}
-                          onChange={(e) => changeRole(m, e.currentTarget.value as AssignableRole)}
-                          className="lbr-input"
-                          aria-label={t('settings.staff.cols.role')}
-                        >
-                          {ASSIGNABLE.map((r) => (
-                            <option key={r} value={r}>
-                              {t(`settings.staff.roles.${r}`)}
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                    </td>
-                    <td>
-                      {isOwner ? (
-                        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
-                      ) : (
-                        <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
-                          {m.username ? (
-                            <Button variant="secondary" size="sm" onClick={() => resetPassword(m)}>
-                              {t('settings.staff.reset')}
-                            </Button>
-                          ) : null}
-                          {!isSelf ? (
-                            <Button variant="danger" size="sm" onClick={() => deactivate(m)}>
-                              {t('settings.staff.deactivate')}
-                            </Button>
-                          ) : null}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="lbr-table-wrap">
+            <table className="lbr-table">
+              <thead>
+                <tr>
+                  <th>{t('settings.staff.cols.member')}</th>
+                  <th>{t('settings.staff.cols.login')}</th>
+                  <th>{t('settings.staff.cols.role')}</th>
+                  <th>{t('settings.staff.cols.actions')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {staff.map((m) => {
+                  const isOwner = m.role === 'owner';
+                  const isSelf = m.id === currentUserId;
+                  return (
+                    <tr key={m.id}>
+                      <td>
+                        <strong>{m.fullName}</strong>
+                        {m.mustChangeCredentials ? (
+                          <div style={{ color: 'var(--color-warning)', fontSize: 'var(--fs-xs)' }}>
+                            {t('settings.staff.pendingSetup')}
+                          </div>
+                        ) : null}
+                      </td>
+                      <td style={{ fontFamily: 'var(--font-mono)' }}>
+                        {m.username ?? m.email ?? '—'}
+                      </td>
+                      <td>
+                        {isOwner ? (
+                          roleLabel('owner')
+                        ) : (
+                          <select
+                            value={m.role}
+                            onChange={(e) => changeRole(m, e.currentTarget.value as AssignableRole)}
+                            className="lbr-input"
+                            aria-label={t('settings.staff.cols.role')}
+                          >
+                            {ASSIGNABLE.map((r) => (
+                              <option key={r} value={r}>
+                                {t(`settings.staff.roles.${r}`)}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </td>
+                      <td>
+                        {isOwner ? (
+                          <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                        ) : (
+                          <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+                            {m.username ? (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => resetPassword(m)}
+                              >
+                                {t('settings.staff.reset')}
+                              </Button>
+                            ) : null}
+                            {!isSelf ? (
+                              <Button variant="danger" size="sm" onClick={() => deactivate(m)}>
+                                {t('settings.staff.deactivate')}
+                              </Button>
+                            ) : null}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </CardBody>
       </Card>
     </>

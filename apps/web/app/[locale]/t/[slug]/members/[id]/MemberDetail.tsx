@@ -165,10 +165,8 @@ export function MemberDetail({ slug, catalog, locale, initial, customFields }: P
       ) : null}
 
       <div
+        className="lbr-split"
         style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)',
-          gap: 'var(--sp-4)',
           marginTop: 'var(--sp-4)',
         }}
       >

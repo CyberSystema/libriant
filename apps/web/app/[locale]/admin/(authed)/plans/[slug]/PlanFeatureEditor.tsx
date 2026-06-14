@@ -138,78 +138,82 @@ export function PlanFeatureEditor({ planSlug, features, planValues }: Props) {
   }
 
   return (
-    <table className="lbr-table">
-      <thead>
-        <tr>
-          <th>Feature</th>
-          <th>Type</th>
-          <th>Effective</th>
-          <th>Value</th>
-          <th />
-        </tr>
-      </thead>
-      <tbody>
-        {features
-          .slice()
-          .sort((a, b) => a.sortOrder - b.sortOrder || a.key.localeCompare(b.key))
-          .map((f) => {
-            const eff = effectiveValue(f);
-            const source = values.get(f.key) ? 'plan' : 'default';
-            return (
-              <tr key={f.key}>
-                <td>
-                  <div style={{ fontWeight: 500 }}>{f.label}</div>
-                  <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>
-                    <code style={{ fontFamily: 'var(--font-mono)' }}>{f.key}</code>
-                    {f.description ? ` · ${f.description}` : ''}
-                  </div>
-                </td>
-                <td>{f.type}</td>
-                <td>
-                  {eff === null || eff === undefined ? (
-                    <span style={{ color: 'var(--color-text-muted)' }}>—</span>
-                  ) : (
-                    <span>
-                      <strong>{String(eff)}</strong>
-                      {f.unit ? (
+    <div className="lbr-table-wrap">
+      <table className="lbr-table">
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>Type</th>
+            <th>Effective</th>
+            <th>Value</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {features
+            .slice()
+            .sort((a, b) => a.sortOrder - b.sortOrder || a.key.localeCompare(b.key))
+            .map((f) => {
+              const eff = effectiveValue(f);
+              const source = values.get(f.key) ? 'plan' : 'default';
+              return (
+                <tr key={f.key}>
+                  <td>
+                    <div style={{ fontWeight: 500 }}>{f.label}</div>
+                    <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>
+                      <code style={{ fontFamily: 'var(--font-mono)' }}>{f.key}</code>
+                      {f.description ? ` · ${f.description}` : ''}
+                    </div>
+                  </td>
+                  <td>{f.type}</td>
+                  <td>
+                    {eff === null || eff === undefined ? (
+                      <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                    ) : (
+                      <span>
+                        <strong>{String(eff)}</strong>
+                        {f.unit ? (
+                          <span
+                            style={{
+                              color: 'var(--color-text-muted)',
+                              marginLeft: 4,
+                              fontWeight: 400,
+                            }}
+                          >
+                            {f.unit}
+                          </span>
+                        ) : null}
                         <span
                           style={{
-                            color: 'var(--color-text-muted)',
-                            marginLeft: 4,
-                            fontWeight: 400,
+                            color:
+                              source === 'plan'
+                                ? 'var(--color-primary)'
+                                : 'var(--color-text-muted)',
+                            fontSize: 'var(--fs-xs)',
+                            marginLeft: 'var(--sp-2)',
                           }}
                         >
-                          {f.unit}
+                          {source}
                         </span>
-                      ) : null}
-                      <span
-                        style={{
-                          color:
-                            source === 'plan' ? 'var(--color-primary)' : 'var(--color-text-muted)',
-                          fontSize: 'var(--fs-xs)',
-                          marginLeft: 'var(--sp-2)',
-                        }}
-                      >
-                        {source}
                       </span>
-                    </span>
-                  )}
-                </td>
-                <td>{renderEditor(f)}</td>
-                <td>
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    loading={busy === f.key}
-                    onClick={() => save(f)}
-                  >
-                    Save
-                  </Button>
-                </td>
-              </tr>
-            );
-          })}
-      </tbody>
-    </table>
+                    )}
+                  </td>
+                  <td>{renderEditor(f)}</td>
+                  <td>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      loading={busy === f.key}
+                      onClick={() => save(f)}
+                    >
+                      Save
+                    </Button>
+                  </td>
+                </tr>
+              );
+            })}
+        </tbody>
+      </table>
+    </div>
   );
 }

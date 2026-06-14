@@ -45,89 +45,91 @@ export function OptionsEditor({ catalog, locale, value, onChange }: Props) {
 
   return (
     <div>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          <tr>
-            <th
-              style={{
-                textAlign: 'left',
-                fontSize: 'var(--fs-xs)',
-                color: 'var(--color-text-muted)',
-                fontWeight: 600,
-                textTransform: 'uppercase',
-                paddingBottom: 'var(--sp-1)',
-              }}
-            >
-              {t('settings.dataModel.form.optionValue')}
-            </th>
-            <th
-              style={{
-                textAlign: 'left',
-                fontSize: 'var(--fs-xs)',
-                color: 'var(--color-text-muted)',
-                fontWeight: 600,
-                textTransform: 'uppercase',
-                paddingBottom: 'var(--sp-1)',
-              }}
-            >
-              {t('settings.dataModel.form.optionLabelEn')}
-            </th>
-            <th
-              style={{
-                textAlign: 'left',
-                fontSize: 'var(--fs-xs)',
-                color: 'var(--color-text-muted)',
-                fontWeight: 600,
-                textTransform: 'uppercase',
-                paddingBottom: 'var(--sp-1)',
-              }}
-            >
-              {t('settings.dataModel.form.optionLabelEl')}
-            </th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {value.map((o, ix) => (
-            <tr key={o.id}>
-              <td style={{ padding: 'var(--sp-1) var(--sp-1) var(--sp-1) 0' }}>
-                <Input
-                  value={o.value}
-                  onChange={(e) =>
-                    update(ix, {
-                      value: e.currentTarget.value.toLowerCase().replace(/\s+/g, '_'),
-                    })
-                  }
-                  spellCheck={false}
-                />
-              </td>
-              <td style={{ padding: 'var(--sp-1)' }}>
-                <Input
-                  value={o.labelEn}
-                  onChange={(e) => update(ix, { labelEn: e.currentTarget.value })}
-                />
-              </td>
-              <td style={{ padding: 'var(--sp-1)' }}>
-                <Input
-                  value={o.labelEl}
-                  onChange={(e) => update(ix, { labelEl: e.currentTarget.value })}
-                />
-              </td>
-              <td style={{ padding: 'var(--sp-1)', textAlign: 'right' }}>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  aria-label={t('settings.dataModel.removeOption')}
-                  onClick={() => remove(ix)}
-                >
-                  ×
-                </Button>
-              </td>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th
+                style={{
+                  textAlign: 'left',
+                  fontSize: 'var(--fs-xs)',
+                  color: 'var(--color-text-muted)',
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  paddingBottom: 'var(--sp-1)',
+                }}
+              >
+                {t('settings.dataModel.form.optionValue')}
+              </th>
+              <th
+                style={{
+                  textAlign: 'left',
+                  fontSize: 'var(--fs-xs)',
+                  color: 'var(--color-text-muted)',
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  paddingBottom: 'var(--sp-1)',
+                }}
+              >
+                {t('settings.dataModel.form.optionLabelEn')}
+              </th>
+              <th
+                style={{
+                  textAlign: 'left',
+                  fontSize: 'var(--fs-xs)',
+                  color: 'var(--color-text-muted)',
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  paddingBottom: 'var(--sp-1)',
+                }}
+              >
+                {t('settings.dataModel.form.optionLabelEl')}
+              </th>
+              <th />
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {value.map((o, ix) => (
+              <tr key={o.id}>
+                <td style={{ padding: 'var(--sp-1) var(--sp-1) var(--sp-1) 0' }}>
+                  <Input
+                    value={o.value}
+                    onChange={(e) =>
+                      update(ix, {
+                        value: e.currentTarget.value.toLowerCase().replace(/\s+/g, '_'),
+                      })
+                    }
+                    spellCheck={false}
+                  />
+                </td>
+                <td style={{ padding: 'var(--sp-1)' }}>
+                  <Input
+                    value={o.labelEn}
+                    onChange={(e) => update(ix, { labelEn: e.currentTarget.value })}
+                  />
+                </td>
+                <td style={{ padding: 'var(--sp-1)' }}>
+                  <Input
+                    value={o.labelEl}
+                    onChange={(e) => update(ix, { labelEl: e.currentTarget.value })}
+                  />
+                </td>
+                <td style={{ padding: 'var(--sp-1)', textAlign: 'right' }}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    aria-label={t('settings.dataModel.removeOption')}
+                    onClick={() => remove(ix)}
+                  >
+                    ×
+                  </Button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       <Button
         type="button"
         size="sm"

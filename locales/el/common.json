@@ -24,6 +24,8 @@
   "nav.staff": "Προσωπικό",
   "nav.help": "Βοήθεια",
   "nav.language": "Γλώσσα",
+  "nav.menu": "Μενού",
+  "nav.closeMenu": "Κλείσιμο μενού",
   "states.loading": "Φόρτωση…",
   "states.empty": "Δεν υπάρχει τίποτα εδώ ακόμη.",
   "states.error": "Κάτι πήγε στραβά.",

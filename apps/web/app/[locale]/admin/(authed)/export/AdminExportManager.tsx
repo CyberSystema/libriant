@@ -171,51 +171,53 @@ export function AdminExportManager({
           {exports.length === 0 ? (
             <p style={{ margin: 0, color: 'var(--color-text-muted)' }}>No exports yet.</p>
           ) : (
-            <table className="lbr-table">
-              <thead>
-                <tr>
-                  <th>Scope</th>
-                  <th>Format</th>
-                  <th>Status</th>
-                  <th>Size</th>
-                  <th>Created</th>
-                  <th>Download</th>
-                </tr>
-              </thead>
-              <tbody>
-                {exports.map((e) => (
-                  <tr key={e.id}>
-                    <td>{scopeLabel(e)}</td>
-                    <td>{FORMAT_LABEL[e.format]}</td>
-                    <td>
-                      {e.status}
-                      {e.status === 'running' && e.progressTotal > 0
-                        ? ` (${e.progressDone}/${e.progressTotal})`
-                        : ''}
-                      {e.status === 'failed' && e.error ? (
-                        <div style={{ color: 'var(--color-danger)', fontSize: 'var(--fs-xs)' }}>
-                          {e.error}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td>{fmtBytes(e.fileBytes)}</td>
-                    <td>{new Date(e.createdAt).toLocaleString()}</td>
-                    <td>
-                      {e.status === 'completed' ? (
-                        <a
-                          href={`/lbr-api/admin/exports/${e.id}/download`}
-                          className="lbr-btn lbr-btn--secondary lbr-btn--sm"
-                        >
-                          Download
-                        </a>
-                      ) : (
-                        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
-                      )}
-                    </td>
+            <div className="lbr-table-wrap">
+              <table className="lbr-table">
+                <thead>
+                  <tr>
+                    <th>Scope</th>
+                    <th>Format</th>
+                    <th>Status</th>
+                    <th>Size</th>
+                    <th>Created</th>
+                    <th>Download</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {exports.map((e) => (
+                    <tr key={e.id}>
+                      <td>{scopeLabel(e)}</td>
+                      <td>{FORMAT_LABEL[e.format]}</td>
+                      <td>
+                        {e.status}
+                        {e.status === 'running' && e.progressTotal > 0
+                          ? ` (${e.progressDone}/${e.progressTotal})`
+                          : ''}
+                        {e.status === 'failed' && e.error ? (
+                          <div style={{ color: 'var(--color-danger)', fontSize: 'var(--fs-xs)' }}>
+                            {e.error}
+                          </div>
+                        ) : null}
+                      </td>
+                      <td>{fmtBytes(e.fileBytes)}</td>
+                      <td>{new Date(e.createdAt).toLocaleString()}</td>
+                      <td>
+                        {e.status === 'completed' ? (
+                          <a
+                            href={`/lbr-api/admin/exports/${e.id}/download`}
+                            className="lbr-btn lbr-btn--secondary lbr-btn--sm"
+                          >
+                            Download
+                          </a>
+                        ) : (
+                          <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </CardBody>
       </Card>

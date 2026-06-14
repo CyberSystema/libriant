@@ -24,6 +24,8 @@
   "nav.staff": "Staff",
   "nav.help": "Help",
   "nav.language": "Language",
+  "nav.menu": "Menu",
+  "nav.closeMenu": "Close menu",
   "states.loading": "Loading…",
   "states.empty": "Nothing here yet.",
   "states.error": "Something went wrong.",

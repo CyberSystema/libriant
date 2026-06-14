@@ -16,7 +16,26 @@ export function AdminSidebar({ admin }: Props) {
   const router = useRouter();
   const toast = useToast();
   const [signingOut, setSigningOut] = React.useState(false);
+  const [menuOpen, setMenuOpen] = React.useState(false);
   const base = '/admin';
+
+  // Off-canvas drawer (mobile only; static sidebar on desktop).
+  React.useEffect(() => {
+    setMenuOpen(false);
+  }, [pathname]);
+  React.useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [menuOpen]);
 
   const links = [
     { href: `${base}/tenants`, label: 'Tenants' },
@@ -46,49 +65,91 @@ export function AdminSidebar({ admin }: Props) {
   }
 
   return (
-    <aside className="lbr-shell__sidebar">
-      <Link
-        href={`${base}/tenants`}
-        className="lbr-shell__brand"
-        style={{ textDecoration: 'none', color: 'inherit' }}
-      >
-        <Asset name="brand/logo-square" width={28} height={28} />
-        <div>
-          <div className="lbr-shell__brand-name">Libriant</div>
-          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--color-text-muted)' }}>Admin</div>
-        </div>
-      </Link>
-      <nav aria-label="Admin sections" className="lbr-nav">
-        {links.map((l) => {
-          const active = pathname === l.href || pathname.startsWith(`${l.href}/`);
-          const classes = ['lbr-nav__link'];
-          if (active) classes.push('lbr-nav__link--active');
-          return (
-            <Link
-              key={l.href}
-              href={l.href}
-              className={classes.join(' ')}
-              aria-current={active ? 'page' : undefined}
-            >
-              <span className="lbr-nav__link-label">{l.label}</span>
-            </Link>
-          );
-        })}
-      </nav>
-      <div className="lbr-shell__footer">
-        <div style={{ marginBottom: 'var(--sp-2)' }}>
-          <div style={{ fontWeight: 500 }}>{admin.fullName}</div>
-          <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--color-text-muted)' }}>
-            {admin.role === 'owner' ? 'Owner' : 'Support'}
+    <>
+      {/* Mobile-only top bar: brand + hamburger. Hidden on desktop via CSS. */}
+      <div className="lbr-shell__topbar">
+        <Link href={`${base}/tenants`} className="lbr-shell__topbar-brand">
+          <Asset name="brand/logo-square" width={28} height={28} />
+          <span>Libriant Admin</span>
+        </Link>
+        <button
+          type="button"
+          className="lbr-shell__hamburger"
+          aria-label={menuOpen ? 'Close menu' : 'Menu'}
+          aria-expanded={menuOpen}
+          aria-controls="lbr-admin-sidebar"
+          onClick={() => setMenuOpen((v) => !v)}
+        >
+          {menuOpen ? (
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M6 6l12 12M18 6L6 18"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          ) : (
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M4 7h16M4 12h16M4 17h16"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          )}
+        </button>
+      </div>
+      <div
+        className={`lbr-shell__scrim${menuOpen ? ' is-open' : ''}`}
+        aria-hidden="true"
+        onClick={() => setMenuOpen(false)}
+      />
+      <aside id="lbr-admin-sidebar" className={`lbr-shell__sidebar${menuOpen ? ' is-open' : ''}`}>
+        <Link
+          href={`${base}/tenants`}
+          className="lbr-shell__brand"
+          style={{ textDecoration: 'none', color: 'inherit' }}
+        >
+          <Asset name="brand/logo-square" width={28} height={28} />
+          <div>
+            <div className="lbr-shell__brand-name">Libriant</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--color-text-muted)' }}>Admin</div>
+          </div>
+        </Link>
+        <nav aria-label="Admin sections" className="lbr-nav">
+          {links.map((l) => {
+            const active = pathname === l.href || pathname.startsWith(`${l.href}/`);
+            const classes = ['lbr-nav__link'];
+            if (active) classes.push('lbr-nav__link--active');
+            return (
+              <Link
+                key={l.href}
+                href={l.href}
+                className={classes.join(' ')}
+                aria-current={active ? 'page' : undefined}
+              >
+                <span className="lbr-nav__link-label">{l.label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+        <div className="lbr-shell__footer">
+          <div style={{ marginBottom: 'var(--sp-2)' }}>
+            <div style={{ fontWeight: 500 }}>{admin.fullName}</div>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--color-text-muted)' }}>
+              {admin.role === 'owner' ? 'Owner' : 'Support'}
+            </div>
+          </div>
+          <Button variant="ghost" size="sm" loading={signingOut} onClick={signOut}>
+            Sign out
+          </Button>
+          <div style={{ marginTop: 'var(--sp-3)' }}>
+            <PoweredBy />
           </div>
         </div>
-        <Button variant="ghost" size="sm" loading={signingOut} onClick={signOut}>
-          Sign out
-        </Button>
-        <div style={{ marginTop: 'var(--sp-3)' }}>
-          <PoweredBy />
-        </div>
-      </div>
-    </aside>
+      </aside>
+    </>
   );
 }

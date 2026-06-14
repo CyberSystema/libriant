@@ -353,13 +353,7 @@ export function BookForm({
       <Card style={{ marginBottom: 'var(--sp-4)' }}>
         <CardHeader title={t('catalog.book.publication')} />
         <CardBody>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              gap: 'var(--sp-3)',
-            }}
-          >
+          <div className="lbr-form-grid">
             <FormField id="book-year" label={t('catalog.book.yearLabel')}>
               <Input
                 type="number"

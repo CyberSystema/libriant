@@ -125,52 +125,54 @@ export default async function AdminTenantsPage(props: {
       {tenants.length === 0 ? (
         <p style={{ color: 'var(--color-text-muted)' }}>No tenants match.</p>
       ) : (
-        <table className="lbr-table">
-          <thead>
-            <tr>
-              <th>Library</th>
-              {subsOn ? <th>Plan</th> : null}
-              {subsOn ? <th>Billing</th> : null}
-              <th>Status</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tenants.map((t) => (
-              <tr key={t.id}>
-                <td>
-                  <Link href={`/admin/tenants/${t.id}`}>
-                    <strong>{t.name}</strong>
-                  </Link>
-                  <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>
-                    {t.slug} · {t.primaryEmail ?? '—'}
-                  </div>
-                </td>
-                {subsOn ? (
-                  <td>
-                    {t.plan ? (
-                      t.plan.name
-                    ) : (
-                      <span style={{ color: 'var(--color-text-muted)' }}>—</span>
-                    )}
-                  </td>
-                ) : null}
-                {subsOn ? (
-                  <td>
-                    {t.billingStatus ?? '—'}
-                    {t.billingMode ? (
-                      <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>
-                        {t.billingMode === 'manual' ? 'Manual / invoice' : 'Self-serve (card)'}
-                      </div>
-                    ) : null}
-                  </td>
-                ) : null}
-                <td>{t.status}</td>
-                <td>{new Date(t.createdAt).toLocaleDateString(params.locale)}</td>
+        <div className="lbr-table-wrap">
+          <table className="lbr-table">
+            <thead>
+              <tr>
+                <th>Library</th>
+                {subsOn ? <th>Plan</th> : null}
+                {subsOn ? <th>Billing</th> : null}
+                <th>Status</th>
+                <th>Created</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {tenants.map((t) => (
+                <tr key={t.id}>
+                  <td>
+                    <Link href={`/admin/tenants/${t.id}`}>
+                      <strong>{t.name}</strong>
+                    </Link>
+                    <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>
+                      {t.slug} · {t.primaryEmail ?? '—'}
+                    </div>
+                  </td>
+                  {subsOn ? (
+                    <td>
+                      {t.plan ? (
+                        t.plan.name
+                      ) : (
+                        <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+                      )}
+                    </td>
+                  ) : null}
+                  {subsOn ? (
+                    <td>
+                      {t.billingStatus ?? '—'}
+                      {t.billingMode ? (
+                        <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>
+                          {t.billingMode === 'manual' ? 'Manual / invoice' : 'Self-serve (card)'}
+                        </div>
+                      ) : null}
+                    </td>
+                  ) : null}
+                  <td>{t.status}</td>
+                  <td>{new Date(t.createdAt).toLocaleDateString(params.locale)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </>
   );

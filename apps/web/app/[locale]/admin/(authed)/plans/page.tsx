@@ -51,37 +51,39 @@ export default async function AdminPlansPage(props: { params: Promise<{ locale: 
         </Banner>
       ) : null}
 
-      <table className="lbr-table">
-        <thead>
-          <tr>
-            <th>Plan</th>
-            <th>Mode</th>
-            <th>Price</th>
-            <th>Features</th>
-            <th>Public</th>
-            <th>Active</th>
-          </tr>
-        </thead>
-        <tbody>
-          {plans.map((p) => (
-            <tr key={p.id}>
-              <td>
-                <Link href={`/admin/plans/${p.slug}`}>
-                  <strong>{p.name}</strong>
-                </Link>
-                <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>
-                  {p.slug}
-                </div>
-              </td>
-              <td>{p.billingMode === 'manual' ? 'Manual' : 'Stripe'}</td>
-              <td>{fmtMoney(p.monthlyPriceCents, p.currency)}</td>
-              <td>{p.values.length}</td>
-              <td>{p.isPublic ? '✓' : '—'}</td>
-              <td>{p.isActive ? '✓' : '—'}</td>
+      <div className="lbr-table-wrap">
+        <table className="lbr-table">
+          <thead>
+            <tr>
+              <th>Plan</th>
+              <th>Mode</th>
+              <th>Price</th>
+              <th>Features</th>
+              <th>Public</th>
+              <th>Active</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {plans.map((p) => (
+              <tr key={p.id}>
+                <td>
+                  <Link href={`/admin/plans/${p.slug}`}>
+                    <strong>{p.name}</strong>
+                  </Link>
+                  <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--fs-xs)' }}>
+                    {p.slug}
+                  </div>
+                </td>
+                <td>{p.billingMode === 'manual' ? 'Manual' : 'Stripe'}</td>
+                <td>{fmtMoney(p.monthlyPriceCents, p.currency)}</td>
+                <td>{p.values.length}</td>
+                <td>{p.isPublic ? '✓' : '—'}</td>
+                <td>{p.isActive ? '✓' : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }
