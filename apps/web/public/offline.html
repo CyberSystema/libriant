@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Offline · Libriant</title>
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 2rem;
+        box-sizing: border-box;
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          Roboto,
+          Helvetica,
+          Arial,
+          sans-serif;
+        background: #f6f8fa;
+        color: #0d1117;
+      }
+      main {
+        text-align: center;
+        max-width: 24rem;
+      }
+      .logo {
+        width: 56px;
+        height: 56px;
+        margin: 0 auto 1.25rem;
+        display: block;
+      }
+      h1 {
+        font-size: 1.375rem;
+        margin: 0 0 0.5rem;
+      }
+      p {
+        margin: 0 0 1.5rem;
+        color: #57606a;
+        line-height: 1.5;
+      }
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 8px;
+        padding: 0.625rem 1.25rem;
+        background: #1f6feb;
+        color: #fff;
+        font-weight: 600;
+        font-size: 1rem;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #1858c9;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <!-- Inlined brand mark so the page needs no network at all. -->
+      <svg
+        class="logo"
+        viewBox="0 0 64 64"
+        role="img"
+        aria-label="Libriant"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <rect width="64" height="64" rx="12" fill="#1f6feb" />
+        <path
+          d="M16 20 L48 20 M16 32 L48 32 M16 44 L40 44"
+          stroke="#ffffff"
+          stroke-width="4"
+          stroke-linecap="round"
+        />
+      </svg>
+      <h1>You're offline</h1>
+      <p>
+        Libriant can't reach the network right now. Pages you've already opened may still be
+        available — otherwise reconnect and try again.
+      </p>
+      <button type="button" onclick="location.reload()">Try again</button>
+    </main>
+  </body>
+</html>

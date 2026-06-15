@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Asset, Button, PoweredBy, useToast } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
+import { clearOfflineCaches } from '@/lib/offline';
 import { useDrawerA11y } from '@/lib/useDrawerA11y';
 import type { AdminProfile } from '@/lib/admin-session';
 
@@ -50,6 +51,7 @@ export function AdminSidebar({ admin }: Props) {
         toast.show({ severity: 'critical', title: err.message });
       }
     }
+    await clearOfflineCaches();
     router.push(`/admin/login`);
     router.refresh();
   }

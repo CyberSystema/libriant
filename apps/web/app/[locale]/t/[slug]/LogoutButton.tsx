@@ -5,6 +5,7 @@ import { Button } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { api } from '@/lib/api';
+import { clearOfflineCaches } from '@/lib/offline';
 
 type Props = { catalog: Catalog; locale: Locale };
 
@@ -26,6 +27,9 @@ export function LogoutButton({ catalog, locale }: Props) {
           // Even if the API errors, the cookie's likely revoked. Push the
           // user to /login anyway — they'll get bounced if still authed.
         }
+        // Wipe offline-cached tenant pages/data so a shared device can't serve
+        // them to the next user.
+        await clearOfflineCaches();
         router.push(`/${locale}/login`);
         router.refresh();
       }}

@@ -54,6 +54,11 @@ const nextConfig = {
       // Same-origin XHR/fetch only; browser API calls go through /lbr-api/* on
       // the same origin (see lib/api.ts), so no cross-origin connect is needed.
       "connect-src 'self'",
+      // PWA: the service worker (worker-src) and web manifest (manifest-src)
+      // are served from our own origin. Both fall back to default-src, but
+      // we name them so the policy stays explicit if default-src tightens.
+      "worker-src 'self'",
+      "manifest-src 'self'",
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",

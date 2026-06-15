@@ -62,6 +62,15 @@ export default tseslint.config(
     },
   },
   {
+    // The PWA service worker runs in a ServiceWorkerGlobalScope (self, caches,
+    // clients, fetch, …) — not Node or the DOM window.
+    files: ['apps/web/public/sw.js'],
+    languageOptions: {
+      globals: { ...globals.serviceworker, ...globals.browser },
+    },
+    rules: { 'no-undef': 'off' },
+  },
+  {
     // CLI scripts + tests legitimately log freely and use looser types.
     // They predate this config, so silence now-redundant disable directives
     // there rather than churn every file.

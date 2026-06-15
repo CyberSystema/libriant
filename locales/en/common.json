@@ -49,5 +49,6 @@
   "scan.hint": "Point your camera at the barcode.",
   "scan.unsupported": "Scanning isn't supported in this browser — type the code in by hand instead.",
   "scan.permission": "Libriant needs camera access to scan. Allow it in your browser, or type the code in by hand.",
-  "scan.error": "Couldn't start the camera. Type the code in by hand instead."
+  "scan.error": "Couldn't start the camera. Type the code in by hand instead.",
+  "offline.banner": "You're offline — showing recently loaded data. Reconnect to refresh."
 }

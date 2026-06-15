@@ -1,14 +1,21 @@
 import type { Metadata, Viewport } from 'next';
 import { notFound } from 'next/navigation';
-import { isLocale, SUPPORTED_LOCALES } from '@libriant/i18n';
+import { isLocale, SUPPORTED_LOCALES, createTranslator } from '@libriant/i18n';
 import { AssetProvider, tokensToCssVars } from '@libriant/ui';
 import '@libriant/ui/styles.css';
 import { loadManifest, loadTokens } from '@/lib/assets-server';
+import { loadCatalog } from '@/lib/locale-loader';
+import { ServiceWorkerManager } from '@/components/ServiceWorkerManager';
 
 export const metadata: Metadata = {
   title: 'Libriant',
   description: 'Library management, made simple.',
-  icons: { icon: '/_assets/brand/favicon.svg' },
+  icons: {
+    icon: '/_assets/brand/favicon.svg',
+    apple: '/_assets/brand/logo-square.svg',
+  },
+  // iOS: launch standalone (no Safari chrome) when added to the home screen.
+  appleWebApp: { capable: true, title: 'Libriant', statusBarStyle: 'default' },
 };
 
 /**
@@ -37,8 +44,13 @@ export default async function LocaleLayout(props: {
 
   if (!isLocale(params.locale)) notFound();
 
-  const [manifest, tokens] = await Promise.all([loadManifest(), loadTokens()]);
+  const [manifest, tokens, catalog] = await Promise.all([
+    loadManifest(),
+    loadTokens(),
+    loadCatalog(params.locale),
+  ]);
   const css = tokensToCssVars(tokens);
+  const t = createTranslator(catalog, params.locale);
 
   return (
     <html lang={params.locale}>
@@ -51,6 +63,8 @@ export default async function LocaleLayout(props: {
         <AssetProvider manifest={manifest} baseUrl="/_assets">
           {children}
         </AssetProvider>
+        {/* Registers the PWA service worker (prod) + shows an offline status bar. */}
+        <ServiceWorkerManager offlineLabel={t('common.offline.banner')} />
       </body>
     </html>
   );
