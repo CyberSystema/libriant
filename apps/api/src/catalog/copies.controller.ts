@@ -1,9 +1,24 @@
-import { Body, Controller, Delete, Inject, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Inject,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { CopiesService } from './copies.service.js';
 import { CreateCopyDto, UpdateCopyDto } from './copies.dto.js';
+
+/** Bound the barcode query so a hostile caller can't probe with huge strings. */
+const MAX_BARCODE_LEN = 128;
 
 /**
  * Copies live under the catalog. Create is nested under a book (you can't
@@ -21,6 +36,21 @@ import { CreateCopyDto, UpdateCopyDto } from './copies.dto.js';
 @UseGuards(TenantGuard)
 export class CopiesController {
   constructor(@Inject(CopiesService) private readonly svc: CopiesService) {}
+
+  /**
+   * Resolve a scanned copy barcode → its copy + book. Drives scan-to-checkout
+   * and scan-to-return. Declared before the `copies/:copyId` routes so the
+   * literal `lookup` segment isn't swallowed by the param.
+   */
+  @Get('copies/lookup')
+  async lookupByBarcode(@TenantCtx() tenant: TenantContext, @Query('barcode') barcode?: string) {
+    const value = (barcode ?? '').trim();
+    if (!value) throw new BadRequestException('A barcode is required.');
+    if (value.length > MAX_BARCODE_LEN) {
+      throw new BadRequestException(`A barcode is at most ${MAX_BARCODE_LEN} characters.`);
+    }
+    return this.svc.lookupByBarcode(tenant, value);
+  }
 
   @Post('books/:bookId/copies')
   async create(

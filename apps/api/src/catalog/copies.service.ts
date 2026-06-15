@@ -27,6 +27,25 @@ export type CopyDto = {
 };
 
 /**
+ * Result of resolving a scanned/typed copy barcode. Carries just enough of the
+ * copy + its book (in the same shape the checkout book-picker uses) to drive
+ * scan-to-checkout and scan-to-return without a second round-trip.
+ */
+export type CopyLookupDto = {
+  copy: {
+    id: string;
+    barcode: string;
+    status: BookCopyStatus;
+    shelfLocation: string | null;
+  };
+  book: {
+    id: string;
+    title: string;
+    authors: Array<{ authorId: string; fullName: string; order: number }>;
+  };
+};
+
+/**
  * Status transitions a library can perform directly through this service.
  *
  *   available  →  reserved | lost | damaged | withdrawn   (manual)
@@ -197,6 +216,52 @@ export class CopiesService {
 
   async archive(tenant: TenantContext, id: string): Promise<CopyDto> {
     return this.update(tenant, id, { archived: true });
+  }
+
+  /**
+   * Resolve a scanned/typed barcode to its (active) copy + book. Barcodes are
+   * unique among non-archived copies, so this matches at most one. 404 when
+   * nothing matches — the caller turns that into a friendly "not found" toast.
+   */
+  async lookupByBarcode(tenant: TenantContext, barcode: string): Promise<CopyLookupDto> {
+    const client = this.tenantPrisma.getClient(tenant);
+    const copy = await client.bookCopy.findFirst({
+      where: { barcode, archivedAt: null },
+      select: {
+        id: true,
+        barcode: true,
+        status: true,
+        shelfLocation: true,
+        book: {
+          select: {
+            id: true,
+            title: true,
+            authors: {
+              orderBy: { order: 'asc' },
+              select: { authorId: true, order: true, author: { select: { fullName: true } } },
+            },
+          },
+        },
+      },
+    });
+    if (!copy) throw new NotFoundException('No copy with that barcode.');
+    return {
+      copy: {
+        id: copy.id,
+        barcode: copy.barcode,
+        status: copy.status,
+        shelfLocation: copy.shelfLocation,
+      },
+      book: {
+        id: copy.book.id,
+        title: copy.book.title,
+        authors: copy.book.authors.map((a) => ({
+          authorId: a.authorId,
+          fullName: a.author.fullName,
+          order: a.order,
+        })),
+      },
+    };
   }
 
   private toDto(row: {

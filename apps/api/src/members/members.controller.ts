@@ -72,6 +72,21 @@ export class MembersController {
     });
   }
 
+  /**
+   * Resolve a scanned/typed membership number → the member. Drives
+   * scan-to-checkout. Declared before `:id` so the literal `lookup` segment
+   * isn't captured as a member id.
+   */
+  @Get('lookup')
+  async lookup(@TenantCtx() tenant: TenantContext, @Query('memberNumber') memberNumber?: string) {
+    const value = (memberNumber ?? '').trim();
+    if (!value) throw new BadRequestException('A membership number is required.');
+    if (value.length > 128) {
+      throw new BadRequestException('A membership number is at most 128 characters.');
+    }
+    return this.svc.getByMemberNumber(tenant, value);
+  }
+
   @Post()
   @RequiresQuota('max_members')
   async create(

@@ -8,6 +8,7 @@ import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
 import { useIdempotencyKey } from '@/lib/useIdempotencyKey';
 import { Combobox } from '@/components/Combobox';
+import { BarcodeScanner, SCAN_FORMATS, scanningSupported } from '@/components/BarcodeScanner';
 
 type MemberOption = {
   id: string;
@@ -76,6 +77,17 @@ export function CheckoutForm({
   const [copiesLoading, setCopiesLoading] = React.useState(false);
   const [copiesError, setCopiesError] = React.useState<string | null>(null);
 
+  // Camera scanning is an optional enhancement over the pickers. `scanTarget`
+  // says which field the open scanner fills; `canScan` is a client-only check
+  // gated through state to avoid a hydration mismatch.
+  const [scanTarget, setScanTarget] = React.useState<'member' | 'copy' | null>(null);
+  const [canScan, setCanScan] = React.useState(false);
+  React.useEffect(() => setCanScan(scanningSupported()), []);
+  // When a copy is scanned we pick the book (which triggers the copies fetch
+  // below); this remembers which copy to auto-select once they load. A ref so
+  // updating it doesn't re-run the fetch effect.
+  const desiredCopyIdRef = React.useRef<string | null>(null);
+
   const defaultDue = React.useMemo(() => {
     const d = new Date();
     d.setDate(d.getDate() + defaultLoanPeriodDays);
@@ -110,8 +122,15 @@ export function CheckoutForm({
     api<BookWithCopies>(`/t/${slug}/catalog/books/${book.id}`)
       .then((b) => {
         setCopies(b.copies);
-        // Auto-pick the first available copy so the librarian's most
+        // If we got here from a copy scan, honour the scanned copy (when it's
+        // available); otherwise auto-pick the first available copy so the
         // common path is a single click after picking the book.
+        const desired = desiredCopyIdRef.current;
+        desiredCopyIdRef.current = null;
+        if (desired && b.copies.some((c) => c.id === desired && c.status === 'available')) {
+          setCopyId(desired);
+          return;
+        }
         const firstAvailable = b.copies.find((c) => c.status === 'available');
         if (firstAvailable) setCopyId(firstAvailable.id);
       })
@@ -122,6 +141,48 @@ export function CheckoutForm({
   }, [book, slug, t]);
 
   const availableCopies = copies?.filter((c) => c.status === 'available') ?? [];
+
+  async function resolveScannedMember(memberNumber: string) {
+    try {
+      const m = await api<MemberOption>(
+        `/t/${slug}/members/lookup?memberNumber=${encodeURIComponent(memberNumber)}`,
+      );
+      setMember(m);
+    } catch {
+      toast.show({
+        severity: 'warning',
+        title: t('loans.checkout.scanMemberNotFound', { number: memberNumber }),
+      });
+    }
+  }
+
+  async function resolveScannedCopy(barcode: string) {
+    try {
+      const res = await api<{ copy: CopySummary; book: BookOption }>(
+        `/t/${slug}/catalog/copies/lookup?barcode=${encodeURIComponent(barcode)}`,
+      );
+      desiredCopyIdRef.current = res.copy.id;
+      setCopyId('');
+      setBook(res.book);
+      if (res.copy.status !== 'available') {
+        toast.show({
+          severity: 'warning',
+          title: t('loans.checkout.scanCopyUnavailable', { barcode: res.copy.barcode }),
+        });
+      }
+    } catch {
+      toast.show({ severity: 'warning', title: t('loans.checkout.scanCopyNotFound', { barcode }) });
+    }
+  }
+
+  function handleScan(value: string) {
+    const v = value.trim();
+    const target = scanTarget;
+    setScanTarget(null);
+    if (!v) return;
+    if (target === 'member') void resolveScannedMember(v);
+    else if (target === 'copy') void resolveScannedCopy(v);
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -164,6 +225,20 @@ export function CheckoutForm({
         </Banner>
       ) : null}
 
+      <BarcodeScanner
+        open={scanTarget !== null}
+        onClose={() => setScanTarget(null)}
+        formats={SCAN_FORMATS.label}
+        title={
+          scanTarget === 'member'
+            ? t('loans.checkout.scanMemberTitle')
+            : t('loans.checkout.scanCopyTitle')
+        }
+        catalog={catalog}
+        locale={locale}
+        onScan={handleScan}
+      />
+
       <Card style={{ marginBottom: 'var(--sp-4)' }}>
         <CardBody>
           <FormField id="checkout-member" label={t('loans.checkout.member')} required>
@@ -196,6 +271,17 @@ export function CheckoutForm({
               )}
             />
           </FormField>
+          {canScan ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              style={{ marginTop: 'var(--sp-2)' }}
+              onClick={() => setScanTarget('member')}
+            >
+              {t('loans.checkout.scanMember')}
+            </Button>
+          ) : null}
         </CardBody>
       </Card>
 
@@ -231,6 +317,17 @@ export function CheckoutForm({
               )}
             />
           </FormField>
+          {canScan ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              style={{ marginTop: 'var(--sp-2)' }}
+              onClick={() => setScanTarget('copy')}
+            >
+              {t('loans.checkout.scanBook')}
+            </Button>
+          ) : null}
 
           {book ? (
             <div style={{ marginTop: 'var(--sp-3)' }}>

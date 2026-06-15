@@ -7,6 +7,7 @@ import { requestCookieHeader } from '@/lib/session';
 import { ApiError, api } from '@/lib/api';
 import { LoanFilters } from './LoanFilters';
 import { LoansTable, type LoanRow } from './LoansTable';
+import { ScanToReturn } from './ScanToReturn';
 
 type ListResponse<T> = { items: T[]; nextCursor: string | null };
 
@@ -45,12 +46,15 @@ export default async function LoansPage(props: {
         title={t('loans.title')}
         subtitle={t('loans.subtitle')}
         actions={
-          <Link
-            href={`/${params.locale}/t/${params.slug}/loans/new`}
-            className="lbr-btn lbr-btn--primary lbr-btn--md"
-          >
-            {t('loans.newLoan')}
-          </Link>
+          <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+            <ScanToReturn slug={params.slug} locale={params.locale} catalog={catalog} />
+            <Link
+              href={`/${params.locale}/t/${params.slug}/loans/new`}
+              className="lbr-btn lbr-btn--primary lbr-btn--md"
+            >
+              {t('loans.newLoan')}
+            </Link>
+          </div>
         }
       />
       {fetchError ? (

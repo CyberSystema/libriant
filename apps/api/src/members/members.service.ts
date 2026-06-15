@@ -122,6 +122,19 @@ export class MembersService {
     return { items, nextCursor: hasMore ? items[items.length - 1]!.id : null };
   }
 
+  /**
+   * Resolve a scanned/typed membership number → the member. Member numbers are
+   * unique among non-archived members, so this matches at most one. Drives
+   * scan-to-checkout (search by `q` doesn't cover the number). 404 when nothing
+   * matches; the caller surfaces a friendly "not found".
+   */
+  async getByMemberNumber(tenant: TenantContext, memberNumber: string): Promise<MemberDto> {
+    const client = this.tenantPrisma.getClient(tenant);
+    const row = await client.member.findFirst({ where: { memberNumber, archivedAt: null } });
+    if (!row) throw new NotFoundException('No member with that number.');
+    return this.toDto(row);
+  }
+
   async get(tenant: TenantContext, id: string): Promise<MemberWithCirculationDto> {
     const client = this.tenantPrisma.getClient(tenant);
     const row = await client.member.findUnique({ where: { id } });

@@ -18,6 +18,7 @@ import { ApiError, api } from '@/lib/api';
 import type { FieldDef } from '@/components/DynamicFields';
 import { BookForm, type BookInitial } from '../new/BookForm';
 import { CoverUploader } from './CoverUploader';
+import { BarcodeScanner, SCAN_FORMATS, scanningSupported } from '@/components/BarcodeScanner';
 
 type BookCopy = {
   id: string;
@@ -396,12 +397,17 @@ function AddCopyModal({
   const [shelf, setShelf] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [scanning, setScanning] = React.useState(false);
+  // Client-only feature check — gated via state to avoid a hydration mismatch.
+  const [canScan, setCanScan] = React.useState(false);
+  React.useEffect(() => setCanScan(scanningSupported()), []);
 
   React.useEffect(() => {
     if (open) {
       setBarcode('');
       setShelf('');
       setError(null);
+      setScanning(false);
     }
   }, [open]);
 
@@ -460,14 +466,39 @@ function AddCopyModal({
         required
       >
         <Input
+          id="copy-barcode"
           spellCheck={false}
           value={barcode}
           onChange={(e) => setBarcode(e.currentTarget.value)}
         />
       </FormField>
+      {canScan ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          style={{ marginTop: 'var(--sp-2)' }}
+          onClick={() => setScanning(true)}
+        >
+          {t('catalog.book.copyScan')}
+        </Button>
+      ) : null}
       <FormField id="copy-shelf" label={t('catalog.book.copyShelf')}>
         <Input value={shelf} onChange={(e) => setShelf(e.currentTarget.value)} />
       </FormField>
+
+      <BarcodeScanner
+        open={scanning}
+        onClose={() => setScanning(false)}
+        formats={SCAN_FORMATS.label}
+        title={t('catalog.book.copyScanTitle')}
+        catalog={catalog}
+        locale={locale}
+        onScan={(value) => {
+          setBarcode(value.trim());
+          setScanning(false);
+        }}
+      />
     </Modal>
   );
 }

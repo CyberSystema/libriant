@@ -18,6 +18,7 @@ import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
 import { AuthorPicker } from '@/components/AuthorPicker';
 import { DynamicFields, type FieldDef } from '@/components/DynamicFields';
+import { BarcodeScanner, SCAN_FORMATS, scanningSupported } from '@/components/BarcodeScanner';
 
 type Author = { id: string; fullName: string };
 
@@ -94,6 +95,11 @@ export function BookForm({
   const [isbn, setIsbn] = React.useState(initial?.isbn13 ?? initial?.isbn10 ?? '');
   const [lookingUp, setLookingUp] = React.useState(false);
   const [lookupError, setLookupError] = React.useState<string | null>(null);
+  const [scanning, setScanning] = React.useState(false);
+  // Set after mount — `BarcodeDetector` is a client-only check, so gating the
+  // scan button on it during render would cause a hydration mismatch.
+  const [canScan, setCanScan] = React.useState(false);
+  React.useEffect(() => setCanScan(scanningSupported()), []);
 
   const [title, setTitle] = React.useState(initial?.title ?? '');
   const [subtitle, setSubtitle] = React.useState(initial?.subtitle ?? '');
@@ -116,8 +122,8 @@ export function BookForm({
   const [formError, setFormError] = React.useState<string | null>(null);
   const [submitting, setSubmitting] = React.useState(false);
 
-  async function lookupIsbn() {
-    const cleaned = isbn.replace(/[\s-]/g, '');
+  async function lookupIsbn(rawIsbn?: string) {
+    const cleaned = (rawIsbn ?? isbn).replace(/[\s-]/g, '');
     if (cleaned.length < 10) {
       setLookupError(t('catalog.book.isbnTooShort'));
       return;
@@ -126,7 +132,7 @@ export function BookForm({
     setLookupError(null);
     try {
       const result = await api<IsbnLookupResult>(
-        `/t/${slug}/catalog/isbn/${encodeURIComponent(cleaned)}`,
+        `/t/${slug}/catalog/isbn-lookup/${encodeURIComponent(cleaned)}`,
       );
       if (result.title) setTitle(result.title);
       if (result.subtitle) setSubtitle(result.subtitle);
@@ -301,12 +307,22 @@ export function BookForm({
                 placeholder="978-…"
               />
             </FormField>
-            <div style={{ marginBottom: 'var(--sp-4)' }}>
+            <div style={{ display: 'flex', gap: 'var(--sp-2)', marginBottom: 'var(--sp-4)' }}>
+              {canScan ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setScanning(true)}
+                  aria-label={t('catalog.book.isbn.scan')}
+                >
+                  {t('catalog.book.isbn.scan')}
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 variant="secondary"
                 loading={lookingUp}
-                onClick={lookupIsbn}
+                onClick={() => lookupIsbn()}
                 disabled={!isbn.trim()}
               >
                 {t('catalog.book.isbn.lookup')}
@@ -315,6 +331,21 @@ export function BookForm({
           </div>
         </CardBody>
       </Card>
+
+      <BarcodeScanner
+        open={scanning}
+        onClose={() => setScanning(false)}
+        formats={SCAN_FORMATS.isbn}
+        title={t('catalog.book.isbn.scanTitle')}
+        catalog={catalog}
+        locale={locale}
+        onScan={(value) => {
+          const cleaned = value.replace(/[\s-]/g, '');
+          setIsbn(cleaned);
+          setScanning(false);
+          void lookupIsbn(cleaned);
+        }}
+      />
 
       <Card style={{ marginBottom: 'var(--sp-4)' }}>
         <CardHeader title={t('catalog.book.identity')} />
