@@ -336,6 +336,15 @@ jobs:
             export COMPOSE_PROJECT_NAME=libriant
             export LIBRIANT_DATA_ROOT=/mnt/libriant
             FILES="-f infra/compose/docker-compose.prod.yml -f infra/compose/docker-compose.volume.yml"
+            # Reclaim disk BEFORE pulling fresh images. Every deploy pulls new
+            # SHA-tagged api/web images; left unpruned they accumulate until the
+            # disk fills — which has broken a deploy at the seed step with
+            # "ENOSPC: no space left on device". Remove images that aren't used
+            # by a container and are >72h old: in-use images are protected
+            # regardless of age, so the running stack and recent tags (for fast
+            # rollback) survive. Best-effort — cleanup never fails the deploy.
+            docker image prune -af --filter 'until=72h' || true
+            docker builder prune -f --filter 'until=72h' || true
             docker compose \$FILES pull
             # --force-recreate is deliberate: \`up -d\` alone only recreates a
             # container when compose decides the image/config changed, and with
