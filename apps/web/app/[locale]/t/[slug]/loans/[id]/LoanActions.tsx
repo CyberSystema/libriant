@@ -5,6 +5,7 @@ import { Button, FormField, Input, Modal, Textarea, useToast } from '@libriant/u
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
+import { useIdempotencyKey } from '@/lib/useIdempotencyKey';
 
 type LoanShape = {
   id: string;
@@ -40,6 +41,10 @@ export function LoanActions({ slug, loan, catalog, locale }: Props) {
   const router = useRouter();
   const toast = useToast();
   const [openModal, setOpenModal] = React.useState<'return' | 'renew' | 'lost' | null>(null);
+  // One key per action attempt: a double-click / retry replays instead of
+  // acting twice (server dedupes per route+key). Rotated after each success so
+  // a deliberate repeat (e.g. renewing again) is a new operation.
+  const { key: idempotencyKey, rotate } = useIdempotencyKey();
 
   if (loan.status !== 'active') {
     return (
@@ -66,13 +71,14 @@ export function LoanActions({ slug, loan, catalog, locale }: Props) {
         loan: { id: string; status: string };
         fine?: { amountCents: number; currency: string } | null;
         promotedHold?: { memberFullName: string } | null;
-      }>(`/t/${slug}/loans/${loan.id}/${path}`, { method: 'POST', body })) as
+      }>(`/t/${slug}/loans/${loan.id}/${path}`, { method: 'POST', body, idempotencyKey })) as
         | {
             loan: { status: string };
             fine: { amountCents: number; currency: string } | null;
             promotedHold: { memberFullName: string } | null;
           }
         | { id: string; status: string };
+      rotate(); // succeeded — next action gets a fresh key
       setOpenModal(null);
       if ('loan' in res && res.loan) {
         const fineMsg = res.fine

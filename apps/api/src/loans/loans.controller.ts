@@ -9,12 +9,14 @@ import {
   Post,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import type { LoanStatus } from '@libriant/db-tenant';
 import { validateDto } from '../auth/validate-dto.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantActor } from '../tenancy/tenant-actor.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
+import { IdempotencyInterceptor } from '../platform/idempotency.interceptor.js';
 import { parseLimit } from '../platform/query.js';
 import {
   CheckoutDto,
@@ -77,6 +79,7 @@ export class LoansController {
   }
 
   @Post()
+  @UseInterceptors(IdempotencyInterceptor)
   async checkout(
     @TenantCtx() tenant: TenantContext,
     @TenantActor() actor: TenantActor,
@@ -98,6 +101,7 @@ export class LoansController {
   }
 
   @Post(':id/return')
+  @UseInterceptors(IdempotencyInterceptor)
   async returnLoan(
     @TenantCtx() tenant: TenantContext,
     @TenantActor() actor: TenantActor,
@@ -109,6 +113,7 @@ export class LoansController {
   }
 
   @Post(':id/renew')
+  @UseInterceptors(IdempotencyInterceptor)
   async renew(
     @TenantCtx() tenant: TenantContext,
     @TenantActor() actor: TenantActor,
@@ -120,6 +125,7 @@ export class LoansController {
   }
 
   @Post(':id/mark-lost')
+  @UseInterceptors(IdempotencyInterceptor)
   async markLost(
     @TenantCtx() tenant: TenantContext,
     @TenantActor() actor: TenantActor,

@@ -6,6 +6,7 @@ import { Banner, Button, Card, CardBody, FormField, Input, Textarea, useToast } 
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
+import { useIdempotencyKey } from '@/lib/useIdempotencyKey';
 import { Combobox } from '@/components/Combobox';
 
 type MemberOption = {
@@ -84,6 +85,9 @@ export function CheckoutForm({
   const [notes, setNotes] = React.useState('');
   const [submitting, setSubmitting] = React.useState(false);
   const [formError, setFormError] = React.useState<string | null>(null);
+  // Stable key for this checkout: a double-submit / retry returns the same loan
+  // instead of lending two copies. Rotated after a successful checkout.
+  const { key: idempotencyKey, rotate } = useIdempotencyKey();
 
   // Pre-fill member from URL (e.g. /loans/new?memberId=...).
   React.useEffect(() => {
@@ -130,6 +134,7 @@ export function CheckoutForm({
     try {
       const res = await api<{ loan: { id: string } }>(`/t/${slug}/loans`, {
         method: 'POST',
+        idempotencyKey,
         body: {
           memberId: member.id,
           copyId,
@@ -137,6 +142,7 @@ export function CheckoutForm({
           notes: notes.trim() || undefined,
         },
       });
+      rotate(); // succeeded — a later checkout starts a fresh key
       toast.show({
         severity: 'success',
         title: t('loans.checkout.success'),

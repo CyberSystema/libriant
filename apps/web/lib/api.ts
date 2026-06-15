@@ -45,6 +45,13 @@ type RequestOptions = {
   /** Add custom headers — usually not needed. */
   headers?: Record<string, string>;
   /**
+   * Stable key for a non-idempotent action (checkout/return/renew/…). Sent as
+   * the `Idempotency-Key` header; a retry/double-submit with the SAME key
+   * replays the original result instead of acting twice. Generate once per
+   * logical action and reuse across retries (see `useIdempotencyKey`).
+   */
+  idempotencyKey?: string;
+  /**
    * `Cache-Control`-shaped hint forwarded to `fetch()`. Defaults to
    * `'no-store'` so authenticated pages never serve a stale tenant's data.
    */
@@ -78,6 +85,7 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
   if (opts.body !== undefined && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
+  if (opts.idempotencyKey) headers['Idempotency-Key'] = opts.idempotencyKey;
   if (opts.cookie) headers['Cookie'] = opts.cookie;
 
   const init: RequestInit = {
