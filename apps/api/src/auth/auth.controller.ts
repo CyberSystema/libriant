@@ -144,7 +144,7 @@ export class AuthController {
     // Invalidate any negative cache entry for this slug so the next
     // /t/<slug>/... request hits the fresh row.
     await this.tenantResolver.invalidate({ slug: result.tenant.slug });
-    this.cookies.setSession(res, result.token, result.expiresAt);
+    this.cookies.setSession(res, result.token, result.expiresAt, result.remember);
     return { tenant: result.tenant, user: result.user };
   }
 
@@ -165,8 +165,9 @@ export class AuthController {
       tenantSlug: dto.slug,
       identifier: dto.identifier,
       password: dto.password,
+      remember: dto.remember,
     });
-    this.cookies.setSession(res, result.token, result.expiresAt);
+    this.cookies.setSession(res, result.token, result.expiresAt, result.remember);
     return { tenant: result.tenant, user: result.user };
   }
 

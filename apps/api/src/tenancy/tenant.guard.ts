@@ -8,6 +8,8 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { controlDb } from '@libriant/db-control';
+import { loadEnv } from '../config/env.js';
+import { isPastAbsoluteMax, isSessionRevoked } from '../auth/jwt-session.service.js';
 
 /**
  * Tenant-scoped route guard. Composes these checks:
@@ -19,11 +21,14 @@ import { controlDb } from '@libriant/db-control';
  *   3. The signed-in user's tenant matches the URL's tenant. Otherwise
  *      → 403 — this is the central cross-tenant defense in our path-based
  *      URL world (where cookies are shared across paths).
- *   4. The signed-in user is STILL active in the DB. Sessions are 7-day JWTs,
- *      so without this a deactivated/suspended user would keep full access to
- *      tenant data until the token expired. Re-read per request (uses the
- *      `controlDb` singleton directly, no DI — mirroring RolesGuard, since a
- *      `@UseGuards(TenantGuard)` class ref can be instantiated standalone).
+ *   4. The signed-in user is STILL active in the DB AND the session hasn't been
+ *      revoked (password reset / role change — `sessionsValidAfter`) or aged out
+ *      (absolute lifetime cap). This is the SAME revocation AuthGuard enforces,
+ *      applied here too: tenant data routes use TenantGuard, not AuthGuard, so
+ *      without these checks a reset wouldn't actually cut off library-data
+ *      access and a sliding session could live forever. Re-read per request
+ *      (uses the `controlDb` singleton directly, no DI — mirroring RolesGuard,
+ *      since a `@UseGuards(TenantGuard)` class ref can be instantiated standalone).
  */
 @Injectable()
 export class TenantGuard implements CanActivate {
@@ -57,13 +62,30 @@ export class TenantGuard implements CanActivate {
         "You're signed in to a different library. Sign out and sign in to this one to continue.",
       );
     }
-    // Deactivation / suspension takes effect immediately, not at JWT expiry.
+    // Absolute lifetime cap (payload-only) — a session can't outlive this even
+    // with sliding.
+    if (
+      isPastAbsoluteMax(
+        req.session,
+        Math.floor(Date.now() / 1000),
+        loadEnv().sessionAbsoluteMaxTtlSec,
+      )
+    ) {
+      throw new UnauthorizedException('Your session has expired. Please sign in again.');
+    }
+    // Deactivation / suspension AND revocation (password reset / role change)
+    // take effect immediately, not at JWT expiry. Revocation keys off the
+    // immutable session start so a sliding re-issue can't escape it.
     const user = await controlDb.user.findUnique({
       where: { id: req.session.sub },
-      select: { status: true },
+      select: { status: true, sessionsValidAfter: true },
     });
     if (!user || user.status !== 'active') {
       throw new UnauthorizedException('Your account is no longer active. Please sign in again.');
+    }
+    const validAfterMs = user.sessionsValidAfter ? user.sessionsValidAfter.getTime() : 0;
+    if (isSessionRevoked(req.session, validAfterMs)) {
+      throw new UnauthorizedException('Your session is no longer valid. Please sign in again.');
     }
     return true;
   }

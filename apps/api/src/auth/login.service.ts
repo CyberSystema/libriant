@@ -10,6 +10,8 @@ import type { SessionPayload } from './jwt-session.service.js';
 export type LoginResult = {
   token: string;
   expiresAt: Date;
+  /** Whether this is a persistent ("remember me") session — drives the cookie. */
+  remember: boolean;
   /** Snapshot to return in the response body (no password fields). */
   user: {
     id: string;
@@ -47,6 +49,7 @@ export class LoginService {
     tenantSlug: string;
     identifier: string;
     password: string;
+    remember?: boolean;
   }): Promise<LoginResult> {
     const tenant = await controlDb.tenant.findUnique({
       where: { slug: input.tenantSlug },
@@ -119,14 +122,16 @@ export class LoginService {
       data: { failedLogins: 0, lockedUntil: null, lastLoginAt: new Date() },
     });
 
-    const { token, expiresAt } = this.jwt.sign({
+    const { token, expiresAt, remember } = this.jwt.sign({
       sub: user.id,
       tid: tenant.id,
       role: user.role as SessionPayload['role'],
+      remember: input.remember,
     });
     return {
       token,
       expiresAt,
+      remember,
       user: {
         id: user.id,
         email: user.email,

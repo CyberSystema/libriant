@@ -25,8 +25,17 @@ export type AppEnv = {
   tenantClientIdleMs: number;
   /** HMAC secret for session JWTs. MUST be set in non-dev environments. */
   sessionSecret: string;
-  /** Session lifetime in seconds (sliding). */
+  /** Session lifetime in seconds for a normal (non-"remember me") login. */
   sessionTtlSec: number;
+  /** Session lifetime for a "remember me" login — longer, persistent cookie. */
+  sessionRememberTtlSec: number;
+  /**
+   * Absolute cap on a session's TOTAL age (from first login), regardless of
+   * sliding/activity. Once exceeded the user must sign in again — bounds the
+   * usefulness of a stolen long-lived cookie and stops sliding from creating a
+   * never-expiring session. Must exceed the remember TTL for sliding to add value.
+   */
+  sessionAbsoluteMaxTtlSec: number;
   /** Cookie name; use `__Host-` prefix only when serving over HTTPS. */
   sessionCookieName: string;
   /** Whether to set Secure on the session cookie (HTTPS only). */
@@ -209,7 +218,14 @@ export function loadEnv(): AppEnv {
   const cookieSecure = optional('SESSION_COOKIE_SECURE', 'auto');
   const isSecure =
     cookieSecure === 'auto'
-      ? optional('PUBLIC_APP_URL', 'http://localhost:3000').startsWith('https://')
+      ? // Default ('auto'): Secure in production NO MATTER WHAT — the app always
+        // runs behind TLS (Cloudflare→Caddy), and a session/admin cookie must
+        // never go out without Secure + the __Host- prefix. Deriving this purely
+        // from PUBLIC_APP_URL meant a prod deploy that left the URL on the http
+        // default would silently ship a non-Secure bearer cookie. Outside prod,
+        // mirror the scheme so dev/test over http still works.
+        nodeEnv === 'production' ||
+        optional('PUBLIC_APP_URL', 'http://localhost:3000').startsWith('https://')
       : cookieSecure === 'true';
   return {
     nodeEnv,
@@ -233,6 +249,14 @@ export function loadEnv(): AppEnv {
     tenantClientIdleMs: num('TENANT_CLIENT_IDLE_MS', 30 * 60 * 1000, { int: true, min: 1000 }),
     sessionSecret,
     sessionTtlSec: num('SESSION_TTL_SEC', 7 * 24 * 60 * 60, { int: true, min: 60 }),
+    sessionRememberTtlSec: num('SESSION_REMEMBER_TTL_SEC', 30 * 24 * 60 * 60, {
+      int: true,
+      min: 60,
+    }),
+    sessionAbsoluteMaxTtlSec: num('SESSION_ABSOLUTE_MAX_TTL_SEC', 90 * 24 * 60 * 60, {
+      int: true,
+      min: 60,
+    }),
     adminSessionSecret: requiredSecret(
       'ADMIN_SESSION_SECRET',
       'dev-only-admin-session-secret-CHANGE-IN-PROD',

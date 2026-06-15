@@ -18,14 +18,20 @@ export class CookieService {
     this.secure = env.sessionCookieSecure;
   }
 
-  /** Set the session cookie. `expiresAt` is the absolute expiry. */
-  setSession(res: Response, token: string, expiresAt: Date): void {
+  /**
+   * Set the session cookie. When `persistent` (a "remember me" login) the cookie
+   * carries an absolute `expires` so it survives a browser restart; otherwise
+   * it's a session cookie (no `expires`) that the browser drops on close — the
+   * right default for shared / circulation-desk machines. The JWT's own `exp`
+   * is the real lifetime cap either way.
+   */
+  setSession(res: Response, token: string, expiresAt: Date, persistent = true): void {
     res.cookie(this.name, token, {
       httpOnly: true,
       secure: this.secure,
       sameSite: 'lax',
       path: '/',
-      expires: expiresAt,
+      ...(persistent ? { expires: expiresAt } : {}),
     });
   }
 

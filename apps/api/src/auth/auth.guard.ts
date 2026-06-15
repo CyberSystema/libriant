@@ -7,7 +7,9 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { controlDb } from '@libriant/db-control';
+import { loadEnv } from '../config/env.js';
 import { RedisService } from '../platform/redis.service.js';
+import { isPastAbsoluteMax, isSessionRevoked, type SessionPayload } from './jwt-session.service.js';
 
 /**
  * Refuses requests without a verified session (set by SessionMiddleware) and
@@ -52,7 +54,11 @@ export class AuthGuard implements CanActivate {
     }
   }
 
-  constructor(@Inject(RedisService) private readonly redis: RedisService) {}
+  private readonly absoluteMaxSec: number;
+
+  constructor(@Inject(RedisService) private readonly redis: RedisService) {
+    this.absoluteMaxSec = loadEnv().sessionAbsoluteMaxTtlSec;
+  }
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest<Request>();
@@ -61,11 +67,18 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException('Please sign in.');
     }
 
+    // Absolute lifetime cap — payload-only (keys off the immutable session
+    // start), so it holds even on the revalidation-cache fast path and can't be
+    // extended by sliding.
+    if (isPastAbsoluteMax(session, Math.floor(Date.now() / 1000), this.absoluteMaxSec)) {
+      throw new UnauthorizedException('Your session has expired. Please sign in again.');
+    }
+
     const cacheKey = AuthGuard.cacheKey(session.sub);
     try {
       const cached = await this.redis.client.get(cacheKey);
       if (cached !== null) {
-        this.assertNotStale(session.iat, Number(cached) || 0);
+        this.assertNotRevoked(session, Number(cached) || 0);
         return true; // validated recently
       }
     } catch (err) {
@@ -88,7 +101,7 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException('This library is not available right now.');
     }
     const validAfterMs = user.sessionsValidAfter ? user.sessionsValidAfter.getTime() : 0;
-    this.assertNotStale(session.iat, validAfterMs);
+    this.assertNotRevoked(session, validAfterMs);
 
     try {
       await this.redis.client.set(
@@ -103,13 +116,13 @@ export class AuthGuard implements CanActivate {
     return true;
   }
 
-  /** Reject a token issued strictly before the user's session epoch. */
-  private assertNotStale(iatSec: number | undefined, validAfterMs: number): void {
-    if (
-      validAfterMs > 0 &&
-      typeof iatSec === 'number' &&
-      iatSec < Math.floor(validAfterMs / 1000)
-    ) {
+  /**
+   * Reject a session that STARTED before the user's revocation epoch. Keys off
+   * the immutable session start (`ist`), not `iat`, so a sliding re-issue can't
+   * launder a reset/role-changed session into a fresh-looking one.
+   */
+  private assertNotRevoked(session: SessionPayload, validAfterMs: number): void {
+    if (isSessionRevoked(session, validAfterMs)) {
       throw new UnauthorizedException('Your session is no longer valid. Please sign in again.');
     }
   }

@@ -26,6 +26,9 @@ export function LoginForm({ catalog, locale }: Props) {
   const [slug, setSlug] = React.useState('');
   const [identifier, setIdentifier] = React.useState('');
   const [password, setPassword] = React.useState('');
+  // Default on so an individual user stays signed in; uncheck on a shared /
+  // circulation-desk machine to get a session cookie that clears on browser close.
+  const [remember, setRemember] = React.useState(true);
   const [errors, setErrors] = React.useState<Errors>({});
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -52,7 +55,7 @@ export function LoginForm({ catalog, locale }: Props) {
     try {
       await api<{ ok: true; tenant: { slug: string } }>('/auth/login', {
         method: 'POST',
-        body: { slug, identifier, password },
+        body: { slug, identifier, password, remember },
       });
       // Redirect to the tenant home. The cookie is set by the API and
       // travels back through the same-origin proxy.
@@ -122,6 +125,25 @@ export function LoginForm({ catalog, locale }: Props) {
           onChange={(e) => setPassword(e.currentTarget.value)}
         />
       </FormField>
+
+      <label
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 'var(--sp-2)',
+          margin: 'var(--sp-2) 0 var(--sp-4)',
+          cursor: 'pointer',
+          fontSize: 'var(--fs-sm)',
+        }}
+      >
+        <input
+          type="checkbox"
+          name="remember"
+          checked={remember}
+          onChange={(e) => setRemember(e.currentTarget.checked)}
+        />
+        {t('auth.signIn.rememberMe')}
+      </label>
 
       <Button type="submit" loading={submitting} style={{ width: '100%' }} size="lg">
         {t('auth.signIn.submit')}

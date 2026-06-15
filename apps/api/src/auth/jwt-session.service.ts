@@ -14,35 +14,62 @@ export type SessionPayload = {
   tid: string;
   /** Role at signing time. May be stale — authoritative role lives in DB. */
   role: 'owner' | 'admin' | 'librarian' | 'volunteer';
-  /** Issued-at, in seconds. */
+  /** "Remember me": a long-lived persistent session. Drives both the TTL and
+   *  whether the cookie persists across browser restarts. */
+  rmb?: boolean;
+  /**
+   * Session START time, in seconds. IMMUTABLE across sliding re-issues (unlike
+   * `iat`, which is refreshed each slide). All security checks key off THIS, not
+   * `iat`, so a slide can never escape revocation (a session that started before
+   * a password-reset/role-change keeps its old `ist`) and the absolute lifetime
+   * cap measures total age. Optional for backward-compat with pre-`ist` tokens
+   * (those fall back to `iat`).
+   */
+  ist?: number;
+  /** Issued-at, in seconds (refreshed on every sliding re-issue). */
   iat: number;
   /** Expires-at, in seconds. */
   exp: number;
 };
 
+export type SignedSession = { token: string; expiresAt: Date; remember: boolean };
+
 @Injectable()
 export class JwtSessionService {
   private readonly secret: string;
   private readonly ttlSec: number;
+  private readonly rememberTtlSec: number;
 
   constructor() {
     const env = loadEnv();
     this.secret = env.sessionSecret;
     this.ttlSec = env.sessionTtlSec;
+    this.rememberTtlSec = env.sessionRememberTtlSec;
   }
 
-  /** Sign a fresh session token for the given user/tenant/role. */
-  sign(input: Pick<SessionPayload, 'sub' | 'tid' | 'role'>): { token: string; expiresAt: Date } {
+  /**
+   * Sign a session token. `remember` picks the long persistent TTL and is
+   * stamped (`rmb`) so a sliding re-issue can preserve the lifetime + cookie
+   * persistence. `ist` (session start) is set to now for a FRESH login and MUST
+   * be passed through unchanged on a slide so the immutable start time — which
+   * revocation + the absolute cap depend on — is preserved.
+   */
+  sign(
+    input: Pick<SessionPayload, 'sub' | 'tid' | 'role'> & { remember?: boolean; ist?: number },
+  ): SignedSession {
+    const remember = !!input.remember;
+    const expiresInSec = remember ? this.rememberTtlSec : this.ttlSec;
+    const ist = input.ist ?? Math.floor(Date.now() / 1000);
     // jsonwebtoken stamps `iat` itself and refuses to honor an explicit one
     // unless `noTimestamp` is set — and `noTimestamp` strips iat from the
     // payload entirely, which then trips our typed-claim guard on verify.
     // Easiest: let the library handle iat + expiresIn for us.
-    const expiresInSec = this.ttlSec;
-    const token = jwt.sign({ sub: input.sub, tid: input.tid, role: input.role }, this.secret, {
-      algorithm: 'HS256',
-      expiresIn: expiresInSec,
-    });
-    return { token, expiresAt: new Date(Date.now() + expiresInSec * 1000) };
+    const token = jwt.sign(
+      { sub: input.sub, tid: input.tid, role: input.role, rmb: remember, ist },
+      this.secret,
+      { algorithm: 'HS256', expiresIn: expiresInSec },
+    );
+    return { token, expiresAt: new Date(Date.now() + expiresInSec * 1000), remember };
   }
 
   /**
@@ -68,4 +95,58 @@ export class JwtSessionService {
       return null;
     }
   }
+}
+
+/** Immutable session-start time (seconds). Falls back to `iat` for legacy tokens. */
+export function sessionStartSec(payload: Pick<SessionPayload, 'iat' | 'ist'>): number {
+  return typeof payload.ist === 'number' && Number.isFinite(payload.ist)
+    ? payload.ist
+    : payload.iat;
+}
+
+/**
+ * Should an active session's cookie be re-issued? True once it's past half its
+ * lifetime — so a user who keeps using the app never hits the hard expiry
+ * (sliding), while a token gets refreshed at most once per half-life. Pure +
+ * exported so it's unit-testable without minting real JWTs.
+ */
+export function isPastHalfLife(
+  payload: Pick<SessionPayload, 'iat' | 'exp'>,
+  nowSec: number,
+): boolean {
+  if (
+    !Number.isFinite(payload.iat) ||
+    !Number.isFinite(payload.exp) ||
+    payload.exp <= payload.iat
+  ) {
+    return false;
+  }
+  return nowSec >= payload.iat + (payload.exp - payload.iat) / 2;
+}
+
+/**
+ * Revoked? True if the session STARTED (ist) before the user's
+ * `sessionsValidAfter` epoch — i.e. a password reset / forced credential or
+ * role change happened after login. Uses `ist` (not `iat`), so a sliding
+ * re-issue can NOT launder a revoked session into a fresh-looking one.
+ * Second-granularity so a token minted in the same second as the bump survives.
+ */
+export function isSessionRevoked(
+  payload: Pick<SessionPayload, 'iat' | 'ist'>,
+  sessionsValidAfterMs: number,
+): boolean {
+  if (!(sessionsValidAfterMs > 0)) return false;
+  return sessionStartSec(payload) < Math.floor(sessionsValidAfterMs / 1000);
+}
+
+/**
+ * Past the absolute lifetime cap? True once total age (now − session start)
+ * exceeds `absoluteMaxSec`, forcing a fresh sign-in regardless of activity.
+ */
+export function isPastAbsoluteMax(
+  payload: Pick<SessionPayload, 'iat' | 'ist'>,
+  nowSec: number,
+  absoluteMaxSec: number,
+): boolean {
+  return nowSec - sessionStartSec(payload) > absoluteMaxSec;
 }

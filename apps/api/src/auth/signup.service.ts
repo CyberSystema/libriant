@@ -25,6 +25,8 @@ export type SignupInput = {
 export type SignupResult = {
   token: string;
   expiresAt: Date;
+  /** New owners get a persistent ("remember me") session out of the gate. */
+  remember: boolean;
   tenant: { id: string; slug: string; name: string; defaultLocale: string };
   user: { id: string; email: string | null; fullName: string; role: 'owner' };
 };
@@ -186,14 +188,16 @@ export class SignupService {
           ),
         );
 
-      const { token, expiresAt } = this.jwt.sign({
+      const { token, expiresAt, remember } = this.jwt.sign({
         sub: created.user.id,
         tid: created.tenant.id,
         role: 'owner',
+        remember: true,
       });
       return {
         token,
         expiresAt,
+        remember,
         tenant: {
           id: created.tenant.id,
           slug: created.tenant.slug,

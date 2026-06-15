@@ -1,4 +1,4 @@
-import { IsOptional, IsString, Length, Matches } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, Length, Matches } from 'class-validator';
 import { Transform } from 'class-transformer';
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/;
@@ -18,6 +18,15 @@ export class LoginDto {
   @IsString()
   @Length(1, 200)
   password!: string;
+
+  /**
+   * "Remember me": when true, issue a long-lived persistent cookie (survives
+   * browser restarts, slides forward on activity). When false/absent, a session
+   * cookie that clears when the browser closes — right for shared/desk machines.
+   */
+  @IsOptional()
+  @IsBoolean()
+  remember?: boolean;
 }
 
 /**
