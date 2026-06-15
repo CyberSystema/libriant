@@ -6,6 +6,8 @@ import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
 import { useIdempotencyKey } from '@/lib/useIdempotencyKey';
+import { useOfflineQueue } from '@/components/OfflineQueueProvider';
+import { isNetworkError, type CirculationKind } from '@/lib/offline-queue';
 
 type LoanShape = {
   id: string;
@@ -45,6 +47,7 @@ export function LoanActions({ slug, loan, catalog, locale }: Props) {
   // acting twice (server dedupes per route+key). Rotated after each success so
   // a deliberate repeat (e.g. renewing again) is a new operation.
   const { key: idempotencyKey, rotate } = useIdempotencyKey();
+  const { enqueue } = useOfflineQueue();
 
   if (loan.status !== 'active') {
     return (
@@ -103,6 +106,24 @@ export function LoanActions({ slug, loan, catalog, locale }: Props) {
       }
       router.refresh();
     } catch (err) {
+      if (isNetworkError(err)) {
+        // Offline — queue the action and replay it (idempotently) on reconnect.
+        const queued = await enqueue({
+          idempotencyKey,
+          path: `/t/${slug}/loans/${loan.id}/${path}`,
+          body,
+          kind: path as CirculationKind,
+          label: loan.copy.book.title,
+        });
+        rotate();
+        setOpenModal(null);
+        toast.show(
+          queued
+            ? { severity: 'info', title: t('loans.queue.queued') }
+            : { severity: 'critical', title: t('loans.queue.saveFailed') },
+        );
+        return;
+      }
       toast.show({
         severity: 'critical',
         title: err instanceof ApiError ? err.message : t('common.states.error'),

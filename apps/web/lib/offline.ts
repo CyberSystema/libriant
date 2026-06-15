@@ -1,3 +1,5 @@
+import { clearQueue } from '@/lib/offline-queue';
+
 /**
  * Client-side service-worker helpers. The SW itself lives at `public/sw.js`.
  */
@@ -16,10 +18,12 @@ export function registerServiceWorker(): void {
 }
 
 /**
- * Wipe offline caches that may hold tenant data. Called on logout so a shared
- * device never serves the previous user's cached pages/data. Belt-and-braces:
- * messages the active SW AND deletes the runtime caches directly (covers the
- * case where the SW isn't controlling this page yet).
+ * Wipe offline state that may hold tenant data — cached pages/data AND the
+ * pending circulation queue. Called on logout so a shared device never serves
+ * the previous user's cached data, and never replays their queued actions under
+ * the next user's session. Belt-and-braces: messages the active SW AND deletes
+ * the runtime caches directly (covers the case where the SW isn't controlling
+ * this page yet).
  */
 export async function clearOfflineCaches(): Promise<void> {
   try {
@@ -42,4 +46,5 @@ export async function clearOfflineCaches(): Promise<void> {
   } catch {
     /* ignore */
   }
+  await clearQueue().catch(() => undefined);
 }

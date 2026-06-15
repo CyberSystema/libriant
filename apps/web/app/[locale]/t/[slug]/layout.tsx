@@ -8,6 +8,7 @@ import { currentAnnouncements } from '@/lib/announcements';
 import { currentImpersonation } from '@/lib/impersonation';
 import { currentSession, requestCookieHeader } from '@/lib/session';
 import { currentSystemMode, isTakeoverMode } from '@/lib/system-mode';
+import { OfflineQueueProvider } from '@/components/OfflineQueueProvider';
 import { AnnouncementsTopBanners } from './AnnouncementsTopBanners';
 import { ChoosePlanScreen } from './ChoosePlanScreen';
 import { EmailVerifyBanner } from './EmailVerifyBanner';
@@ -166,50 +167,52 @@ export default async function TenantLayout(props: {
 
   return (
     <ToastProvider>
-      <div className="lbr-shell" style={shellStyle}>
-        <SidebarNav
-          catalog={catalog}
-          locale={params.locale}
-          slug={params.slug}
-          libraryName={libraryName}
-          brandLogoUrl={brandLogoUrl}
-          userFullName={userFullName}
-          billingEnabled={billingEnabled}
-          role={role}
-        />
-        <main className="lbr-shell__main">
-          {impersonation ? (
-            <ImpersonationBanner
-              tenantName={impersonation.tenant.name}
-              expiresAt={impersonation.expiresAt}
-            />
-          ) : null}
-          {systemMode.mode === 'under_construction' ? (
-            <Banner severity="info" style={{ marginBottom: 'var(--sp-3)' }}>
-              <strong>{t('system.underConstruction.title')}</strong>{' '}
-              {systemMode.messageMarkdown ?? t('system.underConstruction.description')}
-            </Banner>
-          ) : null}
-          {systemMode.mode === 'read_only' ? (
-            <Banner severity="warning" style={{ marginBottom: 'var(--sp-3)' }}>
-              <strong>{t('system.readOnly.title')}</strong>{' '}
-              {systemMode.messageMarkdown ?? t('system.readOnly.body')}
-            </Banner>
-          ) : null}
-          {announcements.length > 0 ? (
-            <AnnouncementsTopBanners
-              slug={params.slug}
-              catalog={catalog}
-              locale={params.locale}
-              initial={announcements}
-            />
-          ) : null}
-          {session && !impersonation && session.user.emailVerified === false ? (
-            <EmailVerifyBanner email={session.user.email} />
-          ) : null}
-          {children}
-        </main>
-      </div>
+      <OfflineQueueProvider slug={params.slug} catalog={catalog} locale={params.locale}>
+        <div className="lbr-shell" style={shellStyle}>
+          <SidebarNav
+            catalog={catalog}
+            locale={params.locale}
+            slug={params.slug}
+            libraryName={libraryName}
+            brandLogoUrl={brandLogoUrl}
+            userFullName={userFullName}
+            billingEnabled={billingEnabled}
+            role={role}
+          />
+          <main className="lbr-shell__main">
+            {impersonation ? (
+              <ImpersonationBanner
+                tenantName={impersonation.tenant.name}
+                expiresAt={impersonation.expiresAt}
+              />
+            ) : null}
+            {systemMode.mode === 'under_construction' ? (
+              <Banner severity="info" style={{ marginBottom: 'var(--sp-3)' }}>
+                <strong>{t('system.underConstruction.title')}</strong>{' '}
+                {systemMode.messageMarkdown ?? t('system.underConstruction.description')}
+              </Banner>
+            ) : null}
+            {systemMode.mode === 'read_only' ? (
+              <Banner severity="warning" style={{ marginBottom: 'var(--sp-3)' }}>
+                <strong>{t('system.readOnly.title')}</strong>{' '}
+                {systemMode.messageMarkdown ?? t('system.readOnly.body')}
+              </Banner>
+            ) : null}
+            {announcements.length > 0 ? (
+              <AnnouncementsTopBanners
+                slug={params.slug}
+                catalog={catalog}
+                locale={params.locale}
+                initial={announcements}
+              />
+            ) : null}
+            {session && !impersonation && session.user.emailVerified === false ? (
+              <EmailVerifyBanner email={session.user.email} />
+            ) : null}
+            {children}
+          </main>
+        </div>
+      </OfflineQueueProvider>
     </ToastProvider>
   );
 }

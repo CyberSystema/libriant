@@ -7,6 +7,8 @@ import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
 import { useIdempotencyKey } from '@/lib/useIdempotencyKey';
+import { useOfflineQueue } from '@/components/OfflineQueueProvider';
+import { isNetworkError } from '@/lib/offline-queue';
 import { Combobox } from '@/components/Combobox';
 import { BarcodeScanner, SCAN_FORMATS, scanningSupported } from '@/components/BarcodeScanner';
 
@@ -100,6 +102,7 @@ export function CheckoutForm({
   // Stable key for this checkout: a double-submit / retry returns the same loan
   // instead of lending two copies. Rotated after a successful checkout.
   const { key: idempotencyKey, rotate } = useIdempotencyKey();
+  const { enqueue } = useOfflineQueue();
 
   // Pre-fill member from URL (e.g. /loans/new?memberId=...).
   React.useEffect(() => {
@@ -192,26 +195,47 @@ export function CheckoutForm({
     }
     setFormError(null);
     setSubmitting(true);
+    const body = {
+      memberId: member.id,
+      copyId,
+      dueAt: `${dueAt}T23:59:59.000Z`,
+      notes: notes.trim() || undefined,
+    };
+    const summary = `${book.title} → ${member.fullName}`;
     try {
       const res = await api<{ loan: { id: string } }>(`/t/${slug}/loans`, {
         method: 'POST',
         idempotencyKey,
-        body: {
-          memberId: member.id,
-          copyId,
-          dueAt: `${dueAt}T23:59:59.000Z`,
-          notes: notes.trim() || undefined,
-        },
+        body,
       });
       rotate(); // succeeded — a later checkout starts a fresh key
-      toast.show({
-        severity: 'success',
-        title: t('loans.checkout.success'),
-        body: `${book.title} → ${member.fullName}`,
-      });
+      toast.show({ severity: 'success', title: t('loans.checkout.success'), body: summary });
       router.push(`/${locale}/t/${slug}/loans/${res.loan.id}`);
       router.refresh();
     } catch (err) {
+      if (isNetworkError(err)) {
+        // Offline — queue the checkout; it replays (idempotently) on reconnect.
+        // We can't navigate to a loan that doesn't exist yet, so reset the form
+        // for the next one and let the sync toast confirm it later.
+        const queued = await enqueue({
+          idempotencyKey,
+          path: `/t/${slug}/loans`,
+          body,
+          kind: 'checkout',
+          label: summary,
+        });
+        rotate();
+        if (queued) {
+          toast.show({ severity: 'info', title: t('loans.queue.queued') });
+          setMember(null);
+          setBook(null);
+          setCopyId('');
+        } else {
+          setFormError(t('loans.queue.saveFailed'));
+        }
+        setSubmitting(false);
+        return;
+      }
       setFormError(err instanceof ApiError ? err.message : t('common.states.error'));
       setSubmitting(false);
     }
