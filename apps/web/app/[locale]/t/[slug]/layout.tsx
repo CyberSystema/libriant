@@ -10,6 +10,7 @@ import { currentSession, requestCookieHeader } from '@/lib/session';
 import { currentSystemMode, isTakeoverMode } from '@/lib/system-mode';
 import { AnnouncementsTopBanners } from './AnnouncementsTopBanners';
 import { ChoosePlanScreen } from './ChoosePlanScreen';
+import { EmailVerifyBanner } from './EmailVerifyBanner';
 import { FirstLoginSetup } from './FirstLoginSetup';
 import { ImpersonationBanner } from './ImpersonationBanner';
 import { type AvailablePlan } from './billing/PlanGrid';
@@ -202,6 +203,9 @@ export default async function TenantLayout(props: {
               locale={params.locale}
               initial={announcements}
             />
+          ) : null}
+          {session && !impersonation && session.user.emailVerified === false ? (
+            <EmailVerifyBanner email={session.user.email} />
           ) : null}
           {children}
         </main>

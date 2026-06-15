@@ -6,6 +6,8 @@ import { JwtSessionService } from './jwt-session.service.js';
 import { LoginService } from './login.service.js';
 import { PasswordService } from './password.service.js';
 import { PasswordResetService } from './password-reset.service.js';
+import { EmailVerificationService } from './email-verification.service.js';
+import { EmailVerifiedGuard } from './email-verified.guard.js';
 import { SignupService } from './signup.service.js';
 import { TenantProvisioningService } from '../provisioning/tenant-provisioning.service.js';
 import { TenantModule } from '../tenancy/tenant.module.js';
@@ -19,6 +21,8 @@ import { TenantModule } from '../tenancy/tenant.module.js';
     LoginService,
     PasswordService,
     PasswordResetService,
+    EmailVerificationService,
+    EmailVerifiedGuard,
     SignupService,
     TenantProvisioningService,
   ],
@@ -30,6 +34,8 @@ import { TenantModule } from '../tenancy/tenant.module.js';
     LoginService,
     PasswordService,
     PasswordResetService,
+    EmailVerificationService,
+    EmailVerifiedGuard,
     SignupService,
   ],
 })

@@ -119,6 +119,10 @@ enum EmailMessageKind {
   announcement
   // Step 7 — auth
   password_reset
+  // Account email verification (signup confirmation + email-change re-verify)
+  email_verification
+  // Sent once after a brand-new owner verifies their address
+  welcome
   // Member circulation reminders (per-library opt-in)
   member_due_soon
   member_overdue
@@ -337,6 +341,11 @@ model User {
   /// status change so a compromised-then-recovered account can't keep a live
   /// cookie for the rest of its 7-day TTL.
   sessionsValidAfter    DateTime?
+  /// When the user confirmed ownership of `email` via a verification link.
+  /// NULL = unverified (soft-gated: can sign in, but verification-sensitive
+  /// actions are blocked until set). Staff accounts have no email, so they are
+  /// treated as exempt rather than unverified.
+  emailVerifiedAt       DateTime?
   createdAt             DateTime   @default(now())
   updatedAt             DateTime   @updatedAt
   archivedAt            DateTime?

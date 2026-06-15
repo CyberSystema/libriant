@@ -122,6 +122,8 @@ export type AuthMeResponse = {
     fullName: string;
     role: 'owner' | 'admin' | 'librarian' | 'volunteer';
     mustChangeCredentials: boolean;
+    /** Email-account confirmed (or staff, which has no email). Soft gate. */
+    emailVerified: boolean;
   };
   tenant: {
     id: string;

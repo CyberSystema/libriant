@@ -19,11 +19,13 @@ import { AuthGuard } from './auth.guard.js';
 import { CookieService } from './cookie.service.js';
 import { LoginService } from './login.service.js';
 import { PasswordResetService } from './password-reset.service.js';
+import { EmailVerificationService } from './email-verification.service.js';
 import { Sess } from './session-context.js';
 import { SignupService } from './signup.service.js';
 import { SignupDto } from './dto/signup.dto.js';
 import { CompleteSetupDto, LoginDto } from './dto/login.dto.js';
 import { PasswordResetCompleteDto, PasswordResetRequestDto } from './dto/password-reset.dto.js';
+import { ChangeEmailDto, VerifyEmailDto } from './dto/email-verification.dto.js';
 import type { SessionPayload } from './jwt-session.service.js';
 import { TenantResolverService } from '../tenancy/tenant-resolver.service.js';
 import { RateLimitService } from '../platform/rate-limit.service.js';
@@ -52,6 +54,9 @@ const RL = {
   signupGlobal: { limit: 60, windowSec: 600 }, // 60 / 10 min total (advisory alarm)
   loginPerIp: { limit: 20, windowSec: 300 }, // 20 / 5 min / IP
   resetPerIp: { limit: 5, windowSec: 900 }, // 5 / 15 min / IP
+  // Email-sending, session-backed paths — modest per-IP cap on top of the
+  // per-account cap inside EmailVerificationService.
+  emailVerifyPerIp: { limit: 10, windowSec: 900 }, // 10 / 15 min / IP
 } as const;
 
 /**
@@ -73,6 +78,7 @@ export class AuthController {
     @Inject(SignupService) private readonly signupSvc: SignupService,
     @Inject(LoginService) private readonly loginSvc: LoginService,
     @Inject(PasswordResetService) private readonly resetSvc: PasswordResetService,
+    @Inject(EmailVerificationService) private readonly emailVerify: EmailVerificationService,
     @Inject(TenantResolverService) private readonly tenantResolver: TenantResolverService,
     @Inject(RateLimitService) private readonly rateLimit: RateLimitService,
   ) {}
@@ -200,6 +206,7 @@ export class AuthController {
           role: true,
           locale: true,
           mustChangeCredentials: true,
+          emailVerifiedAt: true,
         },
       }),
       controlDb.tenant.findUnique({
@@ -218,7 +225,13 @@ export class AuthController {
     if (!user || !tenant) {
       throw new NotFoundException('Session points at a record that no longer exists.');
     }
-    return { user, tenant };
+    // Surface verification state (not the timestamp) so the web can show the
+    // "verify your email" banner. Staff (no email) are never "unverified".
+    const { emailVerifiedAt, ...userPublic } = user;
+    return {
+      user: { ...userPublic, emailVerified: !user.email || emailVerifiedAt != null },
+      tenant,
+    };
   }
 
   @Post('password-reset/request')
@@ -244,6 +257,60 @@ export class AuthController {
       // Surfaced as 410 Gone because the token is either consumed or expired.
       throw new NotFoundException('This reset link is invalid or has expired.');
     }
+    return { ok: true };
+  }
+
+  /**
+   * Consume an email-verification token (from the signup/change link). Public —
+   * the token itself is the credential. Returns the mode + library slug so the
+   * web can route the user back into their library.
+   */
+  @Post('verify-email')
+  @HttpCode(HttpStatus.OK)
+  async verifyEmail(@Body() raw: unknown, @Req() req: Request) {
+    const ip = clientIp(req) ?? 'unknown';
+    await this.throttle(
+      [{ key: `emailverify:ip:${ip}`, ...RL.emailVerifyPerIp }],
+      'Too many verification attempts. Please wait a few minutes and try again.',
+    );
+    const dto = await validateDto(VerifyEmailDto, raw);
+    const result = await this.emailVerify.verify(dto.token);
+    if (!result.ok) {
+      throw new NotFoundException('This verification link is invalid or has expired.');
+    }
+    return { ok: true, mode: result.mode, slug: result.slug };
+  }
+
+  /** Re-send the verification email to the signed-in user's current address. */
+  @Post('verify-email/resend')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @UseGuards(AuthGuard)
+  async resendVerification(@Sess() session: SessionPayload, @Req() req: Request) {
+    const ip = clientIp(req) ?? 'unknown';
+    await this.throttle(
+      [{ key: `emailverify:ip:${ip}`, ...RL.emailVerifyPerIp }],
+      'Too many verification requests. Please wait a few minutes and try again.',
+    );
+    await this.emailVerify.resend(session.sub);
+    // Uniform response regardless of state (no account-state oracle).
+    return { ok: true };
+  }
+
+  /**
+   * Stage an email-address change: sends a verification link to the NEW address.
+   * The account email only changes once that link is confirmed.
+   */
+  @Post('change-email')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @UseGuards(AuthGuard)
+  async changeEmail(@Sess() session: SessionPayload, @Body() raw: unknown, @Req() req: Request) {
+    const ip = clientIp(req) ?? 'unknown';
+    await this.throttle(
+      [{ key: `emailverify:ip:${ip}`, ...RL.emailVerifyPerIp }],
+      'Too many requests. Please wait a few minutes and try again.',
+    );
+    const dto = await validateDto(ChangeEmailDto, raw);
+    await this.emailVerify.requestEmailChange(session.sub, dto.newEmail);
     return { ok: true };
   }
 }

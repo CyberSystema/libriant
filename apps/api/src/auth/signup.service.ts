@@ -9,6 +9,7 @@ import {
 import { controlDb, Prisma } from '@libriant/db-control';
 import { PasswordService } from './password.service.js';
 import { JwtSessionService } from './jwt-session.service.js';
+import { EmailVerificationService } from './email-verification.service.js';
 import { TenantProvisioningService } from '../provisioning/tenant-provisioning.service.js';
 
 export type SignupInput = {
@@ -47,6 +48,7 @@ export class SignupService {
   constructor(
     @Inject(PasswordService) private readonly passwords: PasswordService,
     @Inject(JwtSessionService) private readonly jwt: JwtSessionService,
+    @Inject(EmailVerificationService) private readonly emailVerification: EmailVerificationService,
     @Inject(TenantProvisioningService) private readonly provisioner: TenantProvisioningService,
   ) {}
 
@@ -162,6 +164,27 @@ export class SignupService {
         });
         return { tenant, user };
       });
+
+      // Soft gate: the owner is signed in immediately, but we send a
+      // verification email so they can confirm their address (the
+      // EmailVerifiedGuard blocks sensitive actions until they do). Best-effort
+      // — a Redis/mail hiccup must never fail the signup itself; they can
+      // resend from the in-app banner.
+      await this.emailVerification
+        .send({
+          userId: created.user.id,
+          tenantId: created.tenant.id,
+          email: input.email,
+          slug: created.tenant.slug,
+          locale: created.tenant.defaultLocale,
+          libraryName: created.tenant.name,
+          mode: 'signup',
+        })
+        .catch((err: unknown) =>
+          this.logger.warn(
+            `verification email enqueue failed for new owner ${created.user.id}: ${err instanceof Error ? err.message : err}`,
+          ),
+        );
 
       const { token, expiresAt } = this.jwt.sign({
         sub: created.user.id,

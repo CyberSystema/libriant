@@ -14,6 +14,7 @@ import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { RolesGuard } from '../tenancy/roles.guard.js';
 import { Roles } from '../tenancy/roles.decorator.js';
+import { EmailVerifiedGuard } from '../auth/email-verified.guard.js';
 import { QuotaInterceptor } from '../plans/quota.interceptor.js';
 import { RequiresQuota } from '../plans/decorators.js';
 import { Sess } from '../auth/session-context.js';
@@ -45,6 +46,9 @@ export class StaffController {
 
   @Post()
   @HttpCode(201)
+  // Inviting staff is verification-sensitive (it sends a new person credentials
+  // tied to this library), so it's gated behind a verified owner/admin email.
+  @UseGuards(EmailVerifiedGuard)
   @RequiresQuota('staff_seats')
   async create(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const dto = await validateDto(CreateStaffDto, raw);
