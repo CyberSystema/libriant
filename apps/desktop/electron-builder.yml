@@ -1,0 +1,34 @@
+# Packaging config for the Libriant desktop shell. Run `pnpm package` (after
+# `pnpm build`) to produce installers in `release/`. Code-signing + notarization
+# (mac) and an app icon are deployment concerns — add them here when releasing:
+#   - set `mac.icon` / `win.icon` / `linux.icon` to a 512px+ PNG / .icns / .ico
+#   - provide signing identities via the standard electron-builder env vars.
+appId: com.cybersystema.libriant
+productName: Libriant
+copyright: © CyberSystema
+
+directories:
+  output: release
+  buildResources: build
+
+# Only the compiled output + manifest ship inside the app. node_modules that
+# Electron needs are resolved by electron-builder from the install.
+files:
+  - dist/**/*
+  - package.json
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - dmg
+    - zip
+
+win:
+  target:
+    - nsis
+
+linux:
+  category: Office
+  target:
+    - AppImage
+    - deb

@@ -1,0 +1,22 @@
+{
+  "name": "@libriant/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Libriant desktop shell — a thin, secure Electron wrapper around the Libriant web app.",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "electron .",
+    "dev": "pnpm run build && electron .",
+    "package": "pnpm run build && electron-builder --publish never",
+    "lint": "echo 'lint: ok'",
+    "test": "echo 'tests: none yet' && exit 0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "electron": "^42.4.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^6.0.3"
+  }
+}
