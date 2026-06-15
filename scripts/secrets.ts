@@ -125,8 +125,13 @@ const REGISTRY: VarDef[] = [
     store: 'env',
     save: 'yes',
     saveReason: 'Recovery; rotating it ends active support sessions.',
-    rotation: 'safe',
-    rotationNote: 'Ends any in-progress support/impersonation sessions; users unaffected.',
+    // SEC-10: 'caution', not 'safe' — consistent with the other session-signing
+    // secrets (SESSION_SECRET / ADMIN_SESSION_SECRET). Rotating it DROPS any
+    // in-progress support/impersonation session, so an operator should not do it
+    // unprompted mid-session.
+    rotation: 'caution',
+    rotationNote:
+      'Ends any in-progress support/impersonation session immediately; end-users unaffected.',
     gen: HEX32,
     requirement: 'prod',
     insecureDefault: 'dev-only-impersonation-secret-CHANGE-IN-PROD',
@@ -178,11 +183,22 @@ const REGISTRY: VarDef[] = [
     save: 'yes',
     saveReason:
       'CRITICAL — the running cluster is keyed to it; losing it can lock you out of the DB.',
-    rotation: 'caution',
+    // `never`, not `caution`: this tool only edits the env file. Rotating the
+    // value here WITHOUT the matching `ALTER ROLE libriant PASSWORD ...` desyncs
+    // from the live cluster and locks the app out of its own DB. The rotate
+    // command refuses; do it as a coordinated maintenance procedure.
+    rotation: 'never',
     rotationNote:
-      'The data volume already uses this password. Change it ONLY together with `ALTER ROLE libriant PASSWORD ...` inside Postgres, in a maintenance window — never edit it here alone.',
+      'The running cluster + data volume use this password. Change it ONLY as a coordinated maintenance step: `ALTER ROLE libriant PASSWORD ...` in Postgres AND update this value together — never rotate it here alone.',
     gen: { kind: 'hex', bytes: 24 }, // hex → URL-safe (interpolated into a DB URL)
     requirement: 'prod',
+    // Must be URL-safe: it is interpolated into postgresql://libriant:<pw>@host.
+    // `@ : / ? # [ ]` etc. would corrupt the connection URL or leak into the
+    // host/path. Restrict to RFC3986 unreserved characters.
+    validate: (v) =>
+      /^[A-Za-z0-9\-._~]+$/.test(v)
+        ? null
+        : 'must be URL-safe (letters, digits, and - . _ ~ only) — it goes into the DB connection URL.',
     description:
       'Password for the `libriant` Postgres role; interpolated into the DB connection URLs.',
   },
@@ -486,7 +502,13 @@ function parseValue(rhs: string): string {
   if (t.length >= 2 && t[0] === '"' && t[t.length - 1] === '"') {
     return t.slice(1, -1).replace(/\\(["\\$`])/g, '$1');
   }
-  return t;
+  // SEC-08: strip an unquoted trailing `# comment` to match how the shell
+  // sources the file (`set -a; . file`): an inline comment after whitespace is
+  // not part of the value. Only applies to BAREWORD (unquoted) values — a `#`
+  // inside quotes is handled by the branches above. Without this the
+  // fingerprint/length the tool showed for a commented value was wrong.
+  const noComment = t.replace(/\s+#.*$/, '');
+  return noComment.trim();
 }
 
 function loadModel(path: string): EnvModel {
@@ -494,7 +516,11 @@ function loadModel(path: string): EnvModel {
   if (existsSync(path)) {
     const text = readFileSync(path, 'utf8');
     for (const raw of text.split('\n')) {
-      const m = raw.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+      // SEC-08: accept an optional `export ` prefix so `export KEY=…` lines are
+      // recognised as definitions (they are valid in a sourced shell env file).
+      // Without this they parsed as plain comments → false MISSING reports and
+      // duplicate appends.
+      const m = raw.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/);
       lines.push(m ? { raw, key: m[1] } : { raw });
     }
     // Drop a single trailing empty line artifact from split.
@@ -520,6 +546,19 @@ function isBareword(v: string): boolean {
 }
 
 function serializeKV(key: string, value: string): string {
+  // secrets-tool-new: reject newlines / control chars. A value containing a
+  // newline (e.g. a pasted PEM-ish string, or a credential copied with a
+  // trailing newline) would be written as a corrupt multi-line entry —
+  // truncated to its first line with a dangling `<rest>'` orphan line — while
+  // still printing "✓ updated". The env-file model is one KEY=VALUE per line, so
+  // a newline simply cannot be represented; refuse it (mirrors ensure-env.sh,
+  // which only ever writes shell-safe single-line values).
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(value)) {
+    throw new Error(
+      `value for ${key} contains a newline or control character, which can't be stored in a single-line env entry — choose a single-line value.`,
+    );
+  }
   if (isBareword(value)) return `${key}=${value}`;
   if (value.includes("'")) {
     // Single quotes can't be represented inside a single-quoted env value.
@@ -532,17 +571,35 @@ function serializeKV(key: string, value: string): string {
 
 function setValue(model: EnvModel, key: string, value: string): void {
   const serialized = serializeKV(key, value);
-  const existing = model.lines.find((l) => l.key === key);
-  if (existing) existing.raw = serialized;
+  // SEC-07: update the LAST occurrence, not the first. getValue() reads
+  // last-wins (matching `set -a; . file` shell semantics, where a later
+  // assignment shadows an earlier one). If we updated the FIRST occurrence on a
+  // file with a duplicated key, `set`/`rotate` would report success while the
+  // value the app actually loads (the last one) stayed stale — a silent no-op.
+  let lastIdx = -1;
+  for (let i = model.lines.length - 1; i >= 0; i--) {
+    if (model.lines[i]!.key === key) {
+      lastIdx = i;
+      break;
+    }
+  }
+  if (lastIdx >= 0) model.lines[lastIdx] = { raw: serialized, key };
   else model.lines.push({ raw: serialized, key });
 }
 
 function saveModel(model: EnvModel): void {
   const dir = dirname(model.path);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  // SEC-09: create parent dirs locked down (0o700) — the file holds secrets and
+  // may live under ./.env.* in a shared/world-traversable dir, not only the
+  // root-owned /srv/libriant.
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   const body = model.lines.map((l) => l.raw).join('\n') + '\n';
-  const tmp = `${model.path}.tmp-${process.pid}`;
-  writeFileSync(tmp, body, { mode: 0o600 });
+  // SEC-09: use a RANDOMIZED temp name in the same dir, opened with the 'wx'
+  // flag (O_CREAT|O_EXCL). O_EXCL refuses to follow a symlink or clobber an
+  // existing file, closing the predictable-temp-name + symlink-following write
+  // gap. The rename over the target is still atomic.
+  const tmp = `${model.path}.tmp-${randomBytes(8).toString('hex')}`;
+  writeFileSync(tmp, body, { mode: 0o600, flag: 'wx' });
   chmodSync(tmp, 0o600);
   renameSync(tmp, model.path);
   chmodSync(model.path, 0o600);
@@ -902,7 +959,17 @@ async function actionSet(model: EnvModel, key: string, value?: string): Promise<
       return;
     }
   }
-  setValue(model, key, next);
+  // secrets-tool-new-actionSet: serializeKV (via setValue) can reject the value
+  // (single quote / newline / control char). On the explicit-value path that
+  // would otherwise throw an uncaught error and exit-1 mid-task — print a
+  // friendly message instead, as promptValue's loop already does. The write is
+  // aborted before saveModel, so nothing is persisted.
+  try {
+    setValue(model, key, next);
+  } catch (err) {
+    console.log(col(`✗ ${(err as Error).message}`, C.red));
+    return;
+  }
   saveModel(model);
   console.log(col(`✓ ${key} updated in ${model.path}`, C.green));
 }
@@ -930,9 +997,16 @@ async function actionRotate(model: EnvModel, key: string, assumeYes: boolean): P
     return;
   }
   if (def.rotation === 'never') {
-    console.log(col(`⛔ ${key} is marked DO-NOT-ROTATE.`, C.red));
+    // Hard refusal — NOT just a warning. Rotating these in this file alone is
+    // destructive (MFA_MASTER_KEY orphans every admin's TOTP; POSTGRES_PASSWORD
+    // desyncs from the live cluster and locks the app out). They require an
+    // out-of-band, coordinated procedure, so the tool will not do it.
+    console.log(col(`⛔ ${key} must NOT be rotated with this tool.`, C.red));
     if (def.rotationNote) console.log(col(`   ${def.rotationNote}`, C.red));
-  } else if (def.rotation === 'caution') {
+    console.log(col(`   Refusing. Follow the documented coordinated procedure instead.`, C.red));
+    return;
+  }
+  if (def.rotation === 'caution') {
     console.log(col(`⚠  Rotating ${key} has side effects:`, C.yellow));
     if (def.rotationNote) console.log(col(`   ${def.rotationNote}`, C.yellow));
   }
@@ -1138,6 +1212,14 @@ async function main(): Promise<void> {
       } else if (fmt === 'json') {
         printJson(model, reveal);
       } else if (fmt === 'env') {
+        // Raw env dump is full plaintext (every secret) — same exposure as
+        // pwmanager, so require the same explicit opt-in.
+        if (!reveal) {
+          console.log(
+            col('env format prints all secrets in plaintext — pass --reveal --yes.', C.yellow),
+          );
+          return;
+        }
         for (const l of model.lines) console.log(l.raw);
       } else {
         printInventory(model, reveal);
@@ -1166,10 +1248,33 @@ async function main(): Promise<void> {
       if (n > 0) process.exitCode = 2;
       break;
     }
-    case 'gen':
-      if (values.hex) console.log(genHex(Number(values.hex)));
-      else console.log(genPassword(Number(values.length ?? '20'), false));
+    case 'gen': {
+      // SEC-06: validate the parsed number. A bad --length/--hex (e.g. `l8`
+      // with a letter ell, or a typo) parses to NaN, which silently produced an
+      // EMPTY secret — an operator could paste a blank value into a credential
+      // field believing it was generated. Reject NaN/<=0 loudly and clamp the
+      // upper bound (mirrors actionGenerate's guards).
+      if (values.hex !== undefined) {
+        const bytes = Number(values.hex);
+        if (!Number.isInteger(bytes) || bytes <= 0) {
+          console.log(col(`✗ --hex must be a positive integer (got "${values.hex}").`, C.red));
+          process.exitCode = 1;
+          break;
+        }
+        console.log(genHex(Math.min(bytes, 4096)));
+      } else {
+        const len = Number(values.length ?? '20');
+        if (!Number.isInteger(len) || len <= 0) {
+          console.log(
+            col(`✗ --length must be a positive integer (got "${values.length}").`, C.red),
+          );
+          process.exitCode = 1;
+          break;
+        }
+        console.log(genPassword(Math.min(len, 4096), false));
+      }
       break;
+    }
     default:
       console.log(`Unknown command "${sub}". Try: print | init | set | rotate | audit | gen`);
   }

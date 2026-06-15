@@ -25,7 +25,15 @@ export class SmtpEmailDriver implements EmailDriver, OnModuleDestroy {
     if (!env.smtpUrl) {
       throw new Error('EMAIL_DRIVER=smtp requires SMTP_URL (e.g. smtp://user:pass@host:587).');
     }
-    this.transporter = nodemailer.createTransport(env.smtpUrl);
+    // Bounded timeouts so a hung/unreachable mail server can't stall an email
+    // worker indefinitely (and block graceful shutdown). Without these,
+    // nodemailer waits on the OS socket default (minutes).
+    this.transporter = nodemailer.createTransport({
+      url: env.smtpUrl,
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 20_000,
+    });
     // Verify the transport in the background so boot stays fast. A
     // misconfigured server logs a clear error but doesn't block startup
     // — the queue will retry sends and the operator sees per-attempt

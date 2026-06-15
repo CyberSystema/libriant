@@ -23,7 +23,10 @@ set -euo pipefail
 
 BACKUP_ROOT="${BACKUP_ROOT:-/srv/libriant/backups}"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-libriant}"
-COMPOSE_FILE="${COMPOSE_FILE:-/srv/libriant/deploy/compose/docker-compose.prod.yml}"
+# DR-003: real deployed path is /srv/libriant/app/infra/compose/... (the old
+# /srv/libriant/deploy/compose/... does not exist on the host).
+LIBRIANT_APP_DIR="${LIBRIANT_APP_DIR:-/srv/libriant/app}"
+COMPOSE_FILE="${COMPOSE_FILE:-${LIBRIANT_APP_DIR}/infra/compose/docker-compose.prod.yml}"
 STORAGE_DIR="${STORAGE_DIR:-/srv/libriant/storage}"
 
 log() { printf '[%s] %s\n' "$(date +'%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -57,17 +60,73 @@ if [ "$CONFIRM" != "1" ]; then
   die "this OVERWRITES the live databases and storage. Re-run with --yes to proceed."
 fi
 
+dc() { docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" "$@"; }
+
+# ---------- 0. Validate the archives BEFORE touching live data --------------
+# Decompress-test every archive up front. A corrupt/truncated dump would
+# otherwise only fail partway through the DROP+recreate wave — the worst
+# possible moment, leaving a half-restored cluster. `gunzip -t` reads the whole
+# stream and verifies the gzip integrity without writing anything; abort if it
+# fails so a bad archive never reaches a DROP.
+log "validating backup archives (gzip integrity)…"
+gunzip -t "$dir/postgres.sql.gz" 2>/dev/null \
+  || die "postgres.sql.gz is corrupt/truncated — refusing to restore (no databases were touched)."
+if [ -f "$dir/storage.tar.gz" ]; then
+  gunzip -t "$dir/storage.tar.gz" 2>/dev/null \
+    || die "storage.tar.gz is corrupt/truncated — refusing to restore (no databases were touched)."
+fi
+log "  archives OK"
+
 # ---------- 1. Postgres ----------------------------------------------------
+# The pg_dumpall script DROPs every database. Postgres refuses to DROP a DB that
+# still has open connections, so the api/worker/web containers MUST be stopped
+# first — otherwise the restore aborts under ON_ERROR_STOP=1 ("database is being
+# accessed by other users"). Postgres itself stays up to receive the restore.
+log "stopping application services so databases can be dropped…"
+dc stop api worker web 2>/dev/null || true
+# Belt-and-braces: terminate any other lingering backends (manual psql, etc.)
+# against the non-system databases before the DROP wave.
+dc exec -T postgres psql -U libriant -d postgres -v ON_ERROR_STOP=0 -c \
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+   WHERE datname NOT IN ('postgres','template0','template1') AND pid <> pg_backend_pid();" \
+  >/dev/null 2>&1 || true
+
+# Bring the apps back up even if the restore fails partway, so we never leave the
+# stack down silently.
+restart_apps() {
+  log "restarting application services…"
+  dc up -d api worker web 2>/dev/null || dc start api worker web 2>/dev/null || \
+    log "  WARN: could not restart app services — bring them up manually."
+}
+trap restart_apps EXIT
+
 log "restoring postgres (DROP + recreate via pg_dumpall script)…"
 gunzip -c "$dir/postgres.sql.gz" \
-  | docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" exec -T postgres \
-      psql -U libriant -d postgres -v ON_ERROR_STOP=1
+  | dc exec -T postgres psql -U libriant -d postgres -v ON_ERROR_STOP=1
 log "  postgres restored"
 
 # ---------- 2. Storage -----------------------------------------------------
+# DR-004: untar into a CLEAN tree. A bare `tar -x` is additive — restoring an
+# older backup onto a newer/non-empty $STORAGE_DIR would leave orphaned files
+# (uploads for records the restored DB no longer references, or previously
+# deleted files reappearing), so the restore would not be a faithful
+# point-in-time copy. Move any existing tree aside first (kept, not deleted, so
+# a botched restore is recoverable), then untar into a fresh directory.
 if [ -f "$dir/storage.tar.gz" ]; then
   log "restoring storage → $STORAGE_DIR"
   mkdir -p "$STORAGE_DIR"
+  if [ -n "$(ls -A "$STORAGE_DIR" 2>/dev/null)" ]; then
+    # Move the EXISTING CONTENTS (not the directory itself — $STORAGE_DIR is
+    # often a bind-mount root that can't be renamed) into a timestamped sibling
+    # under the same dir, so the target is clean for the untar but the old tree
+    # is kept for recovery. `.pre-restore.*` is excluded from the move so a
+    # re-run doesn't nest snapshots.
+    aside="$STORAGE_DIR/.pre-restore.$(date +%Y%m%d%H%M%S)"
+    log "  existing storage is non-empty — moving aside to $aside (delete it once the restore is verified)"
+    mkdir -p "$aside"
+    find "$STORAGE_DIR" -mindepth 1 -maxdepth 1 ! -name '.pre-restore.*' \
+      -exec mv -t "$aside" {} +
+  fi
   tar -C "$STORAGE_DIR" -xzf "$dir/storage.tar.gz"
   log "  storage restored"
 fi

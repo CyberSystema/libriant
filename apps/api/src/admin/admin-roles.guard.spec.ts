@@ -1,6 +1,5 @@
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import type { ExecutionContext } from '@nestjs/common';
-import type { Reflector } from '@nestjs/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { findUnique } = vi.hoisted(() => ({ findUnique: vi.fn() }));
@@ -19,8 +18,13 @@ function ctxWith(sub: string | undefined): ExecutionContext {
 }
 
 function guardRequiring(roles: string[] | undefined): AdminRolesGuard {
-  const reflector = { getAllAndOverride: () => roles } as unknown as Reflector;
-  return new AdminRolesGuard(reflector);
+  // The guard builds its own Reflector (no DI — see the guard's comment), so
+  // override that field to control what metadata it "reads" for this unit test.
+  const guard = new AdminRolesGuard();
+  (guard as unknown as { reflector: { getAllAndOverride: () => unknown } }).reflector = {
+    getAllAndOverride: () => roles,
+  };
+  return guard;
 }
 
 describe('AdminRolesGuard', () => {

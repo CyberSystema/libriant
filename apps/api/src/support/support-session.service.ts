@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import type { SupportSessionEndReason } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
@@ -51,9 +51,13 @@ export class SupportSessionService {
         },
       });
 
-      // Mark the key as redeemed + link to the session.
-      await tx.supportKey.update({
-        where: { id: input.keyId },
+      // Consume the key ATOMICALLY (ADM-6): flip pending→redeemed only if it's
+      // still pending. Two concurrent redeems of the same code both pass the
+      // earlier verify, but only one wins this conditional update — the loser
+      // gets count===0 and throws, rolling back its just-created session so a
+      // single code can never mint two sessions.
+      const consumed = await tx.supportKey.updateMany({
+        where: { id: input.keyId, status: 'pending' },
         data: {
           status: 'redeemed',
           redeemedAt: new Date(),
@@ -62,6 +66,11 @@ export class SupportSessionService {
           sessionId: session.id,
         },
       });
+      if (consumed.count === 0) {
+        throw new UnauthorizedException(
+          'That support key was just used. Ask the library to generate a new one.',
+        );
+      }
 
       return {
         id: session.id,

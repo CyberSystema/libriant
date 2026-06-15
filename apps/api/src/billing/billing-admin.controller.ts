@@ -2,6 +2,8 @@ import { Body, Controller, Get, Inject, Param, Post, UseGuards } from '@nestjs/c
 import { controlDb } from '@libriant/db-control';
 import { validateDto } from '../auth/validate-dto.js';
 import { AdminAuthGuard } from '../admin/admin-auth.guard.js';
+import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
+import { AdminRoles } from '../admin/admin-roles.decorator.js';
 import { BillingService } from './billing.service.js';
 import { AdminSetPaidUntilDto, AdminSetPlanDto } from './billing.dto.js';
 
@@ -15,7 +17,7 @@ import { AdminSetPaidUntilDto, AdminSetPlanDto } from './billing.dto.js';
  *   POST /admin/billing/tenants/:tenantId/set-paid-until    (manual mode only)
  */
 @Controller('admin/billing/tenants/:tenantId')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, AdminRolesGuard)
 export class BillingAdminController {
   constructor(@Inject(BillingService) private readonly svc: BillingService) {}
 
@@ -42,12 +44,14 @@ export class BillingAdminController {
   }
 
   @Post('set-plan')
+  @AdminRoles('owner')
   async setPlan(@Param('tenantId') tenantId: string, @Body() raw: unknown) {
     const dto = await validateDto(AdminSetPlanDto, raw);
     return this.svc.applyAdminPlanChange(tenantId, dto);
   }
 
   @Post('set-paid-until')
+  @AdminRoles('owner')
   async setPaidUntil(@Param('tenantId') tenantId: string, @Body() raw: unknown) {
     const dto = await validateDto(AdminSetPaidUntilDto, raw);
     return this.svc.applyManualPayment(tenantId, dto);

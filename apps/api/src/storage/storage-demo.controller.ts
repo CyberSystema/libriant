@@ -2,21 +2,26 @@ import {
   BadRequestException,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Inject,
   NotFoundException,
   Param,
   Post,
   Query,
+  Req,
   Res,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
+import { controlDb } from '@libriant/db-control';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
+import { RolesGuard } from '../tenancy/roles.guard.js';
+import { Roles } from '../tenancy/roles.decorator.js';
 import { TenantResolverService } from '../tenancy/tenant-resolver.service.js';
 import { loadEnv } from '../config/env.js';
 import { StorageService } from './storage.service.js';
@@ -32,6 +37,18 @@ const RESOURCE_TYPES: readonly ResourceType[] = [
   // and every header logo / branded asset renders broken.
   'branding',
 ];
+
+// TEN-06 / storage-new: resource types whose contents are sensitive enough
+// that the least-privileged role (volunteer) shouldn't be able to read them
+// or hand out day-long signed bearer links to them. `members` are PII photos
+// and `attachments` are arbitrary member/loan documents. `covers`, `marc` and
+// `branding` are display/catalog assets surfaced to every signed-in user (the
+// app header logo and book covers load through the download endpoint on every
+// page), so a blanket role floor there would break the UI for volunteers.
+const RESTRICTED_RESOURCE_TYPES: ReadonlySet<ResourceType> = new Set<ResourceType>([
+  'members',
+  'attachments',
+]);
 
 /**
  * End-to-end exercise of the storage layer. The real catalog/members
@@ -91,9 +108,14 @@ export class StorageDemoController {
     @TenantCtx() tenant: TenantContext,
     @Param('resourceType') resourceTypeRaw: string,
     @Param('filename') filename: string,
+    @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
     const resourceType = this.parseResourceType(resourceTypeRaw);
+    // TEN-06: floor reads of sensitive resource types at librarian. Display
+    // assets (covers/branding/marc) stay open to all members so the header
+    // logo and catalog covers keep rendering for volunteers.
+    await this.assertMayAccess(req, resourceType);
     const ref = `${resourceType}/${filename}`;
     const buf = await this.storage.get(tenant, ref);
     const stat = await this.storage.stat(tenant, ref);
@@ -101,7 +123,8 @@ export class StorageDemoController {
   }
 
   @Delete('t/:slug/storage/:resourceType/:filename')
-  @UseGuards(TenantGuard)
+  @UseGuards(TenantGuard, RolesGuard)
+  @Roles('owner', 'admin')
   async remove(
     @TenantCtx() tenant: TenantContext,
     @Param('resourceType') resourceTypeRaw: string,
@@ -118,13 +141,24 @@ export class StorageDemoController {
     @TenantCtx() tenant: TenantContext,
     @Param('resourceType') resourceTypeRaw: string,
     @Param('filename') filename: string,
+    @Req() req: Request,
     @Query('ttlSec') ttlSecRaw?: string,
   ) {
     const resourceType = this.parseResourceType(resourceTypeRaw);
+    // storage-new / TEN-06: minting a publicly-shareable signed URL (a bearer
+    // link that bypasses the app's auth boundary for up to 24h) is a strictly
+    // stronger capability than an in-app download, so it carries the same
+    // sensitive-resource role floor as `download`.
+    await this.assertMayAccess(req, resourceType);
     const ref = `${resourceType}/${filename}`;
     // Stat first so we don't hand out URLs that 404 a second later.
     await this.storage.stat(tenant, ref);
-    const ttlSec = ttlSecRaw ? Math.max(60, Math.min(86400, Number(ttlSecRaw))) : undefined;
+    // STG-04: validate ttlSec. A non-numeric param used to reach jwt.sign as
+    // `expiresIn: NaN`, throwing an uncaught 500. Reject malformed input with a
+    // 400 instead; an absent param falls back to the configured default TTL.
+    // Sensitive resource types also get a shorter TTL cap so leaked PII links
+    // expire sooner.
+    const ttlSec = this.parseTtlSec(ttlSecRaw, resourceType);
     const { token, expiresAt } = this.signedUrls.sign({
       tenantId: tenant.id,
       ref,
@@ -141,7 +175,8 @@ export class StorageDemoController {
   // (POST `/storage/recompute` would bind `recompute` as a resourceType and
   // multer would expect a file body).
   @Post('t/:slug/storage-admin/recompute')
-  @UseGuards(TenantGuard)
+  @UseGuards(TenantGuard, RolesGuard)
+  @Roles('owner', 'admin')
   async recompute(@TenantCtx() tenant: TenantContext) {
     const total = await this.storage.recomputeUsage(tenant);
     return { storageUsedBytes: total.toString() };
@@ -175,6 +210,47 @@ export class StorageDemoController {
     throw new BadRequestException(
       `Unknown resource type "${raw}". Use one of: ${RESOURCE_TYPES.join(', ')}.`,
     );
+  }
+
+  /**
+   * Parse + clamp the optional `ttlSec` query param. Returns `undefined` when
+   * absent (so the signer uses its default TTL), clamps a valid number into
+   * [60, maxTtl], and rejects non-numeric input with a 400 rather than letting
+   * `NaN` propagate into `jwt.sign({ expiresIn })` as an uncaught 500 (STG-04).
+   * Sensitive resource types (member PII) get a tighter 1h cap so a leaked link
+   * has a shorter blast window (TEN-06).
+   */
+  private parseTtlSec(raw: string | undefined, resourceType: ResourceType): number | undefined {
+    const maxTtl = RESTRICTED_RESOURCE_TYPES.has(resourceType) ? 3600 : 86400;
+    if (raw === undefined || raw === '') return undefined;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) {
+      throw new BadRequestException('ttlSec must be a number of seconds.');
+    }
+    return Math.max(60, Math.min(maxTtl, n));
+  }
+
+  /**
+   * TEN-06: floor read / signed-url access to sensitive resource types
+   * (members, attachments) at `librarian`. Mirrors `RolesGuard`: reads the
+   * user's CURRENT role from the control DB (not the JWT, which can be stale)
+   * and lets an impersonating Libriant admin through. Open resource types
+   * (covers/marc/branding) skip the check entirely so the UI keeps working for
+   * volunteers. Runs after `TenantGuard`, so the caller is a proven member.
+   */
+  private async assertMayAccess(req: Request, resourceType: ResourceType): Promise<void> {
+    if (!RESTRICTED_RESOURCE_TYPES.has(resourceType)) return;
+    if (req.impersonation) return;
+    if (!req.session) {
+      throw new ForbiddenException('This file is restricted to library staff.');
+    }
+    const user = await controlDb.user.findUnique({
+      where: { id: req.session.sub },
+      select: { role: true },
+    });
+    if (!user || user.role === 'volunteer') {
+      throw new ForbiddenException('This file is restricted to library staff.');
+    }
   }
 
   /** Resolve a tenant id back to a TenantContext via the resolver cache. */
@@ -213,7 +289,7 @@ export class StorageDemoController {
       // attachment + nosniff together neutralise "HTML uploaded as JPEG"
       // class of attack — browsers won't render the body as HTML even if
       // the content-type is wrong.
-      'content-disposition': `attachment; filename="${sanitiseFilename(filename)}"`,
+      'content-disposition': contentDisposition(filename),
       'x-content-type-options': 'nosniff',
       'cache-control': 'private, max-age=0, no-store',
     });
@@ -221,7 +297,40 @@ export class StorageDemoController {
   }
 }
 
-/** Strip path-ish characters from a filename used in a Content-Disposition. */
-function sanitiseFilename(name: string): string {
-  return name.replace(/[\\/\0]/g, '_').slice(0, 200);
+/**
+ * Build a Content-Disposition header value for a download. STG-06: an ASCII
+ * `filename=` token must never contain CR/LF/`"`/control chars (header
+ * injection / quote-breakout) — `asciiFilename` collapses those to `_`. We
+ * also emit an RFC 5987 `filename*=UTF-8''<percent-encoded>` so non-ASCII
+ * names (e.g. Greek titles) survive intact in modern browsers; the ASCII
+ * `filename=` is the legacy fallback.
+ */
+function contentDisposition(name: string): string {
+  const ascii = asciiFilename(name);
+  const encoded = encodeRfc5987(name);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
+/**
+ * Reduce a filename to a safe quoted-string token: strip path separators,
+ * NUL, the double-quote that would break out of the quoted value, and any
+ * CR/LF or other control characters that could inject a new header.
+ */
+function asciiFilename(name: string): string {
+  return (
+    name
+      // eslint-disable-next-line no-control-regex -- intentional: strip control chars
+      .replace(/[\\/\0"\r\n\x00-\x1f\x7f]/g, '_')
+      .slice(0, 200) || 'download'
+  );
+}
+
+/** Percent-encode a UTF-8 filename per RFC 5987's `ext-value` grammar. */
+function encodeRfc5987(name: string): string {
+  return (
+    encodeURIComponent(name.slice(0, 200))
+      // encodeURIComponent leaves these unescaped, but RFC 5987 disallows them
+      // in an attr-char run, so escape them explicitly.
+      .replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+  );
 }

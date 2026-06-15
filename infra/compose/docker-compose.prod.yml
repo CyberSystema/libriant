@@ -63,7 +63,15 @@ x-app-env: &app-env
   STRIPE_API_KEY: ${STRIPE_API_KEY:-}
   STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
   BILLING_RETURN_URL: https://${PUBLIC_HOST:-libriant.com}
-  EMAIL_DRIVER: ${EMAIL_DRIVER:-console}
+  # REL-06: do NOT default to `console` in prod. A `console` driver writes
+  # password-reset token URLs (account-takeover material) and member PII into
+  # retained Docker logs, and the old `:-console` default silently DISABLED the
+  # fail-fast env.ts builds in for production (it defaults an unset EMAIL_DRIVER
+  # to `smtp`, which then refuses to boot without SMTP_URL). Pass through unset
+  # (empty) instead of defaulting: an operator who sets EMAIL_DRIVER=smtp +
+  # SMTP_URL gets real mail; an operator who forgets gets the loud env.ts
+  # boot-time failure rather than silent, PII-logging email.
+  EMAIL_DRIVER: ${EMAIL_DRIVER:-}
   SMTP_URL: ${SMTP_URL:-}
   EMAIL_FROM: ${EMAIL_FROM:-}
   EMAIL_REPLY_TO: ${EMAIL_REPLY_TO:-}
@@ -129,10 +137,11 @@ services:
     image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-api:${IMAGE_TAG:-latest}
     <<: *logging
     restart: 'no'
-    # Runs as root (not the image's `node` user): this one-shot uses `pnpm` via
-    # corepack, whose cache was prepared as root at build time, and only does DB
-    # DDL — it serves no traffic. Avoids a corepack cache-permission re-download.
-    user: root
+    # INFRA-4: runs as the image's non-root `node` user (the Dockerfile default)
+    # — the previous `user: root` override was only there to avoid a corepack
+    # cache re-download, which is now fixed by warming a shared COREPACK_HOME at
+    # build time. This eliminates the only root container in the prod stack;
+    # the one-shot does DB DDL and serves no traffic.
     command: ['sh', '/app/scripts/prod-bootstrap.sh']
     environment:
       <<: *app-env
@@ -144,7 +153,9 @@ services:
     volumes:
       - ../../scripts:/app/scripts:ro
       - ../../locales:/app/locales:ro
-    networks: [app]
+    # INFRA-3: only the internal data tier — this one-shot does DB DDL and
+    # serves no traffic, so it never needs the app/egress network.
+    networks: [data]
 
   api:
     image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-api:${IMAGE_TAG:-latest}
@@ -168,7 +179,9 @@ services:
       - storage:/srv/libriant/storage
       - ../../assets:/srv/libriant/assets:ro
       - ../../locales:/srv/libriant/locales:ro
-    networks: [app]
+    # `app` for Caddy↔web↔api + egress (Stripe/SMTP); `data` (internal) for
+    # postgres/pgbouncer/redis. (INFRA-3)
+    networks: [app, data]
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://localhost:3001/readyz']
       interval: 15s
@@ -228,9 +241,15 @@ services:
       - storage:/srv/libriant/storage
       - ../../assets:/srv/libriant/assets:ro
       - ../../locales:/srv/libriant/locales:ro
-    networks: [app]
+    # `app` for egress (Stripe/SMTP); `data` (internal) for postgres/redis. (INFRA-3)
+    networks: [app, data]
+    # Give the worker time to drain in-flight jobs on SIGTERM before Docker
+    # SIGKILLs it — pairs with the bounded graceful-shutdown deadline in
+    # worker.ts (REL-03). Probe /readyz (reflects live queue + Redis health),
+    # not /healthz (always-200), so a wedged consumer is actually detected.
+    stop_grace_period: 60s
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:3002/healthz']
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3002/readyz']
       interval: 30s
       timeout: 5s
       retries: 5
@@ -254,7 +273,7 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ../compose/postgres-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
-    networks: [app]
+    networks: [data]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U libriant -d libriant_control']
       interval: 10s
@@ -276,7 +295,7 @@ services:
       AUTH_TYPE: scram-sha-256
       MAX_CLIENT_CONN: '500'
       DEFAULT_POOL_SIZE: '20'
-    networks: [app]
+    networks: [data]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -h localhost -p 5432 -U libriant']
       interval: 30s
@@ -289,22 +308,31 @@ services:
     command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'allkeys-lru']
     volumes:
       - redis_data:/data
-    networks: [app]
+    networks: [data]
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 10s
       timeout: 3s
       retries: 10
 
-# `edge` carries 80/443; `app` is the private inter-service network.
-# Caddy is the only service on both. Postgres / Redis / API never bind
-# to a host port.
+# Network tiers (INFRA-3):
+#   edge  — carries the host-published 80/443; only caddy joins it.
+#   app   — inter-service comm (caddy↔web↔api/worker) + outbound egress for
+#           Stripe / SMTP. Bridge (not internal) because the app processes need
+#           the internet; caddy bridges edge↔app.
+#   data  — postgres / pgbouncer / redis, plus the api/worker/migrate clients.
+#           `internal: true`: containers here have NO route to/from the host or
+#           the internet, so a future service that mistakenly declares `ports:`
+#           — or a `docker run --network libriant_data -p` — CANNOT publish the
+#           data tier (whose only auth is POSTGRES_PASSWORD/scram).
 networks:
   edge:
     driver: bridge
   app:
     driver: bridge
-    internal: false # set to `true` post-MVP if egress through caddy only
+  data:
+    driver: bridge
+    internal: true
 
 volumes:
   pg_data:

@@ -1,6 +1,8 @@
 import { Inject, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
+import { RedisService } from '../platform/redis.service.js';
+import { AuthGuard } from './auth.guard.js';
 import { PasswordService } from './password.service.js';
 import { JwtSessionService } from './jwt-session.service.js';
 import type { SessionPayload } from './jwt-session.service.js';
@@ -28,6 +30,7 @@ export class LoginService {
   constructor(
     @Inject(PasswordService) private readonly passwords: PasswordService,
     @Inject(JwtSessionService) private readonly jwt: JwtSessionService,
+    @Inject(RedisService) private readonly redis: RedisService,
   ) {}
 
   /**
@@ -95,16 +98,18 @@ export class LoginService {
       throw this.invalidCredentials();
     }
     if (user.lockedUntil && user.lockedUntil > new Date()) {
+      // Lockout is enforced server-side but NOT revealed: a distinct "locked /
+      // try again in N min" message is both an account-existence oracle and a
+      // confirmation that a targeted lock-out succeeded (AUTH-02). Return the
+      // same generic failure as every other path (still burning a dummy verify
+      // for timing parity).
       await this.passwords.dummyVerify(input.password);
-      const minutes = Math.ceil((user.lockedUntil.getTime() - Date.now()) / 60_000);
-      throw new UnauthorizedException(
-        `Too many failed attempts. Please try again in ${minutes} minute(s).`,
-      );
+      throw this.invalidCredentials();
     }
 
     const ok = await this.passwords.verify(input.password, user.passwordHash);
     if (!ok) {
-      await this.recordFailure(user.id, user.failedLogins);
+      await this.recordFailure(user.id);
       throw this.invalidCredentials();
     }
 
@@ -149,29 +154,38 @@ export class LoginService {
     userId: string,
     input: { fullName?: string; newPassword?: string },
   ): Promise<void> {
-    const data: { fullName?: string; passwordHash?: string; mustChangeCredentials: boolean } = {
+    const data: {
+      fullName?: string;
+      passwordHash?: string;
+      mustChangeCredentials: boolean;
+      sessionsValidAfter?: Date;
+    } = {
       mustChangeCredentials: false,
     };
     if (input.fullName && input.fullName.trim()) data.fullName = input.fullName.trim();
-    if (input.newPassword) data.passwordHash = await this.passwords.hash(input.newPassword);
+    if (input.newPassword) {
+      data.passwordHash = await this.passwords.hash(input.newPassword);
+      // Changing the password invalidates every existing session (AUTH-01).
+      data.sessionsValidAfter = new Date();
+    }
     await controlDb.user.update({ where: { id: userId }, data });
+    if (input.newPassword) await AuthGuard.invalidateAuthCache(this.redis, userId);
   }
 
-  private async recordFailure(userId: string, currentFailed: number): Promise<void> {
-    const nextCount = currentFailed + 1;
-    const shouldLock = nextCount >= this.env.maxFailedLogins;
-    await controlDb.user.update({
+  private async recordFailure(userId: string): Promise<void> {
+    // Atomic increment (AUTH-03): a burst of concurrent wrong guesses each
+    // advances the counter, instead of a non-atomic read-modify-write that lets
+    // N parallel attempts register as one and never trip the lock.
+    const updated = await controlDb.user.update({
       where: { id: userId },
-      data: {
-        failedLogins: nextCount,
-        lockedUntil: shouldLock ? new Date(Date.now() + this.env.loginLockoutMs) : undefined,
-      },
+      data: { failedLogins: { increment: 1 } },
+      select: { failedLogins: true },
     });
-    if (shouldLock) {
+    if (updated.failedLogins >= this.env.maxFailedLogins) {
+      const until = new Date(Date.now() + this.env.loginLockoutMs);
+      await controlDb.user.update({ where: { id: userId }, data: { lockedUntil: until } });
       this.logger.warn(
-        `User ${userId} locked after ${nextCount} failed attempts (until ${new Date(
-          Date.now() + this.env.loginLockoutMs,
-        ).toISOString()}).`,
+        `User ${userId} locked after ${updated.failedLogins} failed attempts (until ${until.toISOString()}).`,
       );
     }
   }

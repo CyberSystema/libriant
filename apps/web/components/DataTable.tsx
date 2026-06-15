@@ -190,11 +190,13 @@ export function DataTable<T extends { id: string }>({
       ) : (
         <>
           {/* Wrapper scrolls a wide table horizontally on small screens; the
-              `--cards` modifier reflows each row into a stacked label/value
-              card below the mobile breakpoint (see styles.css). Each cell
-              carries its column header as `data-label` so the card view can
-              show it. */}
-          <div className="lbr-table-wrap">
+              table's `--cards` modifier reflows each row into a stacked
+              label/value card below the mobile breakpoint (see styles.css).
+              The wrapper's matching `--cards` modifier drops its own
+              scroll/border in card mode so it doesn't double up around the
+              stack — an explicit class (no `:has()` reliance). Each cell
+              carries its column header as `data-label` for the card view. */}
+          <div className="lbr-table-wrap lbr-table-wrap--cards">
             <table className="lbr-table lbr-table--cards">
               <thead>
                 <tr>

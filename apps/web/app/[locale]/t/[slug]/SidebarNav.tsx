@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { Asset, Nav, PoweredBy } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
+import { useDrawerA11y } from '@/lib/useDrawerA11y';
 import { LogoutButton } from './LogoutButton';
 
 type Props = {
@@ -51,20 +52,21 @@ export function SidebarNav({
   React.useEffect(() => {
     setMenuOpen(false);
   }, [pathname]);
-  // While open: close on Escape and lock background scroll.
+  // mob-2: if the viewport grows past the mobile breakpoint while the drawer is
+  // open, close it. The drawer is only meaningful below 768px; leaving it open
+  // would strand `body { overflow: hidden }` (set by useDrawerA11y) on a desktop
+  // page that has no visible drawer to dismiss. Closing it runs the hook's
+  // cleanup, which restores the body scroll.
   React.useEffect(() => {
-    if (!menuOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setMenuOpen(false);
+    const mql = window.matchMedia('(max-width: 768px)');
+    const onChange = () => {
+      if (!mql.matches) setMenuOpen(false);
     };
-    document.addEventListener('keydown', onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [menuOpen]);
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, []);
+  // Escape-to-close, scroll-lock, focus trap + focus restore while open.
+  const sidebarRef = useDrawerA11y<HTMLElement>(menuOpen, () => setMenuOpen(false));
 
   const brandMark = brandLogoUrl ? (
     <img
@@ -132,7 +134,14 @@ export function SidebarNav({
         aria-hidden="true"
         onClick={() => setMenuOpen(false)}
       />
-      <aside id="lbr-tenant-sidebar" className={`lbr-shell__sidebar${menuOpen ? ' is-open' : ''}`}>
+      <aside
+        ref={sidebarRef}
+        id="lbr-tenant-sidebar"
+        className={`lbr-shell__sidebar${menuOpen ? ' is-open' : ''}`}
+        role={menuOpen ? 'dialog' : undefined}
+        aria-modal={menuOpen ? true : undefined}
+        aria-label={menuOpen ? t('common.nav.menu') : undefined}
+      >
         <Link
           href={base}
           className="lbr-shell__brand"

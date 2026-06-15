@@ -16,6 +16,13 @@ export type TransformResult<T> = TransformOk<T> | TransformErr;
 const ok = <T>(value: T): TransformOk<T> => ({ ok: true, value });
 const fail = (reason: string): TransformErr => ({ ok: false, reason });
 
+// IMP-08: every integer/money column the engine writes is a Postgres int4
+// (numPages, renewedCount, …cents). Postgres rejects out-of-range values at
+// commit with an opaque `db_error` *after* a clean dry-run, so range-check here
+// to surface a precise, actionable issue during validate instead.
+const INT4_MIN = -2_147_483_648;
+const INT4_MAX = 2_147_483_647;
+
 export function toText(raw: string): string {
   return raw.trim();
 }
@@ -26,6 +33,7 @@ export function toInt(raw: string): TransformResult<number> {
   if (!cleaned || cleaned === '-') return fail('not a whole number');
   const n = Number.parseInt(cleaned, 10);
   if (!Number.isFinite(n)) return fail('not a whole number');
+  if (n < INT4_MIN || n > INT4_MAX) return fail('whole number is out of range');
   return ok(n);
 }
 
@@ -82,8 +90,11 @@ export function toMoneyCents(raw: string): TransformResult<number> {
   }
   const value = Number.parseFloat(normalized);
   if (!Number.isFinite(value)) return fail('not an amount');
-  const cents = Math.round(value * 100);
-  return ok(negative ? -cents : cents);
+  const cents = negative ? -Math.round(value * 100) : Math.round(value * 100);
+  // IMP-08: amountCents/priceCents are int4 — reject oversize amounts here so
+  // the dry-run flags them rather than the commit failing as an opaque db_error.
+  if (cents < INT4_MIN || cents > INT4_MAX) return fail('amount is out of range');
+  return ok(cents);
 }
 
 /** Split a 1-3 part numeric date into a validated `YYYY-MM-DD`. */

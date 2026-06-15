@@ -474,8 +474,9 @@ dc up -d api worker
 ## Part 11 — Backups (do this on day one)
 
 `scripts/backup.sh` dumps **all** databases, tars your uploads, snapshots the
-Caddy log, and prunes old dailies. Because your env points `BACKUP_ROOT` and
-`STORAGE_DIR` at the volume, backups land on `/mnt/libriant/backups`.
+Caddy log, and prunes old dailies. Set `BACKUP_ROOT` to the data volume so
+backups land on `/mnt/libriant/backups`; the uploads path is auto-detected from
+the storage Docker volume (no `STORAGE_DIR` needed).
 
 **Offsite copy — Hetzner Storage Box (recommended).** A BX11 is cheap and keeps
 a copy off the server:
@@ -492,6 +493,7 @@ Then set `RCLONE_REMOTE=storagebox:libriant-backups` in `.env.prod`.
 ```sh
 source ~/.bashrc
 COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml \
+BACKUP_ROOT=/mnt/libriant/backups \
   /srv/libriant/app/scripts/backup.sh
 ls -lh /mnt/libriant/backups/$(date +%Y%m%d)/
 ```
@@ -500,18 +502,23 @@ ls -lh /mnt/libriant/backups/$(date +%Y%m%d)/
 
 ```sh
 sudo tee /etc/cron.d/libriant-backup >/dev/null <<'CRON'
-15 2 * * * deploy bash -lc 'set -a; . /srv/libriant/.env.prod; set +a; COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml /srv/libriant/app/scripts/backup.sh >> /var/log/libriant/backup.log 2>&1'
+15 2 * * * deploy bash -lc 'set -a; . /srv/libriant/.env.prod; set +a; COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml BACKUP_ROOT=/mnt/libriant/backups /srv/libriant/app/scripts/backup.sh >> /var/log/libriant/backup.log 2>&1'
 CRON
 ```
 
-**Restore drill** (practise before you need it):
+**Restore drill** (practise before you need it). Use `scripts/restore.sh` — it
+does this safely where a hand-rolled `psql | tar` does not: it stops
+api/worker/web and terminates open DB connections **before** the `pg_dumpall`
+DROP wave (otherwise it half-aborts), restores under `ON_ERROR_STOP=1`, moves
+the existing uploads tree aside into `.pre-restore.<timestamp>/` before
+untarring (a faithful point-in-time copy, not an additive merge), and restarts
+the app services on exit. Pass the same volume paths the backup uses:
 
 ```sh
-# Postgres:
-gunzip -c /mnt/libriant/backups/<date>/postgres.sql.gz | \
-  dc exec -T postgres psql -U libriant -d postgres
-# Uploads:
-sudo tar -C /mnt/libriant/storage -xzf /mnt/libriant/backups/<date>/storage.tar.gz
+COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml \
+BACKUP_ROOT=/mnt/libriant/backups \
+STORAGE_DIR=/mnt/libriant/storage \
+  /srv/libriant/app/scripts/restore.sh <date> --yes   # <date> = YYYYMMDD
 ```
 
 ---

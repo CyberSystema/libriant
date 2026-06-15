@@ -332,6 +332,11 @@ model User {
   lastLoginAt           DateTime?
   failedLogins          Int        @default(0)
   lockedUntil           DateTime?
+  /// Any session JWT issued (iat) strictly before this instant is rejected by
+  /// AuthGuard. Bumped on password reset / forced credential reset / role or
+  /// status change so a compromised-then-recovered account can't keep a live
+  /// cookie for the rest of its 7-day TTL.
+  sessionsValidAfter    DateTime?
   createdAt             DateTime   @default(now())
   updatedAt             DateTime   @updatedAt
   archivedAt            DateTime?
@@ -735,6 +740,9 @@ model AdminUser {
   lastLoginAt     DateTime?
   failedAttempts  Int         @default(0)
   lockedUntil     DateTime?
+  /// Any admin session JWT issued (iat) before this instant is rejected by
+  /// AdminAuthGuard — lets a forced password reset / disable end live sessions.
+  sessionsValidAfter DateTime?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
   disabledAt      DateTime?

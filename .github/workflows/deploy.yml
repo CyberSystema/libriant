@@ -40,10 +40,56 @@ jobs:
   # status checks aren't available on this GitHub plan, so a red build must
   # be blocked HERE rather than relying on branch protection. `build` (and
   # therefore deploy) does not start unless this passes.
+  #
+  # The migrate one-shot runs `db:migrate:deploy` as a hard prerequisite on
+  # every deploy (compose `migrate` service, `service_completed_successfully`),
+  # so a bad migration or seed wedges the whole stack. We therefore exercise
+  # the FULL migrate/seed/tenant path against an ephemeral Postgres + Redis
+  # here (CFG-02), mirroring ci.yml's integration + db-migration jobs — not
+  # just the mocked unit suite — so a schema/seed defect is blocked before it
+  # can reach a host.
   # ---------------------------------------------------------------------
   verify:
-    name: Verify (typecheck + lint + tests)
+    name: Verify (typecheck + lint + tests + migrations)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: libriant
+          POSTGRES_PASSWORD: libriant
+          POSTGRES_DB: libriant_control
+          LANG: el_GR.UTF-8
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U libriant -d libriant_control"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      CONTROL_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_control
+      PG_SUPERUSER_URL: postgresql://libriant:libriant@localhost:5432/libriant_control
+      TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
+      REDIS_URL: redis://localhost:6379
+      SESSION_SECRET: ci-only-test
+      ADMIN_SESSION_SECRET: ci-only-test
+      IMPERSONATION_SECRET: ci-only-test
+      # Quoted: the value is all digits, which unquoted YAML coerces to a
+      # float — the app then rejects it as non-hex.
+      MFA_MASTER_KEY: '0011223344556677889900112233445566778899001122334455667788990011'
+      STRIPE_DRIVER: fake
+      STORAGE_ROOT: /tmp/libriant-test-storage
+      EMAIL_DRIVER: console
+      # tsx + decorators (NestJS DI) needs the API's tsconfig pinned.
+      TSX_TSCONFIG_PATH: ${{ github.workspace }}/apps/api/tsconfig.json
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -72,13 +118,55 @@ jobs:
         run: pnpm format:check
       - name: Unit tests
         run: pnpm --filter @libriant/api exec vitest run --project unit
+      # --- migration / seed / tenant gate (CFG-02) ----------------------
+      # prod-bootstrap.sh runs exactly these against the live DB on every
+      # deploy; exercise them here so a broken migration/seed can't ship.
+      - name: Create + extend both DBs (control + demo tenant)
+        run: |
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "
+            CREATE EXTENSION IF NOT EXISTS unaccent;
+            CREATE EXTENSION IF NOT EXISTS pg_trgm;
+            CREATE EXTENSION IF NOT EXISTS pgcrypto;
+            CREATE EXTENSION IF NOT EXISTS citext;
+          "
+          # `\gexec` isn't honored by `psql -c`, so guard the create in the shell.
+          if ! PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -tAc \
+            "SELECT 1 FROM pg_database WHERE datname = 'libriant_demo'" | grep -q 1; then
+            PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "CREATE DATABASE libriant_demo"
+          fi
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_demo -c "
+            CREATE EXTENSION IF NOT EXISTS unaccent;
+            CREATE EXTENSION IF NOT EXISTS pg_trgm;
+            CREATE EXTENSION IF NOT EXISTS pgcrypto;
+            CREATE EXTENSION IF NOT EXISTS citext;
+          "
+      - name: Apply control-plane migrations
+        run: pnpm db:migrate:deploy
+      - name: Seed control-plane (cells + plans + feature catalog)
+        run: pnpm db:seed
+      - name: Integration tests (real postgres + redis)
+        run: pnpm --filter @libriant/api exec vitest run --project integration
+      - name: Apply tenant migration to libriant_demo
+        run: pnpm tenant:migrate:deploy
+      - name: Seed tenant defaults
+        run: pnpm tenant:seed:defaults
+      - name: Tenant smoke test (catalog → loan → reservation → custom collection)
+        run: pnpm tenant:smoke
 
   # ---------------------------------------------------------------------
-  # build — produce api + web images, push to GHCR
+  # build — produce api + web images, push to GHCR.
+  #
+  # CFG-01: skip this job entirely when a tag override is supplied. A
+  # workflow_dispatch with `image_tag` set is a ROLLBACK to a known-good,
+  # already-pushed immutable image — rebuilding here would push the current
+  # (possibly broken) HEAD under that historical tag, clobbering the artifact
+  # the operator is trying to restore and poisoning :latest. On rollback we
+  # pull the existing tag instead of building anything.
   # ---------------------------------------------------------------------
   build:
     name: Build & push images
     needs: verify
+    if: github.event.inputs.image_tag == ''
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
@@ -87,10 +175,9 @@ jobs:
 
       - id: meta
         run: |
-          TAG="${{ github.event.inputs.image_tag }}"
-          if [ -z "$TAG" ]; then
-            TAG="${GITHUB_SHA::12}"
-          fi
+          # No tag override reaches this job (gated by `if:` above), so the tag
+          # is always the freshly-built HEAD short SHA.
+          TAG="${GITHUB_SHA::12}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           # GHCR image paths must be lowercase; the owner login may not be.
           echo "owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
@@ -133,7 +220,14 @@ jobs:
   plan:
     name: Resolve fleet
     runs-on: ubuntu-latest
-    needs: build
+    # CFG-01: depend on verify + build but tolerate a SKIPPED build (rollback
+    # path), where no new image is produced. Still require verify to have
+    # passed and build, if it ran, to have succeeded.
+    needs: [verify, build]
+    if: |
+      always() &&
+      needs.verify.result == 'success' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
     outputs:
       hosts: ${{ steps.read.outputs.hosts }}
     steps:
@@ -155,7 +249,13 @@ jobs:
   # ---------------------------------------------------------------------
   deploy:
     name: Deploy ${{ matrix.host.name }}
-    needs: [build, plan]
+    # CFG-01: tolerate a skipped build on the rollback path (see `plan`).
+    needs: [verify, build, plan]
+    if: |
+      always() &&
+      needs.verify.result == 'success' &&
+      needs.plan.result == 'success' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -171,6 +271,8 @@ jobs:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
       - name: Pin host key (no trust-on-first-use)
+        env:
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           # Use PINNED host keys from a secret. `ssh-keyscan` blindly trusts
@@ -178,17 +280,31 @@ jobs:
           # intercept a root-equivalent session that sources all prod secrets.
           # Capture the real keys once out-of-band (`ssh-keyscan host`) and store
           # them in the DEPLOY_KNOWN_HOSTS secret.
-          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" >> ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-          if [ ! -s ~/.ssh/known_hosts ]; then
-            echo "DEPLOY_KNOWN_HOSTS secret is empty — set it to the pinned SSH host keys." >&2
+          #
+          # CFG-05: validate the secret CONTENT, not the written file. Writing
+          # an unset secret with `printf '%s\n'` produces a 1-byte (lone "\n")
+          # file that passes `-s`, so the old guard was dead code — a forgotten
+          # secret surfaced later as a generic "Host key verification failed"
+          # mid-deploy instead of this clear diagnostic. Require at least one
+          # real "ssh-" key line before trusting it.
+          if ! printf '%s\n' "$KNOWN_HOSTS" | grep -q '\bssh-'; then
+            echo "DEPLOY_KNOWN_HOSTS secret is empty or has no ssh-* host key — set it to the pinned SSH host keys (\`ssh-keyscan <host>\`)." >&2
             exit 1
           fi
+          printf '%s\n' "$KNOWN_HOSTS" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
       - name: Deploy (git sync + compose up)
         env:
-          IMAGE_TAG: ${{ needs.build.outputs.tag }}
-          GIT_SHA: ${{ github.sha }}
+          # CFG-01: on a rollback (workflow_dispatch with image_tag set) the
+          # build job was skipped and produced no output, so resolve the tag
+          # from the dispatch input. On a normal push it comes from `build`.
+          # Every tag we publish is a 12-char short commit SHA, so the host can
+          # map the deployed image's tag straight back to the commit to check
+          # out — that keeps the running CODE identical to the running IMAGE
+          # even on rollback (the old bug used github.sha = HEAD, which would
+          # check out current code under the old image's tag).
+          IMAGE_TAG: ${{ github.event.inputs.image_tag != '' && github.event.inputs.image_tag || needs.build.outputs.tag }}
         run: |
           # Deploy from the repo checkout the host already keeps at
           # /srv/libriant/app — the same layout + commands as the manual `dc`
@@ -196,13 +312,20 @@ jobs:
           # exact built commit (host-local edits to tracked files are
           # overwritten — keep customisations in .env.prod). The volume overlay
           # keeps all data on /mnt/libriant. The heredoc is UNQUOTED so only
-          # ${GIT_SHA}/${IMAGE_TAG} expand on the runner; remote `$`-vars are
-          # escaped.
+          # ${IMAGE_TAG} expands on the runner; remote `$`-vars are escaped.
           ssh -o StrictHostKeyChecking=yes "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<EOF
             set -euo pipefail
             cd /srv/libriant/app
             git fetch --quiet origin
-            git reset --hard ${GIT_SHA}
+            # Resolve the commit to deploy FROM the image tag (a short SHA), so
+            # the checked-out scripts/migrations always match the image being
+            # run — never current HEAD. (CFG-01)
+            GIT_SHA="\$(git rev-parse --verify --quiet "${IMAGE_TAG}^{commit}" || true)"
+            if [ -z "\$GIT_SHA" ]; then
+              echo "Cannot resolve image tag '${IMAGE_TAG}' to a commit on this host — refusing to deploy." >&2
+              exit 1
+            fi
+            git reset --hard "\$GIT_SHA"
             # Self-bootstrap secrets: generate any MISSING values in .env.prod
             # (idempotent — never overwrites existing, so POSTGRES_PASSWORD is
             # preserved). Operator-supplied bits (admin login) stay blank here;

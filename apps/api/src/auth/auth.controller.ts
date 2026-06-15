@@ -6,6 +6,7 @@ import {
   HttpException,
   HttpStatus,
   Inject,
+  Logger,
   NotFoundException,
   Post,
   Req,
@@ -33,15 +34,22 @@ import { validateDto } from './validate-dto.js';
  * Rate-limit budgets for the unauthenticated edge. Tuned to be invisible to
  * humans but to bound automated abuse:
  *   - signup provisions a Postgres DB + forks a migration, so it is the most
- *     expensive; cap it hard per-IP AND globally (cross-instance) so a botnet
- *     can't exhaust the shared cell.
+ *     expensive; cap it HARD per-IP so a single host can't flood the cell.
  *   - login is cheap per request but bcrypt-amplified; cap per-IP on top of
  *     the existing per-account lockout to stop horizontal credential stuffing.
  *   - password-reset sends email; cap per-IP to stop email bombing.
+ *
+ * AUTH-05: the signup-global bucket is ADVISORY, not a hard reject. A blunt
+ * global hard cap was itself a cheap platform-wide signup blackout — a modest
+ * IP pool, each under the per-IP cap, could collectively trip the global ceiling
+ * and deny ALL new-customer signups at near-zero cost. We still count it and
+ * page loudly when it's exceeded (the operator's signal to bring up real
+ * provisioning-side admission control), but we never refuse a signup solely on
+ * the global counter, so the cap can't be weaponised into an onboarding outage.
  */
 const RL = {
-  signupPerIp: { limit: 5, windowSec: 600 }, // 5 / 10 min / IP
-  signupGlobal: { limit: 60, windowSec: 600 }, // 60 / 10 min total (DoS ceiling)
+  signupPerIp: { limit: 5, windowSec: 600 }, // 5 / 10 min / IP (hard)
+  signupGlobal: { limit: 60, windowSec: 600 }, // 60 / 10 min total (advisory alarm)
   loginPerIp: { limit: 20, windowSec: 300 }, // 20 / 5 min / IP
   resetPerIp: { limit: 5, windowSec: 900 }, // 5 / 15 min / IP
 } as const;
@@ -58,6 +66,8 @@ const RL = {
  */
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(
     @Inject(CookieService) private readonly cookies: CookieService,
     @Inject(SignupService) private readonly signupSvc: SignupService,
@@ -83,6 +93,27 @@ export class AuthController {
     }
   }
 
+  /**
+   * AUTH-05: count a bucket for observability WITHOUT ever rejecting on it.
+   * Used for the global signup ceiling — going over it pages the operator (so
+   * real provisioning-side admission control can kick in) but does not block
+   * signups, since a hard global reject is itself a trivial platform-wide DoS
+   * lever. Never throws (a Redis blip here must not affect the signup path).
+   */
+  private async alarmIfOverBudget(
+    bucket: { key: string; limit: number; windowSec: number },
+    onTrip: string,
+  ): Promise<void> {
+    try {
+      const r = await this.rateLimit.hit(bucket.key, bucket.limit, bucket.windowSec);
+      if (!r.allowed) {
+        this.logger.error(`${onTrip} (count=${r.count}, limit=${bucket.limit}).`);
+      }
+    } catch {
+      // Advisory only — swallow so the global counter can never affect signups.
+    }
+  }
+
   @Post('signup')
   @HttpCode(HttpStatus.CREATED)
   async signup(
@@ -91,12 +122,16 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const ip = clientIp(req) ?? 'unknown';
+    // Per-IP is the HARD cap. The global bucket is advisory only (AUTH-05) — a
+    // hard global reject would let a modest IP pool blackout all signups.
     await this.throttle(
-      [
-        { key: `signup:ip:${ip}`, ...RL.signupPerIp },
-        { key: 'signup:global', ...RL.signupGlobal },
-      ],
+      [{ key: `signup:ip:${ip}`, ...RL.signupPerIp }],
       'Too many sign-up attempts. Please wait a few minutes and try again.',
+    );
+    await this.alarmIfOverBudget(
+      { key: 'signup:global', ...RL.signupGlobal },
+      'Global signup rate exceeded the advisory ceiling — possible distributed signup abuse; ' +
+        'engage provisioning-side admission control',
     );
     const dto = await validateDto(SignupDto, raw);
     const result = await this.signupSvc.signup(dto);

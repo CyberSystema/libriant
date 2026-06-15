@@ -543,7 +543,17 @@ export class BooksService {
     const code = (err as { code?: string }).code;
     const message = (err as { message?: string }).message ?? '';
     if (code === 'P2002') {
-      return new ConflictException('A book with these details already exists.');
+      // The only uniqueness on this surface is the per-tenant partial-unique
+      // index on a copy's barcode (unique among non-archived copies), so a
+      // P2002 here is a duplicate barcode — say so instead of a vague
+      // "these details" (CAT-005). `target` names the offending index/column.
+      const target = String((err as { meta?: { target?: unknown } }).meta?.target ?? '');
+      if (/barcode/i.test(target) || /barcode/i.test(message)) {
+        return new ConflictException(
+          'That barcode is already used by another copy. Each copy needs a unique barcode.',
+        );
+      }
+      return new ConflictException('That conflicts with an existing record.');
     }
     if (/books_isbn13_shape/i.test(message)) {
       return new BadRequestException('ISBN-13 must be exactly 13 digits.');

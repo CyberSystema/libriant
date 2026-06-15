@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { fetchOpenLibraryBook } from '../catalog/openlibrary.js';
+import { pinWorkerConnLimit } from './fine-accrual.job.js';
 import type { JobResult } from './jobs.types.js';
 
 /**
@@ -60,7 +61,13 @@ export async function refreshBookMetadata(): Promise<JobResult> {
   let failed = 0;
   try {
     for (const t of tenants) {
-      const ctx: TenantContext = { ...t, resolvedFrom: 'path' };
+      // One connection per tenant — overlapping crons mustn't multiply pools
+      // (PER-JOB-TENANTPRISMA-CONN-MULTIPLY).
+      const ctx: TenantContext = {
+        ...t,
+        dbUrl: pinWorkerConnLimit(t.dbUrl),
+        resolvedFrom: 'path',
+      };
       try {
         const res = await refreshOneTenant(ctx, tenantPrisma);
         enriched += res.enriched;

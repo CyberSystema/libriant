@@ -7,9 +7,10 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import { controlDb } from '@libriant/db-control';
 
 /**
- * Tenant-scoped route guard. Composes THREE checks:
+ * Tenant-scoped route guard. Composes these checks:
  *
  *   1. The URL resolved to a tenant (TenantMiddleware ran and attached
  *      `req.tenant`). Otherwise → 400.
@@ -18,10 +19,15 @@ import type { Request } from 'express';
  *   3. The signed-in user's tenant matches the URL's tenant. Otherwise
  *      → 403 — this is the central cross-tenant defense in our path-based
  *      URL world (where cookies are shared across paths).
+ *   4. The signed-in user is STILL active in the DB. Sessions are 7-day JWTs,
+ *      so without this a deactivated/suspended user would keep full access to
+ *      tenant data until the token expired. Re-read per request (uses the
+ *      `controlDb` singleton directly, no DI — mirroring RolesGuard, since a
+ *      `@UseGuards(TenantGuard)` class ref can be instantiated standalone).
  */
 @Injectable()
 export class TenantGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest<Request>();
     if (!req.tenant) {
       throw new BadRequestException(
@@ -50,6 +56,14 @@ export class TenantGuard implements CanActivate {
       throw new ForbiddenException(
         "You're signed in to a different library. Sign out and sign in to this one to continue.",
       );
+    }
+    // Deactivation / suspension takes effect immediately, not at JWT expiry.
+    const user = await controlDb.user.findUnique({
+      where: { id: req.session.sub },
+      select: { status: true },
+    });
+    if (!user || user.status !== 'active') {
+      throw new UnauthorizedException('Your account is no longer active. Please sign in again.');
     }
     return true;
   }

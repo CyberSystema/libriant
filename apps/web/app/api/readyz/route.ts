@@ -13,8 +13,16 @@ export async function GET() {
   const apiBase =
     process.env.API_INTERNAL_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
   const start = Date.now();
+  // REL-08: bound the round-trip so a wedged API fails fast as not_ready
+  // instead of hanging on undici's long default timeout. An abort throws and
+  // lands in the catch below, which already returns 503.
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
   try {
-    const res = await fetch(`${apiBase.replace(/\/$/, '')}/readyz`, { cache: 'no-store' });
+    const res = await fetch(`${apiBase.replace(/\/$/, '')}/readyz`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
     const ok = res.ok;
     const elapsedMs = Date.now() - start;
     return NextResponse.json(
@@ -32,5 +40,7 @@ export async function GET() {
       },
       { status: 503 },
     );
+  } finally {
+    clearTimeout(timeout);
   }
 }

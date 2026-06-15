@@ -37,11 +37,20 @@ export class AdminSessionService {
 
   verify(token: string): AdminSessionPayload | null {
     try {
-      const payload = jwt.verify(token, this.secret, { algorithms: ['HS256'] }) as
-        | AdminSessionPayload
-        | undefined;
-      if (!payload || typeof payload !== 'object') return null;
-      return payload;
+      const decoded = jwt.verify(token, this.secret, { algorithms: ['HS256'] });
+      if (typeof decoded !== 'object' || decoded === null) return null;
+      // Per-claim type checks (AUTH-10) — mirror the tenant verify so a token
+      // with a missing/mistyped claim is rejected rather than trusted.
+      const obj = decoded as Record<string, unknown>;
+      if (
+        typeof obj.sub !== 'string' ||
+        (obj.role !== 'owner' && obj.role !== 'support') ||
+        typeof obj.iat !== 'number' ||
+        typeof obj.exp !== 'number'
+      ) {
+        return null;
+      }
+      return { sub: obj.sub, role: obj.role, iat: obj.iat, exp: obj.exp };
     } catch {
       return null;
     }

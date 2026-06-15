@@ -4,6 +4,7 @@ import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { RedisService } from '../platform/redis.service.js';
 import { EmailService } from '../email/email.service.js';
+import { pinWorkerConnLimit } from './fine-accrual.job.js';
 import type { JobResult } from './jobs.types.js';
 
 /**
@@ -138,7 +139,10 @@ export async function sendMemberNotifications(): Promise<JobResult> {
   let failed = 0;
   try {
     for (const t of tenants) {
-      const ctx: TenantContext = { ...t, resolvedFrom: 'path' };
+      // PER-JOB-TENANTPRISMA-CONN-MULTIPLY: pin a 1-connection pool for the
+      // worker's per-tenant client so overlapping hourly sweeps don't march
+      // toward Postgres max_connections.
+      const ctx: TenantContext = { ...t, dbUrl: pinWorkerConnLimit(t.dbUrl), resolvedFrom: 'path' };
       try {
         const c = await notifyOneTenant(ctx, tenantPrisma, emails);
         counts.dueSoon += c.dueSoon;
@@ -250,7 +254,12 @@ async function notifyOneTenant(
         subject: tpl.subject,
         bodyMarkdown: tpl.body,
         tenantId: ctx.id,
-        idempotencyKey: `overdue:${ctx.id}:${loan.id}:${dayKey(loan.dueAt)}`,
+        // OVERDUE-REMINDER-ONCE-EVER: key on TODAY, not the loan's fixed dueAt.
+        // Keying on dueAt sent exactly one overdue nag ever per loan, defeating
+        // the recovery purpose of the reminder. `dayKey(now)` re-reminds at most
+        // once per calendar day (re-runs within a day still dedup as the
+        // registry comment promises) until the book comes back.
+        idempotencyKey: `overdue:${ctx.id}:${loan.id}:${dayKey(now)}`,
         metadata: { loanId: loan.id },
       });
       if (!res.alreadyExisted) overdue++;

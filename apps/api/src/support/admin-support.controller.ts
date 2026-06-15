@@ -244,8 +244,20 @@ export class AdminSupportController {
     });
     if (!session) throw new BadRequestException('Session not found.');
     // Owners see everything; support role only sees their own sessions.
-    if (admin.role !== 'owner' && session.adminId !== admin.sub) {
-      throw new UnauthorizedException('You can only view your own sessions.');
+    // ADM-7: read the role from the DB, not the JWT claim — a just-demoted
+    // admin must lose cross-session visibility immediately, not after the
+    // admin-session TTL. Mirrors AdminRolesGuard's deliberate live re-read.
+    if (session.adminId !== admin.sub) {
+      const liveAdmin = await controlDb.adminUser.findUnique({
+        where: { id: admin.sub },
+        select: { role: true, status: true, disabledAt: true },
+      });
+      if (!liveAdmin || liveAdmin.disabledAt || liveAdmin.status !== 'active') {
+        throw new UnauthorizedException('Your admin account is no longer active.');
+      }
+      if (liveAdmin.role !== 'owner') {
+        throw new UnauthorizedException('You can only view your own sessions.');
+      }
     }
     return { session };
   }

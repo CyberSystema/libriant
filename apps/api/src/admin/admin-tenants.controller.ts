@@ -17,6 +17,8 @@ import {
 import { controlDb } from '@libriant/db-control';
 import { TenantProvisioningService } from '../provisioning/tenant-provisioning.service.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
+import { RedisService } from '../platform/redis.service.js';
+import { SLUG_KEY, SUBDOMAIN_KEY } from '../tenancy/tenant-resolver.service.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { AdminAuthGuard, AdminSess } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
@@ -41,6 +43,10 @@ export class AdminTenantsController {
   constructor(
     @Inject(TenantProvisioningService) private readonly provisioning: TenantProvisioningService,
     @Inject(EffectivePlanService) private readonly effectivePlan: EffectivePlanService,
+    // RedisService is @Global, so it injects here without AdminModule importing
+    // the tenancy module — lets us bust the TenantResolver slug/subdomain cache
+    // on a hard delete (TEN-03) without re-wiring module imports.
+    @Inject(RedisService) private readonly redis: RedisService,
   ) {}
 
   @Get()
@@ -158,7 +164,9 @@ export class AdminTenantsController {
     const dto = await validateDto(DeleteTenantDto, raw);
     const tenant = await controlDb.tenant.findUnique({
       where: { id },
-      select: { id: true, slug: true, name: true, storageUrl: true },
+      // customSubdomain is needed to bust the resolver's subdomain cache key
+      // (TEN-03) — the slug key alone leaves the Host-header route stale.
+      select: { id: true, slug: true, name: true, storageUrl: true, customSubdomain: true },
     });
     if (!tenant) throw new NotFoundException('Tenant not found.');
     if (dto.confirmSlug.trim().toLowerCase() !== tenant.slug.toLowerCase()) {
@@ -179,6 +187,19 @@ export class AdminTenantsController {
     await controlDb.tenant.delete({ where: { id: tenant.id } });
 
     await this.effectivePlan.invalidate(tenant.id).catch(() => {});
+
+    // 4) Bust the TenantResolver Redis cache for both routes this tenant could
+    //    be reached by (TEN-03). Without this, TenantMiddleware keeps resolving
+    //    the slug/subdomain to a stale `active` context for up to the cache TTL
+    //    after the DB has been dropped, turning a clean 404 into connection-error
+    //    500s. The DEL is shared-Redis so it covers every API process at once.
+    //    The dead per-tenant Prisma client is left to self-evict on its idle TTL
+    //    — forgetting it here would need AdminModule to import the tenancy module
+    //    (TenantPrismaService isn't @Global), which is out of scope for this fix;
+    //    a cross-process `forget` would need pub/sub regardless.
+    const resolverKeys = [SLUG_KEY(tenant.slug)];
+    if (tenant.customSubdomain) resolverKeys.push(SUBDOMAIN_KEY(tenant.customSubdomain));
+    await this.redis.client.del(...resolverKeys).catch(() => {});
 
     await controlDb.auditEvent.create({
       data: {

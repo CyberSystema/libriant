@@ -49,6 +49,12 @@ let maintenanceWorker: MaintenanceWorkerHandle | null = null;
 let exportWorker: ExportWorkerHandle | null = null;
 
 const server = createServer((req, res) => {
+  // Treat any registered BullMQ worker handle as "running" only when its
+  // underlying worker is actually running (not closed/paused). A handle that
+  // exists but whose worker died is NOT ready (REL-04).
+  const isRunning = (handle: { worker?: { isRunning(): boolean } } | null | undefined): boolean =>
+    !!handle && (handle.worker ? handle.worker.isRunning() : true);
+
   res.setHeader('Content-Type', 'application/json');
   if (req.url === '/healthz') {
     res.statusCode = shuttingDown ? 503 : 200;
@@ -70,16 +76,36 @@ const server = createServer((req, res) => {
     return;
   }
   if (req.url === '/readyz') {
-    // Ready when both BullMQ workers are connected to Redis. If either
-    // isn't, the orchestrator should pull traffic — jobs are silently
-    // not being drained.
-    const ready = !shuttingDown && !!emailWorker && !!scheduledJobs && !!importWorker;
-    res.statusCode = ready ? 200 : 503;
-    res.end(
-      JSON.stringify({
-        status: ready ? 'ready' : shuttingDown ? 'shutting_down' : 'not_ready',
-      }),
-    );
+    // Ready when ALL FIVE queue consumers are running AND Redis is live
+    // (REL-04 / READYZ-MISSING-WORKERS). Previously this omitted the
+    // maintenance + export workers and never re-checked Redis, so a post-boot
+    // Redis partition or a dead consumer still reported 200 and the
+    // orchestrator never pulled the worker. The Redis ping makes readiness a
+    // liveness signal, not a boot-time latch.
+    const handlesUp =
+      !shuttingDown &&
+      isRunning(emailWorker) &&
+      !!scheduledJobs &&
+      isRunning(importWorker) &&
+      isRunning(maintenanceWorker) &&
+      isRunning(exportWorker);
+    // The HTTP handler can't be async, so ping then write the response.
+    sharedRedis
+      .ping()
+      .then((redisOk) => {
+        const ready = handlesUp && redisOk;
+        res.statusCode = ready ? 200 : 503;
+        res.end(
+          JSON.stringify({
+            status: ready ? 'ready' : shuttingDown ? 'shutting_down' : 'not_ready',
+            redis: redisOk ? 'up' : 'down',
+          }),
+        );
+      })
+      .catch(() => {
+        res.statusCode = 503;
+        res.end(JSON.stringify({ status: 'not_ready', redis: 'down' }));
+      });
     return;
   }
   if (req.url === '/metrics') {
@@ -172,39 +198,81 @@ startExportWorker()
     console.error(`[worker] failed to start export worker: ${(err as Error).message}`);
   });
 
-async function shutdown(signal: NodeJS.Signals) {
+/**
+ * Hard ceiling on a graceful drain (REL-03). A wedged in-flight job (e.g. a
+ * stuck export reading a slow DB, or a worker that can't reach Redis to ack)
+ * must not hold the drain open past this; we force-exit so the orchestrator's
+ * `stop_grace_period` doesn't escalate to an uncontrolled SIGKILL mid-write.
+ * Kept comfortably under the compose stop_grace_period (60s).
+ */
+const SHUTDOWN_DEADLINE_MS = 25_000;
+
+async function shutdown(signal: NodeJS.Signals, exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   // eslint-disable-next-line no-console
   console.log(`[worker] received ${signal}, draining…`);
   server.close();
-  // Stop both BullMQ workers in parallel so a slow one doesn't extend the
-  // overall shutdown deadline.
-  await Promise.all([
-    emailWorker?.stop().catch((err) => {
-      console.warn(`[worker] email-worker stop: ${(err as Error).message}`);
-    }),
-    scheduledJobs?.stop().catch((err) => {
-      console.warn(`[worker] scheduled-jobs stop: ${(err as Error).message}`);
-    }),
-    importWorker?.stop().catch((err) => {
-      console.warn(`[worker] import-worker stop: ${(err as Error).message}`);
-    }),
-    maintenanceWorker?.stop().catch((err) => {
-      console.warn(`[worker] maintenance-worker stop: ${(err as Error).message}`);
-    }),
-    exportWorker?.stop().catch((err) => {
-      console.warn(`[worker] export-worker stop: ${(err as Error).message}`);
-    }),
-  ]);
-  // Close the standalone Redis connection the scheduled-jobs EmailService
-  // borrows (it lives outside Nest's DI graph, so nothing else disconnects it).
-  await sharedRedis.onModuleDestroy().catch((err) => {
-    console.warn(`[worker] redis close: ${(err as Error).message}`);
+
+  // Race the drain against a hard deadline: whichever resolves first wins. If
+  // the deadline trips we exit non-zero so the failure is visible (REL-03).
+  let timedOut = false;
+  const deadline = wait(SHUTDOWN_DEADLINE_MS).then(() => {
+    timedOut = true;
   });
+
+  const drain = (async () => {
+    // Stop all BullMQ workers in parallel so a slow one doesn't extend the
+    // overall shutdown deadline.
+    await Promise.all([
+      emailWorker?.stop().catch((err) => {
+        console.warn(`[worker] email-worker stop: ${(err as Error).message}`);
+      }),
+      scheduledJobs?.stop().catch((err) => {
+        console.warn(`[worker] scheduled-jobs stop: ${(err as Error).message}`);
+      }),
+      importWorker?.stop().catch((err) => {
+        console.warn(`[worker] import-worker stop: ${(err as Error).message}`);
+      }),
+      maintenanceWorker?.stop().catch((err) => {
+        console.warn(`[worker] maintenance-worker stop: ${(err as Error).message}`);
+      }),
+      exportWorker?.stop().catch((err) => {
+        console.warn(`[worker] export-worker stop: ${(err as Error).message}`);
+      }),
+    ]);
+    // Close the standalone Redis connection the scheduled-jobs EmailService
+    // borrows (it lives outside Nest's DI graph, so nothing else disconnects it).
+    await sharedRedis.onModuleDestroy().catch((err) => {
+      console.warn(`[worker] redis close: ${(err as Error).message}`);
+    });
+  })();
+
+  await Promise.race([drain, deadline]);
+  if (timedOut) {
+    console.error(`[worker] graceful shutdown exceeded ${SHUTDOWN_DEADLINE_MS}ms — forcing exit`);
+    process.exit(exitCode || 1);
+  }
   await wait(1000);
-  process.exit(0);
+  process.exit(exitCode);
 }
 
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+// Wrap so Node's listener args (signal name + signal NUMBER) don't leak into
+// `exitCode` — a clean signal drain must exit 0.
+process.on('SIGTERM', (signal) => void shutdown(signal));
+process.on('SIGINT', (signal) => void shutdown(signal));
+
+// WORKER-NO-REJECTION-HANDLER / REL-09: a single floating rejection or uncaught
+// exception would otherwise kill the whole worker (every queue at once) with no
+// logged cause and bypass the graceful drain. Log loudly so the failure is
+// observable, then drain: an unhandledRejection is recoverable enough to attempt
+// a clean shutdown(); an uncaughtException leaves the process in an unknown
+// state, so we still drain but the deadline guarantees we exit.
+process.on('unhandledRejection', (reason) => {
+  console.error('[worker] unhandledRejection — draining and exiting', reason);
+  void shutdown('SIGTERM', 1);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[worker] uncaughtException — draining and exiting', err);
+  void shutdown('SIGTERM', 1);
+});

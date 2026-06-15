@@ -120,6 +120,9 @@ function makeTenantClient(
     tenantSetting: {
       findUnique: vi.fn(async () => ({ holdPickupHours: 48 })),
     },
+    // Per-book advisory lock taken at the top of the promotion tx — a no-op in
+    // the in-memory model (it only matters under real concurrent Postgres txns).
+    $executeRaw: vi.fn(async () => 0),
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(client)),
   };
   return client;

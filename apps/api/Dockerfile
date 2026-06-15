@@ -20,7 +20,15 @@
 FROM node:24-alpine AS base
 # postgresql-client provides pg_dump for the SQL-format database export.
 RUN apk add --no-cache openssl tini postgresql-client
-RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+# Pin corepack's cache to a SHARED, world-readable location instead of the
+# per-user default (~/.cache/node/corepack). The migrate one-shot runs `pnpm`
+# via corepack as the non-root `node` user (INFRA-4); without a warm cache it
+# would try to re-download pnpm into node's HOME and fail. Preparing here lands
+# pnpm under COREPACK_HOME where every user can read it.
+ENV COREPACK_HOME=/opt/corepack
+RUN corepack enable \
+ && corepack prepare pnpm@9.15.4 --activate \
+ && chmod -R a+rX "$COREPACK_HOME"
 WORKDIR /app
 
 # ----- deps ----------------------------------------------------------------

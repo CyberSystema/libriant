@@ -9,6 +9,15 @@ import { HttpExceptionFilter } from './platform/http-exception.filter.js';
 
 async function bootstrap() {
   const env = loadEnv();
+  // AUTH-07: the RATE_LIMIT_DISABLED escape hatch must never reach production.
+  // RateLimitService already ignores it in prod, but refuse to boot at all so
+  // a stray/copied env var surfaces immediately instead of silently lingering.
+  if (env.nodeEnv === 'production' && process.env.RATE_LIMIT_DISABLED === 'true') {
+    throw new Error(
+      'RATE_LIMIT_DISABLED=true is set in production — refusing to boot. ' +
+        'This flag disables every auth rate limiter and must only be set in test/dev.',
+    );
+  }
   // `rawBody: true` keeps the original request bytes around as `req.rawBody`
   // so the Stripe webhook handler can verify the signature against the
   // exact bytes Stripe signed. JSON parsing still happens for everything
@@ -51,6 +60,21 @@ async function bootstrap() {
   // eslint-disable-next-line no-console
   console.log(`[libriant-api] listening on :${env.port} (${env.nodeEnv})`);
 }
+
+// REL-09: last-resort process-level handlers. Node's default
+// `--unhandled-rejections=throw` would otherwise terminate the process with no
+// structured/greppable line. We log a clear `[libriant-api]`-prefixed error so
+// the failure is observable, then exit non-zero so the orchestrator restarts a
+// process left in an unknown state (the Nest exception filter + per-handle
+// `.catch` cover ordinary error paths; these catch only the ones that escape).
+process.on('unhandledRejection', (reason) => {
+  console.error('[libriant-api] unhandledRejection', reason);
+  process.exit(1);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[libriant-api] uncaughtException', err);
+  process.exit(1);
+});
 
 bootstrap().catch((err) => {
   console.error('[libriant-api] failed to start', err);

@@ -10,8 +10,11 @@ type CacheValue =
    *  the control DB for a slug that doesn't exist. */
   | { found: false };
 
-const SLUG_KEY = (slug: string) => `tenant:slug:${slug}`;
-const SUBDOMAIN_KEY = (sub: string) => `tenant:sub:${sub}`;
+// Exported so other call sites that already hold the shared Redis client (e.g.
+// the admin hard-delete path, TEN-03) can DEL the exact same keys this resolver
+// writes, instead of re-deriving the namespace and risking drift.
+export const SLUG_KEY = (slug: string) => `tenant:slug:${slug}`;
+export const SUBDOMAIN_KEY = (sub: string) => `tenant:sub:${sub}`;
 /** Short TTL for negative entries so an admin creating the tenant doesn't
  *  have to wait for the positive TTL to expire. */
 const NEGATIVE_TTL_SEC = 30;
@@ -47,6 +50,12 @@ export class TenantResolverService {
   /**
    * Invalidate every cache key that could point at a given tenant. Called
    * from the admin UI / provisioning script whenever a tenant row changes.
+   *
+   * TEN-04: the cached context includes `status` (active/suspended/archived).
+   * Any future code that mutates a tenant's status (suspend / archive /
+   * reactivate, or a billing past_due → suspend transition) MUST call this, or
+   * every API process will keep serving the stale status for up to the cache
+   * TTL. Relocate, tenant-tags, and hard-delete already do.
    */
   async invalidate(opts: { slug?: string; customSubdomain?: string | null }): Promise<void> {
     const keys: string[] = [];

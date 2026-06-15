@@ -27,7 +27,6 @@ export class AdminAuthService {
     email: string,
     password: string,
   ): Promise<{ id: string; role: 'owner' | 'support'; fullName: string; email: string }> {
-    const env = loadEnv();
     const admin = await controlDb.adminUser.findUnique({
       where: { email },
       select: {
@@ -59,34 +58,52 @@ export class AdminAuthService {
 
     const ok = await this.passwords.verify(password, admin.passwordHash);
     if (!ok) {
-      const nextAttempts = admin.failedAttempts + 1;
-      const locked = nextAttempts >= env.maxFailedLogins;
-      await controlDb.adminUser.update({
-        where: { id: admin.id },
-        data: {
-          failedAttempts: nextAttempts,
-          lockedUntil: locked ? new Date(Date.now() + env.loginLockoutMs) : null,
-          status: locked ? 'locked' : admin.status,
-        },
-      });
+      await this.recordFailure(admin.id);
       throw new UnauthorizedException('Email or password is wrong.');
     }
 
-    // Reset status to 'active' too — a prior lockout set status:'locked', and
-    // without restoring it here the AdminAuthGuard would 403 every request
-    // forever even after a successful sign-in (the lockout was permanent). A
-    // 'disabled' account never reaches this point (it throws above), so it's
-    // safe to force 'active' on success.
-    await controlDb.adminUser.update({
-      where: { id: admin.id },
-      data: { failedAttempts: 0, lockedUntil: null, status: 'active', lastLoginAt: new Date() },
-    });
-
+    // Password is correct, but DON'T reset counters / stamp lastLoginAt yet
+    // (ADM-5): when MFA is enabled the login is incomplete until the TOTP
+    // check passes. The controller calls recordSuccess() only after the FULL
+    // login succeeds, and recordFailure() on a wrong TOTP — so a known password
+    // with a brute-forced second factor still trips the lockout.
     return {
       id: admin.id,
       role: admin.role,
       fullName: admin.fullName,
       email: admin.email,
     };
+  }
+
+  /**
+   * Count a failed attempt (wrong password OR wrong TOTP) atomically and lock
+   * the account once the threshold is reached. Atomic increment (AUTH-03) so a
+   * burst of concurrent guesses can't register as one and slip the lockout.
+   */
+  async recordFailure(adminId: string): Promise<void> {
+    const env = loadEnv();
+    const updated = await controlDb.adminUser.update({
+      where: { id: adminId },
+      data: { failedAttempts: { increment: 1 } },
+      select: { failedAttempts: true },
+    });
+    if (updated.failedAttempts >= env.maxFailedLogins) {
+      await controlDb.adminUser.update({
+        where: { id: adminId },
+        data: { lockedUntil: new Date(Date.now() + env.loginLockoutMs), status: 'locked' },
+      });
+    }
+  }
+
+  /**
+   * Clear counters + lockout and stamp lastLoginAt after a FULLY successful
+   * login (password AND, when enabled, TOTP). Restoring status:'active' lifts a
+   * prior lockout so the guard stops 403ing once the admin signs in cleanly.
+   */
+  async recordSuccess(adminId: string): Promise<void> {
+    await controlDb.adminUser.update({
+      where: { id: adminId },
+      data: { failedAttempts: 0, lockedUntil: null, status: 'active', lastLoginAt: new Date() },
+    });
   }
 }

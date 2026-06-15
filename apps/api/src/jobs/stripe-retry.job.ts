@@ -33,6 +33,17 @@ import type { JobResult } from './jobs.types.js';
  */
 const logger = new Logger('StripeRetrySweeper');
 
+// A SHORT-TTL, sweep-OWNED lock (STRIPE-RETRY-NO-LOCK / BILL-3 / REM-5). It must
+// NOT reuse the controller's `stripe:event:<id>` dedup key: that key lives for
+// 30 days, so a controller that CRASHED mid-dispatch leaves it held with the
+// row still `processedAt = null` — and rescuing exactly that row is this
+// sweep's whole reason to exist. Contending for it would make the sweep skip
+// the crash case for 30 days. Instead we take a private claim that only
+// serializes concurrent sweep ticks (overlapping crons); double-processing vs a
+// simultaneous live redelivery is harmless because every handler is idempotent.
+const SWEEP_LOCK = (id: string) => `stripe:retry-sweep:${id}`;
+const SWEEP_LOCK_TTL_SECONDS = 300; // bounds a wedged sweep; ~the stale window.
+
 export async function sweepFailedStripeWebhooks(): Promise<JobResult> {
   const env = loadEnv();
   // Don't pick up a row that's still within its normal in-flight window — only
@@ -49,22 +60,36 @@ export async function sweepFailedStripeWebhooks(): Promise<JobResult> {
   });
   if (failed.length === 0) return { message: 'no failed events to retry', counts: { retried: 0 } };
 
-  // Build the same collaborators the runtime uses. Direct construction
-  // (no Nest DI) — these classes don't depend on framework features.
+  // jobs-new: open Redis FIRST and keep every other collaborator construction
+  // inside the try below, so the `finally` teardown always covers the
+  // connection — an exception from a downstream constructor can no longer
+  // leak the ioredis client.
   const redis = new RedisService();
-  const settings = new PlatformSettingsService(redis);
-  const effective = new EffectivePlanService(redis, settings);
-  const driver: StripeDriver =
-    env.stripeDriver === 'real' ? new RealStripeDriver() : new FakeStripeDriver();
-  // BillingService constructor: (effectivePlan, stripe, settings) — see billing.service.ts.
-  const billing = new BillingService(effective, driver, settings);
 
   let succeeded = 0;
   let stillFailing = 0;
+  let skipped = 0;
 
   try {
+    // Build the same collaborators the runtime uses. Direct construction
+    // (no Nest DI) — these classes don't depend on framework features.
+    const settings = new PlatformSettingsService(redis);
+    const effective = new EffectivePlanService(redis, settings);
+    const driver: StripeDriver =
+      env.stripeDriver === 'real' ? new RealStripeDriver() : new FakeStripeDriver();
+    // BillingService constructor: (effectivePlan, stripe, settings) — see billing.service.ts.
+    const billing = new BillingService(effective, driver, settings);
+
     for (const row of failed) {
       const event = row.payloadJson as unknown as StripeWebhookEvent;
+      // Serialize concurrent sweep ticks on the same event (overlapping crons).
+      // SETNX on the sweep-private key — if another tick already holds it, skip.
+      const lockKey = SWEEP_LOCK(event.id);
+      const claimed = await redis.client.set(lockKey, '1', 'EX', SWEEP_LOCK_TTL_SECONDS, 'NX');
+      if (claimed !== 'OK') {
+        skipped++;
+        continue;
+      }
       try {
         await dispatch(billing, event);
         await controlDb.stripeWebhookEvent.update({
@@ -79,6 +104,10 @@ export async function sweepFailedStripeWebhooks(): Promise<JobResult> {
           data: { error: (err as Error).message.slice(0, 1000) },
         });
         logger.warn(`retry of ${row.type} (${row.id}) still failing: ${(err as Error).message}`);
+      } finally {
+        // Release our claim so a later Stripe redelivery / sweep can re-attempt
+        // (mirrors the controller dropping the lock once it's done with it).
+        await redis.client.del(lockKey).catch(() => undefined);
       }
     }
   } finally {
@@ -87,8 +116,8 @@ export async function sweepFailedStripeWebhooks(): Promise<JobResult> {
   }
 
   return {
-    message: `retried ${failed.length}: ${succeeded} succeeded, ${stillFailing} still failing`,
-    counts: { considered: failed.length, succeeded, stillFailing },
+    message: `retried ${failed.length}: ${succeeded} succeeded, ${stillFailing} still failing, ${skipped} skipped (locked)`,
+    counts: { considered: failed.length, succeeded, stillFailing, skipped },
   };
 }
 

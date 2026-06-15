@@ -373,6 +373,14 @@ export class LoansService {
     const condition: ReturnCondition = input.condition ?? 'ok';
     const candidateNextStatus: BookCopyStatus = condition === 'damaged' ? 'damaged' : 'available';
 
+    // circ-5: "days overdue" counts whole 24h blocks elapsed since the exact
+    // `dueAt` instant — NOT calendar days in the library's local timezone. So a
+    // book due at 18:00 returned at 17:00 two days later counts as 1 overdue
+    // day, not 2. This is deliberate and is the single source of truth shared
+    // with the fine-accrual sweep (jobs/fine-accrual.job.ts), which floors the
+    // same `(now - dueAt) / 24h` so the running total and the on-return charge
+    // always agree. Calendar-day billing would require a per-tenant timezone
+    // (no such column exists today) applied identically in both paths.
     const overdueMs = Math.max(0, returnedAt.getTime() - loan.dueAt.getTime());
     const daysOverdue = Math.floor(overdueMs / MS_PER_DAY);
     const rawFine = daysOverdue * settings.finePerDayCents;
@@ -401,6 +409,13 @@ export class LoansService {
         let nextCopyStatus: BookCopyStatus = candidateNextStatus;
         let promoted: ReturnTxResult['promotedHold'] = null;
         if (candidateNextStatus === 'available') {
+          // Serialize hold promotion PER BOOK. Without this, two copies of the
+          // same book returned concurrently both read the same queue head and
+          // both reserve a copy for it — stranding one copy in `reserved` with
+          // no reservation pointing at it (a permanently-lost copy). The
+          // xact-scoped advisory lock makes find+promote atomic across
+          // concurrent returns/expiries; it releases at COMMIT/ROLLBACK.
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`book:${loan.copy.bookId}`}, 0))`;
           const head = await tx.reservation.findFirst({
             where: { bookId: loan.copy.bookId, status: 'queued' },
             orderBy: { queuePosition: 'asc' },
@@ -413,8 +428,11 @@ export class LoansService {
           if (head) {
             const now = new Date();
             const expiresAt = new Date(now.getTime() + settings.holdPickupHours * MS_PER_HOUR);
-            await tx.reservation.update({
-              where: { id: head.id },
+            // CAS belt-and-braces with the advisory lock: only promote while the
+            // reservation is still 'queued'. If a concurrent path already
+            // promoted it (count===0), the freed copy goes back to the shelf.
+            const promotedRes = await tx.reservation.updateMany({
+              where: { id: head.id, status: 'queued' },
               data: {
                 status: 'ready',
                 readyAt: now,
@@ -423,21 +441,23 @@ export class LoansService {
                 queuePosition: null,
               },
             });
-            // Everyone behind the head bumps up a slot.
-            await tx.$executeRaw`
-              UPDATE reservations
-              SET "queuePosition" = "queuePosition" - 1, "updatedAt" = NOW()
-              WHERE "bookId" = ${loan.copy.bookId}
-                AND status = 'queued'
-                AND "queuePosition" > 0
-            `;
-            nextCopyStatus = 'reserved';
-            promoted = {
-              reservationId: head.id,
-              memberId: head.memberId,
-              memberFullName: head.member.fullName,
-              expiresAt,
-            };
+            if (promotedRes.count > 0) {
+              // Everyone behind the head bumps up a slot.
+              await tx.$executeRaw`
+                UPDATE reservations
+                SET "queuePosition" = "queuePosition" - 1, "updatedAt" = NOW()
+                WHERE "bookId" = ${loan.copy.bookId}
+                  AND status = 'queued'
+                  AND "queuePosition" > 0
+              `;
+              nextCopyStatus = 'reserved';
+              promoted = {
+                reservationId: head.id,
+                memberId: head.memberId,
+                memberFullName: head.member.fullName,
+                expiresAt,
+              };
+            }
           }
         }
 
@@ -473,31 +493,35 @@ export class LoansService {
         }
         // Issue the overdue fine if any. The accrual sweep may have already
         // opened an outstanding fine for this loan while it was overdue —
-        // finalise that one instead of creating a duplicate.
+        // finalise that one instead of creating a duplicate (DATA-1: done as a
+        // single atomic upsert so a sweep racing this return doesn't abort the tx).
         let fineId: string | null = null;
         if (shouldCreateFine) {
-          const existing = await tx.fine.findFirst({
+          fineId = await this.upsertOutstandingFine(tx, {
+            memberId: loan.memberId,
+            loanId,
+            amountCents: fineAmountCents,
+            currency: settings.currency,
+            reason: `${daysOverdue} day(s) overdue`,
+          });
+        } else {
+          // circ-3: overdue fines are off (or there's nothing to bill) at return
+          // time, but the accrual sweep may have opened an outstanding fine while
+          // the loan was overdue and fines were still on. Reconcile it instead of
+          // leaving the member owing a charge the library has since switched off.
+          // Status-guarded so we never touch a fine someone else just resolved.
+          const stale = await tx.fine.findFirst({
             where: { loanId, status: 'outstanding' },
             select: { id: true },
           });
-          if (existing) {
-            await tx.fine.update({
-              where: { id: existing.id },
-              data: { amountCents: fineAmountCents, reason: `${daysOverdue} day(s) overdue` },
-            });
-            fineId = existing.id;
-          } else {
-            const fine = await tx.fine.create({
+          if (stale) {
+            await tx.fine.updateMany({
+              where: { id: stale.id, status: 'outstanding' },
               data: {
-                memberId: loan.memberId,
-                loanId: loanId,
-                amountCents: fineAmountCents,
-                currency: settings.currency,
-                reason: `${daysOverdue} day(s) overdue`,
+                status: 'waived',
+                reason: 'Overdue fine waived — overdue fines disabled at return',
               },
-              select: { id: true },
             });
-            fineId = fine.id;
           }
         }
         return { fineId, promotedHold: promoted };
@@ -600,10 +624,20 @@ export class LoansService {
     const base = Math.max(loan.dueAt.getTime(), Date.now());
     const newDueAt = new Date(base + periods * settings.loanPeriodDays * MS_PER_DAY);
 
-    await client.loan.update({
-      where: { id: loanId },
+    // circ-2: guard the write with a status + renewedCount compare-and-swap so
+    // two concurrent renews (double-click, two staff stations) can't both pass
+    // the remaining-renewals check above and then each increment the count —
+    // which would push renewedCount past maxRenewals and double-extend dueAt.
+    // The loser sees count===0 and gets a 409 to refresh + retry on fresh state.
+    const renewed = await client.loan.updateMany({
+      where: { id: loanId, status: 'active', renewedCount: loan.renewedCount },
       data: { dueAt: newDueAt, renewedCount: { increment: periods } },
     });
+    if (renewed.count === 0) {
+      throw new ConflictException(
+        'This loan was just renewed or returned from another station. Refresh and try again.',
+      );
+    }
 
     await this.audit.record(tenant, actor, {
       action: 'loan.renewed',
@@ -679,29 +713,15 @@ export class LoansService {
           // An overdue book may already carry an outstanding fine from the
           // accrual sweep. Finalise that one as the replacement fee rather than
           // inserting a second (the fines_one_outstanding_per_loan unique index
-          // would reject the duplicate with P2002).
-          const existing = await tx.fine.findFirst({
-            where: { loanId, status: 'outstanding' },
-            select: { id: true },
+          // would reject the duplicate with P2002). DATA-1: settled as a single
+          // atomic upsert so a concurrent sweep can't abort this mark-lost tx.
+          return this.upsertOutstandingFine(tx, {
+            memberId: loan.memberId,
+            loanId,
+            amountCents: cost,
+            currency: settings.currency,
+            reason: 'Lost book replacement',
           });
-          if (existing) {
-            await tx.fine.update({
-              where: { id: existing.id },
-              data: { amountCents: cost, reason: 'Lost book replacement' },
-            });
-            return existing.id;
-          }
-          const fine = await tx.fine.create({
-            data: {
-              memberId: loan.memberId,
-              loanId: loanId,
-              amountCents: cost,
-              currency: settings.currency,
-              reason: 'Lost book replacement',
-            },
-            select: { id: true },
-          });
-          return fine.id;
         }
         return null;
       });
@@ -844,6 +864,56 @@ export class LoansService {
       throw new Error('Tenant settings row missing; tenant DB is in a corrupt state.');
     }
     return settings;
+  }
+
+  /**
+   * DATA-1: atomically open-or-finalise the single outstanding fine for a loan
+   * from *inside* a return / mark-lost transaction.
+   *
+   * The naive `findFirst` → `create` loses a race with the fine-accrual sweep
+   * (which opens an outstanding fine for the same loan in an autocommit
+   * statement): both find nothing, both insert, and the loser's INSERT trips the
+   * `fines_one_outstanding_per_loan` partial unique index with P2002. Inside an
+   * interactive transaction that statement error aborts the *whole* transaction,
+   * so the librarian gets a spurious 409 on an otherwise-fine return.
+   *
+   * Resolving it in a single `INSERT … ON CONFLICT DO UPDATE` lets Postgres
+   * settle the race atomically — no statement error, no rollback, return
+   * completes on the first attempt. The conflict target mirrors the partial
+   * index exactly (column + predicate). `id` is minted with `gen_random_uuid()`
+   * (pgcrypto is enabled tenant-wide) and `updatedAt` is set explicitly since
+   * neither column carries a DB-side default.
+   */
+  private async upsertOutstandingFine(
+    tx: Pick<TenantPrismaClient, '$queryRaw'>,
+    input: {
+      memberId: string;
+      loanId: string;
+      amountCents: number;
+      currency: string;
+      reason: string;
+    },
+  ): Promise<string> {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      INSERT INTO "fines" ("id", "memberId", "loanId", "amountCents", "currency", "reason", "status", "updatedAt")
+      VALUES (
+        gen_random_uuid()::text,
+        ${input.memberId},
+        ${input.loanId},
+        ${input.amountCents},
+        ${input.currency},
+        ${input.reason},
+        'outstanding',
+        NOW()
+      )
+      ON CONFLICT ("loanId") WHERE "status" = 'outstanding' AND "loanId" IS NOT NULL
+      DO UPDATE SET
+        "amountCents" = EXCLUDED."amountCents",
+        "reason" = EXCLUDED."reason",
+        "updatedAt" = NOW()
+      RETURNING "id"
+    `;
+    return rows[0]!.id;
   }
 
   private appendNote(existing: string | null, addition?: string | null): string | null {

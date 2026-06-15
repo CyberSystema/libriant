@@ -154,6 +154,23 @@ async function main() {
     log(SCRIPT, 'verifying destination…');
     await verifyDestination(newDbUrl);
 
+    // REL-002: the tenant now lives on the destination DB, so the read-only
+    // fence we set on the SOURCE at the Postgres level is no longer needed and,
+    // if left, would silently reject writes (opaque 500s) should the operator
+    // ever reuse the old DB or relocate back without manually RESETting it. The
+    // source is no longer referenced, so lifting the fence here is harmless.
+    // (--drop-source remains the intended terminal step to free the disk.)
+    log(SCRIPT, 'lifting source read-only fence (tenant now on destination)…');
+    let sourceUnfenced = true;
+    await unfenceSource(tenant.dbUrl, dbName).catch((e) => {
+      sourceUnfenced = false;
+      log(
+        SCRIPT,
+        `warning: could not lift source read-only fence (lift it manually with ` +
+          `ALTER DATABASE "${dbName}" RESET default_transaction_read_only): ${(e as Error).message}`,
+      );
+    });
+
     log(SCRIPT, 'updating control plane (db_url + cell_id)…');
     await controlDb.$transaction(async (tx: Prisma.TransactionClient) => {
       await tx.tenant.update({
@@ -167,8 +184,16 @@ async function main() {
           action: 'tenant.relocated',
           targetType: 'tenant',
           targetId: tenant.id,
+          // beforeJson.dbUrl is the OLD host — --drop-source reads it to know
+          // which DB to delete. Do not change its shape.
           beforeJson: { dbUrl: tenant.dbUrl, cellId: tenant.cellId },
-          afterJson: { dbUrl: newDbUrl, cellId: newCellId },
+          // REL-002: record the fence disposition so an operator can find/lift
+          // it if the automatic unfence above failed.
+          afterJson: {
+            dbUrl: newDbUrl,
+            cellId: newCellId,
+            sourceReadOnlyFenceLifted: sourceUnfenced,
+          },
         },
       });
     });
@@ -243,14 +268,29 @@ async function dropSource(
 
   // SAFETY NET: never drop the host the tenant currently lives on. This blocks
   // the post-cutover footgun, a failed relocation (tenant still on source), and
-  // a same-host relocation — in all of which sourceHost == currentHost.
-  const currentHost = new URL(tenant.dbUrl).host;
-  const sourceHost = new URL(sourceUrl).host;
-  if (sourceHost === currentHost) {
+  // a same-host relocation — in all of which the source resolves to the current
+  // live database.
+  //
+  // REL-001: compare CANONICALIZED endpoints, not raw `URL.host`. `URL.host`
+  // includes the port verbatim, so `cell.lan` and `cell.lan:5432` compare as
+  // DIFFERENT even though Postgres treats an omitted port as 5432 — a common
+  // mismatch when operators record one URL with the explicit port and the other
+  // without. That gap let `--drop-source --yes` drop the tenant's LIVE DB on the
+  // same server. Resolve the default port and also compare the (server, dbName)
+  // tuple so a same-host, same-database drop is refused regardless of notation.
+  const currentEndpoint = canonicalEndpoint(tenant.dbUrl);
+  const sourceEndpoint = canonicalEndpoint(sourceUrl);
+  const currentHost = currentEndpoint.hostPort;
+  const sourceHost = sourceEndpoint.hostPort;
+  const currentDbName = new URL(tenant.dbUrl).pathname.replace(/^\//, '');
+  if (
+    sourceHost === currentHost ||
+    (sourceEndpoint.host === currentEndpoint.host && dbName === currentDbName)
+  ) {
     die(
       SCRIPT,
-      `refusing to drop: the resolved source host (${sourceHost}) is the tenant's CURRENT live ` +
-        `host. Dropping it would destroy the live database. (The relocation may have failed, not ` +
+      `refusing to drop: the resolved source (${sourceHost}/${dbName}) is the tenant's CURRENT live ` +
+        `database. Dropping it would destroy the live data. (The relocation may have failed, not ` +
         `changed hosts, or --from-db-url is wrong.)`,
     );
   }
@@ -429,6 +469,18 @@ async function bustResolverCache(slug: string, subdomain: string | null): Promis
 
 function redact(u: string): string {
   return u.replace(/:[^:@]+@/, ':***@');
+}
+
+/**
+ * Canonicalize a Postgres URL's network endpoint for safe comparison (REL-001):
+ * resolve an omitted port to the Postgres default (5432) so `host` and
+ * `host:5432` compare equal. Returns the bare hostname and the `host:port`
+ * pair.
+ */
+function canonicalEndpoint(dbUrl: string): { host: string; hostPort: string } {
+  const u = new URL(dbUrl);
+  const port = u.port || '5432';
+  return { host: u.hostname, hostPort: `${u.hostname}:${port}` };
 }
 
 main().catch(async (err) => {

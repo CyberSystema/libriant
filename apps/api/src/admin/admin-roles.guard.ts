@@ -20,7 +20,13 @@ import { ADMIN_ROLES_KEY, type AdminRole } from './admin-roles.decorator.js';
  */
 @Injectable()
 export class AdminRolesGuard implements CanActivate {
-  constructor(private readonly reflector: Reflector) {}
+  // Construct Reflector DIRECTLY (no DI) — matching the tenant RolesGuard.
+  // A `@UseGuards(AdminRolesGuard)` class reference can be instantiated as a
+  // standalone (outside the controller module's provider graph), and under tsx
+  // (esbuild emits no `design:paramtypes`) constructor injection of Reflector
+  // yields `undefined` → every guarded admin route 500s on
+  // `reflector.getAllAndOverride`. Reflector is stateless, so this is safe.
+  private readonly reflector = new Reflector();
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const required = this.reflector.getAllAndOverride<AdminRole[] | undefined>(ADMIN_ROLES_KEY, [

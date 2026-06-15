@@ -2,6 +2,7 @@ import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
+import { pinWorkerConnLimit } from './fine-accrual.job.js';
 import type { JobResult } from './jobs.types.js';
 
 /**
@@ -50,7 +51,13 @@ export async function sweepExpiredReservationPickups(): Promise<JobResult> {
 
   try {
     for (const t of tenants) {
-      const ctx: TenantContext = { ...t, resolvedFrom: 'path' };
+      // Pin to one connection per tenant so overlapping crons don't multiply
+      // pools across tenants (PER-JOB-TENANTPRISMA-CONN-MULTIPLY).
+      const ctx: TenantContext = {
+        ...t,
+        dbUrl: pinWorkerConnLimit(t.dbUrl),
+        resolvedFrom: 'path',
+      };
       try {
         const result = await expireOneTenant(ctx, tenantPrisma);
         total += result.expired;
@@ -98,6 +105,11 @@ async function expireOneTenant(
   for (const r of overdue) {
     try {
       await client.$transaction(async (tx) => {
+        // Serialize per-book hold promotion with the return path
+        // (loans.service) and other expiry transactions — same lock key — so
+        // find-next + promote is atomic and two paths can't both reserve a copy
+        // for the queue head. Releases at COMMIT/ROLLBACK.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`book:${r.bookId}`}, 0))`;
         // Mark the expired hold + free its copy.
         const upd = await tx.reservation.updateMany({
           where: { id: r.id, status: 'ready' },
@@ -146,8 +158,12 @@ async function expireOneTenant(
           expired++;
           return;
         }
-        await tx.reservation.update({
-          where: { id: next.id },
+        // CAS the promotion: only promote while `next` is still 'queued'. A
+        // concurrent cancel could have flipped it between the read above and
+        // here — without this guard we'd resurrect a cancelled hold (and strand
+        // the copy we just claimed). On a lost race, release the copy.
+        const promotedNext = await tx.reservation.updateMany({
+          where: { id: next.id, status: 'queued' },
           data: {
             status: 'ready',
             fulfilledByCopyId: copy.id,
@@ -159,6 +175,25 @@ async function expireOneTenant(
             queuePosition: null,
           },
         });
+        if (promotedNext.count === 0) {
+          await tx.bookCopy.updateMany({
+            where: { id: copy.id, status: 'reserved' },
+            data: { status: 'available' },
+          });
+          expired++;
+          return;
+        }
+        // circ-4: now that the head-of-queue moved out, everyone behind bumps up
+        // one slot — same rebalance the service paths (reservations.service /
+        // loans.service return) run, so all promotion paths keep queuePositions
+        // contiguous and 1-based. Without it a cron-driven expiry leaves a gap.
+        await tx.$executeRaw`
+          UPDATE reservations
+          SET "queuePosition" = "queuePosition" - 1, "updatedAt" = NOW()
+          WHERE "bookId" = ${r.bookId}
+            AND status = 'queued'
+            AND "queuePosition" > 0
+        `;
         expired++;
         promoted++;
       });

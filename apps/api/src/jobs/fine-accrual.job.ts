@@ -20,9 +20,23 @@ import type { JobResult } from './jobs.types.js';
  * Mirrors the reservation-expiry sweeper's per-tenant pattern (each tenant has
  * its own physical DB, so we need a client per tenant; the TenantPrismaService
  * LRU bounds connection counts).
+ *
+ * PER-JOB-TENANTPRISMA-CONN-MULTIPLY: each per-tenant sweep spins up its own
+ * TenantPrismaService LRU, and several heavy sweeps fire on the same hour. To
+ * keep the worker from marching toward Postgres `max_connections`, we pin the
+ * worker's per-tenant pool to a SINGLE connection (`connection_limit=1`) — the
+ * sweep is sequential per tenant, so one connection is plenty and a dozen
+ * tenants × a few overlapping sweeps stays well under the ceiling.
  */
 const MS_PER_DAY = 86_400_000;
 const logger = new Logger('FineAccrualSweeper');
+
+/** Force a 1-connection pool for worker sweeps (see PER-JOB-TENANTPRISMA-CONN-
+ *  MULTIPLY). Appends `connection_limit=1` to the tenant URL if not already set. */
+export function pinWorkerConnLimit(dbUrl: string): string {
+  if (/[?&]connection_limit=/.test(dbUrl)) return dbUrl;
+  return dbUrl + (dbUrl.includes('?') ? '&' : '?') + 'connection_limit=1';
+}
 
 export async function sweepFineAccrual(): Promise<JobResult> {
   const tenants = await controlDb.tenant.findMany({
@@ -45,7 +59,7 @@ export async function sweepFineAccrual(): Promise<JobResult> {
   let failed = 0;
   try {
     for (const t of tenants) {
-      const ctx: TenantContext = { ...t, resolvedFrom: 'path' };
+      const ctx: TenantContext = { ...t, dbUrl: pinWorkerConnLimit(t.dbUrl), resolvedFrom: 'path' };
       try {
         touched += await accrueOneTenant(ctx, tenantPrisma);
       } catch (err) {

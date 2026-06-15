@@ -13,6 +13,7 @@ import { controlDb } from '@libriant/db-control';
 import { AdminAuthGuard, AdminSess } from '../admin/admin-auth.guard.js';
 import type { AdminSessionPayload } from '../admin/admin-session.service.js';
 import { validateDto } from '../auth/validate-dto.js';
+import { RedisService } from '../platform/redis.service.js';
 import { MfaService } from './mfa.service.js';
 
 class VerifyTotpDto {
@@ -35,10 +36,21 @@ class VerifyTotpDto {
 @Controller('admin/mfa')
 @UseGuards(AdminAuthGuard)
 export class MfaController {
-  /** Ephemeral secrets keyed by admin id. Cleared on verify or restart. */
-  private static readonly pending = new Map<string, string>();
+  /**
+   * Pending-secret TTL while the admin types the code into their app. Stored in
+   * Redis keyed by admin id (AUTH-09) — shared across instances and surviving
+   * deploys, unlike the old in-process Map which silently broke enrollment
+   * after any restart or under horizontal scaling.
+   */
+  private static readonly PENDING_TTL_SEC = 600;
+  private static pendingKey(adminId: string): string {
+    return `mfa:setup:${adminId}`;
+  }
 
-  constructor(@Inject(MfaService) private readonly mfa: MfaService) {}
+  constructor(
+    @Inject(MfaService) private readonly mfa: MfaService,
+    @Inject(RedisService) private readonly redis: RedisService,
+  ) {}
 
   @Get('status')
   async status(@AdminSess() session: AdminSessionPayload) {
@@ -58,7 +70,12 @@ export class MfaController {
     });
     if (!admin) throw new BadRequestException('Admin not found.');
     const { secret, otpauthUrl } = this.mfa.newSecret(admin.email);
-    MfaController.pending.set(session.sub, secret);
+    await this.redis.client.set(
+      MfaController.pendingKey(session.sub),
+      secret,
+      'EX',
+      MfaController.PENDING_TTL_SEC,
+    );
     return { secret, otpauthUrl };
   }
 
@@ -66,10 +83,10 @@ export class MfaController {
   @HttpCode(200)
   async verify(@AdminSess() session: AdminSessionPayload, @Body() raw: unknown) {
     const dto = await validateDto(VerifyTotpDto, raw);
-    const secret = MfaController.pending.get(session.sub);
+    const secret = await this.redis.client.get(MfaController.pendingKey(session.sub));
     if (!secret) {
       throw new BadRequestException(
-        'No MFA setup in progress. Start enrollment again from the setup endpoint.',
+        'No MFA setup in progress (or it expired). Start enrollment again from the setup endpoint.',
       );
     }
     if (!this.mfa.verifyToken(secret, dto.code)) {
@@ -85,7 +102,7 @@ export class MfaController {
         mfaEnabled: true,
       },
     });
-    MfaController.pending.delete(session.sub);
+    await this.redis.client.del(MfaController.pendingKey(session.sub));
     return { mfaEnabled: true };
   }
 }

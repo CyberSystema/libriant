@@ -47,15 +47,73 @@ export async function fetchOpenLibraryBook(rawIsbn: string): Promise<IsbnLookupR
   try {
     const res = await fetch(url, {
       signal: ctrl.signal,
+      // EXP-005: don't follow redirects. The host is pinned to openlibrary.org,
+      // but a 3xx Location could otherwise bounce us to an attacker-controlled
+      // or cloud-metadata endpoint (residual SSRF). Treat any redirect as
+      // "not on OpenLibrary" rather than chasing it.
+      redirect: 'manual',
       headers: { 'User-Agent': 'Libriant/0.1 (library-mgmt; +https://libriant.com)' },
     });
+    // A `manual` redirect surfaces as an opaqueredirect/3xx response — never OK.
     if (!res.ok) return null;
-    const body = (await res.json()) as Record<string, OpenLibraryEntry | undefined>;
+    const parsed = await readCappedJson(res);
+    if (parsed === null || typeof parsed !== 'object') return null;
+    const body = parsed as Record<string, OpenLibraryEntry | undefined>;
     const entry = body[`ISBN:${isbn}`];
     if (!entry?.details) return null;
     return normalize(isbn, entry);
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+/** Hard ceiling on the OpenLibrary response body (EXP-005) — a single-ISBN
+ *  `details` payload is a few KB; cap well above that so a hostile or
+ *  misbehaving upstream can't blow up memory before/around JSON.parse. */
+const MAX_RESPONSE_BYTES = 1_000_000;
+
+/**
+ * Read the response body with a size cap, then JSON.parse it. Returns `null`
+ * if the body exceeds {@link MAX_RESPONSE_BYTES} or isn't valid JSON — callers
+ * treat that the same as "not found" (a malformed/oversized payload carries no
+ * usable book metadata).
+ */
+async function readCappedJson(res: Response): Promise<unknown> {
+  // Fast path: if the server advertised an oversized body, bail before reading.
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) return null;
+
+  const reader = res.body?.getReader();
+  if (!reader) {
+    // No streamable body (e.g. opaqueredirect) — fall back to text() which is
+    // already bounded by the absence of content here.
+    const text = await res.text();
+    if (text.length > MAX_RESPONSE_BYTES) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  }
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.byteLength;
+      if (total > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        return null;
+      }
+      chunks.push(value);
+    }
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    return null;
   }
 }
 

@@ -11,6 +11,8 @@ import {
 } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import { AdminAuthGuard, AdminSess } from '../admin/admin-auth.guard.js';
+import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
+import { AdminRoles } from '../admin/admin-roles.decorator.js';
 import type { AdminSessionPayload } from '../admin/admin-session.service.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { MaintenanceService } from './maintenance.service.js';
@@ -28,7 +30,7 @@ import { StartMaintenanceDto } from './maintenance.dto.js';
  * results back onto the run row, which the UI polls.
  */
 @Controller('admin/maintenance')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, AdminRolesGuard)
 export class AdminMaintenanceController {
   constructor(@Inject(MaintenanceService) private readonly svc: MaintenanceService) {}
 
@@ -53,6 +55,7 @@ export class AdminMaintenanceController {
   }
 
   @Post()
+  @AdminRoles('owner')
   @HttpCode(202)
   async start(@AdminSess() admin: AdminSessionPayload, @Body() raw: unknown) {
     const dto = await validateDto(StartMaintenanceDto, raw);

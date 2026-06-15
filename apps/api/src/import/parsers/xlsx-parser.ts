@@ -5,6 +5,7 @@
  * the mapping + transform layer sees a uniform tabular view.
  */
 import ExcelJS from 'exceljs';
+import { IMPORT_MAX_COLUMNS, IMPORT_MAX_ROWS } from '../import.constants.js';
 import { buildTableFromMatrix } from './tabular.js';
 import { ParseError, type ParsedTable, type ParseOptions } from './types.js';
 
@@ -50,6 +51,25 @@ export async function parseXlsx(data: Buffer, opts: ParseOptions = {}): Promise<
 
   const colCount = ws.actualColumnCount || ws.columnCount || 0;
   if (colCount === 0) throw new ParseError('The worksheet is empty.');
+
+  // Reject pathological dimensions BEFORE materializing the matrix. xlsx is a
+  // zip, so a small upload can expand to a sheet with millions of rows/columns
+  // — building the full string matrix would OOM the worker. exceljs has already
+  // parsed the model by here, but bailing now still avoids the (much larger)
+  // string-matrix + parsed-row allocations stacked on top. The worker enforces
+  // IMPORT_MAX_ROWS again on the assembled table as defence-in-depth.
+  if (colCount > IMPORT_MAX_COLUMNS) {
+    throw new ParseError(
+      `The worksheet has ${colCount} columns, more than the ${IMPORT_MAX_COLUMNS}-column import limit.`,
+    );
+  }
+  const rowCount = ws.actualRowCount || ws.rowCount || 0;
+  if (rowCount > IMPORT_MAX_ROWS + 1) {
+    throw new ParseError(
+      `The worksheet has ${rowCount.toLocaleString()} rows, more than the ` +
+        `${IMPORT_MAX_ROWS.toLocaleString()}-row import limit. Split it into smaller files.`,
+    );
+  }
 
   const matrix: string[][] = [];
   ws.eachRow({ includeEmpty: false }, (row) => {

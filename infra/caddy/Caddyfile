@@ -137,16 +137,28 @@ http:// {
 	# to avoid SameSite + CORS pain on the session cookie. Strip the prefix
 	# before forwarding so the API sees its native routes (/auth/me etc).
 	handle_path /lbr-api/* {
-		reverse_proxy api:3001 {
-			# Pass the REAL client IP so audit logs + rate limits key off it.
-			# Behind Cloudflare the true client is in `CF-Connecting-IP`
-			# (the TCP peer {remote_host} is a Cloudflare edge node). The host
-			# firewall only admits Cloudflare's ranges, so the header can't be
-			# spoofed by hitting the origin directly.
-			header_up X-Real-IP {http.request.header.CF-Connecting-IP}
-			# A failed upstream should look like a 503, not a 502.
-			fail_duration 10s
-			max_fails 3
+		# `route` so source order is honoured: the internal-ops block is
+		# evaluated BEFORE the catch-all reverse_proxy. The prefix is already
+		# stripped here, so these match /lbr-api/metrics, /lbr-api/healthz, …
+		route {
+			# /metrics, /healthz, /readyz carry fleet-wide operational intel
+			# (tenant counts, capacity + queue gauges, readiness internals).
+			# Prometheus scrapes api:3001 DIRECTLY on the private monitoring
+			# network — nothing legitimate reaches them through the public
+			# proxy, so 404 them at the edge.
+			@internal path /metrics /metrics/* /healthz /readyz
+			respond @internal 404
+			reverse_proxy api:3001 {
+				# Pass the REAL client IP so audit logs + rate limits key off it.
+				# Behind Cloudflare the true client is in `CF-Connecting-IP`
+				# (the TCP peer {remote_host} is a Cloudflare edge node). The host
+				# firewall only admits Cloudflare's ranges, so the header can't be
+				# spoofed by hitting the origin directly.
+				header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+				# A failed upstream should look like a 503, not a 502.
+				fail_duration 10s
+				max_fails 3
+			}
 		}
 	}
 
@@ -178,8 +190,14 @@ http:// {
 	import cloudflare_origin
 
 	handle_path /lbr-api/* {
-		reverse_proxy api:3001 {
-			header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+		route {
+			# Internal ops endpoints are scraped on the private network only —
+			# never expose them through the public admin proxy. See public host.
+			@internal path /metrics /metrics/* /healthz /readyz
+			respond @internal 404
+			reverse_proxy api:3001 {
+				header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+			}
 		}
 	}
 

@@ -65,6 +65,13 @@ const FIELD_ENTITY_KINDS = new Set<FieldEntityKind>([
   'fine',
 ]);
 
+/**
+ * A Prisma client capable of author find/create — either the engine's own
+ * client or a `$transaction` tx (IMP-04: authors are resolved inside the book
+ * transaction so they roll back with a failed book write).
+ */
+type AuthorWriter = TenantPrismaClient | Prisma.TransactionClient;
+
 function issue(
   field: string | null,
   code: string,
@@ -106,7 +113,10 @@ export class ImportEngine {
   private readonly memberByNumber = new Map<string, string | null>();
   private readonly memberByEmail = new Map<string, string | null>();
   private readonly copyByBarcode = new Map<string, string | null>();
-  private readonly queueTop = new Map<string, number>();
+  // IMP-05: copies that already carry an active loan within this run. Seeds the
+  // one-active-loan-per-copy check during the dry-run too, where the would-be
+  // loans aren't written to the DB yet.
+  private readonly activeLoanCopies = new Set<string>();
 
   constructor(
     private readonly kind: ImportEntityKind,
@@ -285,8 +295,6 @@ export class ImportEngine {
     const publisher = (v.publisher as string | undefined) ?? null;
     const publicationYear = (v.publicationYear as number | undefined) ?? null;
     const authorNames = (v.authors as string[] | undefined) ?? [];
-    const authorIds: string[] = [];
-    for (const name of authorNames) authorIds.push(await this.findOrCreateAuthor(name));
 
     const sortTitle = normalizeText(title);
     const searchText = buildSearchText([
@@ -315,26 +323,43 @@ export class ImportEngine {
       customFields: row.customFields as Prisma.InputJsonValue,
     };
 
-    if (existingId) {
-      await this.ctx.client.$transaction(async (tx) => {
-        await tx.book.update({ where: { id: existingId }, data: scalar });
-        if (authorIds.length) {
-          await tx.bookAuthor.deleteMany({ where: { bookId: existingId } });
-          await tx.bookAuthor.createMany({
-            data: authorIds.map((authorId, i) => ({ bookId: existingId, authorId, order: i })),
-          });
+    // IMP-04: resolve/create authors INSIDE the book's transaction using the tx
+    // client, so a failed book write rolls back any author rows it just created
+    // (no orphan Author rows). Track sortNames created in this tx so we can drop
+    // their (now rolled-back) cache entries if the transaction throws.
+    const createdSortNames: string[] = [];
+    try {
+      return await this.ctx.client.$transaction(async (tx) => {
+        const authorIds: string[] = [];
+        for (const name of authorNames) {
+          authorIds.push(await this.findOrCreateAuthor(name, tx, createdSortNames));
         }
+        if (existingId) {
+          await tx.book.update({ where: { id: existingId }, data: scalar });
+          if (authorIds.length) {
+            await tx.bookAuthor.deleteMany({ where: { bookId: existingId } });
+            await tx.bookAuthor.createMany({
+              data: authorIds.map((authorId, i) => ({ bookId: existingId, authorId, order: i })),
+            });
+          }
+          return existingId;
+        }
+        const created = await tx.book.create({
+          data: {
+            ...scalar,
+            authors: { create: authorIds.map((authorId, i) => ({ authorId, order: i })) },
+          },
+          select: { id: true },
+        });
+        return created.id;
       });
-      return existingId;
+    } catch (err) {
+      // The transaction rolled back, so any author rows it created no longer
+      // exist — purge their cache entries or later rows would reference ids the
+      // DB doesn't have.
+      for (const sortName of createdSortNames) this.authorCache.delete(sortName);
+      throw err;
     }
-    const created = await this.ctx.client.book.create({
-      data: {
-        ...scalar,
-        authors: { create: authorIds.map((authorId, i) => ({ authorId, order: i })) },
-      },
-      select: { id: true },
-    });
-    return created.id;
   }
 
   // ---- copy --------------------------------------------------------------
@@ -506,7 +531,21 @@ export class ImportEngine {
       return this.result(row, 'error', issues);
     }
 
-    if (this.ctx.dryRun) return this.result(row, 'imported', issues);
+    // IMP-05: enforce the one-active-loan-per-copy invariant the rest of the app
+    // assumes. A copy may have at most one open loan, so refuse to open a second
+    // active loan against a copy that already has one — whether the existing
+    // loan is in the DB (pre-existing) or was opened earlier in THIS run.
+    if (status === 'active' && (await this.copyHasActiveLoan(copyId))) {
+      issues.push(issue('copyBarcode', 'invalid_value', 'This copy already has an active loan.'));
+      return this.result(row, 'error', issues);
+    }
+
+    if (this.ctx.dryRun) {
+      // Track within-file so a second active loan on this copy is flagged in the
+      // same dry-run, even though nothing is written.
+      if (status === 'active') this.activeLoanCopies.add(copyId);
+      return this.result(row, 'imported', issues);
+    }
 
     const data: Prisma.LoanUncheckedCreateInput = {
       copyId,
@@ -522,13 +561,33 @@ export class ImportEngine {
     const created = await this.ctx.client.$transaction(async (tx) => {
       const loan = await tx.loan.create({ data, select: { id: true } });
       if (status === 'active') {
-        await tx.bookCopy.update({ where: { id: copyId }, data: { status: 'on_loan' } });
+        // IMP-05: only flip a copy that isn't already lent. A non-zero count
+        // also confirms we didn't silently clobber another active loan's
+        // on_loan owner; on a lost race throw to roll the row back.
+        const flipped = await tx.bookCopy.updateMany({
+          where: { id: copyId, status: { in: ['available', 'reserved'] } },
+          data: { status: 'on_loan' },
+        });
+        if (flipped.count === 0) {
+          throw new Error('copy is not available for an active loan');
+        }
       } else if (status === 'lost') {
         await tx.bookCopy.update({ where: { id: copyId }, data: { status: 'lost' } });
       }
       return loan;
     });
+    if (status === 'active') this.activeLoanCopies.add(copyId);
     return this.result(row, 'imported', issues, created.id);
+  }
+
+  /** True when the copy already has an open loan (this run or in the DB). IMP-05. */
+  private async copyHasActiveLoan(copyId: string): Promise<boolean> {
+    if (this.activeLoanCopies.has(copyId)) return true;
+    const existing = await this.ctx.client.loan.findFirst({
+      where: { copyId, status: 'active' },
+      select: { id: true },
+    });
+    return existing !== null;
   }
 
   // ---- reservation -------------------------------------------------------
@@ -557,37 +616,50 @@ export class ImportEngine {
     const now = new Date();
     if (this.ctx.dryRun) return this.result(row, 'imported', issues);
 
-    let queuePosition: number | null = null;
-    if (status === 'queued') {
-      queuePosition = await this.nextQueuePosition(bookId);
-    }
-    const data: Prisma.ReservationUncheckedCreateInput = {
+    const baseData = {
       bookId,
       memberId,
       placedAt,
       status,
-      queuePosition,
       readyAt: status === 'ready' ? (placedAt > now ? placedAt : now) : null,
       expiresAt: v.expiresAt ? new Date(v.expiresAt as string) : null,
       canceledAt: status === 'canceled' ? now : null,
       notes: (v.notes as string | undefined) ?? null,
       customFields: row.customFields as Prisma.InputJsonValue,
-    };
-    const created = await this.ctx.client.reservation.create({ data, select: { id: true } });
-    return this.result(row, 'imported', issues, created.id);
-  }
+    } satisfies Omit<Prisma.ReservationUncheckedCreateInput, 'queuePosition'>;
 
-  private async nextQueuePosition(bookId: string): Promise<number> {
-    if (!this.queueTop.has(bookId)) {
-      const agg = await this.ctx.client.reservation.aggregate({
+    // import-new-reservation: a queued hold's position used to come from a
+    // per-run cache seeded once by an aggregate, which collides with positions
+    // assigned by the live reservations service during a concurrent import.
+    // Compute it inside a transaction holding the same per-book advisory lock
+    // those paths use, re-reading the max under the lock so positions stay
+    // unique + contiguous. Non-queued holds carry no position, so they skip it.
+    if (status !== 'queued') {
+      const created = await this.ctx.client.reservation.create({
+        data: { ...baseData, queuePosition: null },
+        select: { id: true },
+      });
+      return this.result(row, 'imported', issues, created.id);
+    }
+
+    const created = await this.ctx.client.$transaction(async (tx) => {
+      // Serialize against the LIVE hold-placement path so an import and a
+      // concurrent reservation can't assign the same queuePosition. That path
+      // (reservations.service) locks `reservation:<bookId>`, so we MUST use the
+      // identical key — `book:<bookId>` (the loans-return/expiry convention) is
+      // a different coordination domain and would NOT mutually exclude.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`reservation:${bookId}`}, 0))`;
+      const agg = await tx.reservation.aggregate({
         where: { bookId, status: 'queued' },
         _max: { queuePosition: true },
       });
-      this.queueTop.set(bookId, agg._max.queuePosition ?? 0);
-    }
-    const next = (this.queueTop.get(bookId) ?? 0) + 1;
-    this.queueTop.set(bookId, next);
-    return next;
+      const queuePosition = (agg._max.queuePosition ?? 0) + 1;
+      return tx.reservation.create({
+        data: { ...baseData, queuePosition },
+        select: { id: true },
+      });
+    });
+    return this.result(row, 'imported', issues, created.id);
   }
 
   // ---- fine --------------------------------------------------------------
@@ -626,9 +698,12 @@ export class ImportEngine {
   }
 
   // ---- resolvers (cached) ------------------------------------------------
-  private async findAuthorId(sortName: string): Promise<string | null> {
+  private async findAuthorId(
+    sortName: string,
+    client: AuthorWriter = this.ctx.client,
+  ): Promise<string | null> {
     if (this.authorCache.has(sortName)) return this.authorCache.get(sortName)!;
-    const row = await this.ctx.client.author.findFirst({
+    const row = await client.author.findFirst({
       where: { sortName, archivedAt: null },
       select: { id: true },
     });
@@ -636,15 +711,26 @@ export class ImportEngine {
     return row?.id ?? null;
   }
 
-  private async findOrCreateAuthor(name: string): Promise<string> {
+  /**
+   * Find an author by normalized name, creating it if absent. IMP-04: when a
+   * write client (a `$transaction` tx) is passed, the create runs inside that
+   * transaction and its sortName is recorded in `createdInTx` so the caller can
+   * evict the cache entry if the transaction later rolls back.
+   */
+  private async findOrCreateAuthor(
+    name: string,
+    client: AuthorWriter = this.ctx.client,
+    createdInTx?: string[],
+  ): Promise<string> {
     const sortName = normalizeText(name);
-    const existing = await this.findAuthorId(sortName);
+    const existing = await this.findAuthorId(sortName, client);
     if (existing) return existing;
-    const created = await this.ctx.client.author.create({
+    const created = await client.author.create({
       data: { fullName: name.trim(), sortName },
       select: { id: true },
     });
     this.authorCache.set(sortName, created.id);
+    createdInTx?.push(sortName);
     return created.id;
   }
 
@@ -689,8 +775,12 @@ export class ImportEngine {
   private async findMemberByEmail(email: string): Promise<string | null> {
     const key = email.toLowerCase();
     if (this.memberByEmail.has(key)) return this.memberByEmail.get(key) ?? null;
+    // import-new-member-email: the cache key is lower-cased, but the DB lookup
+    // used to be case-sensitive (`where: { email }`), so a casing mismatch
+    // between the file and the stored row defeated duplicate detection and
+    // created a duplicate member. Match case-insensitively so the two agree.
     const row = await this.ctx.client.member.findFirst({
-      where: { email, archivedAt: null },
+      where: { email: { equals: email, mode: 'insensitive' }, archivedAt: null },
       select: { id: true },
     });
     this.memberByEmail.set(key, row?.id ?? null);

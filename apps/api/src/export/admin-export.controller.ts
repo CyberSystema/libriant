@@ -12,6 +12,8 @@ import {
 import type { Response } from 'express';
 import { controlDb } from '@libriant/db-control';
 import { AdminAuthGuard, AdminSess } from '../admin/admin-auth.guard.js';
+import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
+import { AdminRoles } from '../admin/admin-roles.decorator.js';
 import type { AdminSessionPayload } from '../admin/admin-session.service.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { ExportService, publicExportJob } from './export.service.js';
@@ -27,7 +29,7 @@ import { streamExport } from './export-download.js';
  *   GET  /admin/exports/:id/download  — download the produced file
  */
 @Controller('admin/exports')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, AdminRolesGuard)
 export class AdminExportController {
   constructor(@Inject(ExportService) private readonly svc: ExportService) {}
 
@@ -47,6 +49,7 @@ export class AdminExportController {
   }
 
   @Post()
+  @AdminRoles('owner')
   @HttpCode(202)
   async create(@AdminSess() admin: AdminSessionPayload, @Body() raw: unknown) {
     const dto = await validateDto(CreateAdminExportDto, raw);
@@ -59,6 +62,7 @@ export class AdminExportController {
   }
 
   @Get(':id/download')
+  @AdminRoles('owner')
   async download(@Param('id') id: string, @Res() res: Response) {
     const job = await this.svc.get(id);
     await streamExport(res, job);

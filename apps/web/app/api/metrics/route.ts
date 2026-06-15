@@ -18,7 +18,9 @@ export function GET() {
     `libriant_web_uptime_seconds ${upSec}`,
     '# HELP libriant_web_build_info Build information.',
     '# TYPE libriant_web_build_info gauge',
-    `libriant_web_build_info{node_env="${process.env.NODE_ENV ?? 'development'}"} 1`,
+    // WEB-03: this endpoint is publicly reachable, so don't leak the runtime
+    // environment. Emit the gauge without the `node_env` label.
+    'libriant_web_build_info 1',
     '',
   ].join('\n');
   return new NextResponse(body, {

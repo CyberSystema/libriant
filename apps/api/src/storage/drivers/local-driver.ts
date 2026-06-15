@@ -93,6 +93,18 @@ export class LocalDriver implements StorageDriver {
     return walkSize(this.root).catch(() => 0);
   }
 
+  /**
+   * Remove orphaned `<target>.tmp-<hex>` files (see the class header) older than
+   * `maxAgeMs`. The age gate is what makes this safe to run while uploads are
+   * in flight: a temp that's still being written has a fresh mtime and is left
+   * alone, so only genuinely-abandoned partials (from a crash between write and
+   * rename) are deleted. Returns the count removed.
+   */
+  async sweepStaleTemps(maxAgeMs: number): Promise<number> {
+    const cutoffMs = Date.now() - Math.max(0, maxAgeMs);
+    return sweepStaleTempsIn(this.root, cutoffMs);
+  }
+
   // --- internals ---------------------------------------------------------
 
   /** Returns null if the resolved path escapes the tenant root. */
@@ -158,6 +170,12 @@ async function walkSize(dir: string): Promise<number> {
   for (const e of entries) {
     const full = `${dir}/${e.name}`;
     if (e.isFile()) {
+      // Skip in-flight / orphaned partial uploads. `put()` writes to a
+      // `<target>.tmp-<hex>` file then atomic-renames it into place; a crash
+      // between write and rename leaves the `.tmp-*` behind. Counting it would
+      // inflate `storageUsedBytes` on recompute and permanently erode the
+      // tenant's usable quota (finding: recomputeUsage counts orphaned temps).
+      if (isTempUpload(e.name)) continue;
       const s = await fs.stat(full);
       total += s.size;
     } else if (e.isDirectory()) {
@@ -165,4 +183,48 @@ async function walkSize(dir: string): Promise<number> {
     }
   }
   return total;
+}
+
+/** Does this basename look like a `put()` temp file (`<name>.tmp-<hex>`)? */
+function isTempUpload(name: string): boolean {
+  return /\.tmp-[0-9a-f]+$/i.test(name);
+}
+
+/**
+ * Recursively delete `.tmp-*` files whose mtime is older than `cutoffMs`.
+ * Returns the number removed. Tolerant of races: a missing tree (ENOENT) is an
+ * empty result, and a file that vanishes (concurrent sweep / a `put()` rename
+ * winning) between readdir and rm is skipped rather than fatal.
+ */
+async function sweepStaleTempsIn(dir: string, cutoffMs: number): Promise<number> {
+  let removed = 0;
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw err;
+  }
+  for (const e of entries) {
+    const full = `${dir}/${e.name}`;
+    if (e.isDirectory()) {
+      removed += await sweepStaleTempsIn(full, cutoffMs);
+    } else if (e.isFile() && isTempUpload(e.name)) {
+      let st;
+      try {
+        st = await fs.stat(full);
+      } catch {
+        continue; // vanished between readdir and stat — nothing to do
+      }
+      if (st.mtimeMs < cutoffMs) {
+        try {
+          await fs.rm(full, { force: true });
+          removed++;
+        } catch {
+          // Locked / removed by a concurrent sweep — best-effort, skip.
+        }
+      }
+    }
+  }
+  return removed;
 }

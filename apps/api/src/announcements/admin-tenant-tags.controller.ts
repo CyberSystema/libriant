@@ -11,6 +11,8 @@ import {
 } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import { AdminAuthGuard } from '../admin/admin-auth.guard.js';
+import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
+import { AdminRoles } from '../admin/admin-roles.decorator.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { TenantResolverService } from '../tenancy/tenant-resolver.service.js';
 import { SetTenantTagsDto } from './announcement.dto.js';
@@ -29,7 +31,7 @@ import { AnnouncementDeliveryService } from './announcement-delivery.service.js'
  * the composer can offer autocomplete.
  */
 @Controller('admin/tenants/:tenantId/tags')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, AdminRolesGuard)
 export class AdminTenantTagsController {
   constructor(
     @Inject(AnnouncementDeliveryService)
@@ -54,6 +56,7 @@ export class AdminTenantTagsController {
   }
 
   @Put()
+  @AdminRoles('owner')
   @HttpCode(200)
   async set(@Param('tenantId') tenantId: string, @Body() raw: unknown) {
     const dto = await validateDto(SetTenantTagsDto, raw);

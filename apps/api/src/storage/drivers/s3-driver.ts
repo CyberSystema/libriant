@@ -47,6 +47,14 @@ export class S3Driver implements StorageDriver {
   totalBytes(): Promise<number> {
     return Promise.reject(notImplemented());
   }
+  /**
+   * No-op: object stores upload atomically (single PutObject), so there are no
+   * orphaned `.tmp-*` partials to sweep. Returns 0 so the cleanup job can call
+   * every driver uniformly without an instanceof check.
+   */
+  sweepStaleTemps(_maxAgeMs: number): Promise<number> {
+    return Promise.resolve(0);
+  }
 }
 
 function notImplemented(): Error {

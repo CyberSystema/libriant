@@ -11,11 +11,37 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../node_modules/.prisma/tenant-client/index.js';
 export type TenantPrismaClient = PrismaClient;
 
+/**
+ * Default per-client pool ceiling. Matches the documented `connection_limit=5`
+ * intent in TenantPrismaService — for the pilot (5–20 tenants on one Postgres)
+ * each tenant client keeps at most 5 connections so the API + worker don't
+ * exhaust Postgres `max_connections`. Env-tunable so the worker (which holds
+ * one client at a time) can run leaner than the API.
+ */
+const DEFAULT_TENANT_POOL_MAX = 5;
+
+function resolveMaxPoolSize(explicit?: number): number {
+  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) {
+    return Math.floor(explicit);
+  }
+  const fromEnv = Number(process.env.TENANT_DB_POOL_MAX);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) {
+    return Math.floor(fromEnv);
+  }
+  return DEFAULT_TENANT_POOL_MAX;
+}
+
 export type MakeTenantClientOptions = {
   /** Per-tenant Postgres URL. Required. */
   databaseUrl: string;
   /** Override Prisma's log targets. Default: warn + error. */
   log?: ('query' | 'info' | 'warn' | 'error')[];
+  /**
+   * Max Postgres connections this client's pool may open. Defaults to
+   * `TENANT_DB_POOL_MAX` (env) or {@link DEFAULT_TENANT_POOL_MAX}. Callers such
+   * as the worker can pass a smaller value than the API.
+   */
+  maxPoolSize?: number;
 };
 
 /**
@@ -23,7 +49,13 @@ export type MakeTenantClientOptions = {
  * own the lifecycle — remember to `await client.$disconnect()` when done.
  */
 export function makeTenantPrismaClient(opts: MakeTenantClientOptions): TenantPrismaClient {
-  const adapter = new PrismaPg({ connectionString: opts.databaseUrl });
+  // jobs-new-Tenant PrismaPg pool: cap the underlying pg pool so reality
+  // matches the documented connection_limit=5 — without `max`, pg defaults to
+  // ~10 connections per client and exhausts Postgres at half the tenant count.
+  const adapter = new PrismaPg({
+    connectionString: opts.databaseUrl,
+    max: resolveMaxPoolSize(opts.maxPoolSize),
+  });
   return new PrismaClient({
     adapter,
     log: opts.log ?? ['warn', 'error'],

@@ -10,7 +10,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
     "check:translations": "tsx scripts/check-translations.ts",

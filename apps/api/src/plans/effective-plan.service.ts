@@ -24,6 +24,9 @@ type Row = {
   override_bool: boolean | null;
   override_text: string | null;
   override_note: string | null;
+  /** When this override lapses (null = permanent). Used to cap the cache TTL
+   *  so a time-boxed override can't over-grant past its expiry (PQF-3). */
+  override_expires_at: Date | null;
   plan_id: string | null;
   plan_slug: string | null;
   plan_name: string | null;
@@ -64,11 +67,17 @@ function unlimitedPlan(plan: EffectivePlan): EffectivePlan {
  * invalidated whenever ANY of:
  *   - the tenant's subscription changes (different plan)
  *   - a plan_feature_value on the tenant's plan changes
- *   - a tenant_plan_override for the tenant changes (created / edited / expired)
+ *   - a tenant_plan_override for the tenant is created / edited
  *
  * For MVP we expose `invalidate(tenantId)` and call it from the few places
  * that mutate those rows (signup, the admin override editor in Step 18,
  * Stripe webhooks in Step 16).
+ *
+ * Time-boxed overrides (a `tpo.expiresAt` in the future) are NOT invalidated
+ * by any mutation when they lapse — nothing writes a row at the expiry instant.
+ * To stop a lapsed override over-granting for a full TTL (PQF-3), `writeCache`
+ * caps the blob's TTL at the soonest upcoming override expiry for the tenant,
+ * so the cache re-resolves from the DB no later than the moment a limit drops.
  */
 @Injectable()
 export class EffectivePlanService {
@@ -86,8 +95,12 @@ export class EffectivePlanService {
   async getEffectivePlan(tenantId: string): Promise<EffectivePlan> {
     let plan = await this.readCache(tenantId);
     if (!plan) {
-      plan = await this.loadFromDb(tenantId);
-      await this.writeCache(tenantId, plan);
+      const loaded = await this.loadFromDb(tenantId);
+      plan = loaded.plan;
+      // PQF-3: cap the cache TTL at the soonest upcoming override expiry, so a
+      // time-boxed override stops over-granting no later than its expiry rather
+      // than lingering for the full TTL window.
+      await this.writeCache(tenantId, plan, loaded.soonestOverrideExpiry);
     }
     // Subscriptions disabled → every tenant gets everything. Applied at read
     // time (the per-tenant cache keeps the real plan) so flipping the master
@@ -122,7 +135,9 @@ export class EffectivePlanService {
 
   // --- internals ---------------------------------------------------------
 
-  private async loadFromDb(tenantId: string): Promise<EffectivePlan> {
+  private async loadFromDb(
+    tenantId: string,
+  ): Promise<{ plan: EffectivePlan; soonestOverrideExpiry: Date | null }> {
     // Single SQL traverses all three layers and emits one row per feature.
     // Expired overrides are filtered out at the join.
     const rows = (await controlDb.$queryRawUnsafe(
@@ -141,6 +156,7 @@ export class EffectivePlanService {
         tpo."valueBool"           AS override_bool,
         tpo."valueText"           AS override_text,
         tpo.note                  AS override_note,
+        tpo."expiresAt"           AS override_expires_at,
         p.id                      AS plan_id,
         p.slug                    AS plan_slug,
         p.name                    AS plan_name
@@ -176,13 +192,23 @@ export class EffectivePlanService {
 
     const features: Record<string, EffectiveValue> = {};
     let plan: EffectivePlan['plan'] = null;
+    let soonestOverrideExpiry: Date | null = null;
     for (const r of rows) {
       if (!plan && r.plan_id && r.plan_slug && r.plan_name) {
         plan = { id: r.plan_id, slug: r.plan_slug, name: r.plan_name };
       }
+      // Track the earliest future override expiry across all features so the
+      // cache TTL can be clamped to it (PQF-3). Rows with a NULL expiresAt are
+      // permanent overrides and don't constrain the TTL.
+      if (r.override_expires_at) {
+        const expiry = new Date(r.override_expires_at);
+        if (!soonestOverrideExpiry || expiry < soonestOverrideExpiry) {
+          soonestOverrideExpiry = expiry;
+        }
+      }
       features[r.feature_key] = this.resolveRow(r);
     }
-    return { tenantId, plan, features };
+    return { plan: { tenantId, plan, features }, soonestOverrideExpiry };
   }
 
   /** Compose one feature's value from the row's three layers. */
@@ -237,7 +263,19 @@ export class EffectivePlanService {
     }
   }
 
-  private async writeCache(tenantId: string, plan: EffectivePlan): Promise<void> {
-    await this.redis.client.set(CACHE_KEY(tenantId), JSON.stringify(plan), 'EX', this.ttlSec);
+  private async writeCache(
+    tenantId: string,
+    plan: EffectivePlan,
+    soonestOverrideExpiry: Date | null = null,
+  ): Promise<void> {
+    let ttl = this.ttlSec;
+    if (soonestOverrideExpiry) {
+      // PQF-3: never cache past the soonest override expiry. Clamp to whole
+      // seconds remaining (floor), but keep a 1s minimum so an override that
+      // is already within the same second still gets a positive EX value.
+      const secsUntilExpiry = Math.floor((soonestOverrideExpiry.getTime() - Date.now()) / 1000);
+      ttl = Math.max(1, Math.min(ttl, secsUntilExpiry));
+    }
+    await this.redis.client.set(CACHE_KEY(tenantId), JSON.stringify(plan), 'EX', ttl);
   }
 }

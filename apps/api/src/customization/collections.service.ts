@@ -14,6 +14,7 @@ import {
   type FieldDef,
   type FieldOptions,
   type FieldValidation,
+  patternSaveError,
   validateOptions,
 } from './field-types.js';
 
@@ -147,10 +148,34 @@ export class CollectionsService {
     },
   ): Promise<CollectionDto> {
     const client = this.tenantPrisma.getClient(tenant);
-    // Restoring (archived: false) needs to find the archived row — every
-    // other path is scoped to active rows only.
-    const isRestore = input.archived === false;
-    const id = await this.resolveCollectionId(tenant, slug, { includeArchived: isRestore });
+    // An `archived: false` edit needs to find the archived row — every other
+    // path is scoped to active rows only. But a no-op `archived: false` on an
+    // already-active collection must NOT consume a seat (REM-4): only an
+    // actual archived→active transition is a quota-consuming restore. Resolve
+    // the row's current archivedAt first, then decide, mirroring books.update.
+    const lookingForArchived = input.archived === false;
+    // When an `archived: false` edit could match either an active or an archived
+    // twin (slugs are unique only among active rows), prefer the ACTIVE row so a
+    // no-op edit doesn't accidentally resurrect an archived collection — only
+    // fall back to the archived row when there's no active one to restore into.
+    const existing = lookingForArchived
+      ? ((await client.collection.findFirst({
+          where: { slug, archivedAt: null },
+          select: { id: true, archivedAt: true },
+        })) ??
+        (await client.collection.findFirst({
+          where: { slug },
+          select: { id: true, archivedAt: true },
+        })))
+      : await client.collection.findFirst({
+          where: { slug, archivedAt: null },
+          select: { id: true, archivedAt: true },
+        });
+    if (!existing) throw new NotFoundException(`No collection "${slug}".`);
+    const id = existing.id;
+    // Only a true restore (was archived, now being un-archived) spends a
+    // max_custom_collections seat; a no-op flag on an active row does not.
+    const isRestore = input.archived === false && existing.archivedAt != null;
 
     if (isRestore) {
       // The partial unique index `collections_slug_unique_active` is keyed
@@ -248,6 +273,10 @@ export class CollectionsService {
         throw new BadRequestException('Select fields need at least one option.');
       }
     }
+    // ReDoS / validity screen — the pattern runs on the shared event loop for
+    // every record write of this collection, so reject a dangerous one at save.
+    const patternErr = patternSaveError(input.validationJson);
+    if (patternErr) throw new BadRequestException(patternErr);
 
     const collectionId = await this.resolveCollectionId(tenant, slug);
     const client = this.tenantPrisma.getClient(tenant);
@@ -330,6 +359,11 @@ export class CollectionsService {
     if (input.optionsJson !== undefined && input.optionsJson !== null) {
       const errs = validateOptions(input.optionsJson);
       if (errs.length) throw new BadRequestException(errs.join(' '));
+    }
+    // Same ReDoS / validity screen on UPDATE as on create.
+    if (input.validationJson !== undefined) {
+      const patternErr = patternSaveError(input.validationJson);
+      if (patternErr) throw new BadRequestException(patternErr);
     }
 
     const data: Record<string, unknown> = {};

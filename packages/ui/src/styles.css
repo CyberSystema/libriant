@@ -6,8 +6,16 @@
  */
 
 /* --- base reset --- */
-*, *::before, *::after { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
 body {
   font-family: var(--font-sans);
   font-size: var(--fs-base);
@@ -16,7 +24,9 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-a { color: var(--color-info); }
+a {
+  color: var(--color-info);
+}
 
 /* visible focus ring everywhere — a11y baseline */
 :focus-visible {
@@ -42,40 +52,65 @@ a { color: var(--color-info); }
   padding: var(--sp-2) var(--sp-4);
   text-decoration: none;
   cursor: pointer;
-  transition: background-color 120ms, border-color 120ms, color 120ms;
+  transition:
+    background-color 120ms,
+    border-color 120ms,
+    color 120ms;
 }
-.lbr-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-.lbr-btn--sm { font-size: var(--fs-sm); padding: var(--sp-1) var(--sp-3); }
-.lbr-btn--md { font-size: var(--fs-base); padding: var(--sp-2) var(--sp-4); }
-.lbr-btn--lg { font-size: var(--fs-lg); padding: var(--sp-3) var(--sp-5); }
+.lbr-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.lbr-btn--sm {
+  font-size: var(--fs-sm);
+  padding: var(--sp-1) var(--sp-3);
+}
+.lbr-btn--md {
+  font-size: var(--fs-base);
+  padding: var(--sp-2) var(--sp-4);
+}
+.lbr-btn--lg {
+  font-size: var(--fs-lg);
+  padding: var(--sp-3) var(--sp-5);
+}
 .lbr-btn--primary {
   background: var(--color-primary);
   color: var(--color-primary-fg);
   border-color: var(--color-primary);
 }
-.lbr-btn--primary:hover:not(:disabled) { background: var(--color-primary-hover); border-color: var(--color-primary-hover); }
+.lbr-btn--primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
 .lbr-btn--secondary {
   background: var(--color-surface);
   color: var(--color-text);
   border-color: var(--color-border);
 }
-.lbr-btn--secondary:hover:not(:disabled) { background: var(--color-surface-muted); }
+.lbr-btn--secondary:hover:not(:disabled) {
+  background: var(--color-surface-muted);
+}
 .lbr-btn--ghost {
   background: transparent;
   color: var(--color-text);
   border-color: transparent;
 }
-.lbr-btn--ghost:hover:not(:disabled) { background: var(--color-surface-muted); }
+.lbr-btn--ghost:hover:not(:disabled) {
+  background: var(--color-surface-muted);
+}
 .lbr-btn--danger {
   background: var(--color-danger);
   color: #ffffff;
   border-color: var(--color-danger);
 }
-.lbr-btn--danger:hover:not(:disabled) { background: var(--color-danger-hover); border-color: var(--color-danger-hover); }
+.lbr-btn--danger:hover:not(:disabled) {
+  background: var(--color-danger-hover);
+  border-color: var(--color-danger-hover);
+}
 /* Loading: keep the label and append a spinner (the button is a flex row with
    `gap`, so the pseudo-element sits beside the text). */
 .lbr-btn--loading::after {
-  content: "";
+  content: '';
   width: 0.85em;
   height: 0.85em;
   border: 2px solid currentColor;
@@ -94,8 +129,14 @@ a { color: var(--color-info); }
   border: 1px solid transparent;
   font-size: var(--fs-sm);
 }
-.lbr-banner__content { flex: 1; }
-.lbr-banner__title { display: block; font-weight: 600; margin-bottom: var(--sp-1); }
+.lbr-banner__content {
+  flex: 1;
+}
+.lbr-banner__title {
+  display: block;
+  font-weight: 600;
+  margin-bottom: var(--sp-1);
+}
 .lbr-banner__dismiss {
   background: transparent;
   border: 0;
@@ -105,10 +146,26 @@ a { color: var(--color-info); }
   color: currentColor;
   padding: 0 var(--sp-1);
 }
-.lbr-banner--info { background: #ddf4ff; color: #0a3069; border-color: #54aeff; }
-.lbr-banner--warning { background: #fff8c5; color: #7c5e00; border-color: #e0c200; }
-.lbr-banner--critical { background: #ffebe9; color: #82071e; border-color: #ff8182; }
-.lbr-banner--success { background: #dafbe1; color: #04420d; border-color: #4ac26b; }
+.lbr-banner--info {
+  background: #ddf4ff;
+  color: #0a3069;
+  border-color: #54aeff;
+}
+.lbr-banner--warning {
+  background: #fff8c5;
+  color: #7c5e00;
+  border-color: #e0c200;
+}
+.lbr-banner--critical {
+  background: #ffebe9;
+  color: #82071e;
+  border-color: #ff8182;
+}
+.lbr-banner--success {
+  background: #dafbe1;
+  color: #04420d;
+  border-color: #4ac26b;
+}
 
 /* --- empty state --- */
 .lbr-empty {
@@ -121,37 +178,78 @@ a { color: var(--color-info); }
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border-muted);
 }
-.lbr-empty__illustration { width: 240px; height: auto; margin-bottom: var(--sp-4); }
-.lbr-empty__title { font-size: var(--fs-xl); margin: 0 0 var(--sp-2) 0; }
-.lbr-empty__description { color: var(--color-text-muted); margin: 0 0 var(--sp-4) 0; max-width: 38ch; }
-.lbr-empty__action { margin-top: var(--sp-2); }
+.lbr-empty__illustration {
+  width: 240px;
+  height: auto;
+  margin-bottom: var(--sp-4);
+}
+.lbr-empty__title {
+  font-size: var(--fs-xl);
+  margin: 0 0 var(--sp-2) 0;
+}
+.lbr-empty__description {
+  color: var(--color-text-muted);
+  margin: 0 0 var(--sp-4) 0;
+  max-width: 38ch;
+}
+.lbr-empty__action {
+  margin-top: var(--sp-2);
+}
 
 /* --- skeleton --- */
 .lbr-skeleton {
-  background: linear-gradient(90deg, var(--color-surface-sunken) 0%, var(--color-surface-muted) 50%, var(--color-surface-sunken) 100%);
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-sunken) 0%,
+    var(--color-surface-muted) 50%,
+    var(--color-surface-sunken) 100%
+  );
   background-size: 200% 100%;
   animation: lbr-skeleton-pulse 1.4s ease-in-out infinite;
 }
-.lbr-skeleton--r-sm { border-radius: var(--radius-sm); }
-.lbr-skeleton--r-md { border-radius: var(--radius-md); }
-.lbr-skeleton--r-lg { border-radius: var(--radius-lg); }
-.lbr-skeleton--r-full { border-radius: var(--radius-full); }
+.lbr-skeleton--r-sm {
+  border-radius: var(--radius-sm);
+}
+.lbr-skeleton--r-md {
+  border-radius: var(--radius-md);
+}
+.lbr-skeleton--r-lg {
+  border-radius: var(--radius-lg);
+}
+.lbr-skeleton--r-full {
+  border-radius: var(--radius-full);
+}
 @keyframes lbr-skeleton-pulse {
-  0% { background-position: 100% 0; }
-  100% { background-position: -100% 0; }
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
 }
 
 /* Indeterminate spinner (e.g. the bulk-import progress step). */
 @keyframes lbr-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
-.lbr-spinner { animation: lbr-spin 0.8s linear infinite; }
+.lbr-spinner {
+  animation: lbr-spin 0.8s linear infinite;
+}
 
 /* respect reduced motion */
 @media (prefers-reduced-motion: reduce) {
-  .lbr-skeleton { animation: none; }
-  .lbr-spinner { animation: none; }
-  .lbr-btn--loading::after { animation: none; border-right-color: currentColor; }
+  .lbr-skeleton {
+    animation: none;
+  }
+  .lbr-spinner {
+    animation: none;
+  }
+  .lbr-btn--loading::after {
+    animation: none;
+    border-right-color: currentColor;
+  }
 }
 
 /* --- input / form field --- */
@@ -168,7 +266,9 @@ a { color: var(--color-info); }
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   padding: var(--sp-2) var(--sp-3);
-  transition: border-color 120ms, box-shadow 120ms;
+  transition:
+    border-color 120ms,
+    box-shadow 120ms;
 }
 .lbr-input:focus-visible {
   border-color: var(--color-primary);
@@ -216,7 +316,10 @@ a { color: var(--color-info); }
 }
 /* A field that grows to fill a flex row beside a sibling control (e.g. the
    ISBN input next to its "Look up" button on the new-book form). */
-.lbr-isbn-field { flex: 1 1 16rem; min-width: 0; }
+.lbr-isbn-field {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
 
 /* --- card --- */
 .lbr-card {
@@ -236,13 +339,26 @@ a { color: var(--color-info); }
   gap: var(--sp-4);
   margin-bottom: var(--sp-4);
 }
-.lbr-card__title { font-size: var(--fs-lg); margin: 0; }
-.lbr-card__subtitle { color: var(--color-text-muted); margin: var(--sp-1) 0 0 0; }
-.lbr-card__actions { display: flex; gap: var(--sp-2); }
-.lbr-card__body { color: var(--color-text); }
+.lbr-card__title {
+  font-size: var(--fs-lg);
+  margin: 0;
+}
+.lbr-card__subtitle {
+  color: var(--color-text-muted);
+  margin: var(--sp-1) 0 0 0;
+}
+.lbr-card__actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+.lbr-card__body {
+  color: var(--color-text);
+}
 
 /* --- page header --- */
-.lbr-page-header { margin-bottom: var(--sp-6); }
+.lbr-page-header {
+  margin-bottom: var(--sp-6);
+}
 .lbr-page-header__trail {
   font-size: var(--fs-sm);
   color: var(--color-text-muted);
@@ -265,12 +381,17 @@ a { color: var(--color-info); }
   margin: 0;
   line-height: 1.2;
 }
-.lbr-page-header__help { display: inline-flex; }
+.lbr-page-header__help {
+  display: inline-flex;
+}
 .lbr-page-header__subtitle {
   color: var(--color-text-muted);
   margin: var(--sp-2) 0 0 0;
 }
-.lbr-page-header__actions { display: flex; gap: var(--sp-2); }
+.lbr-page-header__actions {
+  display: flex;
+  gap: var(--sp-2);
+}
 
 /* --- nav --- */
 .lbr-nav {
@@ -289,7 +410,9 @@ a { color: var(--color-info); }
   font-size: var(--fs-sm);
   transition: background-color 100ms;
 }
-.lbr-nav__link:hover { background: var(--color-surface-muted); }
+.lbr-nav__link:hover {
+  background: var(--color-surface-muted);
+}
 .lbr-nav__link--active {
   background: var(--color-surface-muted);
   font-weight: 600;
@@ -406,8 +529,12 @@ a { color: var(--color-info); }
   margin-top: var(--sp-4);
   font-size: var(--fs-lg);
 }
-.lbr-help-drawer__body p { margin: var(--sp-2) 0; }
-.lbr-help-drawer__body ul { padding-left: var(--sp-4); }
+.lbr-help-drawer__body p {
+  margin: var(--sp-2) 0;
+}
+.lbr-help-drawer__body ul {
+  padding-left: var(--sp-4);
+}
 .lbr-help-drawer__body code {
   font-family: var(--font-mono);
   font-size: 0.9em;
@@ -433,7 +560,10 @@ a { color: var(--color-info); }
   line-height: 1;
   padding: 0;
 }
-.lbr-help-button:hover { color: var(--color-text); border-color: var(--color-text-muted); }
+.lbr-help-button:hover {
+  color: var(--color-text);
+  border-color: var(--color-text-muted);
+}
 
 /* --- destructive-confirm modal extras --- */
 .lbr-confirm-destructive__warning {
@@ -477,13 +607,31 @@ a { color: var(--color-info); }
   padding: var(--sp-3) var(--sp-4);
   animation: lbr-toast-in 200ms ease-out;
 }
-.lbr-toast--info { border-left: 4px solid var(--color-info); }
-.lbr-toast--success { border-left: 4px solid var(--color-success); }
-.lbr-toast--warning { border-left: 4px solid var(--color-warning); }
-.lbr-toast--critical { border-left: 4px solid var(--color-danger); }
-.lbr-toast__content { flex: 1; min-width: 0; }
-.lbr-toast__title { display: block; font-weight: 600; margin-bottom: var(--sp-1); }
-.lbr-toast__body { font-size: var(--fs-sm); color: var(--color-text-muted); }
+.lbr-toast--info {
+  border-left: 4px solid var(--color-info);
+}
+.lbr-toast--success {
+  border-left: 4px solid var(--color-success);
+}
+.lbr-toast--warning {
+  border-left: 4px solid var(--color-warning);
+}
+.lbr-toast--critical {
+  border-left: 4px solid var(--color-danger);
+}
+.lbr-toast__content {
+  flex: 1;
+  min-width: 0;
+}
+.lbr-toast__title {
+  display: block;
+  font-weight: 600;
+  margin-bottom: var(--sp-1);
+}
+.lbr-toast__body {
+  font-size: var(--fs-sm);
+  color: var(--color-text-muted);
+}
 .lbr-toast__action {
   background: transparent;
   border: 0;
@@ -502,11 +650,19 @@ a { color: var(--color-info); }
   color: var(--color-text-muted);
 }
 @keyframes lbr-toast-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .lbr-toast { animation: none; }
+  .lbr-toast {
+    animation: none;
+  }
 }
 
 /* --- table --- */
@@ -532,8 +688,12 @@ a { color: var(--color-info); }
   font-size: var(--fs-xs);
   letter-spacing: 0.04em;
 }
-.lbr-table tbody tr:hover { background: var(--color-surface-muted); }
-.lbr-table tbody tr:last-child td { border-bottom: 0; }
+.lbr-table tbody tr:hover {
+  background: var(--color-surface-muted);
+}
+.lbr-table tbody tr:last-child td {
+  border-bottom: 0;
+}
 
 /* --- app shell --- */
 .lbr-shell {
@@ -575,7 +735,9 @@ a { color: var(--color-info); }
    sidebar drawer + a dimming scrim. Hidden on desktop so the `.lbr-shell` grid
    still resolves to exactly two columns (sidebar + main). The drawer state is
    a `.is-open` class the client sidebar toggles. */
-.lbr-shell__topbar { display: none; }
+.lbr-shell__topbar {
+  display: none;
+}
 .lbr-shell__topbar-brand {
   display: inline-flex;
   align-items: center;
@@ -586,7 +748,11 @@ a { color: var(--color-info); }
   color: inherit;
   min-width: 0;
 }
-.lbr-shell__topbar-brand span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lbr-shell__topbar-brand span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .lbr-shell__hamburger {
   display: inline-flex;
   align-items: center;
@@ -601,9 +767,13 @@ a { color: var(--color-info); }
   cursor: pointer;
   padding: 0;
 }
-.lbr-shell__scrim { display: none; }
+.lbr-shell__scrim {
+  display: none;
+}
 @media (max-width: 768px) {
-  .lbr-shell { grid-template-columns: 1fr; }
+  .lbr-shell {
+    grid-template-columns: 1fr;
+  }
   .lbr-shell__topbar {
     display: flex;
     align-items: center;
@@ -624,12 +794,25 @@ a { color: var(--color-info); }
     width: min(300px, 84vw);
     z-index: 70;
     transform: translateX(-100%);
-    transition: transform 220ms ease;
+    /* mobile-web-new: when closed, drop the off-screen drawer out of the tab
+       order and the a11y tree so keyboard/screen-reader users don't hit the
+       full nav a second time. `visibility:hidden` does both; transitioning it
+       (delayed on close) keeps the slide-out animation intact. */
+    visibility: hidden;
+    transition:
+      transform 220ms ease,
+      visibility 0s linear 220ms;
     overflow-y: auto;
     border-right: 1px solid var(--color-border-muted);
     box-shadow: 4px 0 24px rgba(15, 23, 42, 0.18);
   }
-  .lbr-shell__sidebar.is-open { transform: translateX(0); }
+  .lbr-shell__sidebar.is-open {
+    transform: translateX(0);
+    visibility: visible;
+    transition:
+      transform 220ms ease,
+      visibility 0s linear 0s;
+  }
   .lbr-shell__scrim {
     display: block;
     position: fixed;
@@ -640,11 +823,19 @@ a { color: var(--color-info); }
     pointer-events: none;
     transition: opacity 220ms ease;
   }
-  .lbr-shell__scrim.is-open { opacity: 1; pointer-events: auto; }
-  .lbr-shell__main { padding: var(--sp-4); }
+  .lbr-shell__scrim.is-open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .lbr-shell__main {
+    padding: var(--sp-4);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .lbr-shell__sidebar, .lbr-shell__scrim { transition: none; }
+  .lbr-shell__sidebar,
+  .lbr-shell__scrim {
+    transition: none;
+  }
 }
 
 /* --- auth shell (login / signup) --- */
@@ -794,7 +985,10 @@ a { color: var(--color-info); }
   margin: 0;
   padding: var(--sp-1);
   list-style: none;
-  z-index: 20;
+  /* mob-3: sit above the sticky mobile top bar (z-index:50) so options aren't
+     painted over when the field scrolls under the bar, but below the nav
+     scrim (60)/drawer (70) so an open off-canvas menu still covers it. */
+  z-index: 55;
 }
 .lbr-combobox__option {
   padding: var(--sp-2) var(--sp-3);
@@ -802,7 +996,9 @@ a { color: var(--color-info); }
   cursor: pointer;
   font-size: var(--fs-sm);
 }
-.lbr-combobox__option--active { background: var(--color-surface-muted); }
+.lbr-combobox__option--active {
+  background: var(--color-surface-muted);
+}
 .lbr-combobox__option--inert {
   cursor: default;
   color: var(--color-text-muted);
@@ -817,7 +1013,10 @@ a { color: var(--color-info); }
   border-radius: var(--radius-md);
   padding: var(--sp-2) var(--sp-3);
 }
-.lbr-combobox__picked-body { flex: 1; min-width: 0; }
+.lbr-combobox__picked-body {
+  flex: 1;
+  min-width: 0;
+}
 .lbr-combobox__clear {
   background: transparent;
   border: 0;
@@ -845,9 +1044,17 @@ a { color: var(--color-info); }
 }
 
 /* --- prose styles for rendered markdown (help center articles) --- */
-.lbr-prose { line-height: 1.65; color: var(--color-text); max-width: 70ch; }
-.lbr-prose > :first-child { margin-top: 0; }
-.lbr-prose > :last-child { margin-bottom: 0; }
+.lbr-prose {
+  line-height: 1.65;
+  color: var(--color-text);
+  max-width: 70ch;
+}
+.lbr-prose > :first-child {
+  margin-top: 0;
+}
+.lbr-prose > :last-child {
+  margin-bottom: 0;
+}
 .lbr-prose h2 {
   font-size: var(--fs-xl);
   margin: var(--sp-6) 0 var(--sp-3) 0;
@@ -858,11 +1065,23 @@ a { color: var(--color-info); }
   margin: var(--sp-5) 0 var(--sp-2) 0;
   line-height: 1.3;
 }
-.lbr-prose p { margin: var(--sp-3) 0; }
-.lbr-prose ul, .lbr-prose ol { margin: var(--sp-3) 0; padding-left: var(--sp-5); }
-.lbr-prose li { margin: var(--sp-1) 0; }
-.lbr-prose li > p { margin: var(--sp-1) 0; }
-.lbr-prose strong { font-weight: 600; }
+.lbr-prose p {
+  margin: var(--sp-3) 0;
+}
+.lbr-prose ul,
+.lbr-prose ol {
+  margin: var(--sp-3) 0;
+  padding-left: var(--sp-5);
+}
+.lbr-prose li {
+  margin: var(--sp-1) 0;
+}
+.lbr-prose li > p {
+  margin: var(--sp-1) 0;
+}
+.lbr-prose strong {
+  font-weight: 600;
+}
 .lbr-prose code {
   font-family: var(--font-mono);
   font-size: 0.9em;
@@ -877,15 +1096,22 @@ a { color: var(--color-info); }
   overflow-x: auto;
   font-size: var(--fs-sm);
 }
-.lbr-prose pre code { background: none; padding: 0; }
+.lbr-prose pre code {
+  background: none;
+  padding: 0;
+}
 .lbr-prose blockquote {
   border-left: 3px solid var(--color-border);
   padding-left: var(--sp-3);
   margin: var(--sp-3) 0;
   color: var(--color-text-muted);
 }
-.lbr-prose a { color: var(--color-info); }
-.lbr-prose a:hover { text-decoration: underline; }
+.lbr-prose a {
+  color: var(--color-info);
+}
+.lbr-prose a:hover {
+  text-decoration: underline;
+}
 
 /* --- public landing page --- */
 .lbr-landing__nav {
@@ -898,9 +1124,21 @@ a { color: var(--color-info); }
   margin: 0 auto;
   padding: var(--sp-4) var(--sp-6);
 }
-.lbr-landing__brand { display: inline-flex; align-items: center; }
-.lbr-landing__nav-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
-.lbr-landing__locales { display: inline-flex; gap: var(--sp-1); margin-right: var(--sp-2); }
+.lbr-landing__brand {
+  display: inline-flex;
+  align-items: center;
+}
+.lbr-landing__nav-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+.lbr-landing__locales {
+  display: inline-flex;
+  gap: var(--sp-1);
+  margin-right: var(--sp-2);
+}
 .lbr-landing__locale {
   padding: var(--sp-1) var(--sp-2);
   border-radius: var(--radius-sm);
@@ -908,7 +1146,10 @@ a { color: var(--color-info); }
   font-size: var(--fs-sm);
   color: var(--color-text-muted);
 }
-.lbr-landing__locale--active { color: var(--color-primary); font-weight: 600; }
+.lbr-landing__locale--active {
+  color: var(--color-primary);
+  font-weight: 600;
+}
 
 /* Hero — the one vibrant, full-bleed gradient band. */
 .lbr-landing__hero {
@@ -917,7 +1158,10 @@ a { color: var(--color-info); }
   padding: var(--sp-12) var(--sp-6);
   text-align: center;
 }
-.lbr-landing__hero-inner { max-width: 760px; margin: 0 auto; }
+.lbr-landing__hero-inner {
+  max-width: 760px;
+  margin: 0 auto;
+}
 .lbr-landing__eyebrow {
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -940,8 +1184,17 @@ a { color: var(--color-info); }
   max-width: 600px;
   margin: 0 auto var(--sp-6) auto;
 }
-.lbr-landing__hero-cta { display: flex; gap: var(--sp-3); justify-content: center; flex-wrap: wrap; }
-.lbr-landing__hero-note { margin: var(--sp-4) 0 0 0; font-size: var(--fs-sm); opacity: 0.85; }
+.lbr-landing__hero-cta {
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.lbr-landing__hero-note {
+  margin: var(--sp-4) 0 0 0;
+  font-size: var(--fs-sm);
+  opacity: 0.85;
+}
 
 /* On-gradient CTAs (high-contrast white solid + white outline). */
 .lbr-landing__btn {
@@ -955,18 +1208,46 @@ a { color: var(--color-info); }
   border: 2px solid transparent;
   text-decoration: none;
   cursor: pointer;
-  transition: transform 120ms, background-color 120ms;
+  transition:
+    transform 120ms,
+    background-color 120ms;
 }
-.lbr-landing__btn--solid { background: #ffffff; color: var(--color-primary); }
-.lbr-landing__btn--solid:hover { transform: translateY(-1px); }
-.lbr-landing__btn--outline { background: transparent; color: #ffffff; border-color: rgba(255, 255, 255, 0.7); }
-.lbr-landing__btn--outline:hover { background: rgba(255, 255, 255, 0.14); }
+.lbr-landing__btn--solid {
+  background: #ffffff;
+  color: var(--color-primary);
+}
+.lbr-landing__btn--solid:hover {
+  transform: translateY(-1px);
+}
+.lbr-landing__btn--outline {
+  background: transparent;
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.7);
+}
+.lbr-landing__btn--outline:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
 
 /* Content sections. */
-.lbr-landing__section { max-width: 1100px; margin: 0 auto; padding: var(--sp-12) var(--sp-6); }
-.lbr-landing__section-head { text-align: center; margin-bottom: var(--sp-8); }
-.lbr-landing__section-title { font-size: var(--fs-3xl); letter-spacing: -0.01em; margin: 0 0 var(--sp-2) 0; }
-.lbr-landing__section-sub { color: var(--color-text-muted); font-size: var(--fs-lg); margin: 0; }
+.lbr-landing__section {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--sp-12) var(--sp-6);
+}
+.lbr-landing__section-head {
+  text-align: center;
+  margin-bottom: var(--sp-8);
+}
+.lbr-landing__section-title {
+  font-size: var(--fs-3xl);
+  letter-spacing: -0.01em;
+  margin: 0 0 var(--sp-2) 0;
+}
+.lbr-landing__section-sub {
+  color: var(--color-text-muted);
+  font-size: var(--fs-lg);
+  margin: 0;
+}
 
 .lbr-landing__features {
   display: grid;
@@ -990,9 +1271,19 @@ a { color: var(--color-info); }
   color: var(--color-primary);
   margin-bottom: var(--sp-3);
 }
-.lbr-landing__feature-icon svg { width: 24px; height: 24px; }
-.lbr-landing__feature-title { font-size: var(--fs-lg); margin: 0 0 var(--sp-1) 0; }
-.lbr-landing__feature-body { color: var(--color-text-muted); line-height: 1.55; margin: 0; }
+.lbr-landing__feature-icon svg {
+  width: 24px;
+  height: 24px;
+}
+.lbr-landing__feature-title {
+  font-size: var(--fs-lg);
+  margin: 0 0 var(--sp-1) 0;
+}
+.lbr-landing__feature-body {
+  color: var(--color-text-muted);
+  line-height: 1.55;
+  margin: 0;
+}
 
 /* Closing call-to-action card. */
 .lbr-landing__cta {
@@ -1003,8 +1294,15 @@ a { color: var(--color-info); }
   padding: var(--sp-10) var(--sp-6);
   box-shadow: 0 4px 16px rgba(15, 23, 42, 0.05);
 }
-.lbr-landing__cta-title { font-size: var(--fs-2xl); margin: 0 0 var(--sp-2) 0; }
-.lbr-landing__cta-body { color: var(--color-text-muted); font-size: var(--fs-lg); margin: 0 0 var(--sp-5) 0; }
+.lbr-landing__cta-title {
+  font-size: var(--fs-2xl);
+  margin: 0 0 var(--sp-2) 0;
+}
+.lbr-landing__cta-body {
+  color: var(--color-text-muted);
+  font-size: var(--fs-lg);
+  margin: 0 0 var(--sp-5) 0;
+}
 
 .lbr-landing__footer {
   max-width: 1100px;
@@ -1026,7 +1324,10 @@ a { color: var(--color-info); }
    =========================================================================== */
 
 /* Media never forces horizontal overflow. */
-img, video { max-width: 100%; }
+img,
+video {
+  max-width: 100%;
+}
 
 /* --- responsive utilities (opt-in classes pages apply) --- */
 /* Auto-collapsing form/field grid: as many >=14rem columns as fit, dropping to
@@ -1036,9 +1337,6 @@ img, video { max-width: 100%; }
   gap: var(--sp-4);
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
 }
-/* A horizontal group (action buttons / filters) that wraps rather than
-   overflowing on small screens. */
-.lbr-cluster { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
 /* Asymmetric content split (~2:1, main + aside) that stacks on mobile.
    Replaces inline `minmax(0, 2fr) minmax(0, 1fr)`. */
 .lbr-split {
@@ -1048,9 +1346,13 @@ img, video { max-width: 100%; }
   align-items: start;
 }
 /* Even two-column split that stacks on mobile (1:1). */
-.lbr-split--even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.lbr-split--even {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
 @media (max-width: 768px) {
-  .lbr-split { grid-template-columns: 1fr; }
+  .lbr-split {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* --- responsive tables --- */
@@ -1065,7 +1367,10 @@ img, video { max-width: 100%; }
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border-muted);
 }
-.lbr-table-wrap > .lbr-table { border: 0; border-radius: 0; }
+.lbr-table-wrap > .lbr-table {
+  border: 0;
+  border-radius: 0;
+}
 
 /* Card reflow: a `.lbr-table--cards` table turns each row into a stacked
    label/value card on mobile (DataTable emits a `data-label` per cell). Above
@@ -1085,7 +1390,10 @@ img, video { max-width: 100%; }
   .lbr-table--cards,
   .lbr-table--cards tbody,
   .lbr-table--cards tr,
-  .lbr-table--cards td { display: block; width: 100%; }
+  .lbr-table--cards td {
+    display: block;
+    width: 100%;
+  }
   .lbr-table--cards tr {
     border: 1px solid var(--color-border-muted);
     border-radius: var(--radius-md);
@@ -1102,7 +1410,9 @@ img, video { max-width: 100%; }
     border-bottom: 1px solid var(--color-border-muted);
     text-align: right;
   }
-  .lbr-table--cards td:last-child { border-bottom: 0; }
+  .lbr-table--cards td:last-child {
+    border-bottom: 0;
+  }
   .lbr-table--cards td::before {
     content: attr(data-label);
     flex: 0 0 auto;
@@ -1113,21 +1423,33 @@ img, video { max-width: 100%; }
     font-size: var(--fs-xs);
     letter-spacing: 0.04em;
   }
-  .lbr-table--cards td[data-label='']::before { content: ''; }
-  /* Cards flow normally — drop the wrapper's scroll/border so it doesn't
-     double up around the stack. */
-  .lbr-table-wrap:has(.lbr-table--cards) { overflow-x: visible; border: 0; }
+  .lbr-table--cards td[data-label='']::before {
+    content: '';
+  }
+  /* Cards flow normally — drop the wrapper's own scroll/border so it doesn't
+     double up around the stack. Driven by the explicit `.lbr-table-wrap--cards`
+     modifier the card-reflow wrapper always carries (mob-4), so no `:has()` /
+     `@supports` engine-fallback is needed — this works everywhere. */
+  .lbr-table-wrap--cards {
+    overflow-x: visible;
+    border: 0;
+  }
 }
 
 /* --- mobile form controls --- */
 /* >=16px stops iOS Safari auto-zooming when a field is focused. */
 @media (max-width: 768px) {
-  .lbr-input { font-size: 16px; }
+  .lbr-input {
+    font-size: 16px;
+  }
 }
 
 /* --- touch targets (coarse pointers) --- */
 @media (pointer: coarse) {
-  .lbr-btn, .lbr-nav__link { min-height: 44px; }
+  .lbr-btn,
+  .lbr-nav__link {
+    min-height: 44px;
+  }
   .lbr-modal__close,
   .lbr-help-drawer__close,
   .lbr-banner__dismiss,
@@ -1145,28 +1467,54 @@ img, video { max-width: 100%; }
 
 /* --- modal becomes a bottom sheet on mobile --- */
 @media (max-width: 768px) {
-  .lbr-modal { max-width: 100vw; width: 100vw; margin: auto 0 0 0; }
-  .lbr-modal__inner { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-  .lbr-modal__body { max-height: 75vh; padding: var(--sp-4); }
-  .lbr-modal__header, .lbr-modal__actions { padding: var(--sp-3) var(--sp-4); }
-  .lbr-modal__actions .lbr-btn { flex: 1 1 auto; }
+  .lbr-modal {
+    max-width: 100vw;
+    width: 100vw;
+    margin: auto 0 0 0;
+  }
+  .lbr-modal__inner {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .lbr-modal__body {
+    max-height: 75vh;
+    padding: var(--sp-4);
+  }
+  .lbr-modal__header,
+  .lbr-modal__actions {
+    padding: var(--sp-3) var(--sp-4);
+  }
+  .lbr-modal__actions .lbr-btn {
+    flex: 1 1 auto;
+  }
 }
 
 /* --- detail definition lists stack on mobile --- */
 @media (max-width: 768px) {
-  .lbr-dl { grid-template-columns: 1fr; gap: var(--sp-1) 0; }
+  .lbr-dl {
+    grid-template-columns: 1fr;
+    gap: var(--sp-1) 0;
+  }
   .lbr-dl dt {
     margin-top: var(--sp-2);
     font-size: var(--fs-xs);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
-  .lbr-dl dt:first-child { margin-top: 0; }
+  .lbr-dl dt:first-child {
+    margin-top: 0;
+  }
 }
 
 /* --- misc shared primitives on mobile --- */
 @media (max-width: 768px) {
-  .lbr-page-header__title { font-size: var(--fs-2xl); }
-  .lbr-page-header__actions { flex-wrap: wrap; }
-  .lbr-card { padding: var(--sp-4); }
+  .lbr-page-header__title {
+    font-size: var(--fs-2xl);
+  }
+  .lbr-page-header__actions {
+    flex-wrap: wrap;
+  }
+  .lbr-card {
+    padding: var(--sp-4);
+  }
 }

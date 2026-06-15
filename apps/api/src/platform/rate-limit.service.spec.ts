@@ -1,15 +1,29 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RateLimitService } from './rate-limit.service.js';
 import type { RedisService } from './redis.service.js';
 
-/** Minimal in-memory stand-in for the single counter under test. */
+/**
+ * Minimal in-memory stand-in for the single counter under test. INCR + the
+ * first-hit PEXPIRE are now done atomically inside a Lua script
+ * (`client.eval`), so the fake models the post-INCR count `eval` returns and
+ * tracks how often the TTL was armed (AUTH-04).
+ */
 function fakeRedis(initial = 0) {
   let value = initial;
-  const expire = vi.fn(async () => 1);
+  let armed = 0;
   const ttl = vi.fn(async () => 42);
-  const incr = vi.fn(async () => ++value);
-  return { client: { incr, expire, ttl } } as unknown as RedisService & {
-    client: { incr: typeof incr; expire: typeof expire; ttl: typeof ttl };
+  // The script INCRs then PEXPIREs on the first hit / when TTL is missing.
+  const evalFn = vi.fn(async () => {
+    value++;
+    if (value === 1) armed++;
+    return value;
+  });
+  return {
+    client: { eval: evalFn, ttl },
+    armedCount: () => armed,
+  } as unknown as RedisService & {
+    client: { eval: typeof evalFn; ttl: typeof ttl };
+    armedCount: () => number;
   };
 }
 
@@ -22,11 +36,23 @@ describe('RateLimitService', () => {
     svc = new RateLimitService(redis);
   });
 
-  it('arms the TTL only on the first hit of a window', async () => {
+  const origNodeEnv = process.env.NODE_ENV;
+  afterEach(() => {
+    delete process.env.RATE_LIMIT_DISABLED;
+    process.env.NODE_ENV = origNodeEnv;
+  });
+
+  it('arms the TTL atomically only on the first hit of a window', async () => {
     await svc.hit('k', 3, 60);
-    expect(redis.client.expire).toHaveBeenCalledTimes(1);
+    expect(redis.armedCount()).toBe(1);
     await svc.hit('k', 3, 60);
-    expect(redis.client.expire).toHaveBeenCalledTimes(1);
+    expect(redis.armedCount()).toBe(1);
+  });
+
+  it('passes the window (in ms) to PEXPIRE via the Lua ARGV', async () => {
+    await svc.hit('k', 3, 60);
+    // eval(script, numKeys, key, windowMs)
+    expect(redis.client.eval).toHaveBeenCalledWith(expect.any(String), 1, 'rl:k', '60000');
   });
 
   it('allows up to the limit and blocks beyond it', async () => {
@@ -37,18 +63,39 @@ describe('RateLimitService', () => {
     expect(third.retryAfterSec).toBe(42);
   });
 
-  it('fails OPEN when Redis errors (availability over strict limiting)', async () => {
+  it('fails OPEN for non-signup buckets when Redis errors', async () => {
     const broken = {
       client: {
-        incr: vi.fn(async () => {
+        eval: vi.fn(async () => {
           throw new Error('redis down');
         }),
-        expire: vi.fn(),
         ttl: vi.fn(),
       },
     } as unknown as RedisService;
     const s = new RateLimitService(broken);
-    const r = await s.hit('k', 1, 60);
+    const r = await s.hit('login:ip:1.2.3.4', 1, 60);
     expect(r.allowed).toBe(true);
+  });
+
+  it('fails CLOSED for signup buckets when Redis errors (REM-2)', async () => {
+    const broken = {
+      client: {
+        eval: vi.fn(async () => {
+          throw new Error('redis down');
+        }),
+        ttl: vi.fn(),
+      },
+    } as unknown as RedisService;
+    const s = new RateLimitService(broken);
+    expect((await s.hit('signup:global', 60, 600)).allowed).toBe(false);
+    expect((await s.hit('signup:ip:1.2.3.4', 5, 600)).allowed).toBe(false);
+  });
+
+  it('honours RATE_LIMIT_DISABLED outside production', async () => {
+    process.env.NODE_ENV = 'test';
+    process.env.RATE_LIMIT_DISABLED = 'true';
+    const r = await svc.hit('k', 1, 60);
+    expect(r.allowed).toBe(true);
+    expect(redis.client.eval).not.toHaveBeenCalled();
   });
 });

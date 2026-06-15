@@ -5,6 +5,7 @@ import { loadEnv } from '../config/env.js';
 import { EmailService } from '../email/email.service.js';
 import { RedisService } from '../platform/redis.service.js';
 import { RateLimitService } from '../platform/rate-limit.service.js';
+import { AuthGuard } from './auth.guard.js';
 import { PasswordService } from './password.service.js';
 
 /**
@@ -117,21 +118,32 @@ export class PasswordResetService {
    */
   async complete(input: { token: string; newPassword: string }): Promise<boolean> {
     const key = `pwreset:${input.token}`;
-    const raw = await this.redis.client.get(key);
+    // Claim the token ATOMICALLY before doing any work (AUTH-08): GETDEL returns
+    // the value and deletes it in one round-trip, so a token can't be replayed
+    // or raced — only the caller that wins the delete proceeds.
+    const raw = await this.redis.client.getdel(key);
     if (!raw) return false;
     let parsed: { uid: string; tid: string };
     try {
       parsed = JSON.parse(raw);
     } catch {
-      await this.redis.client.del(key);
       return false;
     }
     const passwordHash = await this.passwords.hash(input.newPassword);
     const updated = await controlDb.user.updateMany({
       where: { id: parsed.uid, tenantId: parsed.tid, status: 'active' },
-      data: { passwordHash, failedLogins: 0, lockedUntil: null },
+      // Bump sessionsValidAfter so any session the attacker already holds is
+      // invalidated by the reset (AUTH-01) — the whole point of recovery.
+      data: {
+        passwordHash,
+        failedLogins: 0,
+        lockedUntil: null,
+        sessionsValidAfter: new Date(),
+      },
     });
-    await this.redis.client.del(key);
+    if (updated.count === 1) {
+      await AuthGuard.invalidateAuthCache(this.redis, parsed.uid);
+    }
     return updated.count === 1;
   }
 }

@@ -31,7 +31,11 @@ export class RedisService implements OnModuleDestroy {
     });
 
     this.client.on('error', (err: Error) => this.logger.error(`Redis error: ${err.message}`));
-    this.client.on('connect', () => this.logger.log(`Connected to Redis at ${env.redisUrl}`));
+    // REL-05: redact any credentials before logging — when REDIS_URL carries a
+    // password it would otherwise land in stdout/Docker logs on every reconnect.
+    this.client.on('connect', () =>
+      this.logger.log(`Connected to Redis at ${redactUrl(env.redisUrl)}`),
+    );
   }
 
   async onModuleDestroy() {
@@ -49,4 +53,12 @@ export class RedisService implements OnModuleDestroy {
       return false;
     }
   }
+}
+
+/**
+ * Strip the password from a `redis://user:pass@host` URL before logging.
+ * Mirrors the `redactUrl` pattern in `email/drivers/smtp-driver.ts` (REL-05).
+ */
+function redactUrl(u: string): string {
+  return u.replace(/:[^:@/]+@/, ':***@');
 }

@@ -8,6 +8,11 @@ coverage/
 .env
 .env.local
 .env.*.local
+# Production secrets file (the secrets-manager's default target if run in-repo)
+# + the atomic-write temp files it creates. NOT .env.prod.example, which is a
+# tracked template (exact-match rule below leaves it alone).
+.env.prod
+.env*.tmp-*
 *.log
 .DS_Store
 .vscode/

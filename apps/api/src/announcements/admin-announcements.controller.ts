@@ -12,6 +12,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { AdminAuthGuard, AdminSess } from '../admin/admin-auth.guard.js';
+import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
+import { AdminRoles } from '../admin/admin-roles.decorator.js';
 import type { AdminSessionPayload } from '../admin/admin-session.service.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { audienceFromJson } from './audience.js';
@@ -33,7 +35,7 @@ import { AnnouncementDeliveryService } from './announcement-delivery.service.js'
  * ack counts — see {@link AnnouncementService.stats} for the why.
  */
 @Controller('admin/announcements')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, AdminRolesGuard)
 export class AdminAnnouncementsController {
   constructor(
     @Inject(AnnouncementService) private readonly anns: AnnouncementService,
@@ -56,6 +58,7 @@ export class AdminAnnouncementsController {
   }
 
   @Post()
+  @AdminRoles('owner')
   @HttpCode(201)
   async create(@AdminSess() admin: AdminSessionPayload, @Body() raw: unknown) {
     const dto = await validateDto(CreateAnnouncementDto, raw);
@@ -84,6 +87,7 @@ export class AdminAnnouncementsController {
   }
 
   @Patch(':id')
+  @AdminRoles('owner')
   async update(@Param('id') id: string, @Body() raw: unknown) {
     const dto = await validateDto(UpdateAnnouncementDto, raw);
     const ann = await this.anns.update(id, {
@@ -105,6 +109,7 @@ export class AdminAnnouncementsController {
   }
 
   @Post(':id/expire')
+  @AdminRoles('owner')
   @HttpCode(200)
   async expire(@Param('id') id: string) {
     const ann = await this.anns.expireNow(id);
@@ -113,6 +118,7 @@ export class AdminAnnouncementsController {
   }
 
   @Delete(':id')
+  @AdminRoles('owner')
   @HttpCode(204)
   async archive(@Param('id') id: string) {
     const ann = await this.anns.archive(id);

@@ -13,3 +13,9 @@ process.env.BILLING_ENABLED ||= 'true';
 // invokes RateLimitService (wiring stays covered) and the limiter's own logic
 // is unit-tested in src/platform/rate-limit.service.spec.ts.
 process.env.RATE_LIMIT_DISABLED ||= 'true';
+
+// Admin tests bootstrap a password-only admin and exercise authorization, not
+// MFA enrollment. Mandatory-MFA (AUTH-06) defaults ON outside development, which
+// would 403 those admins onto the enrollment flow; opt the suite out so it
+// tests what it means to. MFA enforcement has its own dedicated coverage.
+process.env.ADMIN_MFA_REQUIRED ||= 'false';

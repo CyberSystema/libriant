@@ -27,8 +27,15 @@ export function publicExportJob(job: ExportJob) {
 export class ExportService {
   constructor(@Inject(ExportQueueService) private readonly queue: ExportQueueService) {}
 
-  private expiry(): Date {
-    return new Date(Date.now() + EXPORT_TTL_HOURS * 3_600_000);
+  // EXP-004: control/all-scope dumps contain the whole platform's (redacted but
+  // still highly sensitive) control data, so they live for a shorter window
+  // than a single library's tenant export before the cleanup sweep purges them.
+  private static readonly CONTROL_TTL_HOURS = 2;
+
+  private expiry(scope?: ExportScope): Date {
+    const hours =
+      scope === 'control' || scope === 'all' ? ExportService.CONTROL_TTL_HOURS : EXPORT_TTL_HOURS;
+    return new Date(Date.now() + hours * 3_600_000);
   }
 
   async createForTenant(
@@ -36,6 +43,22 @@ export class ExportService {
     userId: string,
     format: ExportFormat,
   ): Promise<ExportJob> {
+    // Per-tenant cap (export-new-No-per-tenant-cap): the export worker runs at
+    // concurrency 1 platform-wide, so a single tenant must not be able to flood
+    // the queue and starve everyone else. At most one in-flight export per
+    // library — they can start another once it finishes.
+    const inFlight = await controlDb.exportJob.count({
+      where: {
+        targetTenantId: tenantId,
+        scope: 'tenant',
+        status: { in: ['queued', 'running'] },
+      },
+    });
+    if (inFlight > 0) {
+      throw new BadRequestException(
+        'An export for this library is already in progress — wait for it to finish before starting another.',
+      );
+    }
     const job = await controlDb.exportJob.create({
       data: {
         format,
@@ -75,7 +98,7 @@ export class ExportService {
         requestedByKind: 'admin',
         requestedById: adminId,
         status: 'queued',
-        expiresAt: this.expiry(),
+        expiresAt: this.expiry(input.scope),
       },
     });
     await this.queue.enqueue(job.id);

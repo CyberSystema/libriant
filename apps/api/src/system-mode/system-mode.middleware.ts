@@ -34,6 +34,14 @@ const ALWAYS_PASS = [
   /^\/system-mode(\/|$)/,
   /^\/admin\/system-mode(\/|$)/,
   /^\/admin\/auth(\/|$)/,
+  // BILL-1: inbound third-party webhooks must never be 503'd during
+  // maintenance / out_of_order / read_only. Stripe gives up after ~3 days,
+  // so a window that outlasts that envelope would silently lose subscription
+  // events with no durable trace (the retry sweep can only rescue rows that
+  // were actually written). The handler is signature-verified, idempotent,
+  // and writes only control-plane rows (no tenant DB), so letting it through
+  // at minimum persists the durable row that the sweep can later rescue.
+  /^\/webhooks\/stripe(\/|$)/,
 ];
 
 /**

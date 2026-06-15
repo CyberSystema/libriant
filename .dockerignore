@@ -1,0 +1,34 @@
+# Docker build context excludes (CFG-06).
+#
+# Both image builds (apps/api/Dockerfile, apps/web/Dockerfile) use the repo
+# ROOT as their context (compose `context: ../..`, CI `context: .`). Without
+# this file a developer- or operator-built image COPYs the whole workspace —
+# embedding stale local node_modules/.next/dist, bloating the image and
+# busting the build cache — and could ship a stray apps/*/.env. The Dockerfiles
+# install deps and generate Prisma clients themselves, so none of this belongs
+# in the context.
+
+# Dependencies + build output (regenerated inside the image)
+**/node_modules
+**/.next
+**/.turbo
+**/dist
+**/coverage
+**/.prisma
+
+# Secrets / local env — must never enter an image layer
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.prod.example
+
+# Local dev + VCS noise
+.git
+.gitignore
+.dev-storage
+**/*.log
+
+# Editor / OS cruft
+**/.DS_Store
+.vscode
+.idea

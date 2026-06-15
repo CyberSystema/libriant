@@ -29,6 +29,43 @@ const nextConfig = {
       ],
     };
   },
+  // WEB-02: Content-Security-Policy. The Caddy edge already sets the other
+  // hardening headers (HSTS, X-Frame-Options, X-Content-Type-Options, …) but
+  // there was no CSP anywhere, so an HTML sink regression (we render
+  // `dangerouslySetInnerHTML` for the injected token <style> and for
+  // tenant-authored help articles) would have no containment for script
+  // execution or data exfiltration. We set CSP here at the web app rather than
+  // Caddy because the Caddyfile is one shared snippet for both hosts and these
+  // rules track the Next.js app's needs.
+  //
+  // `style-src` allows 'unsafe-inline' because Next injects inline styles (and
+  // the per-library accent-colour <style>) without a nonce; a nonce-based
+  // policy needs request-scoped middleware plumbing — a larger change. Scripts
+  // get 'unsafe-inline' for Next's bootstrap/hydration inline scripts (the App
+  // Router emits them without a nonce). object-src/base-uri/frame-ancestors are
+  // locked down to actually contain an injection.
+  async headers() {
+    const csp = [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob:",
+      "font-src 'self' data:",
+      // Same-origin XHR/fetch only; browser API calls go through /lbr-api/* on
+      // the same origin (see lib/api.ts), so no cross-origin connect is needed.
+      "connect-src 'self'",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+    ].join('; ');
+    return [
+      {
+        source: '/:path*',
+        headers: [{ key: 'Content-Security-Policy', value: csp }],
+      },
+    ];
+  },
   // Canonicalise any locale-prefixed admin URL (stale links / bookmarks) to the
   // locale-free path. Runs before the rewrite above, so there's no loop.
   async redirects() {

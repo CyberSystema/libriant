@@ -31,31 +31,215 @@ const DEFAULT_MAX_LENGTH: Partial<Record<FieldType, number>> = {
   long_text: 10_000,
 };
 
-/** Hard cap on the input length a user-supplied regex is allowed to evaluate. */
-export const REGEX_INPUT_CAP = 4000;
+/**
+ * Hard cap on the input length a user-supplied regex is allowed to evaluate.
+ * With `patternLooksCatastrophic` rejecting the exponential class, the residual
+ * worst case is polynomial backtracking; this cap keeps even a quadratic blow-up
+ * (≈cap²) in the low-millisecond range so a pattern can't stall the event loop.
+ */
+export const REGEX_INPUT_CAP = 2000;
 
 /**
- * Heuristic ReDoS screen for admin-authored validation patterns. JavaScript's
- * regex engine is backtracking, so a pattern with a quantifier applied to a
- * group/class that itself contains a quantifier (e.g. `(a+)+`, `(.*)*`,
- * `(a+)*`, `[ab]+*`) can blow up exponentially and freeze the single event
- * loop. We can't safely time-box a synchronous regex without a worker thread
- * and we avoid a native RE2 dependency, so instead we REFUSE patterns that
- * exhibit the classic catastrophic shapes (at save time and, as a safety net,
- * at match time). Conservative: it may reject some safe patterns, but it never
- * lets a known-dangerous one run on the request path.
+ * Static ReDoS screen for admin-authored validation patterns. JavaScript's
+ * regex engine backtracks, so a quantifier applied to a sub-expression that is
+ * itself "ambiguous" can blow up EXPONENTIALLY and freeze the single shared
+ * event loop for every tenant. Pattern authorship is already restricted to
+ * owner/admins (see the field-definition / collection-field role guards), so the
+ * realistic threat is a careless or malicious admin — but one bad pattern still
+ * has a platform-wide blast radius, so we refuse the dangerous shapes outright.
+ *
+ * A truly sound check needs an automaton analyzer (e.g. `recheck`) or a
+ * non-backtracking engine (RE2) — both are dependency/Docker-build changes
+ * tracked as follow-ups. This scanner is a precise, dependency-free
+ * approximation: it walks the pattern with a paren stack (escape- and
+ * char-class-aware, so it survives nesting that a single regex can't see) and
+ * flags a REPEATED group whose body can match the same text two different ways:
+ *   • nested unbounded quantifier  — `(a+)+`, `(.*)*`, `(a*)+`
+ *   • overlapping alternation      — `(a|a)*`, `(a|ab)+`, `(a|a*)*`
+ * Non-overlapping quantified alternation (`(foo|bar)+`, `(ab|cd)*`) and bounded
+ * repetition (`([A-Z]{2})+`) stay ACCEPTED. Conservative on ambiguity: when in
+ * doubt it rejects, never lets a known-dangerous pattern reach the match path.
  */
 export function patternLooksCatastrophic(pattern: string): boolean {
   if (typeof pattern !== 'string') return true;
   if (pattern.length > 200) return true; // unreasonably long → reject
-  // Quantifier ( * + {n,} ) applied to a group whose body contains a
-  // quantifier — nested quantification, the dominant ReDoS class.
-  if (/\([^)]*[*+][^)]*\)\s*[*+]/.test(pattern)) return true;
-  if (/\([^)]*[*+][^)]*\)\s*\{\d*,?\d*\}/.test(pattern)) return true;
-  // Quantifier applied directly to another quantifier's output via a char
-  // class, e.g. `[a-z]+*` / `\w*+`.
+  // Stacked quantifiers applied directly to each other: `a+*`, `\w*+`, `[a-z]+*`.
   if (/[*+]\s*[*+]/.test(pattern)) return true;
+  // Many overlapping unbounded quantifiers (`a*a*a*…`) → polynomial of high
+  // degree. Real field patterns need very few; cap the total.
+  if (countUnbounded(pattern) > 6) return true;
+  // The dominant exponential class: a repeated group with an ambiguous body.
+  return hasAmbiguousRepeatedGroup(pattern);
+}
+
+/** Count unescaped `*` / `+` quantifiers outside character classes. */
+function countUnbounded(p: string): number {
+  let n = 0;
+  let inClass = false;
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i];
+    if (c === '\\') {
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (c === ']') inClass = false;
+      continue;
+    }
+    if (c === '[') inClass = true;
+    else if (c === '*' || c === '+') n++;
+  }
+  return n;
+}
+
+/**
+ * True if `p` contains a group `(...)` immediately followed by a repetition
+ * quantifier (`*`, `+`, or `{…,}`) whose body is ambiguous (nested unbounded
+ * quantifier, or overlapping alternation). Paren stack is escape- and
+ * char-class-aware so nested groups are matched correctly.
+ */
+function hasAmbiguousRepeatedGroup(p: string): boolean {
+  const stack: number[] = [];
+  let inClass = false;
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i];
+    if (c === '\\') {
+      i++;
+      continue;
+    }
+    if (inClass) {
+      if (c === ']') inClass = false;
+      continue;
+    }
+    if (c === '[') {
+      inClass = true;
+      continue;
+    }
+    if (c === '(') {
+      stack.push(i);
+      continue;
+    }
+    if (c === ')') {
+      const start = stack.pop();
+      if (start === undefined) continue; // unbalanced — let RegExp() reject it
+      const next = p[i + 1];
+      const repeated = next === '*' || next === '+' || (next === '{' && isOpenEndedBrace(p, i + 1));
+      if (repeated && bodyIsAmbiguous(p.slice(start + 1, i))) return true;
+    }
+  }
   return false;
+}
+
+/** `{n,}` / `{n,m}` (m possibly large) is repetition; `{n}` exact is not a blow-up driver. */
+function isOpenEndedBrace(p: string, at: number): boolean {
+  return /^\{\d*,\d*\}/.test(p.slice(at));
+}
+
+/**
+ * A repeated group's body is "ambiguous" (can match the same text 2+ ways) if it
+ * contains a nested unbounded quantifier, or an alternation whose branches can
+ * overlap. `body` is the text between the group's own parens.
+ */
+function bodyIsAmbiguous(body: string): boolean {
+  const branches = splitTopLevelAlternation(body);
+  if (branches.length > 1 && branchesOverlap(branches)) return true;
+  // Nested unbounded quantifier anywhere in the body (single-branch case):
+  // `(a+)+`, `(\w*)+`, `(.*)*`.
+  return branches.some((b) => countUnbounded(b) > 0 || /\{\d*,\}/.test(stripClasses(b)));
+}
+
+/** Split on `|` at the body's top level (ignoring nested groups/classes/escapes). */
+function splitTopLevelAlternation(body: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let inClass = false;
+  let cur = '';
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === '\\') {
+      cur += c + (body[i + 1] ?? '');
+      i++;
+      continue;
+    }
+    if (inClass) {
+      cur += c;
+      if (c === ']') inClass = false;
+      continue;
+    }
+    if (c === '[') {
+      inClass = true;
+      cur += c;
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    if (c === '|' && depth === 0) {
+      out.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
+/**
+ * Heuristic overlap test for the branches of a repeated alternation. Exponential
+ * blow-up needs two branches that can match overlapping text. We flag when any
+ * branch is empty, contains its own quantifier, or shares a first "token" with
+ * another branch (`(a|a)`, `(a|ab)`). Distinct first tokens (`(foo|bar)`) are
+ * treated as non-overlapping and ACCEPTED.
+ */
+function branchesOverlap(branches: string[]): boolean {
+  const firsts = new Set<string>();
+  for (const b of branches) {
+    if (b.length === 0) return true; // empty branch → always-matchable → ambiguous
+    if (countUnbounded(b) > 0) return true; // quantifier inside an alternation branch
+    const tok = firstToken(b);
+    if (firsts.has(tok)) return true; // two branches start the same way → overlap
+    firsts.add(tok);
+  }
+  return false;
+}
+
+/** The first matchable token of a branch: an escape pair, a char class, or one char. */
+function firstToken(b: string): string {
+  let i = 0;
+  while (i < b.length && b[i] === '^') i++; // skip leading start-anchors (zero-width)
+  if (b[i] === '\\') return b.slice(i, i + 2);
+  if (b[i] === '[') {
+    const end = b.indexOf(']', i + 1);
+    return b.slice(i, end === -1 ? b.length : end + 1);
+  }
+  return b[i] ?? '';
+}
+
+/** Remove `[...]` class contents so a literal `,` inside a class can't look like `{n,}`. */
+function stripClasses(b: string): string {
+  return b.replace(/\\.|\[[^\]]*\]/g, '');
+}
+
+/**
+ * Validate a field's regex `pattern` at SAVE time. Returns a human-readable
+ * error string if the pattern looks catastrophic (ReDoS) or doesn't compile,
+ * else null. Pure — no throwing, no I/O; the caller maps a non-null result to a
+ * 400. MUST be called on every create AND update of a field definition or a
+ * collection field, since the pattern then runs on the shared event loop for
+ * every record write (see `patternLooksCatastrophic`).
+ */
+export function patternSaveError(validationJson?: FieldValidation | null): string | null {
+  const pattern = validationJson?.pattern;
+  if (typeof pattern !== 'string' || pattern.length === 0) return null;
+  if (patternLooksCatastrophic(pattern)) {
+    return 'That validation pattern is too complex / risky (possible catastrophic backtracking). Simplify it.';
+  }
+  try {
+    new RegExp(pattern);
+  } catch {
+    return 'That validation pattern is not a valid regular expression.';
+  }
+  return null;
 }
 
 /**
@@ -224,10 +408,17 @@ export function validateField(def: FieldDef, raw: unknown): FieldCheck {
 
     case 'url': {
       if (typeof raw !== 'string') return err(def.fieldKey, 'Must be a link.');
+      let parsed: URL;
       try {
-        new URL(raw);
+        parsed = new URL(raw);
       } catch {
         return err(def.fieldKey, "This link doesn't look right.");
+      }
+      // Only allow web/mail schemes (CAT-006). `new URL` happily parses
+      // `javascript:`, `data:`, `file:`, `vbscript:` etc., which become a
+      // stored-XSS vector the moment a stored URL is rendered into an href.
+      if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
+        return err(def.fieldKey, 'Only http(s) and mailto links are allowed.');
       }
       return { ok: true, cleaned: raw };
     }

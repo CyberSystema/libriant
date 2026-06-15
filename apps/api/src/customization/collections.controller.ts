@@ -11,6 +11,8 @@ import {
 } from '@nestjs/common';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
+import { RolesGuard } from '../tenancy/roles.guard.js';
+import { Roles } from '../tenancy/roles.decorator.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { CollectionsService } from './collections.service.js';
 import {
@@ -37,7 +39,7 @@ import {
  *   DELETE /t/:slug/data-model/collections/:cslug/fields/:fkey    (archive)
  */
 @Controller('t/:slug/data-model/collections')
-@UseGuards(TenantGuard)
+@UseGuards(TenantGuard, RolesGuard)
 export class CollectionsController {
   constructor(@Inject(CollectionsService) private readonly svc: CollectionsService) {}
 
@@ -52,6 +54,7 @@ export class CollectionsController {
   }
 
   @Post()
+  @Roles('owner', 'admin')
   async create(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const dto = await validateDto(CreateCollectionDto, raw);
     return this.svc.create(tenant, {
@@ -64,6 +67,7 @@ export class CollectionsController {
   }
 
   @Patch(':cslug')
+  @Roles('owner', 'admin')
   async update(
     @TenantCtx() tenant: TenantContext,
     @Param('cslug') cslug: string,
@@ -80,6 +84,7 @@ export class CollectionsController {
   }
 
   @Delete(':cslug')
+  @Roles('owner', 'admin')
   async archive(@TenantCtx() tenant: TenantContext, @Param('cslug') cslug: string) {
     return this.svc.archive(tenant, cslug);
   }
@@ -87,6 +92,7 @@ export class CollectionsController {
   // -- Nested fields --------------------------------------------------------
 
   @Post(':cslug/fields')
+  @Roles('owner', 'admin')
   async addField(
     @TenantCtx() tenant: TenantContext,
     @Param('cslug') cslug: string,
@@ -106,6 +112,7 @@ export class CollectionsController {
   }
 
   @Patch(':cslug/fields/:fkey')
+  @Roles('owner', 'admin')
   async updateField(
     @TenantCtx() tenant: TenantContext,
     @Param('cslug') cslug: string,
@@ -125,6 +132,7 @@ export class CollectionsController {
   }
 
   @Delete(':cslug/fields/:fkey')
+  @Roles('owner', 'admin')
   async archiveField(
     @TenantCtx() tenant: TenantContext,
     @Param('cslug') cslug: string,

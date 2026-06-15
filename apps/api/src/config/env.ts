@@ -43,6 +43,13 @@ export type AppEnv = {
   /** Cookie name for the admin session. */
   adminCookieName: string;
   /**
+   * Require every control-plane admin to have MFA enrolled (AUTH-06). When
+   * true, AdminAuthGuard forces a non-enrolled admin onto the enrollment
+   * endpoints and blocks everything else. Default ON outside development —
+   * the control plane is the highest-value credential in the system.
+   */
+  adminMfaRequired: boolean;
+  /**
    * Hex-encoded 32-byte master key used to AES-256-GCM-encrypt admin
    * TOTP secrets at rest. The DB column stores ciphertext + nonce; this
    * env value is the only thing that can decrypt them. Rotation is
@@ -86,7 +93,9 @@ export type AppEnv = {
    * unrestricted access to all features and limits (the whole product is free)
    * — useful for a pre-monetization launch. The admin panel is unaffected
    * (it has its own auth). Separate from `stripeDriver`, which only controls
-   * whether real charges happen. Default `true`.
+   * whether real charges happen. Default `false` (off) — enforcement turns on
+   * only when BILLING_ENABLED is an explicit truthy value; the admin
+   * "Subscriptions" toggle (a platform_settings row) overrides this at runtime.
    */
   billingEnabled: boolean;
   /** Stripe secret key (`sk_test_…` / `sk_live_…`). Required for `real`. */
@@ -124,19 +133,77 @@ function required(key: string): string {
   return v;
 }
 
+/**
+ * A secret that MUST be present in non-dev AND meet a minimum length, so a
+ * stub/typo'd value can't sail through boot (AUTH-11). Dev keeps the static
+ * fallback for a frictionless quickstart; automated tests must supply a value
+ * but aren't held to the length bar (short fixture secrets are fine).
+ */
+function requiredSecret(
+  key: string,
+  devFallback: string,
+  nodeEnv: AppEnv['nodeEnv'],
+  minLen = 24,
+): string {
+  const isDev = nodeEnv === 'development';
+  const v = isDev ? optional(key, devFallback) : required(key);
+  if (!isDev && nodeEnv !== 'test' && v.trim().length < minLen) {
+    throw new Error(`Env var ${key} is too short — needs at least ${minLen} characters.`);
+  }
+  return v;
+}
+
 function optional(key: string, fallback: string): string {
   const v = process.env[key];
   return v && v.length ? v : fallback;
+}
+
+/**
+ * Parse a numeric env var with explicit validation. An unset OR empty value
+ * uses the fallback (so a blank `PORT=` doesn't become NaN → a random ephemeral
+ * port); anything present but non-finite / out of range fails boot loudly,
+ * honouring the "valid or fail" contract (CFG-03, STG-02, BILL-5).
+ */
+function num(
+  key: string,
+  fallback: number,
+  opts: { min?: number; max?: number; int?: boolean } = {},
+): number {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim().length === 0) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    throw new Error(`Env var ${key} must be a number, got "${raw}".`);
+  }
+  if (opts.int && !Number.isInteger(n)) {
+    throw new Error(`Env var ${key} must be a whole number, got "${raw}".`);
+  }
+  if (opts.min !== undefined && n < opts.min) {
+    throw new Error(`Env var ${key} must be >= ${opts.min}, got ${n}.`);
+  }
+  if (opts.max !== undefined && n > opts.max) {
+    throw new Error(`Env var ${key} must be <= ${opts.max}, got ${n}.`);
+  }
+  return n;
+}
+
+/** Truthy-string parse shared by boolean env flags. */
+function bool(key: string, fallback: boolean): boolean {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim().length === 0) return fallback;
+  return ['true', '1', 'yes', 'on'].includes(raw.toLowerCase().trim());
 }
 
 export function loadEnv(): AppEnv {
   const nodeEnv = (process.env.NODE_ENV ?? 'development') as AppEnv['nodeEnv'];
   // In dev, allow a static fallback so quickstart works without configuration.
   // In any other environment, refuse to boot without a real secret.
-  const sessionSecret =
-    nodeEnv === 'development'
-      ? optional('SESSION_SECRET', 'dev-only-session-secret-CHANGE-IN-PROD')
-      : required('SESSION_SECRET');
+  const isDev = nodeEnv === 'development';
+  const sessionSecret = requiredSecret(
+    'SESSION_SECRET',
+    'dev-only-session-secret-CHANGE-IN-PROD',
+    nodeEnv,
+  );
   const cookieSecure = optional('SESSION_COOKIE_SECURE', 'auto');
   const isSecure =
     cookieSecure === 'auto'
@@ -144,7 +211,7 @@ export function loadEnv(): AppEnv {
       : cookieSecure === 'true';
   return {
     nodeEnv,
-    port: Number(optional('PORT', '3001')),
+    port: num('PORT', 3001, { int: true, min: 1, max: 65535 }),
     publicAppUrl: optional('PUBLIC_APP_URL', 'http://localhost:3000'),
     controlDbUrl: optional(
       'CONTROL_DATABASE_URL',
@@ -159,20 +226,23 @@ export function loadEnv(): AppEnv {
       `admin.${optional('PUBLIC_APEX_DOMAIN', 'localhost')}`,
     ).toLowerCase(),
     tenantPathPrefix: optional('TENANT_PATH_PREFIX', '/t/'),
-    tenantCacheTtlSec: Number(optional('TENANT_CACHE_TTL_SEC', '300')),
-    tenantClientCacheSize: Number(optional('TENANT_CLIENT_CACHE_SIZE', '50')),
-    tenantClientIdleMs: Number(optional('TENANT_CLIENT_IDLE_MS', String(30 * 60 * 1000))),
+    tenantCacheTtlSec: num('TENANT_CACHE_TTL_SEC', 300, { int: true, min: 0 }),
+    tenantClientCacheSize: num('TENANT_CLIENT_CACHE_SIZE', 50, { int: true, min: 1 }),
+    tenantClientIdleMs: num('TENANT_CLIENT_IDLE_MS', 30 * 60 * 1000, { int: true, min: 1000 }),
     sessionSecret,
-    sessionTtlSec: Number(optional('SESSION_TTL_SEC', String(7 * 24 * 60 * 60))),
-    adminSessionSecret:
-      nodeEnv === 'development'
-        ? optional('ADMIN_SESSION_SECRET', 'dev-only-admin-session-secret-CHANGE-IN-PROD')
-        : required('ADMIN_SESSION_SECRET'),
-    adminSessionTtlSec: Number(optional('ADMIN_SESSION_TTL_SEC', String(60 * 60))),
+    sessionTtlSec: num('SESSION_TTL_SEC', 7 * 24 * 60 * 60, { int: true, min: 60 }),
+    adminSessionSecret: requiredSecret(
+      'ADMIN_SESSION_SECRET',
+      'dev-only-admin-session-secret-CHANGE-IN-PROD',
+      nodeEnv,
+    ),
+    adminSessionTtlSec: num('ADMIN_SESSION_TTL_SEC', 60 * 60, { int: true, min: 60 }),
     adminCookieName: optional(
       'ADMIN_COOKIE_NAME',
       isSecure ? '__Host-libriant_admin' : 'libriant_admin',
     ),
+    // MFA mandatory for admins by default outside development (AUTH-06).
+    adminMfaRequired: bool('ADMIN_MFA_REQUIRED', !isDev),
     mfaMasterKey:
       nodeEnv === 'development'
         ? optional(
@@ -182,12 +252,13 @@ export function loadEnv(): AppEnv {
             '0011223344556677889900112233445566778899001122334455667788990011',
           )
         : required('MFA_MASTER_KEY'),
-    impersonationSecret:
-      nodeEnv === 'development'
-        ? optional('IMPERSONATION_SECRET', 'dev-only-impersonation-secret-CHANGE-IN-PROD')
-        : required('IMPERSONATION_SECRET'),
-    supportSessionTtlSec: Number(optional('SUPPORT_SESSION_TTL_SEC', String(4 * 60 * 60))),
-    supportKeyTtlSec: Number(optional('SUPPORT_KEY_TTL_SEC', String(60 * 60))),
+    impersonationSecret: requiredSecret(
+      'IMPERSONATION_SECRET',
+      'dev-only-impersonation-secret-CHANGE-IN-PROD',
+      nodeEnv,
+    ),
+    supportSessionTtlSec: num('SUPPORT_SESSION_TTL_SEC', 4 * 60 * 60, { int: true, min: 60 }),
+    supportKeyTtlSec: num('SUPPORT_KEY_TTL_SEC', 60 * 60, { int: true, min: 60 }),
     impersonationCookieName: optional(
       'IMPERSONATION_COOKIE_NAME',
       isSecure ? '__Host-libriant_imp' : 'libriant_imp',
@@ -197,21 +268,29 @@ export function loadEnv(): AppEnv {
       isSecure ? '__Host-libriant_session' : 'libriant_session',
     ),
     sessionCookieSecure: isSecure,
-    bcryptCost: Number(optional('BCRYPT_COST', '12')),
-    maxFailedLogins: Number(optional('MAX_FAILED_LOGINS', '5')),
-    loginLockoutMs: Number(optional('LOGIN_LOCKOUT_MS', String(15 * 60 * 1000))),
+    bcryptCost: num('BCRYPT_COST', 12, { int: true, min: 10, max: 15 }),
+    maxFailedLogins: num('MAX_FAILED_LOGINS', 5, { int: true, min: 1 }),
+    loginLockoutMs: num('LOGIN_LOCKOUT_MS', 15 * 60 * 1000, { int: true, min: 1000 }),
     // Used by signup to CREATE DATABASE for new tenants. In dev this is the
     // libriant superuser. In prod, a dedicated provisioning role per cell.
     pgSuperuserUrl: optional(
       'PG_SUPERUSER_URL',
       'postgresql://libriant:libriant@localhost:5432/libriant_control',
     ),
-    // Storage signing — separate secret so we can rotate it independently
-    // of session JWTs. In dev we fall back to the session secret to keep
-    // quickstart painless.
-    storageSigningSecret: optional('STORAGE_SIGNING_SECRET', sessionSecret),
-    storageSignedTtlSec: Number(optional('STORAGE_SIGNED_TTL_SEC', '3600')),
-    storageMaxUploadBytes: Number(optional('STORAGE_MAX_UPLOAD_BYTES', String(25 * 1024 * 1024))),
+    // Storage signing — separate secret so we can rotate it independently of
+    // session JWTs. Dev + test fall back to the session secret to keep
+    // quickstart / fixtures painless; PRODUCTION must set it explicitly (TEN-05)
+    // so a leaked storage secret can't be turned into a session-forgery oracle
+    // and vice-versa.
+    storageSigningSecret:
+      nodeEnv === 'production'
+        ? requiredSecret('STORAGE_SIGNING_SECRET', sessionSecret, nodeEnv)
+        : optional('STORAGE_SIGNING_SECRET', sessionSecret),
+    storageSignedTtlSec: num('STORAGE_SIGNED_TTL_SEC', 3600, { int: true, min: 1 }),
+    storageMaxUploadBytes: num('STORAGE_MAX_UPLOAD_BYTES', 25 * 1024 * 1024, {
+      int: true,
+      min: 1,
+    }),
     stripeDriver: (() => {
       const raw = (process.env.STRIPE_DRIVER ?? '').toLowerCase().trim();
       if (raw === 'real' || raw === 'fake') return raw;
@@ -226,9 +305,7 @@ export function loadEnv(): AppEnv {
     // doesn't catch an empty string, so a blank env var silently enforced
     // Starter limits.) The admin "Subscriptions" toggle — a platform_settings
     // DB row — overrides this at runtime and is the authoritative switch.
-    billingEnabled: ['true', '1', 'yes', 'on'].includes(
-      (process.env.BILLING_ENABLED ?? '').toLowerCase().trim(),
-    ),
+    billingEnabled: bool('BILLING_ENABLED', false),
     stripeApiKey: process.env.STRIPE_API_KEY?.length ? process.env.STRIPE_API_KEY : null,
     stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET?.length
       ? process.env.STRIPE_WEBHOOK_SECRET
@@ -237,7 +314,7 @@ export function loadEnv(): AppEnv {
       'BILLING_RETURN_URL',
       optional('PUBLIC_APP_URL', 'http://localhost:3000'),
     ),
-    billingGracePeriodDays: Number(optional('BILLING_GRACE_PERIOD_DAYS', '7')),
+    billingGracePeriodDays: num('BILLING_GRACE_PERIOD_DAYS', 7, { int: true, min: 0, max: 365 }),
     emailDriver: (() => {
       const raw = (process.env.EMAIL_DRIVER ?? '').toLowerCase().trim();
       if (raw === 'console' || raw === 'smtp') return raw;
@@ -252,6 +329,6 @@ export function loadEnv(): AppEnv {
       `Libriant <no-reply@${optional('PUBLIC_APEX_DOMAIN', 'localhost')}>`,
     ),
     emailReplyTo: process.env.EMAIL_REPLY_TO?.length ? process.env.EMAIL_REPLY_TO : null,
-    emailMaxAttempts: Number(optional('EMAIL_MAX_ATTEMPTS', '5')),
+    emailMaxAttempts: num('EMAIL_MAX_ATTEMPTS', 5, { int: true, min: 1 }),
   };
 }

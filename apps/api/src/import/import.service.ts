@@ -16,6 +16,11 @@ import { detectFormat, parseByFormat } from './parsers/index.js';
 import { ParseError, type ParsedColumn, type SourceFormat } from './parsers/types.js';
 
 const PREVIEW_ROWS = 20;
+// IMP-06: bound how many bytes the (synchronous) preview tokenizer walks for
+// line-oriented formats. A 64 MB CSV would otherwise be fully tokenized on the
+// API event loop just to show 20 sample rows. 256 KB comfortably holds 20 wide
+// rows; the full file is parsed (off the API process) in the worker at run time.
+const PREVIEW_MAX_BYTES = 256 * 1024;
 const VALID_FORMATS: readonly SourceFormat[] = ['csv', 'tsv', 'xlsx', 'marc', 'marcxml'];
 const DUP_MODES = ['skip', 'update', 'error'] as const;
 const FIELD_KEY_RE = /^[a-z][a-z0-9_]{1,49}$/;
@@ -43,9 +48,19 @@ export class ImportService {
     const format = this.resolveFormat(input.format, input.file);
     const noHeader = input.hasHeader === false;
 
+    // IMP-06: only feed the preview tokenizer a bounded prefix for line-oriented
+    // formats so a large upload can't stall the API event loop while we sample
+    // PREVIEW_ROWS. xlsx (a zip) and binary/XML MARC can't be byte-sliced; they
+    // bound themselves by row count in their own parsers. The full buffer is
+    // still staged below for the worker.
+    const previewBuffer =
+      (format === 'csv' || format === 'tsv') && input.file.buffer.byteLength > PREVIEW_MAX_BYTES
+        ? input.file.buffer.subarray(0, PREVIEW_MAX_BYTES)
+        : input.file.buffer;
+
     let preview;
     try {
-      preview = await parseByFormat(format, input.file.buffer, {
+      preview = await parseByFormat(format, previewBuffer, {
         maxRows: PREVIEW_ROWS,
         encoding: input.encoding,
         delimiter: input.delimiter,
@@ -319,7 +334,12 @@ export class ImportService {
     if (!batch.mappingJson) {
       throw new BadRequestException('Set a column mapping before running the import.');
     }
-    if (!['uploaded', 'validated'].includes(batch.status)) {
+    // IMP-07 / IMP-02: a 'failed' batch (a hard error, or one reset by the
+    // crash-recovery sweep) is re-runnable. The engine commits each row
+    // independently and matches on the natural key, so re-running with
+    // skip/update is idempotent over rows a half-done commit already wrote —
+    // this is the "just re-run" recovery the queue producer documents.
+    if (!['uploaded', 'validated', 'failed'].includes(batch.status)) {
       throw new ConflictException(`An import in "${batch.status}" can't be (re)started.`);
     }
     return batch;
@@ -379,8 +399,22 @@ export class ImportService {
   }
 }
 
+/**
+ * Neutralize spreadsheet formula injection (EXP-007 / IMP-03): Excel/Sheets
+ * execute a cell whose text begins with = + - @ (or a leading tab/CR). The
+ * errors.csv carries semi-user-derived text (field names, transform messages),
+ * so prefix such values with an apostrophe to force literal text — mirroring
+ * export-processors' neutralizeFormula so every CSV-producing path is uniformly
+ * safe. (Defined locally rather than imported: the export helper is owned by a
+ * different module and not exported.)
+ */
+function neutralizeFormula(s: string): string {
+  return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+}
+
 /** Minimal RFC-4180 cell quoting for the errors.csv export. */
 function csvCell(value: string): string {
-  if (/[",\r\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
+  const v = neutralizeFormula(value);
+  if (/[",\r\n]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
+  return v;
 }

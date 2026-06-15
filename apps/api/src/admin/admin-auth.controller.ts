@@ -91,6 +91,8 @@ export class AdminAuthController {
     });
     if (mfa?.mfaEnabled) {
       if (!dto.totp) {
+        // Incomplete login — leave the lockout counter untouched (neither
+        // reset nor incremented) until a code is supplied.
         throw new UnauthorizedException({
           code: 'mfa_required',
           message: 'Enter the code from your authenticator app.',
@@ -98,6 +100,9 @@ export class AdminAuthController {
       }
       const secret = this.mfa.decrypt(mfa.mfaSecretCipher, mfa.mfaNonce);
       if (!(await this.mfa.verifyTokenOnce(admin.id, secret, dto.totp))) {
+        // A wrong second factor is a failed attempt and can trip the lockout
+        // (ADM-5) — otherwise a known password makes TOTP brute force free.
+        await this.authSvc.recordFailure(admin.id);
         throw new UnauthorizedException({
           code: 'mfa_invalid',
           message: 'That authenticator code is wrong or has already been used.',
@@ -105,6 +110,8 @@ export class AdminAuthController {
       }
     }
 
+    // Full login succeeded (password AND, if enabled, TOTP) → clear counters.
+    await this.authSvc.recordSuccess(admin.id);
     const { token, expiresAt } = this.jwt.sign({ sub: admin.id, role: admin.role });
     this.cookies.setSession(res, token, expiresAt);
     return {

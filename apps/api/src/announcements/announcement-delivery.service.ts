@@ -242,41 +242,27 @@ export class AnnouncementDeliveryService {
     });
     if (existing) return existing;
     const now = new Date();
-    let deliveredEmailAt: Date | null = null;
-    if (input.markEmail) {
-      try {
-        // Idempotency key ties (announcement, tenant) so a publisher retry
-        // never duplicates the library's email. The worker decides
-        // deliveredAt; we record the enqueue moment so the in-app stats
-        // can show "queued" before the worker picks it up.
-        await this.emails.enqueue({
-          kind: 'announcement',
-          toEmail: input.markEmail.to,
-          subject: input.markEmail.title,
-          bodyMarkdown: input.markEmail.body,
-          tenantId: input.tenantId,
-          idempotencyKey: `announcement:${input.announcementId}:tenant:${input.tenantId}`,
-          metadata: { announcementId: input.announcementId },
-        });
-        deliveredEmailAt = now;
-      } catch (err) {
-        this.logger.warn(
-          `Email enqueue failed for announcement ${input.announcementId}: ${(err as Error).message}`,
-        );
-      }
-    }
+
+    // REL-07: persist the controlling delivery row BEFORE enqueuing the email.
+    // Previously the email fired first, so a failed row insert could send mail
+    // with no row backing it (in-app stats undercount, and a 5xx on this GET
+    // would still have mailed). Creating the row first means we only ever email
+    // for a delivery that actually exists; the email's unique idempotencyKey
+    // keeps a retry from double-sending.
+    let row: Awaited<ReturnType<typeof controlDb.announcementDelivery.create>>;
     try {
-      return await controlDb.announcementDelivery.create({
+      row = await controlDb.announcementDelivery.create({
         data: {
           announcementId: input.announcementId,
           tenantId: input.tenantId,
           userId: input.userId,
           deliveredInAppAt: now,
-          deliveredEmailAt,
+          deliveredEmailAt: null,
         },
       });
     } catch (err) {
-      // Lost a race against another concurrent first-fetch — re-read.
+      // Lost a race against another concurrent first-fetch — re-read. The
+      // winner already owns the email enqueue, so we don't send here.
       const winner = await controlDb.announcementDelivery.findFirst({
         where: {
           announcementId: input.announcementId,
@@ -287,6 +273,44 @@ export class AnnouncementDeliveryService {
       if (winner) return winner;
       throw err;
     }
+
+    if (input.markEmail) {
+      try {
+        // Idempotency key scope must match the delivery scope, or the email
+        // gets deduped against the wrong row. Tenant-wide deliveries
+        // (`userId === null`, non-ack announcements) keep one key per
+        // (announcement, tenant) so a publisher retry never double-mails the
+        // library. Per-user deliveries (ack-required announcements, one row
+        // per user) MUST key on the user too — otherwise every user but the
+        // first dedups against the same tenant-wide key and only one recipient
+        // is ever emailed for a must-read notice (reliability-new-Ack-required).
+        const idempotencyKey =
+          input.userId === null
+            ? `announcement:${input.announcementId}:tenant:${input.tenantId}:tenant-wide`
+            : `announcement:${input.announcementId}:tenant:${input.tenantId}:user:${input.userId}`;
+        // The worker decides deliveredAt; we record the enqueue moment so the
+        // in-app stats can show "queued" before the worker picks it up.
+        await this.emails.enqueue({
+          kind: 'announcement',
+          toEmail: input.markEmail.to,
+          subject: input.markEmail.title,
+          bodyMarkdown: input.markEmail.body,
+          tenantId: input.tenantId,
+          idempotencyKey,
+          metadata: { announcementId: input.announcementId },
+        });
+        // Stamp the enqueue moment now that the email actually went out.
+        row = await controlDb.announcementDelivery.update({
+          where: { id: row.id },
+          data: { deliveredEmailAt: now },
+        });
+      } catch (err) {
+        this.logger.warn(
+          `Email enqueue failed for announcement ${input.announcementId}: ${(err as Error).message}`,
+        );
+      }
+    }
+    return row;
   }
 
   private cacheKey(tenantId: string, userId: string): string {

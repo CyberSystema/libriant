@@ -462,8 +462,11 @@ export class MembersService {
     // gate) propagate untouched.
     if (err instanceof HttpException) return err;
     if (this.isUniqueViolation(err)) {
+      // CAT-005: the only unique index on members is `members_member_number_
+      // unique_active` (member number, among non-archived rows). Email has a
+      // plain index, never a unique one — so a dup here is always the number.
       return new ConflictException(
-        'A member with this number (or email) already exists. Archive the old record first if you want to re-use the number.',
+        'A member with this number already exists. Archive the old record first if you want to re-use the number.',
       );
     }
     if (typeof err === 'object' && err !== null) {

@@ -11,8 +11,7 @@ import { controlDb } from '@libriant/db-control';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { ALLOWED_TYPES, rejectedMessage } from './allowed-types.js';
-import { LocalDriver } from './drivers/local-driver.js';
-import { S3Driver } from './drivers/s3-driver.js';
+import { createStorageDriver } from './drivers/create-driver.js';
 import type { ResourceType, StorageDriver, StoredFile } from './drivers/storage-driver.js';
 
 /**
@@ -65,9 +64,23 @@ export class StorageService {
     //    `0` is a legitimate "no storage allowed" value; treat it as deny.
     const limitMb = await this.effective.getInt(tenant.id, 'max_storage_mb');
     const limitBytes = BigInt(limitMb) * 1024n * 1024n;
-    const currentBytes = await this.currentUsedBytes(tenant.id);
     const newSize = BigInt(input.data.byteLength);
-    if (currentBytes + newSize > limitBytes) {
+
+    // STG-03: reserve the quota atomically *before* writing to disk. A plain
+    // read-then-write (SELECT used + IF check + INCREMENT) is a TOCTOU race —
+    // N concurrent uploads all read the same `used` and each individually pass
+    // the check, letting a tenant blow past `max_storage_mb` by (N × bytes).
+    // The conditional UPDATE below admits a request only if it still fits under
+    // the limit at the moment the row is locked, so the counter can never be
+    // reserved beyond `limitBytes`. 0 rows updated ⇒ the upload doesn't fit.
+    const reserved = await controlDb.$executeRaw`
+      UPDATE tenants
+      SET "storageUsedBytes" = "storageUsedBytes" + ${newSize}
+      WHERE id = ${tenant.id}
+        AND "storageUsedBytes" + ${newSize} <= ${limitBytes}
+    `;
+    if (reserved === 0) {
+      const currentBytes = await this.currentUsedBytes(tenant.id);
       throw new HttpException(
         {
           statusCode: HttpStatus.PAYMENT_REQUIRED,
@@ -82,23 +95,40 @@ export class StorageService {
       );
     }
 
-    // 3. Write through the driver.
+    // 3. Write through the driver. The quota is already reserved, so if the
+    //    disk write fails we must roll the reservation back (floored at 0 per
+    //    STG-05) — otherwise an aborted upload permanently steals quota.
     const driver = this.driverFor(tenant);
-    const stored = await driver.put(input);
+    let stored: StoredFile;
+    try {
+      stored = await driver.put(input);
+    } catch (err) {
+      await this.releaseReservedBytes(tenant.id, newSize, 'put-rollback');
+      throw err;
+    }
 
-    // 4. Bookkeeping — bump the counter. Best-effort: if this fails the
-    //    file is on disk but the counter is stale; the nightly recompute
-    //    job (and `recomputeUsage` below) reconciles.
-    await controlDb.tenant
-      .update({
-        where: { id: tenant.id },
-        data: { storageUsedBytes: { increment: stored.sizeBytes } },
-      })
-      .catch((err: unknown) =>
-        this.logger.warn(
-          `Failed to bump storageUsedBytes for ${tenant.id}: ${err instanceof Error ? err.message : err}`,
-        ),
-      );
+    // 4. Reconcile the reservation to the *actual* bytes the driver wrote, if
+    //    they differ from what we reserved. Normally identical; this keeps the
+    //    counter honest without a second full recompute. Best-effort — the
+    //    nightly recompute (and `recomputeUsage` below) is the backstop.
+    const actual = BigInt(stored.sizeBytes);
+    if (actual !== newSize) {
+      const delta = actual - newSize;
+      if (delta > 0n) {
+        await controlDb.tenant
+          .update({
+            where: { id: tenant.id },
+            data: { storageUsedBytes: { increment: delta } },
+          })
+          .catch((err: unknown) =>
+            this.logger.warn(
+              `Failed to reconcile storageUsedBytes for ${tenant.id}: ${err instanceof Error ? err.message : err}`,
+            ),
+          );
+      } else {
+        await this.releaseReservedBytes(tenant.id, -delta, 'put-reconcile');
+      }
+    }
 
     return stored;
   }
@@ -145,17 +175,33 @@ export class StorageService {
     }
     await driver.delete(ref);
     if (size > 0) {
-      await controlDb.tenant
-        .update({
-          where: { id: tenant.id },
-          data: { storageUsedBytes: { decrement: size } },
-        })
-        .catch((err: unknown) =>
-          this.logger.warn(
-            `Failed to decrement storageUsedBytes for ${tenant.id}: ${err instanceof Error ? err.message : err}`,
-          ),
-        );
+      // STG-05: floor the decrement at 0. A plain `{ decrement }` can drive the
+      // counter negative under drift (double-delete, recompute lag), which then
+      // silently inflates the effective quota. `GREATEST(0, …)` keeps it sane.
+      await this.releaseReservedBytes(tenant.id, BigInt(size), 'delete');
     }
+  }
+
+  /**
+   * Decrement `storageUsedBytes` by `bytes`, floored at 0. Used to free quota
+   * on delete and to roll back a failed/over-reserved upload (STG-03/STG-05).
+   * Best-effort: a failure leaves the counter high until the nightly recompute,
+   * which is the conservative direction (never lets a tenant over-allocate).
+   */
+  private async releaseReservedBytes(
+    tenantId: string,
+    bytes: bigint,
+    reason: string,
+  ): Promise<void> {
+    await controlDb.$executeRaw`
+        UPDATE tenants
+        SET "storageUsedBytes" = GREATEST(0, "storageUsedBytes" - ${bytes})
+        WHERE id = ${tenantId}
+      `.catch((err: unknown) =>
+      this.logger.warn(
+        `Failed to release storageUsedBytes (${reason}) for ${tenantId}: ${err instanceof Error ? err.message : err}`,
+      ),
+    );
   }
 
   /** Walk the driver and overwrite `storageUsedBytes` to the true value. */
@@ -189,8 +235,6 @@ export class StorageService {
   }
 
   private makeDriver(storageUrl: string): StorageDriver {
-    if (storageUrl.startsWith('file://')) return new LocalDriver(storageUrl);
-    if (storageUrl.startsWith('s3://')) return new S3Driver(storageUrl);
-    throw new Error(`Unsupported storage URL scheme: "${storageUrl}"`);
+    return createStorageDriver(storageUrl);
   }
 }

@@ -57,4 +57,13 @@ export interface StorageDriver {
   stat(ref: string): Promise<StatResult>;
   /** Total bytes used by THIS tenant across all resource types. */
   totalBytes(): Promise<number>;
+  /**
+   * Delete orphaned partial-upload artifacts older than `maxAgeMs`. `put()`
+   * writes to a `<target>.tmp-<hex>` file then atomic-renames it into place; a
+   * crash between the two leaves the temp behind. It's already excluded from
+   * `totalBytes()`, but without a sweep it lingers on disk forever. Returns the
+   * number of files removed. Backends that don't write temp files (object
+   * stores upload atomically) return 0.
+   */
+  sweepStaleTemps(maxAgeMs: number): Promise<number>;
 }

@@ -26,6 +26,7 @@ import { deleteStaged, readStaged } from './import-staging.js';
 import {
   IMPORT_JOB_NAME,
   IMPORT_MAX_ISSUES,
+  IMPORT_MAX_ROWS,
   IMPORT_QUEUE_NAME,
   IMPORT_QUEUE_PREFIX,
   type ImportJobData,
@@ -98,12 +99,21 @@ export async function processImportJob(
 
   try {
     const data = await readStaged(batch.stagingPath);
+    // Parse ONE row past the limit so we can tell "exactly at the cap" from
+    // "over the cap" and refuse oversized files instead of OOMing the worker.
     const table = await parseByFormat(batch.format as SourceFormat, data, {
       encoding: batch.encoding ?? undefined,
       delimiter: batch.delimiter ?? undefined,
       sheetName: batch.sheetName ?? undefined,
       noHeader: !batch.hasHeaderRow,
+      maxRows: IMPORT_MAX_ROWS + 1,
     });
+    if (table.truncated || table.rows.length > IMPORT_MAX_ROWS) {
+      throw new Error(
+        `This file exceeds the ${IMPORT_MAX_ROWS.toLocaleString()}-row import limit. ` +
+          `Split it into smaller files and import them separately.`,
+      );
+    }
 
     await controlDb.importBatch.update({
       where: { id: batchId },

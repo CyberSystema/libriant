@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Asset, Button, PoweredBy, useToast } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
+import { useDrawerA11y } from '@/lib/useDrawerA11y';
 import type { AdminProfile } from '@/lib/admin-session';
 
 type Props = {
@@ -23,19 +24,8 @@ export function AdminSidebar({ admin }: Props) {
   React.useEffect(() => {
     setMenuOpen(false);
   }, [pathname]);
-  React.useEffect(() => {
-    if (!menuOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setMenuOpen(false);
-    };
-    document.addEventListener('keydown', onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [menuOpen]);
+  // Escape-to-close, scroll-lock, focus trap + focus restore while open.
+  const sidebarRef = useDrawerA11y<HTMLElement>(menuOpen, () => setMenuOpen(false));
 
   const links = [
     { href: `${base}/tenants`, label: 'Tenants' },
@@ -106,7 +96,14 @@ export function AdminSidebar({ admin }: Props) {
         aria-hidden="true"
         onClick={() => setMenuOpen(false)}
       />
-      <aside id="lbr-admin-sidebar" className={`lbr-shell__sidebar${menuOpen ? ' is-open' : ''}`}>
+      <aside
+        ref={sidebarRef}
+        id="lbr-admin-sidebar"
+        className={`lbr-shell__sidebar${menuOpen ? ' is-open' : ''}`}
+        role={menuOpen ? 'dialog' : undefined}
+        aria-modal={menuOpen ? true : undefined}
+        aria-label={menuOpen ? 'Admin menu' : undefined}
+      >
         <Link
           href={`${base}/tenants`}
           className="lbr-shell__brand"

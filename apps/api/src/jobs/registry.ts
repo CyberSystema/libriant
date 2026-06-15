@@ -6,6 +6,7 @@ import { sweepExpiredExports } from './export-cleanup.job.js';
 import { publishDueAnnouncements } from './announcement-publish.job.js';
 import { refreshBookMetadata } from './book-metadata-refresh.job.js';
 import { sendMemberNotifications } from './member-notifications.job.js';
+import { sweepStaleStorageTemps } from './storage-temp-cleanup.job.js';
 import type { ScheduledJob } from './jobs.types.js';
 
 /**
@@ -67,5 +68,16 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     name: 'member-notifications',
     intervalMs: 60 * 60_000,
     handler: () => sendMemberNotifications(),
+  },
+  {
+    // Hourly: best-effort disk cleanup of crash-orphaned upload temps. Each tick
+    // walks every active tenant's storage tree, so it's a filesystem sweep
+    // rather than a DB query — hourly keeps orphans from lingering without
+    // re-walking constantly (temps only appear on a crash mid-upload, so the
+    // working set is normally empty). Default 30-min staleness skips in-flight
+    // writes; idempotent — a re-run with nothing stale removes nothing.
+    name: 'storage-temp-cleanup',
+    intervalMs: 60 * 60_000,
+    handler: () => sweepStaleStorageTemps(),
   },
 ];

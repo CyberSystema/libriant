@@ -45,7 +45,16 @@ vi.mock('../billing/stripe-real.driver.js', () => ({
 }));
 vi.mock('../platform/redis.service.js', () => ({
   RedisService: vi.fn(function () {
-    return { onModuleDestroy: redisDestroy };
+    // The sweep now claims the controller's `stripe:event:<id>` SETNX lock
+    // before dispatch (STRIPE-RETRY-NO-LOCK). set→'OK' = lock acquired, so each
+    // row is processed and the existing succeeded/stillFailing assertions hold.
+    return {
+      client: {
+        set: vi.fn().mockResolvedValue('OK'),
+        del: vi.fn().mockResolvedValue(1),
+      },
+      onModuleDestroy: redisDestroy,
+    };
   }),
 }));
 

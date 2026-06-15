@@ -8,18 +8,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * subscription sync. The fix reads from `items.data[0]` and never builds an
  * Invalid Date.
  */
-const { billingFindFirst, planFindUnique, subUpdate, subUpdateMany } = vi.hoisted(() => ({
-  billingFindFirst: vi.fn(),
-  planFindUnique: vi.fn(),
-  subUpdate: vi.fn().mockResolvedValue({}),
-  subUpdateMany: vi.fn().mockResolvedValue({ count: 0 }),
-}));
+const { billingFindFirst, planFindUnique, subUpdate, subUpdateMany, subFindUnique } = vi.hoisted(
+  () => ({
+    billingFindFirst: vi.fn(),
+    planFindUnique: vi.fn(),
+    subUpdate: vi.fn().mockResolvedValue({}),
+    subUpdateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    // syncStripeSubscription now reads the existing row for the stale-replay
+    // monotonic guard (STRIPE-RETRY-STALE-REPLAY); null → no prior row → the
+    // guard is a no-op and the period-shape assertions below still hold.
+    subFindUnique: vi.fn().mockResolvedValue(null),
+  }),
+);
 
 vi.mock('@libriant/db-control', () => ({
   controlDb: {
     billingAccount: { findFirst: billingFindFirst },
     plan: { findUnique: planFindUnique },
-    subscription: { update: subUpdate, updateMany: subUpdateMany },
+    subscription: { update: subUpdate, updateMany: subUpdateMany, findUnique: subFindUnique },
   },
 }));
 
@@ -67,6 +73,7 @@ describe('BillingService.syncStripeSubscription (Stripe period shape)', () => {
   beforeEach(() => {
     billingFindFirst.mockReset().mockResolvedValue({ tenantId: 'tnt_1' });
     planFindUnique.mockReset().mockResolvedValue({ id: 'plan_1' });
+    subFindUnique.mockReset().mockResolvedValue(null);
     subUpdate.mockClear();
     subUpdateMany.mockClear();
   });

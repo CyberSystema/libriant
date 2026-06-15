@@ -6,11 +6,15 @@ import type { JobContext, ScheduledJob } from './jobs.types.js';
 const QUEUE_NAME = 'scheduled';
 const QUEUE_PREFIX = 'lbr-bull';
 
+/** One job's last run outcome, surfaced via /healthz. `ok: false` rows let
+ *  ops see ongoing failures without scraping stderr (SCHEDULED-LASTRESULT). */
+export type ScheduledJobResult = { at: string; message: string; ok: boolean };
+
 export type ScheduledJobsHandle = {
   /** Counter the worker exposes via /metrics. */
   inFlight(): number;
   /** Job name → last result snapshot, for /healthz introspection. */
-  lastResults(): Record<string, { at: string; message: string }>;
+  lastResults(): Record<string, ScheduledJobResult>;
   stop(): Promise<void>;
 };
 
@@ -66,7 +70,7 @@ export async function startScheduledJobs(
     );
   }
 
-  const lastResults: Record<string, { at: string; message: string }> = {};
+  const lastResults: Record<string, ScheduledJobResult> = {};
   let inFlight = 0;
 
   const worker = new Worker(
@@ -84,10 +88,22 @@ export async function startScheduledJobs(
         lastResults[job.name] = {
           at: new Date().toISOString(),
           message: result.message,
+          ok: true,
         };
         const elapsedMs = Date.now() - startedAt;
         // eslint-disable-next-line no-console
         console.log(`[scheduled] ${job.name} (${elapsedMs}ms): ${result.message}`);
+      } catch (err) {
+        // SCHEDULED-LASTRESULT-MASKS-FAILURE: record the failure in the health
+        // surface too (not just the `worker.on('failed')` stderr line) so an
+        // ongoing failure — e.g. an unreachable tenant DB — is visible in
+        // /healthz instead of silently masked by the last success.
+        lastResults[job.name] = {
+          at: new Date().toISOString(),
+          message: `FAILED: ${(err as Error).message}`,
+          ok: false,
+        };
+        throw err; // re-throw so BullMQ marks the job failed + retries
       } finally {
         inFlight--;
       }

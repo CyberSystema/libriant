@@ -399,13 +399,34 @@ export class BillingService {
   }
 
   /**
-   * Mark a payment as failed. Flips status to `past_due` and sets a grace
+   * Mark a payment as failed. Flips status to `past_due` and arms a grace
    * window N days out. Called from the `invoice.payment_failed` webhook;
    * EffectivePlanService keeps the paid plan active until `graceUntil`.
+   *
+   * billing-new: the grace window is anchored to the FIRST failure, not to
+   * "now" on every redelivery. Stripe's dunning retries deliver
+   * `invoice.payment_failed` repeatedly for a chronically-failing card; if we
+   * recomputed `now + N days` each time, the deadline would slide forward
+   * forever and the tenant would keep paid features well past the intended
+   * single N-day window. So we only arm `graceUntil` when transitioning INTO
+   * past_due (or when no future grace window is already set), and otherwise
+   * leave the existing deadline untouched.
    */
   async recordPaymentFailure(tenantId: string): Promise<BillingSnapshot> {
     const env = loadEnv();
-    const graceUntil = new Date(Date.now() + env.billingGracePeriodDays * MS_PER_DAY);
+    const sub = await controlDb.subscription.findUnique({
+      where: { tenantId },
+      select: { status: true, graceUntil: true },
+    });
+    if (!sub) throw new NotFoundException('No subscription on file.');
+    const now = Date.now();
+    // Keep an already-running grace deadline; only arm a fresh one on the
+    // first failure (or if a stale/elapsed window left graceUntil unset).
+    const graceStillRunning =
+      sub.status === 'past_due' && sub.graceUntil != null && sub.graceUntil.getTime() > now;
+    const graceUntil = graceStillRunning
+      ? sub.graceUntil
+      : new Date(now + env.billingGracePeriodDays * MS_PER_DAY);
     await controlDb.subscription.update({
       where: { tenantId },
       data: { status: 'past_due', graceUntil },
@@ -472,6 +493,40 @@ export class BillingService {
     const item = payload.items.data[0];
     const periodStart = item?.current_period_start ?? payload.current_period_start;
     const periodEnd = item?.current_period_end ?? payload.current_period_end;
+    const nextPeriodStart = epochSecsToDate(periodStart);
+
+    const existing = await controlDb.subscription.findUnique({
+      where: { tenantId: billing.tenantId },
+      select: {
+        status: true,
+        graceUntil: true,
+        stripeSubscriptionId: true,
+        currentPeriodStart: true,
+      },
+    });
+
+    // STRIPE-RETRY-STALE-REPLAY: refuse to apply an out-of-order event for the
+    // SAME subscription. Stripe's `current_period_start` is monotonic across a
+    // subscription's lifecycle, so a captured payload whose period starts
+    // strictly before the one we already persisted is a stale replay (the
+    // retry sweep re-running an old `payloadJson`, or webhooks arriving out of
+    // order). Applying it would revert plan/status/grace to older state. We
+    // only guard when both ids match and both periods are known — a genuinely
+    // new subscription (different id) or a first-ever sync (no persisted
+    // period) always applies.
+    if (
+      existing?.stripeSubscriptionId === payload.id &&
+      existing.currentPeriodStart != null &&
+      nextPeriodStart != null &&
+      nextPeriodStart.getTime() < existing.currentPeriodStart.getTime()
+    ) {
+      this.logger.warn(
+        `Webhook: ignoring stale subscription event for ${payload.id} ` +
+          `(period start ${nextPeriodStart.toISOString()} < persisted ${existing.currentPeriodStart.toISOString()})`,
+      );
+      return;
+    }
+
     await controlDb.subscription.update({
       where: { tenantId: billing.tenantId },
       data: {
@@ -479,15 +534,22 @@ export class BillingService {
         billingMode: 'stripe',
         status: localStatus,
         stripeSubscriptionId: payload.id,
-        currentPeriodStart: epochSecsToDate(periodStart),
+        currentPeriodStart: nextPeriodStart,
         currentPeriodEnd: epochSecsToDate(periodEnd),
         cancelAtPeriodEnd: payload.cancel_at_period_end,
         canceledAt: epochSecsToDate(payload.canceled_at),
         // Stripe's own retry policy moved us to past_due; arm the grace
-        // window so feature access continues until the deadline.
+        // window so feature access continues until the deadline. billing-new:
+        // anchor the deadline to the first failure — if we're already past_due
+        // with a future grace window, keep it instead of sliding it forward on
+        // every dunning redelivery.
         graceUntil:
           localStatus === 'past_due'
-            ? new Date(Date.now() + loadEnv().billingGracePeriodDays * MS_PER_DAY)
+            ? existing?.status === 'past_due' &&
+              existing.graceUntil != null &&
+              existing.graceUntil.getTime() > Date.now()
+              ? existing.graceUntil
+              : new Date(Date.now() + loadEnv().billingGracePeriodDays * MS_PER_DAY)
             : null,
       },
     });
@@ -531,21 +593,44 @@ export class BillingService {
   }
 
   async handleStripeInvoicePaid(payload: StripeInvoiceShape): Promise<void> {
-    const billing = await controlDb.billingAccount.findFirst({
-      where: { stripeCustomerId: payload.customer },
-      select: { tenantId: true },
-    });
-    if (!billing) return;
-    await this.recordPaymentSuccess(billing.tenantId);
+    const tenantId = await this.tenantForSubscriptionInvoice(payload);
+    if (!tenantId) return;
+    await this.recordPaymentSuccess(tenantId);
   }
 
   async handleStripeInvoiceFailed(payload: StripeInvoiceShape): Promise<void> {
+    const tenantId = await this.tenantForSubscriptionInvoice(payload);
+    if (!tenantId) return;
+    await this.recordPaymentFailure(tenantId);
+  }
+
+  /**
+   * Resolve the tenant an invoice event should mutate, or null to skip.
+   *
+   * BILL-2: an invoice event must only drive subscription status when it is
+   * for THE subscription we track. A one-off invoice (`payload.subscription`
+   * null) or an invoice for a different/stale subscription on the same
+   * customer must not flip status to active/past_due or arm a grace window —
+   * doing so could resurrect a canceled tenant's access or label a free/
+   * canceled row "active". Status is driven by `customer.subscription.updated`
+   * events; invoice events are only a grace-window signal for the subscription
+   * they actually belong to.
+   */
+  private async tenantForSubscriptionInvoice(payload: StripeInvoiceShape): Promise<string | null> {
+    if (!payload.subscription) return null;
     const billing = await controlDb.billingAccount.findFirst({
       where: { stripeCustomerId: payload.customer },
       select: { tenantId: true },
     });
-    if (!billing) return;
-    await this.recordPaymentFailure(billing.tenantId);
+    if (!billing) return null;
+    const sub = await controlDb.subscription.findUnique({
+      where: { tenantId: billing.tenantId },
+      select: { stripeSubscriptionId: true },
+    });
+    if (!sub?.stripeSubscriptionId || sub.stripeSubscriptionId !== payload.subscription) {
+      return null;
+    }
+    return billing.tenantId;
   }
 
   // -------------------------------------------------------------------------

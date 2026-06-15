@@ -14,7 +14,7 @@ import {
   type FieldDef,
   type FieldOptions,
   type FieldValidation,
-  patternLooksCatastrophic,
+  patternSaveError,
   validateOptions,
 } from './field-types.js';
 
@@ -119,22 +119,7 @@ export class FieldDefinitionsService {
         throw new BadRequestException('Select fields need at least one option.');
       }
     }
-    // Reject a validation pattern at save time if it doesn't compile or looks
-    // catastrophic (ReDoS) — it would otherwise run on the event loop for every
-    // record write of this entity. See patternLooksCatastrophic.
-    const pattern = input.validationJson?.pattern;
-    if (typeof pattern === 'string' && pattern.length > 0) {
-      if (patternLooksCatastrophic(pattern)) {
-        throw new BadRequestException(
-          'That validation pattern is too complex / risky (possible catastrophic backtracking). Simplify it.',
-        );
-      }
-      try {
-        new RegExp(pattern);
-      } catch {
-        throw new BadRequestException('That validation pattern is not a valid regular expression.');
-      }
-    }
+    this.assertPatternSafe(input.validationJson);
 
     const client = this.tenantPrisma.getClient(tenant);
 
@@ -235,6 +220,9 @@ export class FieldDefinitionsService {
       const errs = validateOptions(input.optionsJson);
       if (errs.length) throw new BadRequestException(errs.join(' '));
     }
+    // Same ReDoS / validity screen as create — an UPDATE that introduces a
+    // catastrophic pattern would otherwise persist and run on every record write.
+    if (input.validationJson !== undefined) this.assertPatternSafe(input.validationJson);
 
     const data: Record<string, unknown> = {};
     if (input.labelJson !== undefined) data.labelJson = input.labelJson;
@@ -261,6 +249,18 @@ export class FieldDefinitionsService {
     fieldKey: string,
   ): Promise<FieldDefinitionDto> {
     return this.update(tenant, entityKind, fieldKey, { archived: true });
+  }
+
+  /**
+   * Reject a field's validation pattern at save time if it doesn't compile or
+   * looks catastrophic (ReDoS). Called on BOTH create and update — the pattern
+   * otherwise runs on the shared event loop for every record write of this
+   * entity, so one bad pattern freezes the API for all tenants. See
+   * `patternLooksCatastrophic`; the match path screens again as a safety net.
+   */
+  private assertPatternSafe(validationJson?: FieldValidation | null): void {
+    const error = patternSaveError(validationJson);
+    if (error) throw new BadRequestException(error);
   }
 
   private toDto(row: {

@@ -30,6 +30,9 @@ SET
 FROM ranked
 WHERE f."id" = ranked."id" AND ranked.rn > 1;
 
-CREATE UNIQUE INDEX "fines_one_outstanding_per_loan"
+-- INFRA-2: IF NOT EXISTS so a partial-apply failure on a tenant DB stays
+-- re-runnable (no wedged P3009 history) — matches the control-plane
+-- announcement_deliveries_tenant_wide_unique migration.
+CREATE UNIQUE INDEX IF NOT EXISTS "fines_one_outstanding_per_loan"
   ON "fines" ("loanId")
   WHERE "status" = 'outstanding' AND "loanId" IS NOT NULL;

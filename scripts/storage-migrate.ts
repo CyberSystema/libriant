@@ -138,7 +138,11 @@ async function main() {
           targetType: 'tenant',
           targetId: tenant.id,
           beforeJson: { storageUrl: tenant.storageUrl, byteCount: fromSize },
-          afterJson: { storageUrl: toUrl, byteCount: toSize },
+          // Source and destination are byte-identical after the verified rsync
+          // (see the content-equivalence check above), so the post-migrate size
+          // is the same `fromSize`. (`toSize` was removed with the old
+          // byte-count verify — referencing it crashed the script.)
+          afterJson: { storageUrl: toUrl, byteCount: fromSize },
         },
       });
     });
@@ -152,7 +156,21 @@ async function main() {
     log(SCRIPT, `done. Source directory left intact at ${from.path} — delete after verification.`);
   } catch (err) {
     log(SCRIPT, `failed: ${(err as Error).message}`);
-    log(SCRIPT, 'tenant left on source storage; read_only window stays open for inspection.');
+    // raw-sql-new-storage-migrate.ts: bound the read_only window on failure so a
+    // failed migration can't strand the tenant in 503-for-writes forever if
+    // nobody closes it. It stays open ~30min for an admin to inspect, then
+    // auto-expires; bust the cache so the new endsAt is seen promptly.
+    await controlDb.systemModeEvent
+      .update({
+        where: { id: modeEvent.id },
+        data: { endsAt: new Date(Date.now() + 30 * 60_000) },
+      })
+      .then(() => bustSystemModeCache(tenant.id))
+      .catch(() => undefined);
+    log(
+      SCRIPT,
+      'tenant left on source storage; read_only window stays open ~30min for inspection, then auto-expires.',
+    );
     throw err;
   } finally {
     await controlDb.$disconnect();
@@ -216,6 +234,15 @@ async function dirSize(p: string): Promise<number> {
   return Number(stdout.trim().split(/\s+/)[0]);
 }
 
+/**
+ * Generous safety backstop on the read_only window so a migration that is
+ * killed hard (e.g. SIGKILL before the catch path runs) cannot strand the
+ * tenant read-only forever. The API treats a window with `endsAt <= now` as
+ * inactive (system-mode.service.ts), so the window self-clears after this even
+ * with no further cleanup. Long enough to outlast any realistic file copy.
+ */
+const READ_ONLY_BACKSTOP_MS = 6 * 60 * 60_000; // 6h
+
 async function openReadOnly(tenantId: string, adminId: string) {
   return controlDb.systemModeEvent.create({
     data: {
@@ -226,15 +253,21 @@ async function openReadOnly(tenantId: string, adminId: string) {
         'Migrating this library’s files to new storage — should be over in a few minutes.',
       allowAdminBypass: true,
       createdByAdminId: adminId,
+      // raw-sql-new-storage-migrate.ts: auto-expiry backstop (see above).
+      endsAt: new Date(Date.now() + READ_ONLY_BACKSTOP_MS),
     },
   });
 }
 
 async function closeEvent(eventId: string) {
-  await controlDb.systemModeEvent.update({
+  const ended = await controlDb.systemModeEvent.update({
     where: { id: eventId },
     data: { endedAt: new Date() },
+    select: { tenantId: true },
   });
+  // Bust the cache so the read_only window lifts promptly instead of lingering
+  // for up to the 30s system-mode cache TTL.
+  if (ended.tenantId) await bustSystemModeCache(ended.tenantId);
 }
 
 async function firstOwnerAdminId(): Promise<string> {
@@ -254,6 +287,18 @@ async function bustResolverCache(slug: string, subdomain: string | null): Promis
     const keys = [`tenant:slug:${slug}`];
     if (subdomain) keys.push(`tenant:sub:${subdomain}`);
     if (keys.length) await redis.del(...keys);
+  } finally {
+    redis.disconnect();
+  }
+}
+
+/** DEL the per-tenant system-mode cache key so a mode change is seen at once. */
+async function bustSystemModeCache(tenantId: string): Promise<void> {
+  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
+  const redis = new Redis(url, { lazyConnect: true, keyPrefix: 'lbr:' });
+  try {
+    await redis.connect();
+    await redis.del(`system_mode:tenant:${tenantId}`);
   } finally {
     redis.disconnect();
   }
