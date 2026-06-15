@@ -23,11 +23,25 @@ cd /app
 # Point the Prisma CLI + seed client straight at Postgres for DDL.
 export CONTROL_DATABASE_URL="${PG_SUPERUSER_URL:-${CONTROL_DATABASE_URL:-}}"
 
+# Fail fast + legibly if neither URL is set — otherwise Prisma dies with an
+# opaque "Environment variable not found" that, run as a detached one-shot, is
+# easy to mistake for a migration error.
+if [ -z "${CONTROL_DATABASE_URL:-}" ]; then
+  echo "[bootstrap] FATAL: neither PG_SUPERUSER_URL nor CONTROL_DATABASE_URL is set — cannot run migrations or seed." >&2
+  exit 1
+fi
+
 echo "[bootstrap] applying control-plane migrations ..."
-pnpm db:migrate:deploy
+if ! pnpm db:migrate:deploy; then
+  echo "[bootstrap] FATAL: control-plane migration failed. If this is a P3009 'failed migration' or drift, inspect with 'prisma migrate status' and resolve with 'prisma migrate resolve' before redeploying." >&2
+  exit 1
+fi
 
 echo "[bootstrap] seeding cells, feature keys, plans ..."
-pnpm db:seed
+if ! pnpm db:seed; then
+  echo "[bootstrap] FATAL: control-plane seed failed." >&2
+  exit 1
+fi
 
 echo "[bootstrap] ingesting help-centre articles (best-effort) ..."
 pnpm ingest:help || echo "[bootstrap] help ingest skipped (non-fatal)"

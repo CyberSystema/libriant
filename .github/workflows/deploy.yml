@@ -343,7 +343,20 @@ jobs:
             # (or web) running OLD code even though \`pull\` fetched the new image.
             # Forcing recreation guarantees every deploy actually swaps in the
             # freshly-pulled image. (Caddy is reloaded separately below.)
-            docker compose \$FILES up -d --remove-orphans --force-recreate
+            # The one-shot \`migrate\` service is a hard prerequisite (others gate
+            # on service_completed_successfully). \`up -d\` runs detached, so when
+            # migrate exits non-zero compose reports only "service migrate didn't
+            # complete: exit 1" — the container's actual prisma/seed error is NOT
+            # streamed here. On failure, dump the migrate logs (and container
+            # status) before bailing, so the real cause is visible in CI instead
+            # of an opaque exit code.
+            if ! docker compose \$FILES up -d --remove-orphans --force-recreate; then
+              echo "===== deploy failed: dumping one-shot 'migrate' logs =====" >&2
+              docker compose \$FILES logs --no-color --timestamps migrate 2>&1 | tail -n 200 >&2 || true
+              echo "===== container status =====" >&2
+              docker compose \$FILES ps >&2 || true
+              exit 1
+            fi
             # Caddy's config is a bind-mount, so \`up -d\` won't restart it when
             # only the Caddyfile content changed. Reload it explicitly (graceful,
             # zero-downtime) so Caddyfile edits actually take effect; fall back to
