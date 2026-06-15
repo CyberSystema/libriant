@@ -63,20 +63,16 @@ with them it signs + (optionally) notarizes — no config change needed.
 
 ### Code signing & notarization
 
-Driven entirely by environment variables, so the same config works unsigned
-locally and signed in CI:
+Signing is wired into the release workflow via repo secrets, using the modern
+token-free paths: **App Store Connect API key** for macOS notarization and
+**Azure Trusted Signing** for Windows. **[SIGNING.md](SIGNING.md)** is the full
+runbook — what each secret is, how to obtain it, and how to add it.
 
-| Platform       | Secrets                                                                                                                                       |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS sign     | `CSC_LINK` (base64 `.p12`) + `CSC_KEY_PASSWORD`                                                                                               |
-| macOS notarize | `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID`, then set `mac.notarize: true` in [`electron-builder.yml`](electron-builder.yml) |
-| Windows sign   | `WIN_CSC_LINK` (base64 `.pfx`) + `WIN_CSC_KEY_PASSWORD` (or Azure Trusted Signing)                                                            |
-
-The macOS build uses **hardened runtime** + [`build/entitlements.mac.plist`](build/entitlements.mac.plist).
-The **camera entitlement + `NSCameraUsageDescription` are mandatory** — without
-them the barcode scanner is silently blocked once notarized. (`mac.notarize` is
-left `false` so an unsigned local `pnpm package` doesn't try to reach Apple —
-flip it to `true` once the `APPLE_*` secrets are in place.)
+The macOS build uses **hardened runtime** + [`build/entitlements.mac.plist`](build/entitlements.mac.plist);
+the **camera entitlement + `NSCameraUsageDescription` are mandatory** or the
+barcode scanner is silently blocked once notarized. The base config is
+signing-agnostic so a local `pnpm package` is unsigned; the workflow supplies
+signing at run time.
 
 ## Auto-update & diagnostics
 
