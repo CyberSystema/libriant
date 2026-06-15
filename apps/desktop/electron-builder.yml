@@ -58,6 +58,9 @@ win:
   # `win.azureSignOptions` (publisherName/endpoint/account/profile) with
   # `--config` + AZURE_* env. No config here, so a local build is unsigned
   # (SmartScreen warns). See SIGNING.md.
+  # When the Azure secrets are absent the workflow also passes
+  # `--config.win.verifyUpdateCodeSignature=false` so electron-updater still
+  # applies the unsigned update; signed builds keep verification on (default).
   target:
     - nsis
 

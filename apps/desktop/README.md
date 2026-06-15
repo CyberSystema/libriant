@@ -83,7 +83,10 @@ signing at run time.
   nicer flow via the bridge: `window.libriantDesktop.onUpdateState(cb)` to show a
   themed "update ready — restart" nudge, and `installUpdate()` to restart now.
   (The PWA service worker can update web assets but never the Electron/Chromium
-  runtime — this is the only way to patch that.)
+  runtime — this is the only way to patch that.) Unsigned **macOS** builds can't
+  auto-update — Apple's updater requires a signature — so Macs update by
+  re-downloading until the build is signed; unsigned **Windows/Linux** builds
+  auto-update fine. See [SIGNING.md](SIGNING.md) → "Ship now, sign later".
 - **Diagnostics** — `getInfo()` reports app version, platform, the resolved
   server URL + its source, and safe-mode. A rotating, size-capped log
   (electron-log, 5 MB) lives under the app's user-data dir; open it via

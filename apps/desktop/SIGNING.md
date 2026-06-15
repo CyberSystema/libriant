@@ -10,6 +10,27 @@ Everything is driven by **GitHub Actions repo secrets** consumed by
 We use the **modern, hardware-token-free paths**: App Store Connect **API key**
 for macOS notarization and **Azure Trusted Signing** for Windows.
 
+## Ship now, sign later
+
+You don't need any of these secrets to release. With a platform's secrets
+**absent**, [`desktop-release.yml`](../../.github/workflows/desktop-release.yml)
+still builds and publishes a working **unsigned** installer for that OS; add the
+secrets later and the next tagged release signs automatically — **no code or
+config change**. What unsigned costs you until then:
+
+- **macOS** — Gatekeeper shows "unidentified developer" (users right-click →
+  **Open**, or `xattr -dr com.apple.quarantine Libriant.app`). **Auto-update is
+  off**: Apple's updater requires a valid signature, so Macs update by
+  re-downloading the installer until you sign.
+- **Windows** — SmartScreen shows "unknown publisher" (users click **More info →
+  Run anyway**). Auto-update **still works** — the workflow disables the update
+  signature check for unsigned builds.
+- **Linux** — no signing expected; installers and auto-update work as-is.
+
+The app is otherwise fully functional unsigned, including the camera barcode
+scanner (the hardened-runtime camera entitlement only takes effect once
+notarized). Signing buys install trust + macOS auto-update, not features.
+
 ## Secrets at a glance
 
 | Secret                  | Platform | What it is                                                       |

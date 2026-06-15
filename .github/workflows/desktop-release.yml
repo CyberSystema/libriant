@@ -11,8 +11,9 @@
 #                    (AZURE_TENANT_ID + AZURE_CLIENT_ID + AZURE_CLIENT_SECRET) +
 #                    AZURE_TS_ENDPOINT + AZURE_TS_ACCOUNT + AZURE_TS_CERT_PROFILE +
 #                    WIN_PUBLISHER_NAME
-# Until a platform's secrets exist its job produces an unsigned build (or fails
-# at notarize). GITHUB_TOKEN (auto) publishes the release.
+# Each platform job auto-detects its secrets: present → signed (+ notarized on
+# macOS); absent → a clean UNSIGNED build is still published, so you can ship now
+# and add signing later with no code/config change. GITHUB_TOKEN (auto) publishes.
 name: Desktop release
 
 on:
@@ -64,19 +65,40 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$RUNNER_OS" = "macOS" ]; then
-            # App Store Connect API key (.p8) for notarytool — written to a file
-            # whose path electron-builder/@electron/notarize reads via APPLE_API_KEY.
-            if [ -n "${APPLE_API_KEY_P8:-}" ]; then
+            if [ -z "${CSC_LINK:-}" ]; then
+              # No Developer ID cert → publish a clean UNSIGNED build instead of
+              # failing. CSC_IDENTITY_AUTO_DISCOVERY=false stops electron-builder
+              # from hunting the keychain for an identity. Gatekeeper warns, and
+              # macOS auto-update (Squirrel.Mac) stays off until the build is signed.
+              echo "::warning::No MAC_CSC_LINK — publishing an UNSIGNED macOS build (Gatekeeper warns; mac auto-update disabled until signed)."
+              export CSC_IDENTITY_AUTO_DISCOVERY=false
+              pnpm exec electron-builder --publish always
+            elif [ -n "${APPLE_API_KEY_P8:-}" ]; then
+              # Signed + notarized. The .p8 (App Store Connect API key) goes to a
+              # file whose path @electron/notarize reads via APPLE_API_KEY.
               printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
               export APPLE_API_KEY="$RUNNER_TEMP/AuthKey.p8"
+              pnpm exec electron-builder --publish always --config.mac.notarize=true
+            else
+              # Cert but no notarization key → sign without notarizing (Gatekeeper
+              # still warns on first open, but the binary is at least signed).
+              echo "::warning::MAC_CSC_LINK set but no APPLE_API_KEY_P8 — signing WITHOUT notarizing."
+              pnpm exec electron-builder --publish always
             fi
-            pnpm exec electron-builder --publish always --config.mac.notarize=true
           elif [ "$RUNNER_OS" = "Windows" ]; then
-            pnpm exec electron-builder --publish always \
-              --config.win.azureSignOptions.publisherName="$WIN_PUBLISHER_NAME" \
-              --config.win.azureSignOptions.endpoint="$AZURE_TS_ENDPOINT" \
-              --config.win.azureSignOptions.codeSigningAccountName="$AZURE_TS_ACCOUNT" \
-              --config.win.azureSignOptions.certificateProfileName="$AZURE_TS_CERT_PROFILE"
+            if [ -n "${AZURE_CLIENT_ID:-}" ]; then
+              pnpm exec electron-builder --publish always \
+                --config.win.azureSignOptions.publisherName="$WIN_PUBLISHER_NAME" \
+                --config.win.azureSignOptions.endpoint="$AZURE_TS_ENDPOINT" \
+                --config.win.azureSignOptions.codeSigningAccountName="$AZURE_TS_ACCOUNT" \
+                --config.win.azureSignOptions.certificateProfileName="$AZURE_TS_CERT_PROFILE"
+            else
+              # No Azure secrets → UNSIGNED build. verifyUpdateCodeSignature=false so
+              # electron-updater still applies the (unsigned) update; SmartScreen
+              # warns on install. Signed builds keep verification on (default true).
+              echo "::warning::No AZURE_CLIENT_ID — publishing an UNSIGNED Windows build (SmartScreen warns; update signature check disabled)."
+              pnpm exec electron-builder --publish always --config.win.verifyUpdateCodeSignature=false
+            fi
           else
             pnpm exec electron-builder --publish always
           fi
