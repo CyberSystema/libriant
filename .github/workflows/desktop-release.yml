@@ -1,0 +1,70 @@
+# Build + sign + publish the Libriant desktop app to GitHub Releases, which is
+# the auto-update feed electron-updater reads (latest.yml + installers).
+#
+# Trigger by pushing a tag like `desktop-v1.2.3` (separate from the web/api
+# deploy, which keys off `main`). Requires these repo secrets — until they are
+# set the job signs nothing (and notarization, gated by `mac.notarize` in
+# electron-builder.yml, stays off):
+#   MAC_CSC_LINK, MAC_CSC_KEY_PASSWORD            (Developer ID .p12, base64)
+#   APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID   (notarization)
+#   WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD            (Authenticode .pfx, base64)
+# GITHUB_TOKEN (auto) publishes the release.
+name: Desktop release
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Fetch Electron binary
+        # pnpm blocks Electron's large binary postinstall by default; electron-
+        # builder needs it present to package.
+        run: pnpm rebuild electron
+
+      - name: Build desktop (tsc)
+        run: pnpm --filter @libriant/desktop build
+
+      - name: Package, sign & publish
+        working-directory: apps/desktop
+        run: pnpm exec electron-builder --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing + notarization
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Windows Authenticode (kept separate so the macOS job never picks it up)
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}

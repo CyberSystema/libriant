@@ -75,7 +75,31 @@ locally and signed in CI:
 The macOS build uses **hardened runtime** + [`build/entitlements.mac.plist`](build/entitlements.mac.plist).
 The **camera entitlement + `NSCameraUsageDescription` are mandatory** — without
 them the barcode scanner is silently blocked once notarized. (`mac.notarize` is
-left `false` so an unsigned local `pnpm package` doesn't try to reach Apple.)
+left `false` so an unsigned local `pnpm package` doesn't try to reach Apple —
+flip it to `true` once the `APPLE_*` secrets are in place.)
+
+## Auto-update & diagnostics
+
+- **Auto-update** (packaged builds only) — on launch and every 6h the app checks
+  the GitHub Releases feed (`publish` in [`electron-builder.yml`](electron-builder.yml)),
+  downloads in the background, and **installs on quit** by default, so a fleet
+  patches itself on the next restart with no UI. The web app can opt into a
+  nicer flow via the bridge: `window.libriantDesktop.onUpdateState(cb)` to show a
+  themed "update ready — restart" nudge, and `installUpdate()` to restart now.
+  (The PWA service worker can update web assets but never the Electron/Chromium
+  runtime — this is the only way to patch that.)
+- **Diagnostics** — `getInfo()` reports app version, platform, the resolved
+  server URL + its source, and safe-mode. A rotating, size-capped log
+  (electron-log, 5 MB) lives under the app's user-data dir; open it via
+  **Help → Open logs…**.
+
+## Releasing
+
+Push a `desktop-v*` tag (separate from the web/api `main` deploy). The
+[`desktop-release`](../../.github/workflows/desktop-release.yml) workflow builds
+on macOS/Windows/Linux, signs with the repo secrets, and publishes the
+installers + `latest.yml` to GitHub Releases (the update feed). See the workflow
+header for the exact secret names.
 
 ## Security
 

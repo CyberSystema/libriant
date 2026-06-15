@@ -14,6 +14,14 @@ appId: com.cybersystema.libriant
 productName: Libriant
 copyright: © CyberSystema
 
+# Update feed: electron-updater reads release metadata (latest.yml + installers)
+# from GitHub Releases, and `electron-builder --publish` uploads them there.
+# Adjust owner/repo if the desktop releases live elsewhere.
+publish:
+  provider: github
+  owner: CyberSystema
+  repo: libriant
+
 directories:
   output: release
   buildResources: build

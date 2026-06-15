@@ -9,6 +9,8 @@ import {
   type MenuItemConstructorOptions,
 } from 'electron';
 import * as path from 'node:path';
+import log from 'electron-log/main';
+import * as electronUpdater from 'electron-updater';
 import {
   isValidHttpUrl,
   loadConfig,
@@ -16,6 +18,8 @@ import {
   saveConfig,
   type DesktopConfig,
 } from './config.js';
+
+const { autoUpdater } = electronUpdater;
 
 /**
  * Libriant desktop shell. A deliberately thin, hardened Electron window around
@@ -36,6 +40,15 @@ import {
 type Ack = { ok: boolean; reason?: string };
 const DENIED: Ack = { ok: false, reason: 'untrusted-sender' };
 
+/** Auto-update lifecycle pushed to the web app so it can show a themed,
+ *  i18n "update ready — restart" nudge at a safe moment (not mid-checkout). */
+type UpdateState = {
+  status: 'checking' | 'available' | 'none' | 'downloading' | 'downloaded' | 'error';
+  version?: string;
+  percent?: number;
+  message?: string;
+};
+
 const FALLBACK_FILE = path.join(__dirname, '..', 'static', 'fallback.html');
 // Renderer-crash auto-reload budget: at most this many reloads within the
 // window before we stop hammering and show the fallback instead.
@@ -48,6 +61,7 @@ let mainWindow: BrowserWindow | null = null;
 let config: DesktopConfig = {};
 let appOrigin: string | null = null;
 let crashReloads: number[] = [];
+let updateReady = false;
 
 function originOf(url: string): string | null {
   try {
@@ -249,9 +263,67 @@ function buildMenu(): void {
         },
       ],
     },
+    {
+      role: 'help',
+      submenu: [
+        {
+          label: 'Check for updates…',
+          enabled: app.isPackaged,
+          click: () => void autoUpdater.checkForUpdates().catch(() => undefined),
+        },
+        {
+          label: 'Open logs…',
+          click: () => shell.showItemInFolder(log.transports.file.getFile().path),
+        },
+      ],
+    },
     { role: 'windowMenu' },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function initLogging(): void {
+  log.initialize();
+  log.transports.file.maxSize = 5 * 1024 * 1024; // 5 MB, rotated — bounded on disk
+  log.info(`Libriant desktop ${app.getVersion()} starting on ${process.platform}`);
+}
+
+function sendUpdateState(state: UpdateState): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('libriant:update-state', state);
+  }
+}
+
+/**
+ * Auto-update via the signed release feed (packaged builds only — a dev build
+ * has no feed). Downloads in the background and installs on quit by default, so
+ * a fleet patches itself on the next restart even with no UI. The lifecycle is
+ * pushed to the web app (sendUpdateState) so it can offer a "restart now" nudge
+ * at a safe moment; `installUpdate()` performs the restart on demand.
+ */
+function initAutoUpdate(): void {
+  if (!app.isPackaged) return;
+  autoUpdater.logger = log;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('checking-for-update', () => sendUpdateState({ status: 'checking' }));
+  autoUpdater.on('update-available', (i) =>
+    sendUpdateState({ status: 'available', version: i.version }),
+  );
+  autoUpdater.on('update-not-available', () => sendUpdateState({ status: 'none' }));
+  autoUpdater.on('download-progress', (p) =>
+    sendUpdateState({ status: 'downloading', percent: Math.round(p.percent) }),
+  );
+  autoUpdater.on('update-downloaded', (i) => {
+    updateReady = true;
+    sendUpdateState({ status: 'downloaded', version: i.version });
+  });
+  autoUpdater.on('error', (e) =>
+    sendUpdateState({ status: 'error', message: String((e as Error)?.message ?? e) }),
+  );
+  void autoUpdater.checkForUpdates().catch(() => undefined);
+  // Re-check periodically for long-running desk machines.
+  setInterval(() => void autoUpdater.checkForUpdates().catch(() => undefined), 6 * 60 * 60 * 1000);
 }
 
 // --- Audited IPC bridge (see preload.ts) -----------------------------------
@@ -279,6 +351,13 @@ ipcMain.handle('libriant:open-external', (e, url: unknown) => {
     ? openExternal(url)
     : Promise.resolve({ ok: false, reason: 'invalid-url' });
 });
+ipcMain.handle('libriant:install-update', (e): Ack => {
+  if (!isTrustedSender(e)) return DENIED;
+  if (!updateReady) return { ok: false, reason: 'no-update-ready' };
+  // Reply first, then restart into the update.
+  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+  return { ok: true };
+});
 
 // --- Lifecycle --------------------------------------------------------------
 if (!app.requestSingleInstanceLock()) {
@@ -291,10 +370,12 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   void app.whenReady().then(() => {
+    initLogging();
     config = loadConfig();
     configurePermissions();
     buildMenu();
     createWindow();
+    initAutoUpdate();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

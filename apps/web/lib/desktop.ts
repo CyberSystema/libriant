@@ -7,6 +7,14 @@
 /** Acknowledgement returned by the shell's mutating bridge calls. */
 export type DesktopAck = { ok: boolean; reason?: string };
 
+/** Auto-update lifecycle the shell pushes to the web app. */
+export type DesktopUpdateState = {
+  status: 'checking' | 'available' | 'none' | 'downloading' | 'downloaded' | 'error';
+  version?: string;
+  percent?: number;
+  message?: string;
+};
+
 export type LibriantDesktop = {
   isDesktop: true;
   getInfo: () => Promise<{
@@ -19,6 +27,10 @@ export type LibriantDesktop = {
   setServerUrl: (url: string) => Promise<DesktopAck>;
   retry: () => Promise<DesktopAck>;
   openExternal: (url: string) => Promise<DesktopAck>;
+  /** Subscribe to update lifecycle; returns an unsubscribe function. */
+  onUpdateState: (cb: (state: DesktopUpdateState) => void) => () => void;
+  /** Quit + install a downloaded update now. */
+  installUpdate: () => Promise<DesktopAck>;
 };
 
 declare global {
