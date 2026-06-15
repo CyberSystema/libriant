@@ -23,6 +23,6 @@ export type SendResult = {
 };
 
 export interface EmailDriver {
-  readonly name: 'console' | 'smtp';
+  readonly name: 'console' | 'smtp' | 'resend';
   send(input: SendInput): Promise<SendResult>;
 }

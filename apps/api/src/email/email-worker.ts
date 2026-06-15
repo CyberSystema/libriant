@@ -2,9 +2,8 @@ import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { controlDb } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
-import { ConsoleEmailDriver } from './drivers/console-driver.js';
+import { createEmailDriver } from './drivers/create-email-driver.js';
 import type { EmailDriver } from './drivers/email-driver.js';
-import { SmtpEmailDriver } from './drivers/smtp-driver.js';
 import { EMAIL_JOB_NAME, EMAIL_QUEUE_NAME } from './email.service.js';
 
 type JobData = { outboxId: string };
@@ -62,8 +61,7 @@ export async function startEmailWorker(): Promise<EmailWorkerHandle> {
     enableReadyCheck: false,
   });
 
-  const driver: EmailDriver =
-    env.emailDriver === 'smtp' ? new SmtpEmailDriver() : new ConsoleEmailDriver();
+  const driver: EmailDriver = createEmailDriver();
 
   let inFlight = 0;
 

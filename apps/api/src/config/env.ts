@@ -110,13 +110,15 @@ export type AppEnv = {
   /** Days a tenant keeps full feature access after a failed payment. */
   billingGracePeriodDays: number;
   /**
-   * `console` → log what would have gone out (dev default). `smtp` →
-   * deliver through nodemailer + `SMTP_URL` (e.g. `smtp://user:pass@host:port`).
-   * Production must opt in to a real driver.
+   * `console` → log what would have gone out (dev default). `smtp` → deliver
+   * through nodemailer + `SMTP_URL`. `resend` → deliver through the Resend HTTP
+   * API + `RESEND_API_KEY`. Production must opt in to a real driver.
    */
-  emailDriver: 'console' | 'smtp';
+  emailDriver: 'console' | 'smtp' | 'resend';
   /** SMTP connection URL — `smtp://user:pass@host:587` style. Required for `smtp`. */
   smtpUrl: string | null;
+  /** Resend API key (`re_…`). Required for the `resend` driver. */
+  resendApiKey: string | null;
   /** Default `From:` envelope. Falls back to `Libriant <no-reply@$PUBLIC_HOST>`. */
   emailFrom: string;
   /** Optional default `Reply-To:` envelope. */
@@ -317,13 +319,15 @@ export function loadEnv(): AppEnv {
     billingGracePeriodDays: num('BILLING_GRACE_PERIOD_DAYS', 7, { int: true, min: 0, max: 365 }),
     emailDriver: (() => {
       const raw = (process.env.EMAIL_DRIVER ?? '').toLowerCase().trim();
-      if (raw === 'console' || raw === 'smtp') return raw;
+      if (raw === 'console' || raw === 'smtp' || raw === 'resend') return raw;
       // Default: console in development (no network needed); smtp in any
-      // other environment. The smtp driver fails fast at boot if SMTP_URL
-      // is missing, so a misconfigured prod surfaces immediately.
+      // other environment. Each real driver fails fast at boot if its config
+      // (SMTP_URL / RESEND_API_KEY) is missing, so a misconfigured prod
+      // surfaces immediately.
       return nodeEnv === 'development' ? 'console' : 'smtp';
     })(),
     smtpUrl: process.env.SMTP_URL?.length ? process.env.SMTP_URL : null,
+    resendApiKey: process.env.RESEND_API_KEY?.length ? process.env.RESEND_API_KEY : null,
     emailFrom: optional(
       'EMAIL_FROM',
       `Libriant <no-reply@${optional('PUBLIC_APEX_DOMAIN', 'localhost')}>`,
