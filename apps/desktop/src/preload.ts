@@ -35,6 +35,14 @@ contextBridge.exposeInMainWorld('libriantDesktop', {
   retry: (): Promise<Ack> => ipcRenderer.invoke('libriant:retry'),
   /** Open a URL in the user's default browser. */
   openExternal: (url: string): Promise<Ack> => ipcRenderer.invoke('libriant:open-external', url),
+  /** List the OS printers (name / display name / default). Read-only + safe. */
+  getPrinters: (): Promise<Array<{ name: string; displayName: string; isDefault: boolean }>> =>
+    ipcRenderer.invoke('libriant:get-printers'),
+  /** Silently print a same-origin Libriant print route (a receipt or a barcode
+   *  label) to a printer — the default printer when `deviceName` is omitted.
+   *  Gated in main by the origin/top-frame guard. */
+  print: (opts: { path: string; deviceName?: string }): Promise<Ack> =>
+    ipcRenderer.invoke('libriant:print', opts),
   /** Subscribe to auto-update lifecycle events; returns an unsubscribe fn so
    *  the web app can show a themed "update ready — restart" nudge. */
   onUpdateState: (cb: (state: UpdateState) => void): (() => void) => {

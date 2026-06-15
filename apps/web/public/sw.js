@@ -26,8 +26,15 @@ const OFFLINE_URL = '/offline.html';
 const RUNTIME_CACHES = [PAGES_CACHE, DATA_CACHE];
 const ALL_CACHES = [STATIC_CACHE, ...RUNTIME_CACHES];
 
-/** Never cache anything under these paths — sessions, payments, admin plane. */
-const SENSITIVE = [/\/auth(\/|$)/, /\/billing(\/|$)/, /\/admin(\/|$)/, /\/stripe(\/|$)/];
+/** Never cache anything under these paths — sessions, payments, admin plane,
+ *  and print routes (a cached receipt could be served stale across librarians). */
+const SENSITIVE = [
+  /\/auth(\/|$)/,
+  /\/billing(\/|$)/,
+  /\/admin(\/|$)/,
+  /\/stripe(\/|$)/,
+  /\/print(\/|$)/,
+];
 function isSensitive(pathname) {
   return SENSITIVE.some((re) => re.test(pathname));
 }

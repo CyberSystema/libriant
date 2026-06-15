@@ -104,6 +104,81 @@ async function openExternal(url: string): Promise<Ack> {
   }
 }
 
+type PrintRequest = { path?: unknown; deviceName?: unknown };
+
+/**
+ * Silently print a same-origin Libriant print route (a circulation receipt or a
+ * barcode label) to a printer — the thing a browser can't do without a dialog.
+ *
+ * We render the route in a HIDDEN window that shares the librarian's logged-in
+ * session (the default session ⇒ the auth cookie rides along, so the *authed*
+ * print page renders), then drive `webContents.print({ silent })`. The hidden
+ * window is hardened exactly like the main one (no node, sandboxed, NO preload
+ * so it gets no bridge). `path` is constrained to our own origin AND a `/print/`
+ * route, so a compromised renderer can't make the authed background window print
+ * an arbitrary page. A timeout guarantees the window is always torn down.
+ */
+async function silentPrint(req: PrintRequest): Promise<Ack> {
+  if (!appOrigin) return { ok: false, reason: 'no-origin' };
+  const rawPath = req?.path;
+  if (typeof rawPath !== 'string' || !rawPath.startsWith('/') || rawPath.startsWith('//')) {
+    return { ok: false, reason: 'invalid-path' };
+  }
+  let target: URL;
+  try {
+    target = new URL(rawPath, appOrigin);
+  } catch {
+    return { ok: false, reason: 'invalid-path' };
+  }
+  // Same-origin, an actual print route, and no caller-supplied fragment.
+  if (target.origin !== appOrigin || !target.pathname.includes('/print/') || target.hash) {
+    return { ok: false, reason: 'forbidden-path' };
+  }
+  const deviceName = typeof req?.deviceName === 'string' ? req.deviceName : undefined;
+  // Marker the print page reads to NOT also call window.print() — the shell
+  // drives the silent job below, so a self-print would duplicate it / pop a dialog.
+  target.hash = 'shellprint';
+
+  const printWindow = new BrowserWindow({
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webviewTag: false,
+    },
+  });
+
+  return await new Promise<Ack>((resolve) => {
+    let settled = false;
+    const wc = printWindow.webContents;
+    const done = (ack: Ack): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        if (!printWindow.isDestroyed()) printWindow.destroy();
+      } catch {
+        /* already gone — nothing to clean up */
+      }
+      resolve(ack);
+    };
+    // Safety net: never leak an authed background window if the route hangs.
+    const timer = setTimeout(() => done({ ok: false, reason: 'print-timeout' }), 20_000);
+
+    wc.once('did-finish-load', () => {
+      wc.print({ silent: true, printBackground: true, deviceName }, (ok, failureReason) =>
+        done({ ok, reason: ok ? undefined : failureReason || 'print-failed' }),
+      );
+    });
+    wc.on('did-fail-load', (_e, code, desc, _url, isMainFrame) => {
+      if (!isMainFrame || code === -3) return; // sub-frame / ERR_ABORTED
+      done({ ok: false, reason: desc || `load-failed-${code}` });
+    });
+    void printWindow.loadURL(target.href);
+  });
+}
+
 function persistBounds(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   config.windowBounds = mainWindow.getBounds();
@@ -357,6 +432,37 @@ ipcMain.handle('libriant:install-update', (e): Ack => {
   // Reply first, then restart into the update.
   setImmediate(() => autoUpdater.quitAndInstall(false, true));
   return { ok: true };
+});
+// Read-only (mirrors get-info): the available OS printers, for an optional
+// printer picker on the web side. Leaks only local printer names to the top frame.
+ipcMain.handle('libriant:get-printers', async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return [];
+  try {
+    const printers = await mainWindow.webContents.getPrintersAsync();
+    return printers.map((p) => {
+      // `isDefault` isn't a top-level field; on CUPS (macOS/Linux) it surfaces in
+      // the platform options. Defaults to false elsewhere — v1 doesn't rely on it.
+      const opts = p.options as unknown as Record<string, string | undefined>;
+      return {
+        name: p.name,
+        displayName: p.displayName,
+        isDefault: opts['printer-is-default'] === 'true',
+      };
+    });
+  } catch {
+    return [];
+  }
+});
+// Gated: silently print a same-origin print route. Handlers don't auto-convert
+// throws, so wrap it and always return an Ack.
+ipcMain.handle('libriant:print', async (e, req: unknown): Promise<Ack> => {
+  if (!isTrustedSender(e)) return DENIED;
+  try {
+    return await silentPrint((req ?? {}) as PrintRequest);
+  } catch (err) {
+    log.warn('silent print failed', err);
+    return { ok: false, reason: 'print-error' };
+  }
 });
 
 // --- Lifecycle --------------------------------------------------------------

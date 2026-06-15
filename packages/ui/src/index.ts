@@ -1,5 +1,6 @@
 export { Asset, AssetProvider, useAssetUrl } from './Asset';
 export type { AssetManifest, AssetSlot, AssetName } from './asset-manifest';
+export { Barcode, encodeCode128 } from './Barcode';
 export { Button } from './Button';
 export { Banner } from './Banner';
 export { Card, CardHeader, CardBody } from './Card';

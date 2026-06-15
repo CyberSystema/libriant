@@ -15,6 +15,9 @@ export type DesktopUpdateState = {
   message?: string;
 };
 
+/** An OS printer as reported by the shell. */
+export type DesktopPrinter = { name: string; displayName: string; isDefault: boolean };
+
 export type LibriantDesktop = {
   isDesktop: true;
   getInfo: () => Promise<{
@@ -31,6 +34,11 @@ export type LibriantDesktop = {
   onUpdateState: (cb: (state: DesktopUpdateState) => void) => () => void;
   /** Quit + install a downloaded update now. */
   installUpdate: () => Promise<DesktopAck>;
+  /** List available OS printers (for an optional printer picker). */
+  getPrinters: () => Promise<DesktopPrinter[]>;
+  /** Silently print a same-origin print route to a printer (the default printer
+   *  unless a `deviceName` is given). */
+  print: (opts: { path: string; deviceName?: string }) => Promise<DesktopAck>;
 };
 
 declare global {

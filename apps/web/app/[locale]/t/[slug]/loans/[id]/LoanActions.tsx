@@ -5,6 +5,7 @@ import { Button, FormField, Input, Modal, Textarea, useToast } from '@libriant/u
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
+import { printDocument } from '@/lib/print';
 import { useIdempotencyKey } from '@/lib/useIdempotencyKey';
 import { useOfflineQueue } from '@/components/OfflineQueueProvider';
 import { isNetworkError, type CirculationKind } from '@/lib/offline-queue';
@@ -48,23 +49,48 @@ export function LoanActions({ slug, loan, catalog, locale }: Props) {
   // a deliberate repeat (e.g. renewing again) is a new operation.
   const { key: idempotencyKey, rotate } = useIdempotencyKey();
   const { enqueue } = useOfflineQueue();
+  const [printing, setPrinting] = React.useState(false);
+
+  // Print a checkout/return slip. Read-only — no offline queue, no idempotency
+  // key. In the desktop shell this is a silent job; in a browser it opens the
+  // print route, which raises the dialog itself.
+  async function printReceipt() {
+    setPrinting(true);
+    try {
+      const res = await printDocument({ locale, slug, kind: 'receipt', id: loan.id });
+      toast.show(
+        res.ok
+          ? { severity: 'success', title: t('loans.print.sent') }
+          : { severity: 'critical', title: t('loans.print.failed') },
+      );
+    } finally {
+      setPrinting(false);
+    }
+  }
 
   if (loan.status !== 'active') {
     return (
-      <p
-        style={{
-          padding: 'var(--sp-3) var(--sp-4)',
-          background: 'var(--color-surface-muted)',
-          borderRadius: 'var(--radius-md)',
-          color: 'var(--color-text-muted)',
-          fontSize: 'var(--fs-sm)',
-          margin: 0,
-        }}
-      >
-        {loan.status === 'returned'
-          ? t('loans.actions.closedReturned')
-          : t('loans.actions.closedLost')}
-      </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
+        <p
+          style={{
+            padding: 'var(--sp-3) var(--sp-4)',
+            background: 'var(--color-surface-muted)',
+            borderRadius: 'var(--radius-md)',
+            color: 'var(--color-text-muted)',
+            fontSize: 'var(--fs-sm)',
+            margin: 0,
+          }}
+        >
+          {loan.status === 'returned'
+            ? t('loans.actions.closedReturned')
+            : t('loans.actions.closedLost')}
+        </p>
+        <div>
+          <Button variant="secondary" loading={printing} onClick={printReceipt}>
+            {t('loans.print.printReceipt')}
+          </Button>
+        </div>
+      </div>
     );
   }
 
@@ -142,6 +168,9 @@ export function LoanActions({ slug, loan, catalog, locale }: Props) {
         </Button>
         <Button variant="ghost" onClick={() => setOpenModal('lost')}>
           {t('loans.actions.markLost')}
+        </Button>
+        <Button variant="secondary" loading={printing} onClick={printReceipt}>
+          {t('loans.print.printReceipt')}
         </Button>
       </div>
 

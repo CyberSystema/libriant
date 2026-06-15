@@ -15,6 +15,7 @@ import {
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
+import { printDocument } from '@/lib/print';
 import type { FieldDef } from '@/components/DynamicFields';
 import { BookForm, type BookInitial } from '../new/BookForm';
 import { CoverUploader } from './CoverUploader';
@@ -63,10 +64,27 @@ export function BookDetail({ slug, catalog, locale, initial, customFields }: Pro
   const [archiveBusy, setArchiveBusy] = React.useState(false);
   const [archiveOpen, setArchiveOpen] = React.useState(false);
   const [addCopyOpen, setAddCopyOpen] = React.useState(false);
+  const [printingCopyId, setPrintingCopyId] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     setBook(initial);
   }, [initial]);
+
+  // Print a barcode/spine label for one copy. Silent in the desktop shell; opens
+  // the print route (which auto-prints) in a browser.
+  async function printLabel(copyId: string) {
+    setPrintingCopyId(copyId);
+    try {
+      const res = await printDocument({ locale, slug, kind: 'label', id: copyId, bookId: book.id });
+      toast.show(
+        res.ok
+          ? { severity: 'success', title: t('catalog.book.print.labelSent') }
+          : { severity: 'critical', title: t('catalog.book.print.labelFailed') },
+      );
+    } finally {
+      setPrintingCopyId(null);
+    }
+  }
 
   async function archive() {
     setArchiveBusy(true);
@@ -287,6 +305,7 @@ export function BookDetail({ slug, catalog, locale, initial, customFields }: Pro
                         <th>{t('catalog.book.copyBarcode')}</th>
                         <th>{t('catalog.book.copyStatus')}</th>
                         <th>{t('catalog.book.copyShelf')}</th>
+                        <th>{t('catalog.book.print.column')}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -295,6 +314,16 @@ export function BookDetail({ slug, catalog, locale, initial, customFields }: Pro
                           <td>{c.barcode}</td>
                           <td>{c.status}</td>
                           <td>{c.shelfLocation ?? '—'}</td>
+                          <td>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              loading={printingCopyId === c.id}
+                              onClick={() => printLabel(c.id)}
+                            >
+                              {t('catalog.book.printLabel')}
+                            </Button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
