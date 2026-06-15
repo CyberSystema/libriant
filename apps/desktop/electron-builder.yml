@@ -1,8 +1,15 @@
-# Packaging config for the Libriant desktop shell. Run `pnpm package` (after
-# `pnpm build`) to produce installers in `release/`. Code-signing + notarization
-# (mac) and an app icon are deployment concerns — add them here when releasing:
-#   - set `mac.icon` / `win.icon` / `linux.icon` to a 512px+ PNG / .icns / .ico
-#   - provide signing identities via the standard electron-builder env vars.
+# Packaging config for the Libriant desktop shell. `pnpm package` (after
+# `pnpm build`) produces installers in `release/`.
+#
+# Signing & notarization are driven by environment variables so the same config
+# does an unsigned local build (electron-builder just warns) AND a fully
+# signed+notarized build in CI when the secrets are present:
+#   macOS sign:      CSC_LINK (base64 .p12) + CSC_KEY_PASSWORD
+#   macOS notarize:  APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID
+#                    (then enable `mac.notarize: true` — see note below)
+#   Windows sign:    WIN_CSC_LINK (base64 .pfx) + WIN_CSC_KEY_PASSWORD
+#                    (or Azure Trusted Signing via its own env)
+# The app icon is build/icon.png (1024px); electron-builder derives .icns/.ico.
 appId: com.cybersystema.libriant
 productName: Libriant
 copyright: © CyberSystema
@@ -11,19 +18,35 @@ directories:
   output: release
   buildResources: build
 
-# Only the compiled output + manifest ship inside the app. node_modules that
-# Electron needs are resolved by electron-builder from the install.
+# Compiled main/preload + the bundled static fallback page + manifest.
 files:
   - dist/**/*
+  - static/**/*
   - package.json
 
 mac:
   category: public.app-category.productivity
+  # Hardened runtime + entitlements are required for notarization; the camera
+  # entitlement keeps the barcode scanner working under it.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # macOS shows these when the app first asks for the camera/mic (the scanner).
+  extendInfo:
+    NSCameraUsageDescription: 'Libriant uses the camera to scan book and membership barcodes.'
+    NSMicrophoneUsageDescription: 'Libriant only needs the camera; microphone access is not used.'
+  # Notarization: once APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID are set
+  # in CI, flip this to `true` (kept off here so an unsigned local `pnpm package`
+  # doesn't fail trying to reach Apple).
+  notarize: false
   target:
     - dmg
     - zip
 
 win:
+  # Authenticode signing is auto-applied when WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD
+  # are present; otherwise an unsigned build (SmartScreen will warn).
   target:
     - nsis
 

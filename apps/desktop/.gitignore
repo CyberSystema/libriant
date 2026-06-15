@@ -1,3 +1,9 @@
 dist/
 release/
 node_modules/
+
+# The root .gitignore ignores `build/` everywhere (it's a common build-output
+# name). Here, build/ holds COMMITTED packaging inputs — the app icon and the
+# macOS entitlements — so re-include it.
+!build/
+!build/**

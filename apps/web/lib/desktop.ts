@@ -4,11 +4,21 @@
  * in a normal browser it's absent. Use `isDesktopApp()` to light up
  * desktop-only affordances without breaking the browser experience.
  */
+/** Acknowledgement returned by the shell's mutating bridge calls. */
+export type DesktopAck = { ok: boolean; reason?: string };
+
 export type LibriantDesktop = {
   isDesktop: true;
-  getInfo: () => Promise<{ version: string; platform: string; serverUrl: string }>;
-  setServerUrl: (url: string) => Promise<boolean>;
-  openExternal: (url: string) => Promise<void>;
+  getInfo: () => Promise<{
+    version: string;
+    platform: string;
+    serverUrl: string;
+    serverUrlSource: 'env' | 'config' | 'default';
+    safeMode: boolean;
+  }>;
+  setServerUrl: (url: string) => Promise<DesktopAck>;
+  retry: () => Promise<DesktopAck>;
+  openExternal: (url: string) => Promise<DesktopAck>;
 };
 
 declare global {

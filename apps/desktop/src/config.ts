@@ -50,10 +50,17 @@ export function saveConfig(config: DesktopConfig): void {
  *   1. LIBRIANT_APP_URL env (ops / dev override)
  *   2. persisted serverUrl (the user pointed the app at their own instance)
  *   3. localhost in dev, the packaged default in production
+ *
+ * In safe mode (`ignoreSaved`) the persisted serverUrl is skipped — the IT
+ * escape hatch for a machine wedged on a bad saved URL, without hand-editing
+ * the config JSON.
  */
-export function resolveStartUrl(config: DesktopConfig): string {
+export function resolveStartUrl(
+  config: DesktopConfig,
+  opts: { ignoreSaved?: boolean } = {},
+): string {
   const fromEnv = process.env.LIBRIANT_APP_URL;
   if (isValidHttpUrl(fromEnv)) return fromEnv;
-  if (isValidHttpUrl(config.serverUrl)) return config.serverUrl;
+  if (!opts.ignoreSaved && isValidHttpUrl(config.serverUrl)) return config.serverUrl;
   return app.isPackaged ? DEFAULT_APP_URL : DEV_APP_URL;
 }
