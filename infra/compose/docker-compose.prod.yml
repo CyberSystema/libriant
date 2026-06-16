@@ -77,6 +77,12 @@ x-app-env: &app-env
   EMAIL_REPLY_TO: ${EMAIL_REPLY_TO:-}
   BCRYPT_COST: '12'
   PG_SUPERUSER_URL: postgresql://libriant:${POSTGRES_PASSWORD}@postgres:5432/libriant_control
+  # In-panel desktop-app download proxy. Repo where `desktop-v*` installers are
+  # published (matches apps/desktop/electron-builder.yml). The TOKEN is required
+  # because that repo is PRIVATE — without it the in-panel download 404s. Use a
+  # fine-grained PAT with `contents:read` on the repo (or a classic `repo` token).
+  DESKTOP_RELEASE_REPO: ${DESKTOP_RELEASE_REPO:-CyberSystema/libriant}
+  DESKTOP_RELEASE_TOKEN: ${DESKTOP_RELEASE_TOKEN:-}
 
 x-restart: &restart
   restart: unless-stopped

@@ -8,7 +8,7 @@ import * as path from 'node:path';
  * persisted config file (Connection → Open config folder). Set this to your
  * Libriant deployment's public URL before packaging installers.
  */
-export const DEFAULT_APP_URL = 'https://app.libriant.com';
+export const DEFAULT_APP_URL = 'https://libriant.com';
 const DEV_APP_URL = 'http://localhost:3000';
 
 export type WindowBounds = { x?: number; y?: number; width: number; height: number };
