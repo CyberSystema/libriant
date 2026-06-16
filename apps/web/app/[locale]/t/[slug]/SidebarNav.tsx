@@ -89,6 +89,7 @@ export function SidebarNav({
     ...(isAdmin && billingEnabled ? [{ href: `${base}/billing`, label: 'Billing' }] : []),
     ...(isAdmin ? [{ href: `${base}/staff`, label: t('common.nav.staff') }] : []),
     ...(isAdmin ? [{ href: `${base}/settings`, label: t('common.nav.settings') }] : []),
+    { href: `${base}/desktop`, label: t('common.nav.desktop') },
     { href: `${base}/help`, label: t('common.nav.help') },
   ];
 

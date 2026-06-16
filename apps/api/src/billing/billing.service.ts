@@ -158,6 +158,38 @@ export class BillingService {
     };
   }
 
+  /**
+   * Whether this tenant is entitled to the DESKTOP app. The rule:
+   *   - subscriptions OFF globally → everyone's entitled (free-for-all launch);
+   *   - subscriptions ON           → only a PAID plan (`monthlyPriceCents > 0`)
+   *     in good standing: `active`/`trialing`, or `past_due` still inside its
+   *     grace window. Free-plan, canceled, paused, or lapsed tenants are blocked.
+   * Used both to gate the in-app download and to hard-block the desktop shell.
+   */
+  async getDesktopAccess(
+    tenantId: string,
+  ): Promise<{ allowed: boolean; reason: string; billingEnabled: boolean }> {
+    if (!(await this.settings.billingEnabled())) {
+      return { allowed: true, reason: 'free-for-all', billingEnabled: false };
+    }
+    const sub = await controlDb.subscription.findUnique({
+      where: { tenantId },
+      include: { plan: true },
+    });
+    if (!sub) return { allowed: false, reason: 'no-subscription', billingEnabled: true };
+    if (sub.plan.monthlyPriceCents <= 0) {
+      return { allowed: false, reason: 'free-plan', billingEnabled: true };
+    }
+    const inGrace = sub.graceUntil != null && sub.graceUntil.getTime() > Date.now();
+    const goodStanding =
+      sub.status === 'active' ||
+      sub.status === 'trialing' ||
+      (sub.status === 'past_due' && inGrace);
+    return goodStanding
+      ? { allowed: true, reason: sub.status, billingEnabled: true }
+      : { allowed: false, reason: sub.status, billingEnabled: true };
+  }
+
   // -------------------------------------------------------------------------
   // Stripe-mode self-serve flows
   // -------------------------------------------------------------------------

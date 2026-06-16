@@ -34,6 +34,10 @@ const SENSITIVE = [
   /\/admin(\/|$)/,
   /\/stripe(\/|$)/,
   /\/print(\/|$)/,
+  // The desktop-installer proxy streams a ~100MB binary — never write it into
+  // the runtime cache (storage blowout + a stale installer served after a new
+  // release). The /desktop PANEL page is fine to cache (network-first).
+  /\/desktop\/download(\/|$)/,
 ];
 function isSensitive(pathname) {
   return SENSITIVE.some((re) => re.test(pathname));

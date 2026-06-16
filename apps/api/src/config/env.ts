@@ -134,6 +134,12 @@ export type AppEnv = {
   emailReplyTo: string | null;
   /** Per-job retry budget. */
   emailMaxAttempts: number;
+  /** GitHub `owner/repo` the desktop installers publish to (the Releases feed
+   *  electron-updater reads + the panel download proxy resolves). */
+  desktopReleaseRepo: string;
+  /** Optional GitHub token for reading releases + assets — required only if that
+   *  repo is PRIVATE; also lifts the unauthenticated GitHub API rate limit. */
+  desktopReleaseToken: string | null;
 };
 
 function required(key: string): string {
@@ -358,5 +364,9 @@ export function loadEnv(): AppEnv {
     ),
     emailReplyTo: process.env.EMAIL_REPLY_TO?.length ? process.env.EMAIL_REPLY_TO : null,
     emailMaxAttempts: num('EMAIL_MAX_ATTEMPTS', 5, { int: true, min: 1 }),
+    desktopReleaseRepo: optional('DESKTOP_RELEASE_REPO', 'CyberSystema/libriant'),
+    desktopReleaseToken: process.env.DESKTOP_RELEASE_TOKEN?.length
+      ? process.env.DESKTOP_RELEASE_TOKEN
+      : null,
   };
 }

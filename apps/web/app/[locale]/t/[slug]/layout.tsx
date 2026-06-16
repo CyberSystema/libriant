@@ -7,6 +7,7 @@ import { ApiError, api } from '@/lib/api';
 import { currentAnnouncements } from '@/lib/announcements';
 import { currentImpersonation } from '@/lib/impersonation';
 import { currentSession, requestCookieHeader } from '@/lib/session';
+import { isDesktopRequest } from '@/lib/desktop-server';
 import { currentSystemMode, isTakeoverMode } from '@/lib/system-mode';
 import { OfflineQueueProvider } from '@/components/OfflineQueueProvider';
 import { AnnouncementsTopBanners } from './AnnouncementsTopBanners';
@@ -15,6 +16,7 @@ import { EmailVerifyBanner } from './EmailVerifyBanner';
 import { FirstLoginSetup } from './FirstLoginSetup';
 import { ImpersonationBanner } from './ImpersonationBanner';
 import { type AvailablePlan } from './billing/PlanGrid';
+import { DesktopGate } from './DesktopGate';
 import { SidebarNav } from './SidebarNav';
 import { SystemModeTakeover } from './SystemModeTakeover';
 
@@ -148,6 +150,24 @@ export default async function TenantLayout(props: {
     }
   }
 
+  // Desktop runtime gate. When the request comes from the Electron shell (UA
+  // marker) and the tenant isn't entitled to the desktop app (a paid feature
+  // once subscriptions are on), we hard-block the workspace below. Computed
+  // server-side so the overlay is in the first paint; only fetched for desktop
+  // requests, so browsers pay nothing. A transient read failure never blocks.
+  let desktopBlocked = false;
+  if (session && !impersonation && (await isDesktopRequest())) {
+    try {
+      const cookie = await requestCookieHeader();
+      const access = await api<{ allowed: boolean }>(`/t/${params.slug}/desktop/access`, {
+        cookie,
+      });
+      desktopBlocked = !access.allowed;
+    } catch (err) {
+      if (!(err instanceof ApiError)) throw err;
+    }
+  }
+
   // Announcement banners only render for real librarian sessions — admins
   // under impersonation neither own nor need to act on the tenant's
   // announcements. The endpoint also keys deliveries on `users.id`, which
@@ -169,6 +189,13 @@ export default async function TenantLayout(props: {
     <ToastProvider>
       <OfflineQueueProvider slug={params.slug} catalog={catalog} locale={params.locale}>
         <div className="lbr-shell" style={shellStyle}>
+          <DesktopGate
+            blocked={desktopBlocked}
+            locale={params.locale}
+            slug={params.slug}
+            catalog={catalog}
+            libraryName={libraryName}
+          />
           <SidebarNav
             catalog={catalog}
             locale={params.locale}
