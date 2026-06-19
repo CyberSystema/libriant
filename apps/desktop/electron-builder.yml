@@ -77,3 +77,10 @@ linux:
   target:
     - AppImage
     - deb
+
+# The .deb artifact name otherwise defaults to ${name} = "@libriant/desktop",
+# whose "/" makes fpm try to write into a non-existent release/@libriant/ dir
+# ("Parent directory does not exist"). A flat, productName-based name fixes it.
+# (AppImage already produces a clean "Libriant-<v>.AppImage".)
+deb:
+  artifactName: ${productName}-${version}-${arch}.${ext}
