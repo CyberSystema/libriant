@@ -14,6 +14,14 @@
 appId: com.cybersystema.libriant
 productName: Libriant
 copyright: © CyberSystema
+# Explicit, filesystem-safe executable name. Without this, electron-builder
+# derives it from the package `name` (@libriant/desktop → "@libriantdesktop"),
+# whose "@"/"/" the Linux AppImage target rejects.
+executableName: libriant
+# No native dependencies (electron-log / electron-updater are pure JS), so skip
+# @electron/rebuild — it both wastes time and, in this pnpm workspace, fails on
+# macOS with "apps/desktop not a file" while resolving the symlinked node_modules.
+npmRebuild: false
 
 # Update feed: electron-updater reads release metadata (latest.yml + installers)
 # from GitHub Releases, and `electron-builder --publish` uploads them there.
