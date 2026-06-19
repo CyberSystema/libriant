@@ -37,6 +37,7 @@
   "desktop.recommended": "Recommended for this computer",
   "desktop.notPublished": "The desktop app isn't available to download yet — check back soon.",
   "desktop.installHint": "Open the downloaded installer and follow the prompts. The app keeps itself up to date automatically.",
+  "desktop.macFirstOpen": "On macOS, the first time you open the app: right-click it (or Control-click) → Open → Open. This is only needed once.",
   "desktop.upgradeTitle": "The desktop app is a paid feature",
   "desktop.upgradeBody": "The Libriant desktop app is included with paid plans. Upgrade your plan to download and use it.",
   "desktop.upgradeCta": "View plans",

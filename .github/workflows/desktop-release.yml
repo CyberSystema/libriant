@@ -131,7 +131,12 @@ jobs:
               # "import this cert", and the empty path resolves to the project dir
               # → the "apps/desktop not a file" packaging failure. Unsetting +
               # CSC_IDENTITY_AUTO_DISCOVERY=false makes it cleanly skip signing.
-              echo "::warning::No MAC_CSC_LINK — publishing an UNSIGNED macOS build (Gatekeeper warns; mac auto-update disabled until signed)."
+              # afterPack (build/after-pack.js) ad-hoc-signs the bundle in this
+              # path so the arm64 build is launchable — without it Apple Silicon
+              # rejects a fully unsigned .app as "damaged". Still un-notarized, so
+              # users open via right-click → Open. mac auto-update stays disabled
+              # until a real Developer ID cert is supplied.
+              echo "::warning::No MAC_CSC_LINK — publishing an ad-hoc-signed UNSIGNED macOS build (no notarization → open via right-click → Open; mac auto-update disabled until signed)."
               unset CSC_LINK CSC_KEY_PASSWORD
               export CSC_IDENTITY_AUTO_DISCOVERY=false
               pnpm exec electron-builder --publish always $VER_FLAG

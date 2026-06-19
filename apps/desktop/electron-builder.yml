@@ -23,6 +23,14 @@ executableName: libriant
 # macOS with "apps/desktop not a file" while resolving the symlinked node_modules.
 npmRebuild: false
 
+# Ad-hoc-sign the macOS bundle when building UNSIGNED (no Developer ID cert).
+# Apple Silicon will not launch a fully unsigned arm64 .app — it reports it as
+# "damaged". The hook applies an ad-hoc signature so the build is launchable
+# (still un-notarized → a bypassable "unidentified developer" prompt). It no-ops
+# when a real cert is present (electron-builder's own signing takes over) and on
+# Windows/Linux. See build/after-pack.js.
+afterPack: build/after-pack.js
+
 # Update feed: electron-updater reads release metadata (latest.yml + installers)
 # from GitHub Releases, and `electron-builder --publish` uploads them there.
 # Adjust owner/repo if the desktop releases live elsewhere.

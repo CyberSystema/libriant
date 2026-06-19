@@ -114,6 +114,17 @@ export default async function DesktopPage(props: {
             >
               {t('common.desktop.installHint')}
             </p>
+            {info.platforms.mac ? (
+              <p
+                style={{
+                  marginTop: 'var(--sp-2)',
+                  color: 'var(--color-text-muted)',
+                  fontSize: 'var(--fs-sm)',
+                }}
+              >
+                {t('common.desktop.macFirstOpen')}
+              </p>
+            ) : null}
           </CardBody>
         </Card>
       )}

@@ -71,6 +71,21 @@ export default tseslint.config(
     rules: { 'no-undef': 'off' },
   },
   {
+    // Node-side build hooks (e.g. the electron-builder afterPack hook) are
+    // CommonJS scripts the packager runs on the build host — not bundled app
+    // code. They legitimately use require/exports/process and log progress.
+    files: ['apps/desktop/build/**/*.{js,cjs}'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: { ...globals.node },
+    },
+    rules: {
+      'no-undef': 'off',
+      'no-console': 'off',
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
+  {
     // CLI scripts + tests legitimately log freely and use looser types.
     // They predate this config, so silence now-redundant disable directives
     // there rather than churn every file.
