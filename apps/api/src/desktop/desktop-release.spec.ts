@@ -136,4 +136,63 @@ describe('DesktopReleaseService.getLatest', () => {
     expect(rel!.assets.win).toBeUndefined();
     expect(rel!.assets.linux).toBeUndefined();
   });
+
+  it('matches an electron-builder v<version> release by its installer assets', async () => {
+    // The real auto-release workflow publishes `v<version>` tags (NOT desktop-v).
+    const vRelease = [
+      {
+        tag_name: 'v0.1.42',
+        draft: false,
+        assets: [
+          {
+            name: 'Libriant-0.1.42-arm64.dmg',
+            browser_download_url: 'https://x/dmg',
+            url: 'https://api/dmg',
+            size: 1,
+            content_type: 'application/x-apple-diskimage',
+          },
+          {
+            name: 'Libriant-Setup-0.1.42.exe',
+            browser_download_url: 'https://x/exe',
+            url: 'https://api/exe',
+            size: 2,
+            content_type: 'application/x-msdownload',
+          },
+          {
+            name: 'Libriant-0.1.42.AppImage',
+            browser_download_url: 'https://x/appimage',
+            url: 'https://api/appimage',
+            size: 3,
+            content_type: 'application/octet-stream',
+          },
+        ],
+      },
+    ];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ghResponse(vRelease)));
+    const rel = await new DesktopReleaseService().getLatest();
+    expect(rel!.version).toBe('0.1.42'); // leading `v` stripped
+    expect(rel!.assets.mac?.name).toBe('Libriant-0.1.42-arm64.dmg');
+    expect(rel!.assets.win?.name).toBe('Libriant-Setup-0.1.42.exe');
+    expect(rel!.assets.linux?.name).toBe('Libriant-0.1.42.AppImage');
+  });
+
+  it('skips a non-draft release that carries no installer (e.g. a source-only tag)', async () => {
+    const noInstallers = [
+      {
+        tag_name: 'v9.9.9',
+        draft: false,
+        assets: [
+          {
+            name: 'source.zip',
+            browser_download_url: 'https://x/z',
+            url: 'https://api/z',
+            size: 1,
+            content_type: 'application/zip',
+          },
+        ],
+      },
+    ];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(ghResponse(noInstallers)));
+    expect(await new DesktopReleaseService().getLatest()).toBeNull();
+  });
 });

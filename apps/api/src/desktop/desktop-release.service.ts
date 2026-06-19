@@ -27,6 +27,7 @@ const ASSET_MATCHERS: Record<DesktopPlatform, RegExp> = {
 type GhRelease = {
   tag_name: string;
   draft: boolean;
+  created_at?: string;
   assets: Array<{
     name: string;
     browser_download_url: string;
@@ -63,7 +64,7 @@ export class DesktopReleaseService {
     return h;
   }
 
-  /** Latest non-draft `desktop-v*` release, or null if none / GitHub unreachable. */
+  /** Latest non-draft desktop installer release, or null if none / unreachable. */
   async getLatest(): Promise<ResolvedRelease | null> {
     const now = Date.now();
     if (this.cache && now - this.cache.at < DesktopReleaseService.CACHE_MS) {
@@ -78,9 +79,23 @@ export class DesktopReleaseService {
         this.logger.warn(`GitHub releases fetch failed (${res.status}) for ${this.repo}`);
       } else {
         const list = (await res.json()) as GhRelease[];
-        // Releases come back newest-first; take the first desktop release.
+        // Identify the desktop release by its installer ASSETS, not a tag
+        // prefix: electron-builder publishes releases tagged `v<version>` (the
+        // desktop-release workflow auto-increments that). Sort newest-first by
+        // `created_at` explicitly rather than trusting the list endpoint's order,
+        // then take the first non-draft release that carries a per-OS installer.
         const rel = Array.isArray(list)
-          ? list.find((r) => !r.draft && r.tag_name.startsWith('desktop-v'))
+          ? [...list]
+              .sort(
+                (a, b) =>
+                  (Date.parse(b.created_at ?? '') || 0) - (Date.parse(a.created_at ?? '') || 0),
+              )
+              .find(
+                (r) =>
+                  !r.draft &&
+                  Array.isArray(r.assets) &&
+                  r.assets.some((a) => Object.values(ASSET_MATCHERS).some((re) => re.test(a.name))),
+              )
           : undefined;
         if (rel) {
           const assets: ResolvedRelease['assets'] = {};
@@ -96,7 +111,8 @@ export class DesktopReleaseService {
               };
             }
           }
-          release = { version: rel.tag_name.replace(/^desktop-v/, ''), assets };
+          // Strip a leading `v` (or legacy `desktop-v`) for the display version.
+          release = { version: rel.tag_name.replace(/^(?:desktop-)?v/, ''), assets };
         }
       }
     } catch (err) {
