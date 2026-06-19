@@ -125,10 +125,14 @@ jobs:
           if [ "$RUNNER_OS" = "macOS" ]; then
             if [ -z "${CSC_LINK:-}" ]; then
               # No Developer ID cert → publish a clean UNSIGNED build instead of
-              # failing. CSC_IDENTITY_AUTO_DISCOVERY=false stops electron-builder
-              # from hunting the keychain for an identity. Gatekeeper warns, and
-              # macOS auto-update (Squirrel.Mac) stays off until the build is signed.
+              # failing. Crucially UNSET CSC_LINK/CSC_KEY_PASSWORD rather than
+              # leave them as the empty strings the env block sets from the unset
+              # secrets: electron-builder treats a DEFINED-but-empty CSC_LINK as
+              # "import this cert", and the empty path resolves to the project dir
+              # → the "apps/desktop not a file" packaging failure. Unsetting +
+              # CSC_IDENTITY_AUTO_DISCOVERY=false makes it cleanly skip signing.
               echo "::warning::No MAC_CSC_LINK — publishing an UNSIGNED macOS build (Gatekeeper warns; mac auto-update disabled until signed)."
+              unset CSC_LINK CSC_KEY_PASSWORD
               export CSC_IDENTITY_AUTO_DISCOVERY=false
               pnpm exec electron-builder --publish always $VER_FLAG
             elif [ -n "${APPLE_API_KEY_P8:-}" ]; then
