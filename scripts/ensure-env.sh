@@ -124,4 +124,33 @@ ask IMAGE_OWNER "GitHub owner/org, lowercase (e.g. cybersystema)"
 ask ADMIN_BOOTSTRAP_EMAIL "First admin email"
 ask ADMIN_BOOTSTRAP_PASSWORD "First admin password" secret
 
+# Sync any NEW keys from the .env.prod.example template that the explicit logic
+# above doesn't already manage (e.g. DESKTOP_RELEASE_*) — so a .env.prod created
+# by an older version of this script, or a fresh host, picks them up on the next
+# run. Copies the template's committed line VERBATIM and ONLY when the key is
+# entirely absent — it NEVER overwrites an operator-set value (same contract as
+# the rest of this script). Runs LAST so secrets keep their generated values
+# (they're already present by now) rather than the template's blanks.
+#
+# Skips IMAGE_OWNER: the template ships it as the placeholder `your-github-owner`,
+# which must never be written into a live .env (it's set per host via `ask`).
+TEMPLATE="$(cd "$(dirname "$0")" && pwd)/../.env.prod.example"
+if [ -f "${TEMPLATE}" ]; then
+  echo "Syncing any new keys from .env.prod.example ..."
+  while IFS= read -r line || [ -n "${line}" ]; do
+    case "${line}" in
+      '' | \#*) continue ;; # blank line or comment
+    esac
+    key="${line%%=*}"
+    case "${key}" in
+      '' | *[!A-Za-z0-9_]*) continue ;; # not a KEY=value line
+      IMAGE_OWNER) continue ;;          # per-host placeholder, handled by `ask`
+    esac
+    if ! grep -q "^${key}=" "${ENV_FILE}"; then
+      printf '%s\n' "${line}" >> "${ENV_FILE}"
+      echo "  added ${key} (from template)"
+    fi
+  done < "${TEMPLATE}"
+fi
+
 echo "Done - ${ENV_FILE} is ready."
