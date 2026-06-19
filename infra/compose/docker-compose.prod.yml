@@ -211,6 +211,9 @@ services:
       API_INTERNAL_URL: http://api:3001
       NEXT_PUBLIC_API_URL: https://${PUBLIC_HOST:-libriant.com}
       PUBLIC_APP_URL: https://${PUBLIC_HOST:-libriant.com}
+      # The admin panel is served ONLY from this host; the admin layout 404s the
+      # /admin routes on any other host (e.g. the public apex libriant.com/admin).
+      ADMIN_HOST: ${ADMIN_HOST:-admin.libriant.com}
     depends_on:
       api:
         condition: service_healthy
