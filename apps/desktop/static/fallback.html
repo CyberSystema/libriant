@@ -5,43 +5,259 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Libriant — connection</title>
     <style>
-      :root { color-scheme: light; }
-      html, body { margin: 0; height: 100%; }
-      body {
-        display: flex; align-items: center; justify-content: center; min-height: 100vh;
-        padding: 2rem; box-sizing: border-box; background: #f6f8fa; color: #0d1117;
-        font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      :root {
+        color-scheme: light;
       }
-      main { width: 100%; max-width: 26rem; text-align: center; }
-      .logo { width: 56px; height: 56px; margin: 0 auto 1.25rem; display: block; }
-      h1 { font-size: 1.375rem; margin: 0 0 0.5rem; }
-      p { margin: 0 0 1rem; color: #57606a; line-height: 1.5; }
-      .err { font-size: 0.8125rem; color: #8a6d00; background: #fff8e6; border: 1px solid #f0e0a0;
-             border-radius: 8px; padding: 0.5rem 0.75rem; word-break: break-all; margin: 0 0 1.25rem; }
-      label { display: block; text-align: left; font-size: 0.8125rem; color: #57606a; margin: 0 0 0.25rem; }
-      input { width: 100%; box-sizing: border-box; padding: 0.5rem 0.625rem; border: 1px solid #d0d7de;
-              border-radius: 8px; font-size: 0.9375rem; margin: 0 0 0.75rem; }
-      .row { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
-      button { appearance: none; border: 0; border-radius: 8px; padding: 0.625rem 1rem; font-weight: 600;
-               font-size: 0.9375rem; cursor: pointer; }
-      .primary { background: #1f6feb; color: #fff; }
-      .primary:hover { background: #1858c9; }
-      .ghost { background: transparent; color: #1f6feb; border: 1px solid #d0d7de; }
-      .muted { font-size: 0.75rem; color: #6e7781; margin-top: 1rem; }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 2rem;
+        box-sizing: border-box;
+        background: #f6f8fa;
+        color: #0d1117;
+        font-family:
+          'Inter',
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          Roboto,
+          Helvetica,
+          Arial,
+          sans-serif;
+      }
+      main {
+        width: 100%;
+        max-width: 26rem;
+        text-align: center;
+      }
+      .logo {
+        width: 56px;
+        height: 56px;
+        margin: 0 auto 1.25rem;
+        display: block;
+      }
+      h1 {
+        font-size: 1.375rem;
+        margin: 0 0 0.5rem;
+      }
+      p {
+        margin: 0 0 1rem;
+        color: #57606a;
+        line-height: 1.5;
+      }
+      .err {
+        font-size: 0.8125rem;
+        color: #8a6d00;
+        background: #fff8e6;
+        border: 1px solid #f0e0a0;
+        border-radius: 8px;
+        padding: 0.5rem 0.75rem;
+        word-break: break-all;
+        margin: 0 0 1.25rem;
+      }
+      label {
+        display: block;
+        text-align: left;
+        font-size: 0.8125rem;
+        color: #57606a;
+        margin: 0 0 0.25rem;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.5rem 0.625rem;
+        border: 1px solid #d0d7de;
+        border-radius: 8px;
+        font-size: 0.9375rem;
+        margin: 0 0 0.75rem;
+      }
+      .row {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 8px;
+        padding: 0.625rem 1rem;
+        font-weight: 600;
+        font-size: 0.9375rem;
+        cursor: pointer;
+      }
+      .primary {
+        background: #1f6feb;
+        color: #fff;
+      }
+      .primary:hover {
+        background: #1858c9;
+      }
+      .ghost {
+        background: transparent;
+        color: #1f6feb;
+        border: 1px solid #d0d7de;
+      }
+      .muted {
+        font-size: 0.75rem;
+        color: #6e7781;
+        margin-top: 1rem;
+      }
     </style>
   </head>
   <body>
     <main>
-      <svg class="logo" viewBox="0 0 64 64" role="img" aria-label="Libriant" xmlns="http://www.w3.org/2000/svg">
-        <rect width="64" height="64" rx="12" fill="#1f6feb" />
-        <path d="M16 20 L48 20 M16 32 L48 32 M16 44 L40 44" stroke="#ffffff" stroke-width="4" stroke-linecap="round" />
+      <svg
+        class="logo"
+        viewBox="32 32 192 192"
+        role="img"
+        aria-label="Libriant"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <defs>
+          <linearGradient id="fb-ink" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#123A47" />
+            <stop offset="1" stop-color="#0A222C" />
+          </linearGradient>
+          <linearGradient id="fb-t1" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#13B0A0" />
+            <stop offset="1" stop-color="#0C8C81" />
+          </linearGradient>
+          <linearGradient id="fb-t2" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#22C9B8" />
+            <stop offset="1" stop-color="#14A99A" />
+          </linearGradient>
+          <linearGradient id="fb-g1" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#F8CE63" />
+            <stop offset="1" stop-color="#E9A93C" />
+          </linearGradient>
+          <linearGradient id="fb-g2" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#F2A741" />
+            <stop offset="1" stop-color="#E08A2A" />
+          </linearGradient>
+        </defs>
+        <g fill="url(#fb-ink)" stroke="rgba(255,255,255,0.06)" stroke-width="1">
+          <rect x="44" y="44" width="40" height="168" rx="13" />
+          <rect x="44" y="172" width="168" height="40" rx="13" />
+        </g>
+        <g transform="rotate(-7 107 172)">
+          <rect x="95" y="80" width="24" height="92" rx="4.5" fill="url(#fb-t1)" />
+          <rect
+            x="96.6"
+            y="80"
+            width="20.8"
+            height="5.5"
+            rx="2.5"
+            fill="#F4ECD6"
+            fill-opacity="0.92"
+          />
+          <rect
+            x="114.5"
+            y="86"
+            width="4.5"
+            height="82"
+            rx="2"
+            fill="#06181F"
+            fill-opacity="0.14"
+          />
+        </g>
+        <g>
+          <rect x="123" y="62" width="25" height="110" rx="4.5" fill="url(#fb-t2)" />
+          <rect
+            x="124.6"
+            y="62"
+            width="21.8"
+            height="5.5"
+            rx="2.5"
+            fill="#F4ECD6"
+            fill-opacity="0.92"
+          />
+          <rect
+            x="143.5"
+            y="68"
+            width="4.5"
+            height="100"
+            rx="2"
+            fill="#06181F"
+            fill-opacity="0.14"
+          />
+        </g>
+        <g>
+          <rect x="152" y="92" width="24" height="80" rx="4.5" fill="url(#fb-g1)" />
+          <rect
+            x="153.6"
+            y="92"
+            width="20.8"
+            height="5.5"
+            rx="2.5"
+            fill="#F4ECD6"
+            fill-opacity="0.92"
+          />
+          <rect
+            x="171.5"
+            y="98"
+            width="4.5"
+            height="70"
+            rx="2"
+            fill="#06181F"
+            fill-opacity="0.14"
+          />
+        </g>
+        <g transform="rotate(9 190.5 172)">
+          <rect x="178" y="104" width="25" height="68" rx="4.5" fill="url(#fb-g2)" />
+          <rect
+            x="179.6"
+            y="104"
+            width="21.8"
+            height="5.5"
+            rx="2.5"
+            fill="#F4ECD6"
+            fill-opacity="0.92"
+          />
+          <rect
+            x="198.5"
+            y="110"
+            width="4.5"
+            height="58"
+            rx="2"
+            fill="#06181F"
+            fill-opacity="0.14"
+          />
+        </g>
+        <path d="M132 53 H145 V96 L138.5 91 L132 96 Z" fill="#F8CE63" />
+        <line
+          x1="138.5"
+          y1="53"
+          x2="138.5"
+          y2="91"
+          stroke="#0C8C81"
+          stroke-opacity="0.25"
+          stroke-width="1.2"
+        />
       </svg>
       <h1>Can't reach Libriant</h1>
-      <p>The app couldn't load the library server. Check your connection, or point it at the right address.</p>
+      <p>
+        The app couldn't load the library server. Check your connection, or point it at the right
+        address.
+      </p>
       <p class="err" id="err" hidden></p>
 
       <label for="url">Library server URL</label>
-      <input id="url" type="url" inputmode="url" spellcheck="false" placeholder="https://library.example.org" />
+      <input
+        id="url"
+        type="url"
+        inputmode="url"
+        spellcheck="false"
+        placeholder="https://library.example.org"
+      />
       <div class="row">
         <button class="primary" id="connect">Connect</button>
         <button class="ghost" id="retry">Retry</button>
@@ -59,7 +275,10 @@
         var errEl = document.getElementById('err');
         var urlEl = document.getElementById('url');
         var statusEl = document.getElementById('status');
-        if (errText) { errEl.textContent = (failedUrl ? failedUrl + ' — ' : '') + errText; errEl.hidden = false; }
+        if (errText) {
+          errEl.textContent = (failedUrl ? failedUrl + ' — ' : '') + errText;
+          errEl.hidden = false;
+        }
         urlEl.value = failedUrl;
 
         if (!d) {
@@ -67,22 +286,36 @@
           return;
         }
         // Prefer the authoritative configured URL for the input.
-        d.getInfo().then(function (info) { if (info && info.serverUrl) urlEl.value = info.serverUrl; }).catch(function () {});
+        d.getInfo()
+          .then(function (info) {
+            if (info && info.serverUrl) urlEl.value = info.serverUrl;
+          })
+          .catch(function () {});
 
         function ack(p, okMsg) {
           statusEl.textContent = '';
-          return p.then(function (r) {
-            if (r && r.ok === false) statusEl.textContent = 'Could not apply: ' + (r.reason || 'unknown');
-            else if (okMsg) statusEl.textContent = okMsg;
-          }).catch(function () { statusEl.textContent = 'Something went wrong.'; });
+          return p
+            .then(function (r) {
+              if (r && r.ok === false)
+                statusEl.textContent = 'Could not apply: ' + (r.reason || 'unknown');
+              else if (okMsg) statusEl.textContent = okMsg;
+            })
+            .catch(function () {
+              statusEl.textContent = 'Something went wrong.';
+            });
         }
 
         document.getElementById('connect').addEventListener('click', function () {
           var v = urlEl.value.trim();
-          if (!v) { statusEl.textContent = 'Enter a server URL.'; return; }
+          if (!v) {
+            statusEl.textContent = 'Enter a server URL.';
+            return;
+          }
           ack(d.setServerUrl(v), 'Connecting…');
         });
-        document.getElementById('retry').addEventListener('click', function () { ack(d.retry(), 'Retrying…'); });
+        document.getElementById('retry').addEventListener('click', function () {
+          ack(d.retry(), 'Retrying…');
+        });
         document.getElementById('browser').addEventListener('click', function () {
           if (failedUrl) d.openExternal(failedUrl);
         });

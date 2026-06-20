@@ -1,5 +1,46 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 40" role="img" aria-label="Libriant">
-  <rect x="4" y="8" width="24" height="24" rx="4" fill="#ffffff" opacity="0.2"/>
-  <path d="M10 14 L22 14 M10 20 L22 20 M10 26 L18 26" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
-  <text x="40" y="27" font-family="Inter, system-ui, sans-serif" font-size="20" font-weight="600" fill="#ffffff">Libriant</text>
+  <!-- Libriant horizontal lockup for DARK backgrounds: same bookshelf mark
+       (its colours read on dark), white wordmark. -->
+  <svg x="0" y="1" width="38" height="38" viewBox="32 32 192 192">
+    <defs>
+      <linearGradient id="ld-ink" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#1B4A59"/><stop offset="1" stop-color="#123A47"/>
+      </linearGradient>
+      <linearGradient id="ld-t1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#13B0A0"/><stop offset="1" stop-color="#0C8C81"/></linearGradient>
+      <linearGradient id="ld-t2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22C9B8"/><stop offset="1" stop-color="#14A99A"/></linearGradient>
+      <linearGradient id="ld-g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F8CE63"/><stop offset="1" stop-color="#E9A93C"/></linearGradient>
+      <linearGradient id="ld-g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2A741"/><stop offset="1" stop-color="#E08A2A"/></linearGradient>
+    </defs>
+    <g fill="url(#ld-ink)" stroke="rgba(255,255,255,0.12)" stroke-width="1">
+      <rect x="44" y="44" width="40" height="168" rx="13"/>
+      <rect x="44" y="172" width="168" height="40" rx="13"/>
+    </g>
+    <g transform="rotate(-7 107 172)">
+      <rect x="95" y="80" width="24" height="92" rx="4.5" fill="url(#ld-t1)"/>
+      <rect x="96.6" y="80" width="20.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+      <rect x="114.5" y="86" width="4.5" height="82" rx="2" fill="#06181F" fill-opacity="0.14"/>
+      <rect x="99" y="135.2" width="16" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+    </g>
+    <g>
+      <rect x="123" y="62" width="25" height="110" rx="4.5" fill="url(#ld-t2)"/>
+      <rect x="124.6" y="62" width="21.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+      <rect x="143.5" y="68" width="4.5" height="100" rx="2" fill="#06181F" fill-opacity="0.14"/>
+      <rect x="127" y="128" width="17" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+    </g>
+    <g>
+      <rect x="152" y="92" width="24" height="80" rx="4.5" fill="url(#ld-g1)"/>
+      <rect x="153.6" y="92" width="20.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+      <rect x="171.5" y="98" width="4.5" height="70" rx="2" fill="#06181F" fill-opacity="0.14"/>
+      <rect x="156" y="140" width="16" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+    </g>
+    <g transform="rotate(9 190.5 172)">
+      <rect x="178" y="104" width="25" height="68" rx="4.5" fill="url(#ld-g2)"/>
+      <rect x="179.6" y="104" width="21.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+      <rect x="198.5" y="110" width="4.5" height="58" rx="2" fill="#06181F" fill-opacity="0.14"/>
+      <rect x="182" y="144.8" width="17" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+    </g>
+    <path d="M132 53 H145 V96 L138.5 91 L132 96 Z" fill="#F8CE63"/>
+    <line x1="138.5" y1="53" x2="138.5" y2="91" stroke="#0C8C81" stroke-opacity="0.25" stroke-width="1.2"/>
+  </svg>
+  <text x="45" y="27" font-family="'Sora', 'Avenir Next', 'Segoe UI', system-ui, sans-serif" font-size="20" font-weight="600" letter-spacing="-0.6" fill="#ffffff">Libriant</text>
 </svg>

@@ -70,7 +70,7 @@ export default async function LandingPage(props: { params: Promise<{ locale: str
     <div className="lbr-landing">
       <header className="lbr-landing__nav">
         <Link href={`/${locale}`} className="lbr-landing__brand" aria-label="Libriant">
-          <Asset name="brand/logo" width={140} height={36} />
+          <Asset name="brand/logo" width={140} height={35} />
         </Link>
         <nav className="lbr-landing__nav-actions">
           <div className="lbr-landing__locales" aria-label={t('common.nav.language')}>

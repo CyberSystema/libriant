@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Libriant">
+  <!-- Source for build/icon.png (the desktop app icon electron-builder turns
+       into .icns/.ico). The Libriant bookshelf mark on a warm paper rounded
+       square, so it matches the web favicon / in-app icon. Regenerate the PNG
+       with:  qlmanage -t -s 1024 -o build build/icon.svg  (then trim the name). -->
+  <defs>
+    <linearGradient id="ic-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FBF7EC"/><stop offset="1" stop-color="#F1E7D0"/>
+    </linearGradient>
+    <linearGradient id="ic-ink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#123A47"/><stop offset="1" stop-color="#0A222C"/>
+    </linearGradient>
+    <linearGradient id="ic-t1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#13B0A0"/><stop offset="1" stop-color="#0C8C81"/></linearGradient>
+    <linearGradient id="ic-t2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22C9B8"/><stop offset="1" stop-color="#14A99A"/></linearGradient>
+    <linearGradient id="ic-g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F8CE63"/><stop offset="1" stop-color="#E9A93C"/></linearGradient>
+    <linearGradient id="ic-g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2A741"/><stop offset="1" stop-color="#E08A2A"/></linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#ic-bg)"/>
+  <rect x="6" y="6" width="1012" height="1012" rx="218" fill="none" stroke="#0A222C" stroke-opacity="0.06" stroke-width="12"/>
+  <svg x="205" y="196" width="614" height="614" viewBox="32 32 192 192">
+    <g fill="url(#ic-ink)" stroke="rgba(255,255,255,0.06)" stroke-width="1">
+      <rect x="44" y="44" width="40" height="168" rx="13"/>
+      <rect x="44" y="172" width="168" height="40" rx="13"/>
+    </g>
+    <g transform="rotate(-7 107 172)">
+      <rect x="95" y="80" width="24" height="92" rx="4.5" fill="url(#ic-t1)"/>
+      <rect x="96.6" y="80" width="20.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+      <rect x="114.5" y="86" width="4.5" height="82" rx="2" fill="#06181F" fill-opacity="0.14"/>
+      <rect x="99" y="135.2" width="16" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+    </g>
+    <g>
+      <rect x="123" y="62" width="25" height="110" rx="4.5" fill="url(#ic-t2)"/>
+      <rect x="124.6" y="62" width="21.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+      <rect x="143.5" y="68" width="4.5" height="100" rx="2" fill="#06181F" fill-opacity="0.14"/>
+      <rect x="127" y="128" width="17" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+    </g>
+    <g>
+      <rect x="152" y="92" width="24" height="80" rx="4.5" fill="url(#ic-g1)"/>
+      <rect x="153.6" y="92" width="20.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+      <rect x="171.5" y="98" width="4.5" height="70" rx="2" fill="#06181F" fill-opacity="0.14"/>
+      <rect x="156" y="140" width="16" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+    </g>
+    <g transform="rotate(9 190.5 172)">
+      <rect x="178" y="104" width="25" height="68" rx="4.5" fill="url(#ic-g2)"/>
+      <rect x="179.6" y="104" width="21.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+      <rect x="198.5" y="110" width="4.5" height="58" rx="2" fill="#06181F" fill-opacity="0.14"/>
+      <rect x="182" y="144.8" width="17" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+    </g>
+    <path d="M132 53 H145 V96 L138.5 91 L132 96 Z" fill="#F8CE63"/>
+    <line x1="138.5" y1="53" x2="138.5" y2="91" stroke="#0C8C81" stroke-opacity="0.25" stroke-width="1.2"/>
+  </svg>
+</svg>

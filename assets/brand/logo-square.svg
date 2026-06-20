@@ -1,4 +1,44 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Libriant">
-  <rect width="64" height="64" rx="12" fill="#1f6feb"/>
-  <path d="M16 20 L48 20 M16 32 L48 32 M16 44 L40 44" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Libriant">
+  <!-- Canonical Libriant bookshelf mark (mirrors brand/libriant-mark-shelf.svg,
+       the official artwork). Square, centered form — used for the favicon, the
+       app/sidebar icon and the desktop app icon so they all match. -->
+  <defs>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#123A47"/><stop offset="1" stop-color="#0A222C"/>
+    </linearGradient>
+    <linearGradient id="t1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#13B0A0"/><stop offset="1" stop-color="#0C8C81"/></linearGradient>
+    <linearGradient id="t2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22C9B8"/><stop offset="1" stop-color="#14A99A"/></linearGradient>
+    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F8CE63"/><stop offset="1" stop-color="#E9A93C"/></linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2A741"/><stop offset="1" stop-color="#E08A2A"/></linearGradient>
+  </defs>
+  <g fill="url(#ink)" stroke="rgba(255,255,255,0.06)" stroke-width="1.0">
+    <rect x="44" y="44" width="40" height="168" rx="13"/>
+    <rect x="44" y="172" width="168" height="40" rx="13"/>
+  </g>
+  <g transform="rotate(-7 107.0 172.0)">
+    <rect x="95" y="80" width="24" height="92.0" rx="4.5" fill="url(#t1)"/>
+    <rect x="96.6" y="80" width="20.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+    <rect x="114.5" y="86" width="4.5" height="82.0" rx="2" fill="#06181F" fill-opacity="0.14"/>
+    <rect x="99" y="135.2" width="16" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+  </g>
+  <g>
+    <rect x="123" y="62" width="25" height="110.0" rx="4.5" fill="url(#t2)"/>
+    <rect x="124.6" y="62" width="21.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+    <rect x="143.5" y="68" width="4.5" height="100.0" rx="2" fill="#06181F" fill-opacity="0.14"/>
+    <rect x="127" y="128.0" width="17" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+  </g>
+  <g>
+    <rect x="152" y="92" width="24" height="80.0" rx="4.5" fill="url(#g1)"/>
+    <rect x="153.6" y="92" width="20.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+    <rect x="171.5" y="98" width="4.5" height="70.0" rx="2" fill="#06181F" fill-opacity="0.14"/>
+    <rect x="156" y="140.0" width="16" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+  </g>
+  <g transform="rotate(9 190.5 172.0)">
+    <rect x="178" y="104" width="25" height="68.0" rx="4.5" fill="url(#g2)"/>
+    <rect x="179.6" y="104" width="21.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+    <rect x="198.5" y="110" width="4.5" height="58.0" rx="2" fill="#06181F" fill-opacity="0.14"/>
+    <rect x="182" y="144.8" width="17" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+  </g>
+  <path d="M132 53 H145 V96 L138.5 91 L132 96 Z" fill="#F8CE63"/>
+  <line x1="138.5" y1="53" x2="138.5" y2="91" stroke="#0C8C81" stroke-opacity="0.25" stroke-width="1.2"/>
 </svg>

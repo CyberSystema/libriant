@@ -10,19 +10,30 @@
         --bg: #ffffff;
         --fg: #0f172a;
         --muted: #475569;
-        --accent: #0ea5e9;
+        --accent: #0c8c81;
+        --ink: #123a47;
         --card: #f8fafc;
         --border: #e2e8f0;
         --radius: 12px;
-        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-          Arial, sans-serif;
+        font-family:
+          'Inter',
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          Roboto,
+          'Helvetica Neue',
+          Arial,
+          sans-serif;
       }
       @media (prefers-color-scheme: dark) {
         :root {
           --bg: #0b1220;
           --fg: #e2e8f0;
           --muted: #94a3b8;
-          --accent: #38bdf8;
+          --accent: #22c9b8;
+          /* Lift the bookshelf's ink bookends so they stay visible on dark. */
+          --ink: #2e5c6e;
           --card: #111827;
           --border: #1f2937;
         }
@@ -81,27 +92,88 @@
   <body>
     <main>
       <div class="card">
-        <svg
-          class="icon"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          aria-hidden="true"
-        >
-          <path d="M12 8v4l2 2" />
-          <circle cx="12" cy="12" r="9" />
+        <svg class="icon" viewBox="32 32 192 192" role="img" aria-label="Libriant">
+          <defs>
+            <linearGradient id="mt-t1" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#13b0a0" />
+              <stop offset="1" stop-color="#0c8c81" />
+            </linearGradient>
+            <linearGradient id="mt-t2" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#22c9b8" />
+              <stop offset="1" stop-color="#14a99a" />
+            </linearGradient>
+            <linearGradient id="mt-g1" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#f8ce63" />
+              <stop offset="1" stop-color="#e9a93c" />
+            </linearGradient>
+            <linearGradient id="mt-g2" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#f2a741" />
+              <stop offset="1" stop-color="#e08a2a" />
+            </linearGradient>
+          </defs>
+          <g fill="var(--ink)">
+            <rect x="44" y="44" width="40" height="168" rx="13" />
+            <rect x="44" y="172" width="168" height="40" rx="13" />
+          </g>
+          <g transform="rotate(-7 107 172)">
+            <rect x="95" y="80" width="24" height="92" rx="4.5" fill="url(#mt-t1)" />
+            <rect
+              x="96.6"
+              y="80"
+              width="20.8"
+              height="5.5"
+              rx="2.5"
+              fill="#f4ecd6"
+              fill-opacity="0.92"
+            />
+          </g>
+          <g>
+            <rect x="123" y="62" width="25" height="110" rx="4.5" fill="url(#mt-t2)" />
+            <rect
+              x="124.6"
+              y="62"
+              width="21.8"
+              height="5.5"
+              rx="2.5"
+              fill="#f4ecd6"
+              fill-opacity="0.92"
+            />
+          </g>
+          <g>
+            <rect x="152" y="92" width="24" height="80" rx="4.5" fill="url(#mt-g1)" />
+            <rect
+              x="153.6"
+              y="92"
+              width="20.8"
+              height="5.5"
+              rx="2.5"
+              fill="#f4ecd6"
+              fill-opacity="0.92"
+            />
+          </g>
+          <g transform="rotate(9 190.5 172)">
+            <rect x="178" y="104" width="25" height="68" rx="4.5" fill="url(#mt-g2)" />
+            <rect
+              x="179.6"
+              y="104"
+              width="21.8"
+              height="5.5"
+              rx="2.5"
+              fill="#f4ecd6"
+              fill-opacity="0.92"
+            />
+          </g>
+          <path d="M132 53 H145 V96 L138.5 91 L132 96 Z" fill="#f8ce63" />
         </svg>
         <div class="badge">Scheduled maintenance</div>
         <h1>We&rsquo;re upgrading Libriant</h1>
         <p>
           We&rsquo;re making things better behind the scenes. Your library will be back shortly.
         </p>
-        <p>If this page is still here in an hour, our system thinks something is off — please
-          email
-          <a href="mailto:support@libriant.com">support@libriant.com</a>.</p>
+        <p>
+          If this page is still here in an hour, our system thinks something is off — please email
+          <a href="mailto:support@libriant.com">support@libriant.com</a>.
+        </p>
         <footer>This page is served by the edge — even if Libriant itself is down.</footer>
       </div>
     </main>

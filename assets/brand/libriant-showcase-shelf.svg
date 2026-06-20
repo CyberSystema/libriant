@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 620" role="img" aria-label="Libriant brand">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#081A22"/><stop offset="1" stop-color="#0B2630"/></linearGradient>
+    <radialGradient id="glow" cx="0.28" cy="0.42" r="0.5"><stop offset="0" stop-color="#16C2B0" stop-opacity="0.20"/><stop offset="1" stop-color="#16C2B0" stop-opacity="0"/></radialGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#143F4D"/><stop offset="1" stop-color="#0C2A35"/></linearGradient>
+    <linearGradient id="t1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#13B0A0"/><stop offset="1" stop-color="#0C8C81"/></linearGradient>
+    <linearGradient id="t2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#22C9B8"/><stop offset="1" stop-color="#14A99A"/></linearGradient>
+    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F8CE63"/><stop offset="1" stop-color="#E9A93C"/></linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F2A741"/><stop offset="1" stop-color="#E08A2A"/></linearGradient>
+  </defs>
+  <rect width="1160" height="620" rx="28" fill="url(#bg)"/>
+  <rect width="1160" height="620" fill="url(#glow)"/>
+  <rect x="92" y="150" width="320" height="320" rx="64" fill="#06161D" stroke="rgba(255,255,255,0.05)"/>
+  <g transform="translate(92 150) scale(1.25)">    <g fill="url(#ink)" stroke="rgba(255,255,255,0.06)" stroke-width="1.0">
+      <rect x="44" y="44" width="40" height="168" rx="13"/>
+      <rect x="44" y="172" width="168" height="40" rx="13"/>
+    </g>
+    <g transform="rotate(-7 107.0 172.0)">
+      <rect x="95" y="80" width="24" height="92.0" rx="4.5" fill="url(#t1)"/>
+      <rect x="96.6" y="80" width="20.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+      <rect x="114.5" y="86" width="4.5" height="82.0" rx="2" fill="#06181F" fill-opacity="0.14"/>
+      <rect x="99" y="135.2" width="16" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+    </g>
+    <g>
+      <rect x="123" y="62" width="25" height="110.0" rx="4.5" fill="url(#t2)"/>
+      <rect x="124.6" y="62" width="21.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+      <rect x="143.5" y="68" width="4.5" height="100.0" rx="2" fill="#06181F" fill-opacity="0.14"/>
+      <rect x="127" y="128.0" width="17" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+    </g>
+    <g>
+      <rect x="152" y="92" width="24" height="80.0" rx="4.5" fill="url(#g1)"/>
+      <rect x="153.6" y="92" width="20.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+      <rect x="171.5" y="98" width="4.5" height="70.0" rx="2" fill="#06181F" fill-opacity="0.14"/>
+      <rect x="156" y="140.0" width="16" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+    </g>
+    <g transform="rotate(9 190.5 172.0)">
+      <rect x="178" y="104" width="25" height="68.0" rx="4.5" fill="url(#g2)"/>
+      <rect x="179.6" y="104" width="21.8" height="5.5" rx="2.5" fill="#F4ECD6" fill-opacity="0.92"/>
+      <rect x="198.5" y="110" width="4.5" height="58.0" rx="2" fill="#06181F" fill-opacity="0.14"/>
+      <rect x="182" y="144.8" width="17" height="3.4" rx="1.7" fill="#FFFFFF" fill-opacity="0.30"/>
+    </g>
+    <path d="M132 53 H145 V96 L138.5 91 L132 96 Z" fill="#F8CE63"/>
+    <line x1="138.5" y1="53" x2="138.5" y2="91" stroke="#0C8C81" stroke-opacity="0.25" stroke-width="1.2"/></g>
+  <text x="470" y="298" font-family="'Sora','Avenir Next','Segoe UI',system-ui,sans-serif" font-size="116" font-weight="600" letter-spacing="-3" fill="#F4F7F6">Libriant</text>
+  <text x="474" y="348" font-family="'Sora','Avenir Next','Segoe UI',system-ui,sans-serif" font-size="23" font-weight="400" letter-spacing="4" fill="#62B9AE">EVERY&#160;&#160;VOLUME&#160;&#160;IN&#160;&#160;ITS&#160;&#160;PLACE</text>
+  <g transform="translate(474 414)" font-family="'Sora','Avenir Next','Segoe UI',system-ui,sans-serif" font-size="15" fill="#86A6AE">
+    <rect x="0" y="0" width="58" height="58" rx="12" fill="#0C8C81"/><text x="0" y="78">#0C8C81</text>
+    <rect x="78" y="0" width="58" height="58" rx="12" fill="#22C9B8"/><text x="78" y="78">#22C9B8</text>
+    <rect x="156" y="0" width="58" height="58" rx="12" fill="#F8CE63"/><text x="156" y="78">#F8CE63</text>
+    <rect x="234" y="0" width="58" height="58" rx="12" fill="#E08A2A"/><text x="234" y="78">#E08A2A</text>
+    <rect x="312" y="0" width="58" height="58" rx="12" fill="#0A222C"/><text x="312" y="78">#0A222C</text>
+  </g>
+</svg>
