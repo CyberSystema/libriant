@@ -31,8 +31,9 @@ export class LoginDto {
 
 /**
  * First-login setup for staff. Both fields optional — the user may keep their
- * current name/password. (Staff passwords are admin-managed and can be short,
- * so the minimum is intentionally low.)
+ * current name/password. A1-04: the password floor matches signup + reset
+ * (>=12) — this is an interactive login credential, so a 4-char password (the
+ * old floor) was brute-forceable offline if the control-DB hashes ever leaked.
  */
 export class CompleteSetupDto {
   @IsOptional()
@@ -42,6 +43,6 @@ export class CompleteSetupDto {
 
   @IsOptional()
   @IsString()
-  @Length(4, 200)
+  @Length(12, 200)
   newPassword?: string;
 }

@@ -37,6 +37,23 @@ export type QueuedAction = {
  *  poison action can't wedge the whole queue. */
 export const MAX_REPLAY_ATTEMPTS = 6;
 
+/**
+ * A7-02: drop a queued action once it is older than this, WITHOUT replaying it.
+ * The server only remembers an idempotency result for 24h
+ * (`IdempotencyInterceptor.RESULT_TTL_SEC`). If the original request actually
+ * reached the server but the connection dropped before we got the response, a
+ * replay after that window would no longer dedupe and would APPLY THE ACTION A
+ * SECOND TIME (a double return / double fine / double renew). We keep a safe
+ * margin under 24h so a stale entry is surfaced to the librarian to redo
+ * manually rather than silently double-applied.
+ */
+export const MAX_QUEUE_AGE_MS = 18 * 60 * 60 * 1000;
+
+/** True when an entry is too old to safely replay (see {@link MAX_QUEUE_AGE_MS}). */
+export function isExpired(action: QueuedAction, now: number = Date.now()): boolean {
+  return now - action.createdAt > MAX_QUEUE_AGE_MS;
+}
+
 const DB_NAME = 'libriant-offline';
 const DB_VERSION = 1;
 const STORE = 'circulation-queue';

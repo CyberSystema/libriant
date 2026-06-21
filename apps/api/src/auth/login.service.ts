@@ -7,6 +7,14 @@ import { PasswordService } from './password.service.js';
 import { JwtSessionService } from './jwt-session.service.js';
 import type { SessionPayload } from './jwt-session.service.js';
 
+// A1-01: brute-force lockout is scoped to (account + source IP), NOT the bare
+// account. A bare-account lock lets ANY attacker lock ANY user (incl. the owner)
+// out of their own sessions by guessing — a trivial, renewable DoS. Per-(account
+// +IP) lockout still stops a single attacker hammering one account, but a victim
+// signing in from their own IP is never affected by an attacker elsewhere.
+const FAIL_KEY = (uid: string, ip: string): string => `login:fail:${uid}:${ip}`;
+const LOCK_KEY = (uid: string, ip: string): string => `login:lock:${uid}:${ip}`;
+
 export type LoginResult = {
   token: string;
   expiresAt: Date;
@@ -50,7 +58,10 @@ export class LoginService {
     identifier: string;
     password: string;
     remember?: boolean;
+    /** Source IP, for per-(account+IP) lockout (A1-01). Defaults to 'unknown'. */
+    ip?: string;
   }): Promise<LoginResult> {
+    const ip = input.ip ?? 'unknown';
     const tenant = await controlDb.tenant.findUnique({
       where: { slug: input.tenantSlug },
       select: {
@@ -100,7 +111,7 @@ export class LoginService {
       await this.passwords.dummyVerify(input.password);
       throw this.invalidCredentials();
     }
-    if (user.lockedUntil && user.lockedUntil > new Date()) {
+    if (await this.isLockedOut(user.id, ip)) {
       // Lockout is enforced server-side but NOT revealed: a distinct "locked /
       // try again in N min" message is both an account-existence oracle and a
       // confirmation that a targeted lock-out succeeded (AUTH-02). Return the
@@ -112,15 +123,19 @@ export class LoginService {
 
     const ok = await this.passwords.verify(input.password, user.passwordHash);
     if (!ok) {
-      await this.recordFailure(user.id);
+      await this.recordFailure(user.id, ip);
       throw this.invalidCredentials();
     }
 
-    // Success — reset counters, stamp lastLoginAt, issue session.
+    // Success — reset counters (DB audit + the per-IP Redis lock), stamp
+    // lastLoginAt, issue session.
     await controlDb.user.update({
       where: { id: user.id },
       data: { failedLogins: 0, lockedUntil: null, lastLoginAt: new Date() },
     });
+    await this.redis.client
+      .del(FAIL_KEY(user.id, ip), LOCK_KEY(user.id, ip))
+      .catch(() => undefined);
 
     const { token, expiresAt, remember } = this.jwt.sign({
       sub: user.id,
@@ -177,21 +192,42 @@ export class LoginService {
     if (input.newPassword) await AuthGuard.invalidateAuthCache(this.redis, userId);
   }
 
-  private async recordFailure(userId: string): Promise<void> {
-    // Atomic increment (AUTH-03): a burst of concurrent wrong guesses each
-    // advances the counter, instead of a non-atomic read-modify-write that lets
-    // N parallel attempts register as one and never trip the lock.
-    const updated = await controlDb.user.update({
-      where: { id: userId },
-      data: { failedLogins: { increment: 1 } },
-      select: { failedLogins: true },
-    });
-    if (updated.failedLogins >= this.env.maxFailedLogins) {
-      const until = new Date(Date.now() + this.env.loginLockoutMs);
-      await controlDb.user.update({ where: { id: userId }, data: { lockedUntil: until } });
-      this.logger.warn(
-        `User ${userId} locked after ${updated.failedLogins} failed attempts (until ${until.toISOString()}).`,
-      );
+  /** True when (account, ip) is currently locked. Fails OPEN if Redis is down
+   *  so an outage never blocks every login (parity with the rate limiter). */
+  private async isLockedOut(userId: string, ip: string): Promise<boolean> {
+    try {
+      return (await this.redis.client.get(LOCK_KEY(userId, ip))) !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  private async recordFailure(userId: string, ip: string): Promise<void> {
+    // Keep a DB tally for audit/visibility (atomic increment, AUTH-03), but the
+    // LOCK decision is per-(account+IP) in Redis (A1-01) so one attacker can't
+    // DoS-lock a victim globally.
+    await controlDb.user
+      .update({
+        where: { id: userId },
+        data: { failedLogins: { increment: 1 } },
+        select: { failedLogins: true },
+      })
+      .catch(() => undefined);
+
+    try {
+      const windowSec = Math.ceil(this.env.loginLockoutMs / 1000);
+      const failKey = FAIL_KEY(userId, ip);
+      const n = await this.redis.client.incr(failKey);
+      if (n === 1) await this.redis.client.expire(failKey, windowSec);
+      if (n >= this.env.maxFailedLogins) {
+        await this.redis.client.set(LOCK_KEY(userId, ip), '1', 'EX', windowSec);
+        this.logger.warn(
+          `Login locked for user ${userId} from ${ip} after ${n} failed attempts (${windowSec}s).`,
+        );
+      }
+    } catch {
+      // Redis down → no lockout this attempt (fail open); the per-IP edge rate
+      // limit (auth.controller) still bounds the attempt rate.
     }
   }
 

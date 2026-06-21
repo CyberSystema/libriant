@@ -4,7 +4,14 @@
  * skipping, short/overflow-row handling, continuous row numbering, and the
  * `maxRows` cap — so CSV, XLSX and MARC all behave identically downstream.
  */
-import type { ParsedColumn, ParsedTable, ParseOptions, RawRow } from './types.js';
+import { IMPORT_MAX_COLUMNS } from '../import.constants.js';
+import {
+  ParseError,
+  type ParsedColumn,
+  type ParsedTable,
+  type ParseOptions,
+  type RawRow,
+} from './types.js';
 
 /** Make header labels unique + non-empty so cells can be keyed by name. */
 export function normalizeHeaders(raw: string[]): string[] {
@@ -53,6 +60,15 @@ export function buildTableFromMatrix(
   let widest = headerCells.length;
   for (let r = dataStart; r < work.length; r++) {
     if (work[r]!.length > widest) widest = work[r]!.length;
+  }
+  // A8-02: cap columns for EVERY tabular format (CSV/TSV come straight here;
+  // xlsx pre-checks too). Without this a 64 MB upload with millions of columns
+  // per row amplifies into multi-GB of column/cell objects and OOMs the worker.
+  if (widest > IMPORT_MAX_COLUMNS) {
+    throw new ParseError(
+      `The file has ${widest} columns, more than the ${IMPORT_MAX_COLUMNS}-column import limit. ` +
+        'Check the delimiter is correct, or split the file.',
+    );
   }
   const columns: ParsedColumn[] = Array.from({ length: widest }, (_, i) => ({
     index: i,

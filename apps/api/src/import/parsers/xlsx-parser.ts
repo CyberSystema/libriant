@@ -8,6 +8,7 @@ import ExcelJS from 'exceljs';
 import { IMPORT_MAX_COLUMNS, IMPORT_MAX_ROWS } from '../import.constants.js';
 import { buildTableFromMatrix } from './tabular.js';
 import { ParseError, type ParsedTable, type ParseOptions } from './types.js';
+import { assertXlsxNotZipBomb } from './zip-guard.js';
 
 /** Coerce any exceljs cell value to a plain string. */
 function cellToString(value: unknown): string {
@@ -34,6 +35,10 @@ function cellToString(value: unknown): string {
 }
 
 export async function parseXlsx(data: Buffer, opts: ParseOptions = {}): Promise<ParsedTable> {
+  // A8-01: reject a decompression bomb from the ZIP central directory BEFORE
+  // exceljs inflates anything — an OOM during load() aborts the whole worker.
+  assertXlsxNotZipBomb(data);
+
   const wb = new ExcelJS.Workbook();
   try {
     // Pass an ArrayBuffer slice rather than the Node Buffer: exceljs's bundled

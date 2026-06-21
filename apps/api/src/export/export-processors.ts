@@ -32,8 +32,13 @@ class ExportTooLargeError extends Error {}
  * field — so this MUST run before any error is persisted/returned, or a tenant
  * can read the (super)user DB password from a failed export.
  */
-const redactSecrets = (s: string): string =>
-  s.replace(/(postgres(?:ql)?:\/\/[^:@/\s]+:)[^@/\s]+@/gi, '$1***@');
+export const redactSecrets = (s: string): string =>
+  // A14-04: the password may itself contain '@' (raw, un-encoded in some
+  // connection strings). The old `[^@/\s]+@` stopped at the FIRST '@', leaking
+  // the rest of the password. Match the password greedily up to the LAST '@'
+  // before the host (host has no '@' or '/'), so `user:p@ss@host/db` fully
+  // redacts to `user:***@host/db`.
+  s.replace(/(postgres(?:ql)?:\/\/[^:@/\s]+:)[^\s]*@([^@\s/]+)/gi, '$1***@$2');
 
 /**
  * Sensitive control-plane columns that must never leave the box in a plaintext
@@ -54,6 +59,10 @@ const SENSITIVE_COLUMNS: Record<string, ReadonlySet<string>> = {
   admin_users: new Set(['passwordhash', 'mfasecretcipher', 'mfanonce', 'mfakeyid']),
   tenant_db_credentials: new Set(['encryptedpwd', 'encryptionkeyid', 'encryptionnonce']),
   support_keys: new Set(['codehash']),
+  // A14-02: the raw Stripe event payload carries customer PII (email, name,
+  // billing address, card last4). It's kept in the DB for the retry sweep, but
+  // must NOT ship in a control/all export — redact the value (shape preserved).
+  stripe_webhook_events: new Set(['payloadjson']),
 };
 const REDACTED = '[redacted]';
 

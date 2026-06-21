@@ -48,6 +48,14 @@ export class SmtpEmailDriver implements EmailDriver, OnModuleDestroy {
   }
 
   async send(input: SendInput): Promise<SendResult> {
+    // A9-03: set a stable Message-ID from the outbox key so duplicate sends are
+    // at least correlatable in mail logs / by dedup-aware MTAs. SMTP has no
+    // portable server-side idempotency, so this path remains at-least-once: a
+    // crash between a successful relay and the `delivered` DB write can re-send.
+    // Prefer the Resend driver (Idempotency-Key) where exactly-once matters.
+    const messageId = input.idempotencyKey
+      ? `<${input.idempotencyKey}@${input.from.split('@').pop()?.replace(/>$/, '') ?? 'libriant'}>`
+      : undefined;
     const info = await this.transporter.sendMail({
       from: input.from,
       to: input.to,
@@ -55,6 +63,7 @@ export class SmtpEmailDriver implements EmailDriver, OnModuleDestroy {
       subject: input.subject,
       text: input.bodyMarkdown,
       html: markdownToBasicHtml(input.bodyMarkdown),
+      ...(messageId ? { messageId } : {}),
     });
     return { providerId: info.messageId ?? null };
   }

@@ -644,11 +644,11 @@ export class ImportEngine {
 
     const created = await this.ctx.client.$transaction(async (tx) => {
       // Serialize against the LIVE hold-placement path so an import and a
-      // concurrent reservation can't assign the same queuePosition. That path
-      // (reservations.service) locks `reservation:<bookId>`, so we MUST use the
-      // identical key — `book:<bookId>` (the loans-return/expiry convention) is
-      // a different coordination domain and would NOT mutually exclude.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`reservation:${bookId}`}, 0))`;
+      // concurrent reservation can't assign the same queuePosition. A7-01: ALL
+      // per-book copy-allocation paths (place / promote-on-return / promote-on-
+      // expiry / cancel-expire / this import) now share ONE `book:<bookId>` lock
+      // domain, so they all mutually exclude — not just import-vs-placement.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`book:${bookId}`}, 0))`;
       const agg = await tx.reservation.aggregate({
         where: { bookId, status: 'queued' },
         _max: { queuePosition: true },

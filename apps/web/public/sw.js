@@ -44,8 +44,17 @@ function isSensitive(pathname) {
 }
 
 const STATIC_RE = /\.(?:css|js|mjs|woff2?|ttf|otf|svg|png|jpg|jpeg|gif|webp|avif|ico)$/i;
-/** Content-hashed/immutable → cache-first. */
+/**
+ * Content-hashed / tenant-AGNOSTIC immutable assets → cache-first into the
+ * never-wiped STATIC_CACHE. A10-01: tenant-scoped media (member photos, brand
+ * logos) is served under `/lbr-api/t/<slug>/storage/...` and ALSO ends in an
+ * image extension — those must NOT be treated as immutable, or PII lands in
+ * STATIC_CACHE and survives logout. Exclude `/lbr-api/` (it's handled by the
+ * DATA_CACHE branch, which IS wiped) so only truly tenant-agnostic assets
+ * (/_next/static, top-level public icons, etc.) are cache-first here.
+ */
 function isImmutableAsset(url) {
+  if (url.pathname.startsWith('/lbr-api/')) return false;
   return url.pathname.startsWith('/_next/static/') || STATIC_RE.test(url.pathname);
 }
 
@@ -146,14 +155,16 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  if (isImmutableAsset(url)) {
-    event.respondWith(cacheFirst(request, STATIC_CACHE));
-    return;
-  }
-
+  // A10-01: handle tenant API (incl. /storage media) BEFORE the immutable-asset
+  // branch, so tenant images go to the wiped DATA_CACHE, never STATIC_CACHE.
   if (url.pathname.startsWith('/lbr-api/')) {
     if (isSensitive(url.pathname)) return; // auth/billing/admin — straight to network
     event.respondWith(staleWhileRevalidate(request, DATA_CACHE));
+    return;
+  }
+
+  if (isImmutableAsset(url)) {
+    event.respondWith(cacheFirst(request, STATIC_CACHE));
     return;
   }
 

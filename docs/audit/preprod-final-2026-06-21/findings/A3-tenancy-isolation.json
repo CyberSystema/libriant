@@ -1,0 +1,36 @@
+{
+  "dimension": "A3-tenancy-isolation",
+  "summary": "I audited the full tenant-isolation surface: slug/subdomain resolution and Redis caching (tenancy/tenant-middleware + tenant-resolver), the per-tenant Prisma client LRU (tenant-prisma.service + packages/db-tenant/src/client.ts), TenantGuard/RolesGuard, the storage layer (signed URLs, local driver path safety, per-tenant driver cache), the support-key/impersonation path, provisioning + relocate, background jobs/workers, import + export (incl. admin \"full\" exports), the Stripe webhook tenant mapping, and the admin plane. The architecture is genuinely strong and the two prior audits' fixes hold: each tenant has a physically separate Postgres DB, every data path obtains its client via getClient(resolvedTenantContext) keyed by tenant id with a dbUrl-change rebuild, TenantGuard cross-checks session.tid === resolved tenant.id (and impersonation.tenantId === tenant.id), JWT secrets for session/admin/impersonation/storage-signing are deliberately distinct, signed-download tokens bind ref+tid so they can't be replayed cross-tenant, the local driver refuses path traversal, and admin/full exports are gated to platform owners while the tenant download endpoint hard-rejects non-own/non-tenant-scope jobs. I found NO cross-tenant read/write, auth-bypass, or data-loss defect on the running product. The only items worth recording are a misleading security comment and a couple of defense-in-depth gaps that are not currently exploitable. Static reading was the method (dev data was not mutated).",
+  "findings": [
+    {
+      "severity": "low",
+      "title": "Misleading comment claims a cross-tenant replay check the signed-download endpoint does not (and need not) perform",
+      "file": "apps/api/src/storage/signed-url.service.ts:52-57",
+      "evidence": "JSDoc on verify(): \"Caller must STILL check that the request's resolved tenant matches `payload.tid` — defence against a leaked token being used against a different tenant via a forged Host header.\" But the actual consumer in storage-demo.controller.ts:187-204 (`@Get('_files/signed')`) runs no tenant middleware (the route is not under /t/ and carries no slug), so there is no `req.tenant` to compare. It instead resolves the tenant directly FROM the signed `payload.tid` (resolveTenantById, line 197) and reads `storage.get(tenant, payload.ref)`. That is actually correct and replay-safe (ref+tid are signed together, secret is HMAC-distinct), but the comment describes a check that doesn't exist, inviting a future maintainer to either add a redundant/incorrect check or to wrongly assume one is already enforcing isolation.",
+      "impact": "Documentation/maintainability risk only. No isolation impact today: a token from tenant A cannot be used to read tenant B because the served tenant is derived from the signed tid, not from any attacker-controllable Host/path.",
+      "verified": "static",
+      "fix": "Rewrite the comment to state that isolation is enforced by deriving the tenant from the signed `tid` (not from request context), since `/_files/signed` runs outside tenant middleware. Remove the 'caller must check resolved tenant' sentence so nobody adds a meaningless or breaking comparison.",
+      "confidence": "high"
+    },
+    {
+      "severity": "low",
+      "title": "Announcement dismiss/ack do not verify the announcement targets the caller's tenant (write-safe, but allows no-op cross-tenant probes)",
+      "file": "apps/api/src/announcements/announcement-delivery.service.ts:140-188",
+      "evidence": "dismiss() and acknowledge() look up the announcement by id only (`controlDb.announcement.findUnique({ where: { id: input.announcementId } })`) and never call anns.tenantMatches() to confirm the announcement's audience includes this tenant. They DO scope the write by tenant: `controlDb.announcementDelivery.updateMany({ where: { announcementId, tenantId: input.tenantId, userId } })`. Because the controller (tenant-announcements.controller.ts:48-74) always supplies `tenantId: tenant.id` from the resolved TenantContext behind TenantGuard, a cross-tenant write is impossible — updateMany simply matches 0 rows for a foreign tenant/announcement and returns success.",
+      "impact": "No cross-tenant data write or read. A librarian can POST dismiss/ack for an arbitrary announcement id (incl. one not targeted at their tenant) and get a 200 with zero effect — a minor existence-probe / API-noise issue, not a breach. The 404 'cannot be dismissed' branch already prevents acting on non-dismissible announcements.",
+      "verified": "static",
+      "fix": "For consistency and to return a clean 404 on foreign announcements, gate dismiss/ack on anns.tenantMatches(audienceFromJson(ann.audienceFilter), { id, tags, status }) before the updateMany (the active-set fetcher already does this). Strictly defense-in-depth; not required to close an isolation hole.",
+      "confidence": "high"
+    },
+    {
+      "severity": "info",
+      "title": "Tenant-status reactivation has no cache-invalidation hook, but no reactivation endpoint exists yet (TEN-04 latent)",
+      "file": "apps/api/src/tenancy/tenant-resolver.service.ts:50-68",
+      "evidence": "The resolver positively caches the full TenantContext including `status` for tenantCacheTtlSec; the middleware (tenant.middleware.ts:76-83) enforces archived→410 / suspended→403 AFTER reading the cache. invalidate() exists and is called by hard-delete (admin-tenants.controller.ts:200-202), tags (admin-tenant-tags.controller.ts:75-78) and relocate (scripts/tenant-relocate.ts:462-464). I found NO admin/billing code path that flips tenants.status to suspended/archived/active (grep for tenant.update/updateMany shows only brandColor/brandLogoRef and tags writes; billing past_due acts on Subscription.status + EffectivePlan, not Tenant.status). So today the cached status is always consistent with the row.",
+      "impact": "Latent only: if a suspend/archive/reactivate endpoint is added later WITHOUT calling resolver.invalidate(), every API process would serve the stale status for up to the TTL — a suspended tenant could keep being served, or a reactivated one stay locked out. Not exploitable now because the mutation surface doesn't exist.",
+      "verified": "static",
+      "fix": "When implementing tenant suspend/archive/reactivate (and any billing→tenant.status transition), call TenantResolverService.invalidate({ slug, customSubdomain }) in the same operation, mirroring the existing tags/relocate/delete callers. Consider a control-plane test asserting any tenants.status write is paired with an invalidate.",
+      "confidence": "medium"
+    }
+  ]
+}

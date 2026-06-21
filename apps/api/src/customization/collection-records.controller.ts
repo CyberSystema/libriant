@@ -16,6 +16,8 @@ import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { parseLimit } from '../platform/query.js';
 import { CollectionRecordsService, type ListRecordsOptions } from './collection-records.service.js';
+import { RolesGuard } from '../tenancy/roles.guard.js';
+import { StaffWrite } from '../tenancy/roles.decorator.js';
 
 /**
  * Generic CRUD for records of a custom collection. Validation is driven
@@ -31,7 +33,7 @@ import { CollectionRecordsService, type ListRecordsOptions } from './collection-
  *   DELETE /t/:slug/collections/:cslug/records/:id              (archive)
  */
 @Controller('t/:slug/collections/:cslug/records')
-@UseGuards(TenantGuard)
+@UseGuards(TenantGuard, RolesGuard)
 export class CollectionRecordsController {
   constructor(@Inject(CollectionRecordsService) private readonly svc: CollectionRecordsService) {}
 
@@ -53,6 +55,7 @@ export class CollectionRecordsController {
     return this.svc.list(tenant, cslug, opts);
   }
 
+  @StaffWrite()
   @Post()
   async create(
     @TenantCtx() tenant: TenantContext,
@@ -72,6 +75,7 @@ export class CollectionRecordsController {
     return this.svc.get(tenant, cslug, id);
   }
 
+  @StaffWrite()
   @Patch(':id')
   async update(
     @TenantCtx() tenant: TenantContext,
@@ -82,6 +86,7 @@ export class CollectionRecordsController {
     return this.svc.update(tenant, cslug, id, raw);
   }
 
+  @StaffWrite()
   @Delete(':id')
   async archive(
     @TenantCtx() tenant: TenantContext,

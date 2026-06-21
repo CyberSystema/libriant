@@ -94,9 +94,10 @@ function countUnbounded(p: string): number {
 
 /**
  * True if `p` contains a group `(...)` immediately followed by a repetition
- * quantifier (`*`, `+`, or `{…,}`) whose body is ambiguous (nested unbounded
- * quantifier, or overlapping alternation). Paren stack is escape- and
- * char-class-aware so nested groups are matched correctly.
+ * quantifier (`*`, `+`, or a brace repeating it 2+ times — `{n}` n>=2, `{n,}`,
+ * `{n,m}` m>=2) whose body is ambiguous (nested unbounded quantifier, or
+ * overlapping alternation). Paren stack is escape- and char-class-aware so
+ * nested groups are matched correctly.
  */
 function hasAmbiguousRepeatedGroup(p: string): boolean {
   const stack: number[] = [];
@@ -123,16 +124,29 @@ function hasAmbiguousRepeatedGroup(p: string): boolean {
       const start = stack.pop();
       if (start === undefined) continue; // unbalanced — let RegExp() reject it
       const next = p[i + 1];
-      const repeated = next === '*' || next === '+' || (next === '{' && isOpenEndedBrace(p, i + 1));
+      const repeated = next === '*' || next === '+' || (next === '{' && isRepeatingBrace(p, i + 1));
       if (repeated && bodyIsAmbiguous(p.slice(start + 1, i))) return true;
     }
   }
   return false;
 }
 
-/** `{n,}` / `{n,m}` (m possibly large) is repetition; `{n}` exact is not a blow-up driver. */
-function isOpenEndedBrace(p: string, at: number): boolean {
-  return /^\{\d*,\d*\}/.test(p.slice(at));
+/**
+ * A4-01: true if the brace quantifier at `p[at]` repeats its group 2+ times —
+ * enough to drive catastrophic backtracking when the body is ambiguous:
+ *   - `{n}`   exact, n >= 2          (the bypass the old check missed, e.g. `([a-z]*){8}`)
+ *   - `{n,}`  open-ended
+ *   - `{n,m}` bounded, m >= 2
+ * A max repetition of 1 (`{0}`,`{1}`,`{0,1}`,`{1,1}`) adds no multiplicity and
+ * is safe. Mirrors JS quantifier syntax: a brace is only a quantifier with a
+ * leading digit (`{,m}` is a literal), so we require `\d+` up front.
+ */
+function isRepeatingBrace(p: string, at: number): boolean {
+  const m = /^\{(\d+)(,(\d*))?\}/.exec(p.slice(at));
+  if (!m) return false; // not a JS quantifier brace
+  if (m[2] === undefined) return Number(m[1]) >= 2; // {n}
+  if (m[3] === '') return true; // {n,}
+  return Number(m[3]) >= 2; // {n,m}
 }
 
 /**

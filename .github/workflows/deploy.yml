@@ -313,19 +313,37 @@ jobs:
           # concern, monitored by uptime checks — not the deploy gate.)
           ssh -o StrictHostKeyChecking=yes "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<'REMOTE'
             set -euo pipefail
+            proj=libriant
+            # A12-03: the edge /healthz is a STATIC 200 (Caddy's :80 block) — it
+            # stays green even if api/web/worker crashed after `up`, so it can't
+            # be the only gate or a broken stack deploys "successfully" and never
+            # rolls back. Also assert each app container's OWN healthcheck (which
+            # probes /readyz — real DB+Redis liveness) reports `healthy`. Resolve
+            # containers by compose labels (naming-scheme agnostic).
+            svc_health() {
+              local id
+              id="$(docker ps -q \
+                --filter "label=com.docker.compose.project=$proj" \
+                --filter "label=com.docker.compose.service=$1" | head -n1)"
+              [ -n "$id" ] || { echo "missing"; return; }
+              docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$id" 2>/dev/null || echo "missing"
+            }
             deadline=$(( $(date +%s) + 150 ))
+            edge=""; api=""; web=""; worker=""
             while [ "$(date +%s)" -lt "$deadline" ]; do
               # Require a real 200 — not a 3xx. The plaintext :80 /healthz block
               # answers 200; if Caddy were still on an old config it would 301 to
               # HTTPS, which must NOT count as healthy.
-              code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://localhost/healthz 2>/dev/null || true)"
-              if [ "$code" = "200" ]; then
-                echo "origin healthy"
+              edge="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://localhost/healthz 2>/dev/null || true)"
+              api="$(svc_health api)"; web="$(svc_health web)"; worker="$(svc_health worker)"
+              if [ "$edge" = "200" ] && [ "$api" = "healthy" ] && [ "$web" = "healthy" ] && [ "$worker" = "healthy" ]; then
+                echo "origin + app containers healthy"
                 exit 0
               fi
+              echo "waiting for health… edge=$edge api=$api web=$web worker=$worker"
               sleep 5
             done
-            echo "origin did not become healthy within 150s" >&2
+            echo "stack did not become healthy within 150s (edge=$edge api=$api web=$web worker=$worker)" >&2
             docker ps --format 'table {{.Names}}\t{{.Status}}' || true
             exit 1
           REMOTE

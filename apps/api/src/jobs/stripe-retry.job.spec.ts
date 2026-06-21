@@ -45,9 +45,11 @@ vi.mock('../billing/stripe-real.driver.js', () => ({
 }));
 vi.mock('../platform/redis.service.js', () => ({
   RedisService: vi.fn(function () {
-    // The sweep now claims the controller's `stripe:event:<id>` SETNX lock
-    // before dispatch (STRIPE-RETRY-NO-LOCK). set→'OK' = lock acquired, so each
-    // row is processed and the existing succeeded/stillFailing assertions hold.
+    // The sweep claims its OWN sweep-private `stripe:retry-sweep:<id>` lock
+    // (short TTL) before dispatch — deliberately NOT the controller's 30-day
+    // `stripe:event:<id>` dedup key, so it can rescue crash-recovery rows the
+    // controller already locked. set→'OK' = lock acquired, so each row is
+    // processed and the existing succeeded/stillFailing assertions hold.
     return {
       client: {
         set: vi.fn().mockResolvedValue('OK'),

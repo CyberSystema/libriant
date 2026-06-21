@@ -8,15 +8,42 @@ import {
   Param,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
+import { controlDb } from '@libriant/db-control';
 import { AdminAuthGuard, AdminSess } from '../admin/admin-auth.guard.js';
 import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
 import { AdminRoles } from '../admin/admin-roles.decorator.js';
 import type { AdminSessionPayload } from '../admin/admin-session.service.js';
+import { adminAuditActor, recordAdminAudit } from '../platform/admin-audit.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { OpenSystemModeDto } from './system-mode.dto.js';
 import { SystemModeService } from './system-mode.service.js';
+
+type SystemModeLike = {
+  id: string;
+  scope: string;
+  tenantId: string | null;
+  mode: string;
+  startsAt: Date;
+  endsAt: Date | null;
+  endedAt?: Date | null;
+};
+
+/** Focused JSON-safe snapshot of a system-mode event, for audit diffs. */
+function systemModeSnapshot(e: SystemModeLike): Record<string, unknown> {
+  return {
+    eventId: e.id,
+    scope: e.scope,
+    tenantId: e.tenantId,
+    mode: e.mode,
+    startsAt: e.startsAt ? e.startsAt.toISOString() : null,
+    endsAt: e.endsAt ? e.endsAt.toISOString() : null,
+    endedAt: e.endedAt ? e.endedAt.toISOString() : null,
+  };
+}
 
 /**
  * Admin control plane for system mode. Gated by `AdminAuthGuard`. The
@@ -101,7 +128,11 @@ export class AdminSystemModeController {
   @Post('global')
   @AdminRoles('owner')
   @HttpCode(201)
-  async openGlobal(@AdminSess() admin: AdminSessionPayload, @Body() raw: unknown) {
+  async openGlobal(
+    @AdminSess() admin: AdminSessionPayload,
+    @Req() req: Request,
+    @Body() raw: unknown,
+  ) {
     const dto = await validateDto(OpenSystemModeDto, raw);
     const event = await this.modes.openGlobal({
       mode: dto.mode,
@@ -110,6 +141,13 @@ export class AdminSystemModeController {
       endsAt: dto.endsAt ? new Date(dto.endsAt) : null,
       allowAdminBypass: dto.allowAdminBypass ?? true,
       createdByAdminId: admin.sub,
+    });
+    await recordAdminAudit(adminAuditActor(req, admin), {
+      // Platform-wide takeover.
+      action: 'system_mode.set',
+      targetType: 'system_mode_event',
+      targetId: event.id,
+      after: systemModeSnapshot(event),
     });
     return { event };
   }
@@ -120,6 +158,7 @@ export class AdminSystemModeController {
   async openTenant(
     @AdminSess() admin: AdminSessionPayload,
     @Param('tenantId') tenantId: string,
+    @Req() req: Request,
     @Body() raw: unknown,
   ) {
     const dto = await validateDto(OpenSystemModeDto, raw);
@@ -132,21 +171,50 @@ export class AdminSystemModeController {
       allowAdminBypass: dto.allowAdminBypass ?? true,
       createdByAdminId: admin.sub,
     });
+    await recordAdminAudit(adminAuditActor(req, admin), {
+      tenantId,
+      action: 'system_mode.set',
+      targetType: 'system_mode_event',
+      targetId: event.id,
+      after: systemModeSnapshot(event),
+    });
     return { event };
   }
 
   @Post('events/:id/end')
   @AdminRoles('owner')
   @HttpCode(200)
-  async end(@Param('id') id: string) {
+  async end(@Param('id') id: string, @AdminSess() admin: AdminSessionPayload, @Req() req: Request) {
     const event = await this.modes.endNow(id);
+    await recordAdminAudit(adminAuditActor(req, admin), {
+      tenantId: event.scope === 'tenant' ? event.tenantId : null,
+      action: 'system_mode.ended',
+      targetType: 'system_mode_event',
+      targetId: event.id,
+      after: systemModeSnapshot(event),
+    });
     return { event };
   }
 
   @Delete('events/:id')
   @AdminRoles('owner')
   @HttpCode(204)
-  async cancel(@Param('id') id: string) {
+  async cancel(
+    @Param('id') id: string,
+    @AdminSess() admin: AdminSessionPayload,
+    @Req() req: Request,
+  ) {
+    // Snapshot the scheduled window before cancelScheduled() deletes it.
+    const event = await controlDb.systemModeEvent.findUnique({ where: { id } });
     await this.modes.cancelScheduled(id);
+    if (event) {
+      await recordAdminAudit(adminAuditActor(req, admin), {
+        tenantId: event.scope === 'tenant' ? event.tenantId : null,
+        action: 'system_mode.canceled',
+        targetType: 'system_mode_event',
+        targetId: event.id,
+        before: systemModeSnapshot(event),
+      });
+    }
   }
 }

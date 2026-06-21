@@ -22,6 +22,11 @@ export function isValidHttpUrl(value: unknown): value is string {
   if (typeof value !== 'string') return false;
   try {
     const u = new URL(value);
+    // ORCH-03 / A11-05: a PACKAGED build must only ever point at https — never
+    // ship the session cookie + traffic in cleartext, and never let env/config
+    // repoint the shell at a plaintext (MITM-able) origin that would then become
+    // the trusted IPC origin (A11-03). Dev keeps http for localhost.
+    if (app.isPackaged) return u.protocol === 'https:';
     return u.protocol === 'http:' || u.protocol === 'https:';
   } catch {
     return false;

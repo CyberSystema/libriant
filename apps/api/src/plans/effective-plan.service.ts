@@ -97,10 +97,11 @@ export class EffectivePlanService {
     if (!plan) {
       const loaded = await this.loadFromDb(tenantId);
       plan = loaded.plan;
-      // PQF-3: cap the cache TTL at the soonest upcoming override expiry, so a
-      // time-boxed override stops over-granting no later than its expiry rather
-      // than lingering for the full TTL window.
-      await this.writeCache(tenantId, plan, loaded.soonestOverrideExpiry);
+      // PQF-3: cap the cache TTL at the soonest upcoming expiry boundary (a
+      // time-boxed override, a past-due grace window, or a manual paidUntil) so
+      // access stops over-granting no later than that deadline rather than
+      // lingering for the full TTL window.
+      await this.writeCache(tenantId, plan, loaded.soonestExpiry);
     }
     // Subscriptions disabled → every tenant gets everything. Applied at read
     // time (the per-tenant cache keeps the real plan) so flipping the master
@@ -137,7 +138,7 @@ export class EffectivePlanService {
 
   private async loadFromDb(
     tenantId: string,
-  ): Promise<{ plan: EffectivePlan; soonestOverrideExpiry: Date | null }> {
+  ): Promise<{ plan: EffectivePlan; soonestExpiry: Date | null }> {
     // Single SQL traverses all three layers and emits one row per feature.
     // Expired overrides are filtered out at the join.
     const rows = (await controlDb.$queryRawUnsafe(
@@ -208,7 +209,26 @@ export class EffectivePlanService {
       }
       features[r.feature_key] = this.resolveRow(r);
     }
-    return { plan: { tenantId, plan, features }, soonestOverrideExpiry };
+
+    // PQF-3 (extended): the resolver SQL drops access exactly at graceUntil
+    // (past_due) and paidUntil (manual), but the cached blob would otherwise
+    // live for the full TTL — over-granting paid features past the boundary.
+    // Clamp the cache to the soonest of {override expiry, graceUntil, paidUntil}
+    // so a lapsed grace / manual term stops granting no later than its deadline.
+    let soonestExpiry = soonestOverrideExpiry;
+    const fold = (d: Date | null | undefined): void => {
+      if (d && d.getTime() > Date.now() && (!soonestExpiry || d < soonestExpiry)) {
+        soonestExpiry = d;
+      }
+    };
+    const sub = await controlDb.subscription.findUnique({
+      where: { tenantId },
+      select: { status: true, graceUntil: true, billingMode: true, paidUntil: true },
+    });
+    if (sub?.status === 'past_due') fold(sub.graceUntil);
+    if (sub?.billingMode === 'manual') fold(sub.paidUntil);
+
+    return { plan: { tenantId, plan, features }, soonestExpiry };
   }
 
   /** Compose one feature's value from the row's three layers. */
@@ -266,14 +286,15 @@ export class EffectivePlanService {
   private async writeCache(
     tenantId: string,
     plan: EffectivePlan,
-    soonestOverrideExpiry: Date | null = null,
+    soonestExpiry: Date | null = null,
   ): Promise<void> {
     let ttl = this.ttlSec;
-    if (soonestOverrideExpiry) {
-      // PQF-3: never cache past the soonest override expiry. Clamp to whole
-      // seconds remaining (floor), but keep a 1s minimum so an override that
-      // is already within the same second still gets a positive EX value.
-      const secsUntilExpiry = Math.floor((soonestOverrideExpiry.getTime() - Date.now()) / 1000);
+    if (soonestExpiry) {
+      // PQF-3: never cache past the soonest upcoming expiry boundary (override
+      // expiry / grace / manual paidUntil). Clamp to whole seconds remaining
+      // (floor), but keep a 1s minimum so a boundary already within the same
+      // second still gets a positive EX value.
+      const secsUntilExpiry = Math.floor((soonestExpiry.getTime() - Date.now()) / 1000);
       ttl = Math.max(1, Math.min(ttl, secsUntilExpiry));
     }
     await this.redis.client.set(CACHE_KEY(tenantId), JSON.stringify(plan), 'EX', ttl);

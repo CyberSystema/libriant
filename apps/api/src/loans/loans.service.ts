@@ -606,32 +606,33 @@ export class LoansService {
       );
     }
 
-    // Once someone else is queued for this book, the holding member loses
-    // their option to renew. This matches typical library policy and gives
-    // the next person in line a fair turn.
-    const queuedHold = await client.reservation.findFirst({
-      where: { bookId: loan.copy.bookId, status: { in: ['queued', 'ready'] } },
-      select: { id: true },
-    });
-    if (queuedHold) {
-      throw new BadRequestException(
-        "Another member is waiting for this book — you can't renew while there's an active hold.",
-      );
-    }
-
     // If the loan is already past due, base the extension on "now" rather
     // than on the old dueAt so we don't silently bake in the overdue period.
     const base = Math.max(loan.dueAt.getTime(), Date.now());
     const newDueAt = new Date(base + periods * settings.loanPeriodDays * MS_PER_DAY);
 
-    // circ-2: guard the write with a status + renewedCount compare-and-swap so
-    // two concurrent renews (double-click, two staff stations) can't both pass
-    // the remaining-renewals check above and then each increment the count —
-    // which would push renewedCount past maxRenewals and double-extend dueAt.
-    // The loser sees count===0 and gets a 409 to refresh + retry on fresh state.
-    const renewed = await client.loan.updateMany({
-      where: { id: loanId, status: 'active', renewedCount: loan.renewedCount },
-      data: { dueAt: newDueAt, renewedCount: { increment: periods } },
+    // A7-03 + circ-2: do the active-hold check AND the renew write inside ONE
+    // transaction holding the per-book advisory lock. Once someone else is
+    // queued for this book the holding member loses their renew option; checking
+    // that OUTSIDE the lock left a window where a hold placed between the check
+    // and the write would be renewed past. Hold placement takes the same
+    // `book:<id>` lock, so they now mutually exclude. The renewedCount CAS still
+    // guards two concurrent renews from each incrementing the count.
+    const renewed = await client.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`book:${loan.copy.bookId}`}, 0))`;
+      const queuedHold = await tx.reservation.findFirst({
+        where: { bookId: loan.copy.bookId, status: { in: ['queued', 'ready'] } },
+        select: { id: true },
+      });
+      if (queuedHold) {
+        throw new BadRequestException(
+          "Another member is waiting for this book — you can't renew while there's an active hold.",
+        );
+      }
+      return tx.loan.updateMany({
+        where: { id: loanId, status: 'active', renewedCount: loan.renewedCount },
+        data: { dueAt: newDueAt, renewedCount: { increment: periods } },
+      });
     });
     if (renewed.count === 0) {
       throw new ConflictException(

@@ -137,12 +137,31 @@ export class AnnouncementDeliveryService {
     return out;
   }
 
+  /**
+   * A3-02: true only if this announcement has actually been delivered to this
+   * tenant (a delivery row exists — created by activeForUser when the audience
+   * matched). Used to gate dismiss/ack so a caller in tenant A can't probe the
+   * existence/attributes of an announcement targeted only at tenant B (the
+   * mutation was already tenant-scoped + write-safe, but the per-attribute
+   * NotFounds leaked an oracle).
+   */
+  private async targetsTenant(announcementId: string, tenantId: string): Promise<boolean> {
+    const row = await controlDb.announcementDelivery.findFirst({
+      where: { announcementId, tenantId },
+      select: { id: true },
+    });
+    return row !== null;
+  }
+
   async dismiss(input: { announcementId: string; tenantId: string; userId: string }) {
     const ann = await controlDb.announcement.findUnique({
       where: { id: input.announcementId },
       select: { dismissible: true, requiresAck: true },
     });
-    if (!ann) throw new NotFoundException('Announcement not found.');
+    // Same generic 404 for "no such announcement" AND "not delivered to you".
+    if (!ann || !(await this.targetsTenant(input.announcementId, input.tenantId))) {
+      throw new NotFoundException('Announcement not found.');
+    }
     if (!ann.dismissible) {
       throw new NotFoundException('This announcement cannot be dismissed.');
     }
@@ -169,7 +188,11 @@ export class AnnouncementDeliveryService {
       where: { id: input.announcementId },
       select: { requiresAck: true },
     });
-    if (!ann) throw new NotFoundException('Announcement not found.');
+    // A3-02: same generic 404 for "no such announcement" AND "not delivered to
+    // you", so a cross-tenant id can't be used as an existence/attribute oracle.
+    if (!ann || !(await this.targetsTenant(input.announcementId, input.tenantId))) {
+      throw new NotFoundException('Announcement not found.');
+    }
     if (!ann.requiresAck) {
       throw new NotFoundException("This announcement doesn't need an acknowledgement.");
     }

@@ -1,0 +1,53 @@
+NOTICE:  database "libriant_audit" does not exist, skipping
+DROP DATABASE
+NOTICE:  database "libriant_audit_demo" does not exist, skipping
+DROP DATABASE
+CREATE DATABASE
+CREATE DATABASE
+CREATE EXTENSION
+CREATE EXTENSION
+CREATE EXTENSION
+CREATE EXTENSION
+CREATE EXTENSION
+CREATE EXTENSION
+CREATE EXTENSION
+CREATE EXTENSION
+G10: see log (counts + smoke) — review G10.log tail
+    
+    Step 9: adversarial — schema-level shape constraints
+    prisma:error new row for relation "books" violates check constraint "books_isbn13_shape"
+      ✓ invalid ISBN-13 shape → rejected as expected
+    prisma:error new row for relation "members" violates check constraint "members_member_number_format"
+      ✓ invalid member number shape → rejected as expected
+    prisma:error new row for relation "loans" violates check constraint "loans_due_after_loaned"
+      ✓ loan due date before loan date → rejected as expected
+    prisma:error new row for relation "fines" violates check constraint "fines_amount_nonneg"
+      ✓ negative fine amount → rejected as expected
+    
+    Step 10: cleanup
+      ✓ cleanup complete
+    
+    ALL SMOKE-TEST STEPS PASSED ✓
+G8 integration: PASS
+G11 audit: see G11.log
+    │ Package             │ esbuild                                                │
+    ├─────────────────────┼────────────────────────────────────────────────────────┤
+    │ Vulnerable versions │ >=0.27.3 <0.28.1                                       │
+    ├─────────────────────┼────────────────────────────────────────────────────────┤
+    │ Patched versions    │ >=0.28.1                                               │
+    ├─────────────────────┼────────────────────────────────────────────────────────┤
+    │ Paths               │ . > tsx@4.22.3 > esbuild@0.28.0                        │
+    │                     │                                                        │
+    │                     │ apps/api > tsx@4.22.3 > esbuild@0.28.0                 │
+    │                     │                                                        │
+    │                     │ apps/api > vitest@4.1.7 > @vitest/mocker@4.1.7 >       │
+    │                     │ vite@7.3.3 > tsx@4.22.3 > esbuild@0.28.0               │
+    │                     │                                                        │
+    │                     │ ... Found 8 paths, run `pnpm why esbuild` for more     │
+    │                     │ information                                            │
+    ├─────────────────────┼────────────────────────────────────────────────────────┤
+    │ More info           │ https://github.com/advisories/GHSA-g7r4-m6w7-qqqr      │
+    └─────────────────────┴────────────────────────────────────────────────────────┘
+    17 vulnerabilities found
+    Severity: 2 low | 10 moderate | 5 high
+ALL DB GATES DONE

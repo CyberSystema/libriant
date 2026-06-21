@@ -26,6 +26,8 @@ import {
   UpdateLoanDto,
 } from './loans.dto.js';
 import { LOAN_STATUSES, LoansService } from './loans.service.js';
+import { RolesGuard } from '../tenancy/roles.guard.js';
+import { StaffWrite } from '../tenancy/roles.decorator.js';
 
 /**
  * Circulation — the actual lend/return flow.
@@ -45,7 +47,7 @@ import { LOAN_STATUSES, LoansService } from './loans.service.js';
  * customFields validated against active FieldDefinitions for entity_kind='loan'.
  */
 @Controller('t/:slug/loans')
-@UseGuards(TenantGuard)
+@UseGuards(TenantGuard, RolesGuard)
 export class LoansController {
   constructor(@Inject(LoansService) private readonly svc: LoansService) {}
 
@@ -78,6 +80,7 @@ export class LoansController {
     });
   }
 
+  @StaffWrite()
   @Post()
   @UseInterceptors(IdempotencyInterceptor)
   async checkout(
@@ -94,12 +97,14 @@ export class LoansController {
     return this.svc.get(tenant, id);
   }
 
+  @StaffWrite()
   @Patch(':id')
   async update(@TenantCtx() tenant: TenantContext, @Param('id') id: string, @Body() raw: unknown) {
     const dto = await validateDto(UpdateLoanDto, raw);
     return this.svc.update(tenant, id, dto);
   }
 
+  @StaffWrite()
   @Post(':id/return')
   @UseInterceptors(IdempotencyInterceptor)
   async returnLoan(
@@ -112,6 +117,7 @@ export class LoansController {
     return this.svc.returnLoan(tenant, id, dto, actor);
   }
 
+  @StaffWrite()
   @Post(':id/renew')
   @UseInterceptors(IdempotencyInterceptor)
   async renew(
@@ -124,6 +130,7 @@ export class LoansController {
     return this.svc.renew(tenant, id, dto, actor);
   }
 
+  @StaffWrite()
   @Post(':id/mark-lost')
   @UseInterceptors(IdempotencyInterceptor)
   async markLost(

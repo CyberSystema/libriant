@@ -116,3 +116,33 @@ describe('BillingService.syncStripeSubscription (Stripe period shape)', () => {
     expect(data.currentPeriodEnd).toBeNull();
   });
 });
+
+describe('BillingService.handleStripeSubscriptionDeleted (A6-01 stale-delete guard)', () => {
+  beforeEach(() => {
+    billingFindFirst.mockReset().mockResolvedValue({ tenantId: 'tnt_1' });
+    planFindUnique.mockReset().mockResolvedValue({ id: 'plan_starter', billingMode: 'stripe' });
+    subFindUnique.mockReset();
+    subUpdate.mockClear();
+  });
+
+  it('downgrades when the deleted id matches the tracked subscription', async () => {
+    subFindUnique.mockResolvedValue({ stripeSubscriptionId: 'sub_1' });
+    await makeService().handleStripeSubscriptionDeleted(basilPayload({ id: 'sub_1' }));
+    expect(subUpdate).toHaveBeenCalledTimes(1);
+    expect(subUpdate.mock.calls[0]![0].data.status).toBe('canceled');
+  });
+
+  it('downgrades when we track no subscription id', async () => {
+    subFindUnique.mockResolvedValue({ stripeSubscriptionId: null });
+    await makeService().handleStripeSubscriptionDeleted(basilPayload({ id: 'sub_old' }));
+    expect(subUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('IGNORES a stale delete for a superseded subscription (tenant re-subscribed)', async () => {
+    // Tenant churned off sub_old and is now active on sub_new; a replayed
+    // delete for sub_old must NOT clobber the newer subscription.
+    subFindUnique.mockResolvedValue({ stripeSubscriptionId: 'sub_new' });
+    await makeService().handleStripeSubscriptionDeleted(basilPayload({ id: 'sub_old' }));
+    expect(subUpdate).not.toHaveBeenCalled();
+  });
+});

@@ -25,6 +25,14 @@ describe('patternLooksCatastrophic — rejects exponential patterns', () => {
     'a+*', // stacked quantifiers
     '\\w*+',
     'a*a*a*a*a*a*a*$', // many overlapping quantifiers → high-degree polynomial
+    // A4-01: bounded {n}/{n,m} repetition of an ambiguous group — the bypass the
+    // old open-ended-only check missed. Each still backtracks catastrophically.
+    '([a-z]*){8}$',
+    '(a*){5}c',
+    '(a|a){10}',
+    '(.*){10}',
+    '(a+){8}',
+    '(.*a){11}',
   ];
   for (const p of evil) {
     it(`flags ${p}`, () => expect(patternLooksCatastrophic(p)).toBe(true));

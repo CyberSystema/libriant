@@ -44,11 +44,32 @@ export class ImpersonationSessionService {
 
   verify(token: string): ImpersonationPayload | null {
     try {
-      const payload = jwt.verify(token, this.secret, { algorithms: ['HS256'] }) as
-        | ImpersonationPayload
-        | undefined;
-      if (!payload || payload.imp !== true) return null;
-      return payload;
+      const decoded = jwt.verify(token, this.secret, { algorithms: ['HS256'] }) as unknown;
+      // A1-03: validate the type of EVERY claim before trusting the payload —
+      // mirror the tenant + admin verifiers (AUTH-10). The signature already
+      // proves authenticity, and the middleware re-checks the SupportSession row,
+      // but a strict shape check keeps the contract consistent and means no
+      // consumer can ever act on a malformed claim.
+      if (typeof decoded !== 'object' || decoded === null) return null;
+      const p = decoded as Record<string, unknown>;
+      if (
+        p.imp !== true ||
+        typeof p.adminId !== 'string' ||
+        typeof p.tenantId !== 'string' ||
+        typeof p.sessionId !== 'string' ||
+        typeof p.iat !== 'number' ||
+        typeof p.exp !== 'number'
+      ) {
+        return null;
+      }
+      return {
+        imp: true,
+        adminId: p.adminId,
+        tenantId: p.tenantId,
+        sessionId: p.sessionId,
+        iat: p.iat,
+        exp: p.exp,
+      };
     } catch {
       return null;
     }

@@ -5,8 +5,11 @@ import {
   HttpCode,
   HttpStatus,
   Inject,
+  NotFoundException,
+  Req,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { controlDb } from '@libriant/db-control';
 import { RedisService } from './redis.service.js';
 
@@ -60,7 +63,19 @@ export class HealthController {
 
   @Get('metrics')
   @Header('Content-Type', 'text/plain; version=0.0.4')
-  async metrics(): Promise<string> {
+  async metrics(@Req() req: Request): Promise<string> {
+    // A14-03: defence-in-depth — `/metrics` is internal-only. Prometheus scrapes
+    // api:3001 DIRECTLY on the private net (no proxy headers); a request that
+    // arrived via the public edge carries Caddy's X-Real-IP / X-Forwarded-*.
+    // Reject those with a 404 so a Caddy/topology regression can't expose
+    // fleet-wide tenant counts, rather than relying on the edge alone.
+    if (
+      req.headers['x-real-ip'] ||
+      req.headers['x-forwarded-for'] ||
+      req.headers['x-forwarded-host']
+    ) {
+      throw new NotFoundException();
+    }
     const upSec = Math.round((Date.now() - this.bootedAt.getTime()) / 1000);
     const lines = [
       '# HELP libriant_api_uptime_seconds Process uptime in seconds.',

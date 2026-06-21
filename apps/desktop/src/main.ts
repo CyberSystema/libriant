@@ -9,6 +9,7 @@ import {
   type MenuItemConstructorOptions,
 } from 'electron';
 import * as path from 'node:path';
+import * as fs from 'node:fs';
 import log from 'electron-log/main';
 import * as electronUpdater from 'electron-updater';
 import {
@@ -55,6 +56,14 @@ const FALLBACK_FILE = path.join(__dirname, '..', 'static', 'fallback.html');
 const CRASH_RELOADS_MAX = 3;
 const CRASH_WINDOW_MS = 60_000;
 
+// A11-06: silent printing is intentional (a circulation desk prints receipts/
+// labels without a dialog), but a compromised renderer shouldn't be able to
+// spam the printer. Throttle to a generous ceiling per rolling window — well
+// above any human checkout rate, but a hard bound on abuse.
+const PRINT_RATE_MAX = 30;
+const PRINT_RATE_WINDOW_MS = 60_000;
+let printTimes: number[] = [];
+
 const safeMode = process.argv.includes('--safe-mode') || process.env.LIBRIANT_SAFE_MODE === '1';
 
 let mainWindow: BrowserWindow | null = null;
@@ -83,12 +92,21 @@ function resolvedWithSource(): { url: string; source: 'env' | 'config' | 'defaul
 }
 
 /** Only the app's own top frame (or the bundled file:// fallback) may drive
- *  privileged IPC — never a cross-origin sub-frame. */
+ *  privileged IPC — never a cross-origin sub-frame.
+ *
+ *  A11-03: in a packaged build the trusted origin can only ever be https. The
+ *  start URL flows through isValidHttpUrl/resolveStartUrl (https-only when
+ *  packaged), so `appOrigin` is always an https origin and a renderer can never
+ *  repoint the bridge at a plaintext / MITM-able origin. We assert it here too
+ *  (defence in depth) so a future code path that sets appOrigin loosely still
+ *  can't grant trust to a non-https frame. */
 function isTrustedSender(event: IpcMainInvokeEvent): boolean {
   const frame = event.senderFrame;
   if (!frame || frame.parent) return false; // must be a top-level frame
   if (frame.url.startsWith('file://')) return true; // the bundled fallback page
-  return originOf(frame.url) === appOrigin;
+  if (originOf(frame.url) !== appOrigin) return false;
+  if (app.isPackaged && !frame.url.startsWith('https://')) return false;
+  return true;
 }
 
 async function openExternal(url: string): Promise<Ack> {
@@ -250,6 +268,18 @@ function createWindow(): void {
     void openExternal(url);
   });
 
+  // A11-02: `will-navigate` does NOT fire for a server/HTTP-level 3xx redirect,
+  // so without this a compromised/hostile server could 302 the privileged main
+  // window off-origin. Pin redirects to the app origin too; anything else is
+  // cancelled (the bridge is gated by origin, so an off-origin page can't drive
+  // it regardless, but we never even load it).
+  wc.on('will-redirect', (event, url) => {
+    if (appOrigin && originOf(url) === appOrigin) return;
+    if (url.startsWith('file://')) return;
+    event.preventDefault();
+    void openExternal(url);
+  });
+
   wc.on('will-attach-webview', (event) => event.preventDefault());
 
   // Server unreachable (offline / bad URL / DNS) → show the bundled fallback
@@ -370,14 +400,38 @@ function sendUpdateState(state: UpdateState): void {
 }
 
 /**
- * Auto-update via the signed release feed (packaged builds only — a dev build
- * has no feed). Downloads in the background and installs on quit by default, so
- * a fleet patches itself on the next restart even with no UI. The lifecycle is
- * pushed to the web app (sendUpdateState) so it can offer a "restart now" nudge
- * at a safe moment; `installUpdate()` performs the restart on demand.
+ * A11-01: auto-update is only safe for CODE-SIGNED builds — electron-updater
+ * verifies the downloaded installer's signature before applying it. An UNSIGNED
+ * build that still auto-updates is a fleet-wide RCE vector (anyone who can
+ * publish to the release channel ships an arbitrary executable). CI bakes
+ * `libriantAutoUpdate: false` into unsigned release builds (extraMetadata); we
+ * read it here and refuse to auto-update rather than disabling the signature
+ * check. Signed builds omit the flag → auto-update on, verification on.
+ */
+function autoUpdateAllowed(): boolean {
+  try {
+    const pkgPath = path.join(app.getAppPath(), 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { libriantAutoUpdate?: boolean };
+    return pkg.libriantAutoUpdate !== false;
+  } catch {
+    return true; // default on; a signed build never sets the flag
+  }
+}
+
+/**
+ * Auto-update via the signed release feed (packaged + signed builds only — a dev
+ * build has no feed; an unsigned build opts out via autoUpdateAllowed()).
+ * Downloads in the background and installs on quit by default, so a fleet
+ * patches itself on the next restart even with no UI. The lifecycle is pushed to
+ * the web app (sendUpdateState) so it can offer a "restart now" nudge at a safe
+ * moment; `installUpdate()` performs the restart on demand.
  */
 function initAutoUpdate(): void {
   if (!app.isPackaged) return;
+  if (!autoUpdateAllowed()) {
+    log.info('Auto-update disabled: this build is not code-signed (manual updates only).');
+    return;
+  }
   autoUpdater.logger = log;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
@@ -457,6 +511,11 @@ ipcMain.handle('libriant:get-printers', async () => {
 // throws, so wrap it and always return an Ack.
 ipcMain.handle('libriant:print', async (e, req: unknown): Promise<Ack> => {
   if (!isTrustedSender(e)) return DENIED;
+  // A11-06: rate-limit silent prints so a compromised renderer can't spam paper.
+  const now = Date.now();
+  printTimes = printTimes.filter((t) => now - t < PRINT_RATE_WINDOW_MS);
+  if (printTimes.length >= PRINT_RATE_MAX) return { ok: false, reason: 'rate-limited' };
+  printTimes.push(now);
   try {
     return await silentPrint((req ?? {}) as PrintRequest);
   } catch (err) {

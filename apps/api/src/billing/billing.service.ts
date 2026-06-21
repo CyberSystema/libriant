@@ -10,6 +10,7 @@ import type {
 import { loadEnv } from '../config/env.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
+import { recordAdminAudit, type AdminAuditActor } from '../platform/admin-audit.js';
 import {
   STRIPE_DRIVER,
   type StripeDriver,
@@ -388,9 +389,15 @@ export class BillingService {
   async applyAdminPlanChange(
     tenantId: string,
     input: { planSlug: string },
+    actor: AdminAuditActor,
   ): Promise<BillingSnapshot> {
     const plan = await controlDb.plan.findUnique({ where: { slug: input.planSlug } });
     if (!plan || plan.archivedAt) throw new NotFoundException(`Plan "${input.planSlug}" missing.`);
+    // Snapshot the prior plan/status for the audit diff before we overwrite it.
+    const before = await controlDb.subscription.findUnique({
+      where: { tenantId },
+      select: { planId: true, billingMode: true, status: true, plan: { select: { slug: true } } },
+    });
     await controlDb.subscription.update({
       where: { tenantId },
       data: {
@@ -403,6 +410,26 @@ export class BillingService {
       },
     });
     await this.effectivePlan.invalidate(tenantId);
+    await recordAdminAudit(actor, {
+      tenantId,
+      action: 'subscription.changed',
+      targetType: 'subscription',
+      targetId: tenantId,
+      before: before
+        ? {
+            planSlug: before.plan?.slug ?? null,
+            planId: before.planId,
+            billingMode: before.billingMode,
+            status: before.status,
+          }
+        : undefined,
+      after: {
+        planSlug: plan.slug,
+        planId: plan.id,
+        billingMode: plan.billingMode,
+        status: 'active',
+      },
+    });
     return this.getSnapshot(tenantId);
   }
 
@@ -410,6 +437,7 @@ export class BillingService {
   async applyManualPayment(
     tenantId: string,
     input: { paidUntil: string },
+    actor: AdminAuditActor,
   ): Promise<BillingSnapshot> {
     const sub = await controlDb.subscription.findUnique({ where: { tenantId } });
     if (!sub) throw new NotFoundException('No subscription on file.');
@@ -427,6 +455,14 @@ export class BillingService {
       data: { status: 'active', paidUntil, graceUntil: null },
     });
     await this.effectivePlan.invalidate(tenantId);
+    await recordAdminAudit(actor, {
+      tenantId,
+      action: 'subscription.paid_until_set',
+      targetType: 'subscription',
+      targetId: tenantId,
+      before: { status: sub.status, paidUntil: sub.paidUntil?.toISOString() ?? null },
+      after: { status: 'active', paidUntil: paidUntil.toISOString() },
+    });
     return this.getSnapshot(tenantId);
   }
 
@@ -602,6 +638,24 @@ export class BillingService {
       select: { tenantId: true },
     });
     if (!billing) return;
+    // STRIPE-RETRY-STALE-REPLAY (delete path): only act on a delete for the
+    // subscription we currently track. A customer can churn and re-subscribe on
+    // a NEW subscription id; the retry sweep (or out-of-order delivery) may then
+    // replay the OLD `customer.subscription.deleted`. Without this guard that
+    // stale delete would downgrade a tenant who is actively paying on the newer
+    // subscription. If we already moved on to a different id, ignore it; if we
+    // track none (or the same id), the downgrade is legitimate.
+    const existing = await controlDb.subscription.findUnique({
+      where: { tenantId: billing.tenantId },
+      select: { stripeSubscriptionId: true },
+    });
+    if (existing?.stripeSubscriptionId != null && existing.stripeSubscriptionId !== payload.id) {
+      this.logger.warn(
+        `Webhook: ignoring stale subscription.deleted for ${payload.id} ` +
+          `(tenant now on ${existing.stripeSubscriptionId})`,
+      );
+      return;
+    }
     const starter = await controlDb.plan.findUnique({ where: { slug: 'starter' } });
     if (!starter) {
       this.logger.error('starter plan missing — webhook downgrade aborted');

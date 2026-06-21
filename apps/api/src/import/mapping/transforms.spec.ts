@@ -122,6 +122,16 @@ describe('splitMulti / flipName', () => {
     ]);
     expect(splitMulti('a|b|c')).toEqual(['a', 'b', 'c']);
   });
+  it('A8-03: treats a user separator containing "-" as a literal, not a range', () => {
+    // "-" must be escaped inside the char class: as a literal separator it splits
+    // on "-", and it must NOT silently become an a–c range.
+    expect(splitMulti('a-b-c', '-')).toEqual(['a', 'b', 'c']);
+    expect(splitMulti('xqy', 'a-c')).toEqual(['xqy']); // not a range → no split on b
+  });
+  it('A8-03: an out-of-order range separator does not throw (would crash the batch)', () => {
+    expect(() => splitMulti('hello', 'z-a')).not.toThrow();
+    expect(splitMulti('p-z-a-q', 'z-a')).toEqual(['p', 'q']); // splits on z, -, a literally
+  });
   it('flips Last, First to First Last', () => {
     expect(flipName('Καζαντζάκης, Νίκος')).toBe('Νίκος Καζαντζάκης');
     expect(flipName('Madonna')).toBe('Madonna');

@@ -1,0 +1,418 @@
+{
+  "summary": "Pre-prod platform cluster review (A10-A14): web, desktop, infra, deps, observability",
+  "agentCount": 11,
+  "logs": [],
+  "result": [
+    {
+      "dimension": "A10-web-frontend",
+      "summary": "Audited the Next.js web app with focus on the new PWA service worker, offline reads/queue, admin-host routing, branding, and the XSS/CSRF/redirect/secrets surface the two prior \"ready\" audits would have skipped. The frontend is in solid shape: every user-facing HTML sink I traced is either React-escaped (announcements bodyMarkdown, branding accent colour via React style object, print receipts, system-mode banners) or server-controlled (help articles render checked-in markdown from a non-tenant /help endpoint; the layout <style> comes from assets/theme/tokens.json). SVG upload is blocked at the API (image/svg+xml is absent from every ALLOWED_TYPES list), closing the stored-SVG-XSS path; the assets route has correct path-traversal protection; /api/metrics no longer leaks node_env; healthz/readyz/locales are clean; the only NEXT_PUBLIC_* is the API URL (not a secret); login and verify-email derive their redirect target from server data, not a URL param (no open redirect); a CSP is set in next.config; and admin host-isolation is enforced server-side. The real gaps are all in the new offline/PWA layer. (1) The service worker classifies tenant member-photo/logo URLs (/lbr-api/t/<slug>/storage/...<.jpg|.png>) as \"immutable assets\" and caches them cache-first into STATIC_CACHE, which the logout cache-wipe (LBR_CLEAR_OFFLINE / clearOfflineCaches) deliberately does NOT clear — so member-photo PII persists on a shared device past logout and is even served stale while online. (2) The runtime page/data caches that DO get wiped are only wiped on explicit logout, not on browser-close or session-cookie expiry, so the default-on \"remember me\" plus a user who just closes the tab leaves authenticated tenant HTML/JSON cached for the next same-tenant user offline — contradicting the SW's own \"wiped on logout\" guarantee. (3) The tenant session is protected by SameSite=Lax with no CSRF token; I confirmed no CORS and no state-changing GET endpoints, so it is not exploitable today, but it's a thin, defense-in-depth-free posture. No cross-tenant leak exists in any cache (every cache key includes the tenant slug in the path).",
+      "findings": [
+        {
+          "severity": "medium",
+          "title": "Service worker caches member-photo/logo PII into STATIC_CACHE, which is never wiped on logout",
+          "file": "apps/web/public/sw.js:46-50,144-158,26,82",
+          "evidence": "STATIC_RE = /\\.(?:css|js|mjs|woff2?|ttf|otf|svg|png|jpg|jpeg|gif|webp|avif|ico)$/i; isImmutableAsset() returns true for any URL whose pathname ends in an image extension. In the fetch handler the immutable-asset branch runs BEFORE the /lbr-api/ branch: `if (isImmutableAsset(url)) { event.respondWith(cacheFirst(request, STATIC_CACHE)); return; }` (line 149) precedes `if (url.pathname.startsWith('/lbr-api/')) {...}` (line 154). Member photos and tenant logos are served at `/lbr-api/t/<slug>/storage/members/<cuid>.jpg` and `/branding/<cuid>.png` (storage refs are `<resourceType>/<cuid><ext>` — apps/api/src/storage/drivers/local-driver.ts:55-57; URLs built in members/[id]/PhotoUploader.tsx:41 and layout.tsx:182). So these PII images are cached cache-first into STATIC_CACHE. But the logout wipe only clears RUNTIME_CACHES: `const RUNTIME_CACHES = [PAGES_CACHE, DATA_CACHE];` (line 26) and LBR_CLEAR_OFFLINE does `Promise.all(RUNTIME_CACHES.map((c) => caches.delete(c)))` (line 82); clearOfflineCaches() in lib/offline.ts:41-44 only deletes keys matching `lbr-pages-`/`lbr-data-`. STATIC_CACHE (`lbr-static-v1`) is excluded from both. The SW header comment claims 'The runtime caches (pages + data) hold tenant data, so they're wiped on logout' — but member-photo PII lands in the non-wiped static cache instead.",
+          "impact": "On a shared circulation-desk device, a member's photo and the tenant logo remain in the browser cache indefinitely after the librarian logs out, retrievable by the next operator (e.g. via DevTools/cache inspection or simply re-opening the member page offline). Because the entry is cache-first, a stale photo is also served even when back online until the SW version bumps. Same-tenant only (the cache key includes the slug), and it is image data rather than full records, but it is personal data persisting past the logout boundary the SW promises to enforce.",
+          "verified": "static",
+          "fix": "Exclude tenant-scoped storage URLs from the immutable-asset path. Either move the `/lbr-api/` check above `isImmutableAsset` (so anything under /lbr-api/ is treated as tenant data and never goes to STATIC_CACHE), or guard isImmutableAsset with `&& !url.pathname.startsWith('/lbr-api/')`, and route /lbr-api/ storage GETs through the DATA_CACHE (which IS wiped on logout) via staleWhileRevalidate. Restrict cacheFirst/STATIC_CACHE to truly tenant-agnostic paths (/_next/static, /_assets, top-level public assets).",
+          "confidence": "high"
+        },
+        {
+          "severity": "medium",
+          "title": "Offline page/data caches only cleared on explicit logout, not on browser-close or session expiry (shared-device stale PII)",
+          "file": "apps/web/public/sw.js:114-128,99-112",
+          "evidence": "networkFirstPage caches authenticated tenant HTML into PAGES_CACHE (`cache.put(request, response.clone())`, line 119) and staleWhileRevalidate caches /lbr-api JSON into DATA_CACHE (line 105). These runtime caches are only ever cleared via LBR_CLEAR_OFFLINE / clearOfflineCaches, which is invoked solely from the logout button (apps/web/app/[locale]/t/[slug]/LogoutButton.tsx:32). The session cookie defaults to persistent='remember me on' (apps/web/app/[locale]/login/LoginForm.tsx:31, CookieService.setSession persistent default true — apps/api/src/auth/cookie.service.ts:28), and the documented shared-machine workflow is to UNCHECK remember so the cookie drops on browser close. But dropping the cookie does not run clearOfflineCaches, so the cached tenant pages/JSON survive. When the next user opens the same tenant URL while offline, networkFirstPage serves the previous user's cached member/loan PII from PAGES_CACHE.",
+          "impact": "A librarian who closes the browser (the recommended shared-desk flow) instead of clicking Sign out leaves authenticated tenant pages and API responses (member lists, loan records, etc.) cached. The next person on that device, offline, is served that PII. Same-tenant (cache keyed by slug, so no cross-tenant leak) and only while offline (online requests are network-first and re-authenticated), which bounds it, but it contradicts the SW's stated 'wiped on logout' security model for the exact shared-device scenario the code calls out.",
+          "verified": "static",
+          "fix": "Clear runtime caches on session loss, not just on the logout button: call clearOfflineCaches() when /auth/me returns 401 (session expired) and/or on the SW 'activate'/page-load when no session cookie is present. Consider not caching full authenticated navigations at all (the offline value is mostly the API data cache), or scope cached pages/data with a per-session marker so a new/absent session can't read the prior one's entries.",
+          "confidence": "high"
+        },
+        {
+          "severity": "low",
+          "title": "Tenant session relies on SameSite=Lax alone — no CSRF token, no defense in depth",
+          "file": "apps/api/src/auth/cookie.service.ts:32,43",
+          "evidence": "The tenant session cookie is set with `sameSite: 'lax'` (lines 32, 43) and there is no CSRF token anywhere in apps/web or apps/api (grep for csrf/xsrf returns nothing). All state-changing browser calls are JSON POST/PATCH/DELETE via the same-origin /lbr-api proxy with credentials:'include' (apps/web/lib/api.ts:88-98). I confirmed there is NO CORS configured on the API (no enableCors in apps/api/src/main.ts) and found no state-changing @Get endpoints, so a cross-site request cannot both send the Lax cookie and reach a mutating handler today. Admin and impersonation cookies correctly use SameSite=Strict (admin-cookie.service.ts:26, impersonation-cookie.service.ts:24), so only the tenant plane is on the weaker Lax setting.",
+          "impact": "Not exploitable as written: SameSite=Lax suppresses the cookie on cross-site POST, and with no CORS a cross-origin credentialed XHR is blocked, so there is no working CSRF path. The risk is purely defense-in-depth — a future regression that adds a permissive CORS policy, a top-level GET that mutates state, or a same-site subdomain takeover would have no second line of defense for tenant write operations.",
+          "verified": "static",
+          "fix": "Add a standard double-submit or header-based CSRF defense for the tenant plane (e.g. require a non-cookie custom header such as X-Requested-With / X-CSRF on all mutating routes — trivial to enforce since all browser writes already go through lib/api.ts and could add the header centrally), and/or tighten the tenant session to SameSite=Strict like the admin/impersonation cookies if the UX (no cross-site top-level entry needed) allows it.",
+          "confidence": "high"
+        },
+        {
+          "severity": "info",
+          "title": "CSP allows 'unsafe-inline' for script-src, weakening XSS containment",
+          "file": "apps/web/next.config.mjs:48-66",
+          "evidence": "The CSP sets `script-src 'self' 'unsafe-inline'` (and style-src 'unsafe-inline'), acknowledged in the comment as needed because 'the App Router emits [bootstrap/hydration inline scripts] without a nonce'. object-src 'none', base-uri 'self', frame-ancestors 'none', and connect-src 'self' are correctly locked down.",
+          "impact": "If an HTML-injection sink ever regresses (the code does use dangerouslySetInnerHTML for the token <style>, print CSS, and help-article HTML), 'unsafe-inline' on script-src means an injected inline <script> would execute — the CSP would not contain it. No such sink is currently reachable with user input (verified: all three dangerouslySetInnerHTML sources are server-controlled), so this is hardening, not an active vulnerability.",
+          "verified": "static",
+          "fix": "Move to a nonce-based CSP via request-scoped middleware so 'unsafe-inline' can be dropped from script-src (Next.js App Router supports nonce propagation through middleware). At minimum keep the help-article ingest pipeline (the one HTML sink that renders rendered markdown) sanitized/whitelisted so it can never emit <script> regardless of CSP.",
+          "confidence": "medium"
+        }
+      ],
+      "verified": []
+    },
+    {
+      "dimension": "A11-desktop-electron",
+      "summary": "The Electron shell is, on the whole, genuinely well-hardened and the prior audits' \"ready\" verdict for the core sandbox posture holds up: contextIsolation:true, nodeIntegration:false, sandbox:true, webviewTag:false, webSecurity left at its secure default, no certificate-validation bypass anywhere, a minimal audited contextBridge (no arbitrary IPC/fs/shell/child_process), in-app window creation denied + routed to the system browser, navigation pinned to appOrigin, <webview> attach blocked, every mutating IPC gated by a top-frame + origin check, silent printing constrained to same-origin /print/ routes in a preload-less hidden window, auto-update sha512-verified against a latest.yml fetched over HTTPS, and — importantly — the subscription download gate is enforced SERVER-SIDE (TenantGuard auth + tenant match + BillingService.getDesktopAccess + ForbiddenException), not just in the UI, and is unit-tested. RCE / auth-bypass / cross-tenant via the desktop app were NOT found. What the prior audits missed are lower-tier-but-real supply-chain/transport hardening gaps: (1) the release workflow ships Windows builds with verifyUpdateCodeSignature=false, so a release-channel/GitHub-write compromise auto-installs an arbitrary unsigned exe with no Authenticode gate; (2) the loaded server URL may be plain http:// (env, saved config, or the in-app setServerUrl), sending the session cookie and all traffic in cleartext with no HTTPS enforcement; (3) no will-redirect handler, so a server/HTTP-level 3xx can navigate the privileged main window off-origin (bounded by the sandbox, but a hardening gap); (4) the IPC trust origin (appOrigin) is mutable via setServerUrl; (5) over-broad mac entitlements including an audio-input entitlement the code comments say is unused. None rise to critical on a running product; the Windows update-signature gap is the most serious (high, precondition: signing secrets absent or release channel compromised).",
+      "findings": [
+        {
+          "severity": "high",
+          "title": "Windows auto-update ships with code-signature verification disabled (verifyUpdateCodeSignature=false) on unsigned builds",
+          "file": ".github/workflows/desktop-release.yml (Windows leg) + apps/desktop/electron-builder.yml:72-81",
+          "evidence": "Release workflow, Windows branch: `echo \"::warning::No AZURE_CLIENT_ID — publishing an UNSIGNED Windows build (SmartScreen warns; update signature check disabled).\"` then `pnpm exec electron-builder --publish always $VER_FLAG --config.win.verifyUpdateCodeSignature=false`. electron-builder bakes this into app-update.yml, so the SHIPPED client skips electron-updater's Authenticode check (NsisUpdater.verifySignature → _verifyUpdateCodeSignature). The shell auto-downloads + auto-installs on quit unconditionally for packaged builds: main.ts:382-383 `autoUpdater.autoDownload = true; autoUpdater.autoInstallOnAppQuit = true;` and main.ts:399-401 checks on launch + every 6h. sha512 from latest.yml is still verified (mitigates a pure network MITM since latest.yml is HTTPS-from-GitHub), but the publisher-identity gate is gone.",
+          "impact": "If the GitHub Releases channel is compromised (leaked GITHUB_TOKEN, a malicious release author, or anyone with write to CyberSystema/libriant Releases), an attacker can publish a release with a matching latest.yml + sha512 and every Windows client silently downloads and installs an arbitrary, unsigned executable on next quit — fleet-wide remote code execution on librarian desktops. The Authenticode layer that would normally stop a swapped binary is explicitly off. Ships this way today because the Azure signing secrets are not yet configured.",
+          "verified": "static",
+          "fix": "Sign Windows builds (Azure Trusted Signing secrets) before any production rollout so verifyUpdateCodeSignature stays at its secure default. If shipping unsigned is unavoidable interim, DISABLE auto-update on the unsigned Windows path (don't call autoUpdater for unsigned builds) rather than disabling the signature check — an unsigned auto-updater is the worst of both worlds. Also restrict who can publish GitHub Releases and protect the release tag.",
+          "confidence": "high"
+        },
+        {
+          "severity": "high",
+          "title": "Server URL may be plain HTTP — session cookie and all traffic sent in cleartext, no HTTPS enforcement",
+          "file": "apps/desktop/src/config.ts:21-29, 58-66; apps/desktop/src/main.ts:76-83,293-299",
+          "evidence": "isValidHttpUrl accepts http: as well as https: — config.ts:25 `return u.protocol === 'http:' || u.protocol === 'https:';`. This validator gates every URL source: LIBRIANT_APP_URL env, the persisted serverUrl, and the renderer/fallback-driven setServerUrl (main.ts:293 `if (!isValidHttpUrl(url)) return ...; config.serverUrl = url; ... loadAppUrl(url);`). openExternal likewise allows http: (main.ts:97). Nothing upgrades or requires https for the loaded app origin; the default is https (config.ts:11) but any override can be cleartext. The shell carries the librarian's authenticated session cookie (silentPrint relies on it riding along: main.ts:115-119).",
+          "impact": "An operator pointing the shell at an http:// instance (on-prem, LAN, a typo, or a setServerUrl call) transmits the session cookie and all library data over cleartext. A network attacker on the LAN can steal the session, read/modify circulation data, and inject a page into the (sandboxed, but cookie-bearing) renderer. No warning is surfaced. This is a transport-downgrade exposure that a browser would at least flag; the shell silently accepts it.",
+          "verified": "static",
+          "fix": "For production targets, require https for the loaded app origin (allow http only for localhost/dev or behind an explicit opt-in flag). At minimum, refuse http URLs in setServerUrl when app.isPackaged, and surface a clear insecure-connection warning in the fallback/connection UI.",
+          "confidence": "high"
+        },
+        {
+          "severity": "medium",
+          "title": "No will-redirect handler — a server/HTTP-level 3xx can navigate the privileged main window off-origin",
+          "file": "apps/desktop/src/main.ts:246-251",
+          "evidence": "Only `wc.on('will-navigate', ...)` is registered; there is no `will-redirect` handler (grep of main.ts shows will-navigate only). will-navigate does not fire for HTTP-layer (3xx) redirects in Electron — will-redirect does. So a 302 from the loaded origin (or a MITM on an http:// instance) to https://attacker.example can move the main, node-adjacent BrowserWindow to an attacker origin without the external-browser redirect kicking in.",
+          "impact": "The attacker origin loads in the main window. Bounded by the strong sandbox (contextIsolation/sandbox/nodeIntegration-off hold, so no RCE) and by the IPC origin check (it won't equal appOrigin, so privileged IPC is denied), so this is a hardening gap rather than a breach — but it defeats the intended 'navigation stays on the app origin' guarantee and can be combined with the http downgrade above for phishing inside a trusted-looking app chrome.",
+          "verified": "static",
+          "fix": "Add `wc.on('will-redirect', (event, url) => { if (appOrigin && originOf(url) !== appOrigin && !url.startsWith('file://')) { event.preventDefault(); void openExternal(url); } })` mirroring the will-navigate guard, so off-origin redirects are also pushed to the external browser.",
+          "confidence": "high"
+        },
+        {
+          "severity": "medium",
+          "title": "IPC trust origin (appOrigin) is mutable from the renderer, letting a compromised app pivot the full bridge to an attacker origin",
+          "file": "apps/desktop/src/main.ts:87-92,188-191,293-299",
+          "evidence": "isTrustedSender compares the sender frame origin to the mutable global `appOrigin` (main.ts:91 `return originOf(frame.url) === appOrigin;`). setServerUrl (callable from the trusted top frame and from the file:// fallback) reassigns appOrigin via loadAppUrl (main.ts:189 `appOrigin = originOf(url);`) to ANY http/https origin. After that call, the new origin's top frame passes isTrustedSender and gains the entire bridge: openExternal, silent local printing, installUpdate, and further setServerUrl.",
+          "impact": "If the trusted web app is ever XSS'd (or an http instance is injected), the attacker can call setServerUrl('https://attacker') to make their own server permanently 'trusted' by the shell, gaining persistent access to the privileged bridge (local printer enumeration + silent printing, external-URL opening) across restarts since serverUrl is persisted. Self-perpetuating persistence/pivot; requires an initial foothold so it's an escalation aid rather than a standalone breach.",
+          "verified": "static",
+          "fix": "Gate setServerUrl so it is reachable ONLY from the file:// fallback page (the legitimate reconfiguration surface), not from the live app top frame; e.g. in the handler require frame.url.startsWith('file://') for the mutating set, and treat the live app origin as read-only. Consider an allowlist/confirmation for new origins.",
+          "confidence": "medium"
+        },
+        {
+          "severity": "low",
+          "title": "Over-broad macOS hardened-runtime entitlements (audio-input granted though unused; library validation + unsigned-exec memory disabled)",
+          "file": "apps/desktop/build/entitlements.mac.plist:8-18",
+          "evidence": "Entitlements include `com.apple.security.cs.disable-library-validation`, `com.apple.security.cs.allow-unsigned-executable-memory`, and `com.apple.security.device.audio-input` (true). The audio entitlement contradicts the code's own intent — extendInfo in electron-builder.yml:63 states 'Libriant only needs the camera; microphone access is not used.' and the permission allowlist (main.ts:283) does not include microphone-specific media beyond what camera needs. disable-library-validation lets unsigned/third-party dylibs load into the signed app.",
+          "impact": "Weakens the hardened-runtime guarantees more than necessary: an attacker who achieves local code-injection has an easier time loading unsigned libraries, and the unused mic entitlement grants the app microphone access (privacy surface) for no functional reason. JIT/allow-jit and allow-unsigned-executable-memory are genuinely required by V8; library-validation and audio-input are the questionable ones.",
+          "verified": "static",
+          "fix": "Remove com.apple.security.device.audio-input (the scanner uses the camera only). Re-evaluate com.apple.security.cs.disable-library-validation — Electron typically does not require it; drop it unless a notarization failure proves otherwise. Keep allow-jit/allow-unsigned-executable-memory (V8 needs them).",
+          "confidence": "medium"
+        },
+        {
+          "severity": "info",
+          "title": "Silent printing requires no user consent once the renderer is trusted",
+          "file": "apps/desktop/src/main.ts:121-180,456-466; apps/desktop/src/preload.ts:44-45",
+          "evidence": "The print bridge drives wc.print({ silent: true, printBackground: true }) (main.ts:170) on a same-origin /print/ route with no per-action user confirmation. It is well-constrained (top-frame + origin gated, same-origin + /print/ path only, no caller fragment, preload-less hidden window, 20s teardown timeout) so it cannot print arbitrary pages or write arbitrary files.",
+          "impact": "A compromised trusted renderer could spam the default printer with same-origin /print/ routes (paper/toner waste / nuisance), but cannot read files, print arbitrary content, or escape the sandbox. Acceptable for a kiosk circulation desk; noting as residual surface, not a defect.",
+          "verified": "static",
+          "fix": "No change required. If desired, rate-limit silentPrint calls per minute to blunt nuisance abuse.",
+          "confidence": "high"
+        }
+      ],
+      "verified": [
+        {
+          "finding": {
+            "severity": "high",
+            "title": "Windows auto-update ships with code-signature verification disabled (verifyUpdateCodeSignature=false) on unsigned builds",
+            "file": ".github/workflows/desktop-release.yml (Windows leg) + apps/desktop/electron-builder.yml:72-81",
+            "evidence": "Release workflow, Windows branch: `echo \"::warning::No AZURE_CLIENT_ID — publishing an UNSIGNED Windows build (SmartScreen warns; update signature check disabled).\"` then `pnpm exec electron-builder --publish always $VER_FLAG --config.win.verifyUpdateCodeSignature=false`. electron-builder bakes this into app-update.yml, so the SHIPPED client skips electron-updater's Authenticode check (NsisUpdater.verifySignature → _verifyUpdateCodeSignature). The shell auto-downloads + auto-installs on quit unconditionally for packaged builds: main.ts:382-383 `autoUpdater.autoDownload = true; autoUpdater.autoInstallOnAppQuit = true;` and main.ts:399-401 checks on launch + every 6h. sha512 from latest.yml is still verified (mitigates a pure network MITM since latest.yml is HTTPS-from-GitHub), but the publisher-identity gate is gone.",
+            "impact": "If the GitHub Releases channel is compromised (leaked GITHUB_TOKEN, a malicious release author, or anyone with write to CyberSystema/libriant Releases), an attacker can publish a release with a matching latest.yml + sha512 and every Windows client silently downloads and installs an arbitrary, unsigned executable on next quit — fleet-wide remote code execution on librarian desktops. The Authenticode layer that would normally stop a swapped binary is explicitly off. Ships this way today because the Azure signing secrets are not yet configured.",
+            "verified": "static",
+            "fix": "Sign Windows builds (Azure Trusted Signing secrets) before any production rollout so verifyUpdateCodeSignature stays at its secure default. If shipping unsigned is unavoidable interim, DISABLE auto-update on the unsigned Windows path (don't call autoUpdater for unsigned builds) rather than disabling the signature check — an unsigned auto-updater is the worst of both worlds. Also restrict who can publish GitHub Releases and protect the release tag.",
+            "confidence": "high"
+          },
+          "verdict": {
+            "real": true,
+            "adjusted_severity": "high",
+            "reason": "Independently confirmed; the claim is accurate and not overstated. CODE FACTS (all verified): (1) .github/workflows/desktop-release.yml Windows leg, unsigned branch runs `pnpm exec electron-builder --publish always $VER_FLAG --config.win.verifyUpdateCodeSignature=false` with the warning \"update signature check disabled\" — this is the DEFAULT shipping path today because the AZURE_* secrets are not configured (SIGNING.md \"ship now, sign later\"; apps/desktop/electron-builder.yml:72-81 win section documents the same). electron-builder writes verifyUpdateCodeSignature into the packaged app-update.yml, so the shipped NsisUpdater skips electron-updater's Authenticode/publisher-identity check. (2) The client auto-updates unconditionally for packaged builds: apps/desktop/src/main.ts:382-383 `autoUpdater.autoDownload = true; autoUpdater.autoInstallOnAppQuit = true;`, checks on launch and every 6h (main.ts:399-401), and initAutoUpdate() IS actually invoked (main.ts:484; quitAndInstall at main.ts:433). IMPACT: if the GitHub Releases channel is compromised (leaked GITHUB_TOKEN, malicious release author, or anyone with write to Releases), an attacker publishes a release whose latest.yml lists the sha512 of their own malicious unsigned binary; every Windows client then silently downloads and installs it on next quit — fleet-wide RCE on librarian desktops. The Authenticode layer that would normally reject a binary not signed by the legitimate publisher is explicitly off. ADVERSARIAL CHECKS: No existing guard prevents this — unlike macOS, where unsigned => auto-update is fully DISABLED (a safe posture), the Windows path leaves auto-update ENABLED with verification DISABLED (the \"worst of both worlds\" the fix calls out). The sha512-from-latest.yml check the report itself credits as a mitigation only stops a pure network MITM (latest.yml is HTTPS from GitHub); it does NOT help in the Releases-compromise scenario because the attacker controls latest.yml. Severity HIGH not CRITICAL is correct per the rubric: exploitation requires a precondition (Releases-channel/supply-chain compromise) and there is no unauthenticated network path to RCE against the default-secure feed, so it is an ops/DR + supply-chain risk rather than a directly exploitable bug on the running product. Cited files/lines are accurate; nothing misread or overstated."
+          }
+        },
+        {
+          "finding": {
+            "severity": "high",
+            "title": "Server URL may be plain HTTP — session cookie and all traffic sent in cleartext, no HTTPS enforcement",
+            "file": "apps/desktop/src/config.ts:21-29, 58-66; apps/desktop/src/main.ts:76-83,293-299",
+            "evidence": "isValidHttpUrl accepts http: as well as https: — config.ts:25 `return u.protocol === 'http:' || u.protocol === 'https:';`. This validator gates every URL source: LIBRIANT_APP_URL env, the persisted serverUrl, and the renderer/fallback-driven setServerUrl (main.ts:293 `if (!isValidHttpUrl(url)) return ...; config.serverUrl = url; ... loadAppUrl(url);`). openExternal likewise allows http: (main.ts:97). Nothing upgrades or requires https for the loaded app origin; the default is https (config.ts:11) but any override can be cleartext. The shell carries the librarian's authenticated session cookie (silentPrint relies on it riding along: main.ts:115-119).",
+            "impact": "An operator pointing the shell at an http:// instance (on-prem, LAN, a typo, or a setServerUrl call) transmits the session cookie and all library data over cleartext. A network attacker on the LAN can steal the session, read/modify circulation data, and inject a page into the (sandboxed, but cookie-bearing) renderer. No warning is surfaced. This is a transport-downgrade exposure that a browser would at least flag; the shell silently accepts it.",
+            "verified": "static",
+            "fix": "For production targets, require https for the loaded app origin (allow http only for localhost/dev or behind an explicit opt-in flag). At minimum, refuse http URLs in setServerUrl when app.isPackaged, and surface a clear insecure-connection warning in the fallback/connection UI.",
+            "confidence": "high"
+          },
+          "verdict": {
+            "real": false,
+            "adjusted_severity": "info",
+            "reason": "Code reading confirms the literal facts (config.ts:25 isValidHttpUrl accepts http: and https:; main.ts:293-299 setServerUrl has no app.isPackaged/localhost guard; main.ts:97 openExternal allows http:), but the \"high\" framing is overstated and not attacker-exploitable on the running product.\n\nWhy it is not a real high finding:\n1. Not attacker-reachable. setServerUrl is gated by isTrustedSender (main.ts:87-92, 415-417): only the app-origin top frame or the bundled file:// fallback can invoke it. The renderer is sandboxed (sandbox:true, contextIsolation:true, nodeIntegration:false), navigation is pinned to appOrigin (will-navigate, will-attach-webview prevented), and preload.ts exposes only a tiny audited surface. A network/LAN MITM has no primitive to flip a victim from https to http. So there is no \"downgrade\" an attacker can drive — only operator configuration.\n2. The precondition is a deliberate operator/IT choice, not an exploit. Pointing the shell at a chosen server (env LIBRIANT_APP_URL, config JSON, or the fallback connection UI) is the intended self-hosting/on-prem override. http://localhost:3000 is the documented dev default (config.ts:12); the packaged default is https://libriant.com (config.ts:11). Running an on-prem LAN instance over http is a supported operator decision, equivalent to a browser visiting an http site.\n3. The actual cleartext-cookie control is server-side, not in the desktop shell. Cookies are set with secure: env.sessionCookieSecure (apps/api/src/auth/cookie.service.ts:13-42 and the admin/impersonation cookie services). For the hosted product the Secure flag is on, so the session cookie will not traverse http at all regardless of what URL the shell loads. Cleartext session exposure requires an operator to BOTH serve over http AND set sessionCookieSecure=false — a self-inflicted self-hosted misconfiguration, not a product vulnerability.\n4. The \"a browser would flag it\" argument is inaccurate: browsers load http origins and transmit non-Secure cookies over them without blocking.\n\nThis is a legitimate defense-in-depth hardening idea (refuse/ warn on http for app.isPackaged builds, allow http only for localhost or an explicit opt-in), but it is a low/info hardening nit, not a serious issue with a reachable precondition or DR/ops impact. Marking real=false at the claimed severity; adjusted to info."
+          }
+        }
+      ]
+    },
+    {
+      "dimension": "A12-infra-ops",
+      "summary": "Re-verified all four CFG-01 / INFRA-1 / restore-stops-apps / tenant-relocate items the prior audits relied on, and they hold up: the rollback path resolves IMAGE_TAG from the dispatch input, re-pulls the immutable PREV_TAG image, checks out the matching commit (no current-code rebuild), and runs only forward-only `migrate:deploy` from the OLD code (no new migrations); backup.sh's off-host guard correctly queries the quoted Prisma column `\"dbUrl\"` and aborts loudly on relocated tenants; restore.sh stops api/worker/web and terminates backends before the DROP wave and validates archives first; tenant-relocate.ts's --drop-source now compares canonicalized endpoints + (server,dbName) tuple, resolves the source from audit beforeJson (never tenant.dbUrl), and requires --yes. Dockerfiles run as non-root (`USER node`), bake no secrets, and .dockerignore excludes **/.env; postgres-init.sql only creates extensions + a demo DB (no over-broad GRANTs); the admin-host gate keys off the real preserved Host header (not a spoofable X-Forwarded-Host), with the host firewall admitting only Cloudflare ranges. No committed .env.prod / secrets. Three real issues remain, none a clean RCE/cross-tenant: (1) HIGH — the deploy's post-`up` health gate curls Caddy's static always-200 /healthz, so a stack that comes up then crashes is reported healthy and auto-rollback never fires, undermining the documented \"production never stays on a broken build\" guarantee; (2) HIGH — no CPU/memory limits on any container in the single-host prod stack, so one OOM/runaway can take down Postgres and the whole cell; (3) MEDIUM — ensure-env.sh writes EMAIL_DRIVER=console into .env.prod, which env.ts accepts in production, re-introducing the REL-06 reset-token/PII-in-Docker-logs exposure the compose file's pass-through-empty default was written to prevent (intentional for the current no-email-provider trial, but the comment now overstates the gap is closed).",
+      "findings": [
+        {
+          "severity": "high",
+          "title": "Deploy health gate hits Caddy's static always-200 /healthz, not app health — a stack that crashes after `up` is reported healthy and auto-rollback never fires",
+          "file": ".github/workflows/deploy.yml:303-331 (Wait for health) + infra/caddy/Caddyfile:115-123 (http:// /healthz block)",
+          "evidence": "deploy.yml:321 `code=\"$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://localhost/healthz ...)\"` is the only post-deploy gate that triggers the `if: failure()` rollback step (deploy.yml:333-336). In the Caddyfile the plaintext :80 site answers that path with a static literal: `http:// { @probe path /healthz /readyz; handle @probe { respond \"ok\" 200 } ... }` (Caddyfile:115-119) — it never proxies to api or web. So the gate returns 200 whenever the Caddy container is up, independent of whether api/web/worker actually stayed healthy. The step's own comment (deploy.yml:305-313) claims it verifies 'the new code came up'. The real gate is `docker compose ... up -d` failing on `depends_on: condition: service_healthy` (deploy.yml:288), but that only checks health at the instant of `up`; a container that passes start_period then crash-loops (runtime error under load, flapping /readyz) is not caught here.",
+          "impact": "The documented DR guarantee 'production never stays on a broken build — the host is AUTOMATICALLY rolled back' (deploy.yml:148-152) does not hold for a deploy whose app comes up momentarily then fails. Operators get a green deploy and a down/degraded site, with no auto-rollback and no alert from this gate.",
+          "verified": "static",
+          "fix": "Probe real app health through the proxy instead of Caddy's literal: poll the api's readiness, e.g. `docker compose exec -T api wget -qO- http://localhost:3001/readyz` (the api container's own healthcheck target, compose:192) and the web's `/api/healthz`, on the host over the existing SSH session. Keep the static :80 /healthz only for the load-balancer liveness probe, not as the deploy success criterion.",
+          "confidence": "high"
+        },
+        {
+          "severity": "high",
+          "title": "No CPU/memory limits on any container in the single-host prod stack — one OOM/runaway takes down Postgres and the entire cell",
+          "file": "infra/compose/docker-compose.prod.yml (entire services block; no `deploy.resources`/`mem_limit`/`cpus` anywhere)",
+          "evidence": "`grep -n 'deploy:|resources:|limits:|mem_limit|cpus|memory:' docker-compose.prod.yml` returns nothing (exit 1). All seven services (caddy, migrate, api, web, worker, postgres, pgbouncer, redis) share the host with no containment; only `worker` has `stop_grace_period: 60s`. The compose header (lines 3-14) states this is a single host with app + data tiers co-located, and the alert rules anticipate the failure mode — HostLowMemory/HostSwapping/HostHighCPU (infra/monitoring/alerts.yml:30-72) — but nothing bounds a container. A bulk import, a runaway report query, or an api/worker memory leak can exhaust host RAM; the kernel OOM-killer or thrashing can take Postgres (the same box) with it.",
+          "impact": "A single tenant's heavy workload or one leaking process is a whole-cell availability and potential data-integrity risk (Postgres killed mid-write). On the documented single-host topology there is no blast-radius containment between the noisy workload and the database.",
+          "verified": "static",
+          "fix": "Add `deploy.resources.limits` (memory + cpus) and `mem_reservation` to at least api, web, worker (cap each well under host RAM), and a memory reservation/limit guardrail for postgres + redis. With plain `docker compose up` (not Swarm) use the `mem_limit`/`cpus`/`pids_limit` top-level keys, which compose honours. Also set Postgres `shared_buffers`/`work_mem` consistent with the chosen limit.",
+          "confidence": "high"
+        },
+        {
+          "severity": "medium",
+          "title": "ensure-env.sh writes EMAIL_DRIVER=console into .env.prod, which env.ts accepts in production — re-opens the REL-06 reset-token/PII-in-Docker-logs exposure the compose default was written to close",
+          "file": "scripts/ensure-env.sh:98 + infra/compose/docker-compose.prod.yml:66-74 + apps/api/src/config/env.ts:350-358 + apps/api/src/email/drivers/console-driver.ts:16-23",
+          "evidence": "docker-compose.prod.yml:74 deliberately passes `EMAIL_DRIVER: ${EMAIL_DRIVER:-}` (empty when unset) with a comment (66-73) stating console 'writes password-reset token URLs (account-takeover material) and member PII into retained Docker logs' and that pass-through-empty forces env.ts to fail fast. But the deploy runs `bash scripts/ensure-env.sh --auto` (deploy.yml:259) which executes `ensure_default EMAIL_DRIVER console` (ensure-env.sh:98), writing `EMAIL_DRIVER=console` into /srv/libriant/.env.prod; the deploy then sources that file (deploy.yml:260) so compose's `${EMAIL_DRIVER:-}` resolves to `console`. env.ts then returns it verbatim with no prod guard: `if (raw === 'console' || raw === 'smtp' || raw === 'resend') return raw;` (env.ts:352). console-driver.ts:19-21 logs `to:`, `subj:` and the first 6 body lines at info level — reset/verification links sit at the top of those bodies — into json-file logs retained at 50m×5 (compose:90-95).",
+          "impact": "Once any real member exists, password-reset and email-verification token URLs plus member PII are written to host Docker logs readable by anyone with host/log access — account-takeover material. The compose comment's claim that the gap is closed is contradicted by ensure-env.sh. (Per project memory this console-only posture is intentional while no email provider is wired, so impact is currently bounded to the closed trial.)",
+          "verified": "static",
+          "fix": "Either stop defaulting EMAIL_DRIVER in ensure-env.sh (leave it unset so compose's pass-through-empty + env.ts fail-fast actually engages), or make env.ts refuse `console` when NODE_ENV=production unless an explicit ALLOW_CONSOLE_EMAIL escape hatch is set. Until a provider is wired, accept the risk explicitly and align the compose comment with reality.",
+          "confidence": "high"
+        }
+      ],
+      "verified": [
+        {
+          "finding": {
+            "severity": "high",
+            "title": "Deploy health gate hits Caddy's static always-200 /healthz, not app health — a stack that crashes after `up` is reported healthy and auto-rollback never fires",
+            "file": ".github/workflows/deploy.yml:303-331 (Wait for health) + infra/caddy/Caddyfile:115-123 (http:// /healthz block)",
+            "evidence": "deploy.yml:321 `code=\"$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://localhost/healthz ...)\"` is the only post-deploy gate that triggers the `if: failure()` rollback step (deploy.yml:333-336). In the Caddyfile the plaintext :80 site answers that path with a static literal: `http:// { @probe path /healthz /readyz; handle @probe { respond \"ok\" 200 } ... }` (Caddyfile:115-119) — it never proxies to api or web. So the gate returns 200 whenever the Caddy container is up, independent of whether api/web/worker actually stayed healthy. The step's own comment (deploy.yml:305-313) claims it verifies 'the new code came up'. The real gate is `docker compose ... up -d` failing on `depends_on: condition: service_healthy` (deploy.yml:288), but that only checks health at the instant of `up`; a container that passes start_period then crash-loops (runtime error under load, flapping /readyz) is not caught here.",
+            "impact": "The documented DR guarantee 'production never stays on a broken build — the host is AUTOMATICALLY rolled back' (deploy.yml:148-152) does not hold for a deploy whose app comes up momentarily then fails. Operators get a green deploy and a down/degraded site, with no auto-rollback and no alert from this gate.",
+            "verified": "static",
+            "fix": "Probe real app health through the proxy instead of Caddy's literal: poll the api's readiness, e.g. `docker compose exec -T api wget -qO- http://localhost:3001/readyz` (the api container's own healthcheck target, compose:192) and the web's `/api/healthz`, on the host over the existing SSH session. Keep the static :80 /healthz only for the load-balancer liveness probe, not as the deploy success criterion.",
+            "confidence": "high"
+          },
+          "verdict": {
+            "real": false,
+            "adjusted_severity": "low",
+            "reason": "The claim's central premise is refuted by the compose file. It asserts the Caddy static /healthz (Caddyfile:115-119, deploy.yml:321) is \"the only post-deploy gate\" and that `docker compose up -d` \"only checks health at the instant of up.\" Both are false. In infra/compose/docker-compose.prod.yml the deploy actually gates on real application healthchecks via `depends_on: condition: service_healthy`: api (line 105-106 / 191-196) is probed at http://localhost:3001/readyz (15s interval, 8 retries, 30s start_period), web (line 103-104 / 224-229) at http://localhost:3000/api/healthz, and caddy (line 102-106) depends on BOTH being healthy. `up -d --force-recreate` (deploy.yml:288) blocks until those conditions are satisfied — it waits for the app readiness probes, it does not merely sample at the instant of up. So a deploy where api/web fail to come up exits non-zero, triggering the `if: failure()` rollback (deploy.yml:333-336). The DR guarantee (deploy.yml:149-152) therefore DOES hold for a build that fails to start. The author misread the gate: the Caddy /healthz poll (Wait for health step) is a secondary check whose stated purpose (deploy.yml:318-320) is to confirm the Caddy config RELOAD at line 299 took effect (new config = 200, stale config = 301-to-HTTPS), not to be the app-health gate. The only residual is the generic \"container passes start_period then crash-loops under later production load\" gap — but that is a universal property of every service_healthy-gated deploy, is not specific to the Caddy literal probe, and is explicitly scoped to uptime monitoring rather than the deploy gate by the code's own comment (deploy.yml:313). Runtime crashes are also mitigated by container healthchecks + restart:unless-stopped. Net: the impactful failure mode the claim describes (broken build reported healthy, no rollback) does not occur for a deploy that fails to come up; the narrow residual is a known, documented monitoring boundary, not a high-severity ops/DR defect."
+          }
+        },
+        {
+          "finding": {
+            "severity": "high",
+            "title": "No CPU/memory limits on any container in the single-host prod stack — one OOM/runaway takes down Postgres and the entire cell",
+            "file": "infra/compose/docker-compose.prod.yml (entire services block; no `deploy.resources`/`mem_limit`/`cpus` anywhere)",
+            "evidence": "`grep -n 'deploy:|resources:|limits:|mem_limit|cpus|memory:' docker-compose.prod.yml` returns nothing (exit 1). All seven services (caddy, migrate, api, web, worker, postgres, pgbouncer, redis) share the host with no containment; only `worker` has `stop_grace_period: 60s`. The compose header (lines 3-14) states this is a single host with app + data tiers co-located, and the alert rules anticipate the failure mode — HostLowMemory/HostSwapping/HostHighCPU (infra/monitoring/alerts.yml:30-72) — but nothing bounds a container. A bulk import, a runaway report query, or an api/worker memory leak can exhaust host RAM; the kernel OOM-killer or thrashing can take Postgres (the same box) with it.",
+            "impact": "A single tenant's heavy workload or one leaking process is a whole-cell availability and potential data-integrity risk (Postgres killed mid-write). On the documented single-host topology there is no blast-radius containment between the noisy workload and the database.",
+            "verified": "static",
+            "fix": "Add `deploy.resources.limits` (memory + cpus) and `mem_reservation` to at least api, web, worker (cap each well under host RAM), and a memory reservation/limit guardrail for postgres + redis. With plain `docker compose up` (not Swarm) use the `mem_limit`/`cpus`/`pids_limit` top-level keys, which compose honours. Also set Postgres `shared_buffers`/`work_mem` consistent with the chosen limit.",
+            "confidence": "high"
+          },
+          "verdict": {
+            "real": true,
+            "adjusted_severity": "high",
+            "reason": "CONFIRMED. I independently verified infra/compose/docker-compose.prod.yml: no `deploy.resources`, `mem_limit`, `cpus`, `mem_reservation`, or `pids_limit` on ANY of the 7 services (caddy, migrate, api, web, worker, postgres, pgbouncer, redis). My grep for `deploy:|resources:|limits:|mem_limit|cpus|memory:|reservations|pids_limit` across infra/compose/ returned nothing (exit 1), matching the claim. Topology is confirmed single-host: the compose header (lines 1-22) and docs/deployment-hetzner.md describe one Hetzner box where Postgres shares the host with api/web/worker on private networks; deployment is plain `docker compose up` (NOT Swarm — confirmed via the guide and `restart: unless-stopped` usage), and `infra/deploy/fleet.yml` is just a host list with no resource config and no override compose file applies limits. Postgres is set only with `max_connections=200` and `shared_preload_libraries` — no `shared_buffers`/`work_mem` bound (docker-compose.prod.yml:275-283). The alert rules independently corroborate the anticipated failure mode: HostLowMemory (<12% RAM), HostSwapping (>50%), HostHighCPU (>85%, description literally says \"Check for a bulk import/report\") at infra/monitoring/alerts.yml:30-72, and the documented remediation is \"grow the box\" (Part 15) with only a 2G swapfile as cushion (deployment-hetzner.md:189-192) — i.e., no per-container blast-radius containment. The precondition (bulk import, runaway report, or an api/worker leak) is reachable in ordinary multi-tenant usage, so a noisy workload can drive the host OOM-killer/thrashing and take down co-located Postgres. I could NOT find any guard refuting this (no daemon ulimits, no systemd cgroup limits, no swarm deploy block). Notably Redis sets `--maxmemory-policy allkeys-lru` but no `--maxmemory`, so even that policy is inert — further confirming the gap. SEVERITY: correctly HIGH per the rubric (ops/DR with a reachable precondition), NOT critical: an OOM-kill of Postgres is crash-consistent (WAL+fsync) and recovers, so the claim's \"potential data-integrity risk / Postgres killed mid-write\" framing is overstated — this is a single-host availability/DR issue, not exploitable data corruption. With that one caveat trimmed, the finding is real, accurately evidenced (the author did not misread), and appropriately rated high."
+          }
+        }
+      ]
+    },
+    {
+      "dimension": "A13-deps-supplychain",
+      "summary": "Triaged all 17 G11 advisories (5 high / 10 moderate / 2 low) against actual Libriant usage. The raw severity is misleading: 14 of 17 are dev/build-only or hit unreachable code paths for this app, and the prior \"ready\" audits were not wrong to discount the count — but they MISSED one genuinely prod-reachable issue. The only advisory that lands on a running, reachable production code path is multer 2.1.1 (both the deeply-nested-field-name DoS and the aborted-upload-cleanup DoS): multer is a DIRECT prod dependency of apps/api (apps/api/package.json:24 \"multer\":\"^2.1.1\", resolved 2.1.1) and NestJS FileInterceptor is wired into 5 live upload endpoints (import, book covers, member photos, branding logo, storage-demo), all of which parse attacker-supplied multipart field names. These are behind TenantGuard (auth precondition → high, not critical). Everything else is low/info: the 8 \"hono\" advisories and 1 \"@hono/node-server\" advisory come solely through @prisma/client > prisma > @prisma/dev (a dev-only Prisma local-server tool, never loaded at runtime) and are additionally AWS-Lambda/Windows-specific (Libriant is neither); nodemailer 8.0.9 is prod but the vulnerable `raw` message option is never used (smtp-driver.ts:50-60 only sets from/to/subject/text/html) AND EMAIL_DRIVER=console is the current prod setting; form-data is dev (supertest) + desktop build tool (electron-builder) only; the vulnerable qs@6.14.2 is dev-only (supertest) while prod qs via express is 6.15.2 = already patched; uuid@8.3.2 (via exceljs) only calls uuid.v4() with no `buf` arg so the bounds-check bug is unreachable; postcss@8.4.31 (in next@16.2.6) is build-time only — it is NOT required anywhere under next/dist/server, so the CSS-stringify XSS needs runtime untrusted CSS that never occurs; vite/launch-editor/esbuild are vitest/tsx build tooling and Windows-dev-server-only. pnpm.overrides (react/react-dom 19.2.6, ioredis 5.11.0) are current and safe and resolve correctly in the lockfile. No package runs an unvetted postinstall during install (pnpm 9 blocks build scripts by default; no onlyBuiltDependencies allowlist; prod deps are pure-JS — bcryptjs not native bcrypt). Frozen-lockfile install confirmed: \"Lockfile is up to date\", matches package.json.",
+      "findings": [
+        {
+          "severity": "high",
+          "title": "multer 2.1.1 (direct prod dep) — two DoS advisories reachable via 5 live authenticated upload endpoints",
+          "file": "apps/api/package.json:24",
+          "evidence": "apps/api/package.json:24 declares \"multer\": \"^2.1.1\"; installed = 2.1.1 (node_modules/.pnpm/multer@2.1.1). `pnpm why multer -r` shows it as a production dependency of @libriant/api both directly and via @nestjs/platform-express (which pins multer 2.1.1 as a hard dep, peer:none). Two advisories apply: GHSA-72gw-mp4g-v24j (high — DoS via deeply nested field names, <2.2.0) and GHSA-3p4h-7m6x-2hcm (moderate — DoS via incomplete cleanup of aborted uploads, <2.2.0). Reachable: FileInterceptor is wired into live endpoints — import.controller.ts:70 `@UseInterceptors(FileInterceptor('file', { limits: { fileSize: IMPORT_MAX_UPLOAD_BYTES } }))` with `@Body() body: Record<string,string>` (multipart text fields parsed); plus covers.controller.ts:39, photos.controller.ts:39, branding.controller.ts:55, storage-demo.controller.ts:83. The deeply-nested-field-name parse happens in multer before route validation, so the fileSize limit does not prevent it.",
+          "impact": "An authenticated tenant user (endpoints sit behind TenantGuard; import also RolesGuard/PlanGuard) can send a multipart request with deeply nested field names or repeatedly abort uploads to exhaust CPU/memory/disk on the shared API worker, degrading the service for all tenants. Not unauth (hence high, not critical), but it is a real, running, reachable prod path — the one advisory the prior audits should not have waved away.",
+          "verified": "static",
+          "fix": "Add a pnpm override to force the patched line: in root package.json pnpm.overrides add \"multer\": \"^2.2.0\". This is a same-major minor bump compatible with @nestjs/platform-express@11's hard dep on 2.1.1 (the override supersedes it). Then `pnpm install` and re-run G11 to confirm both multer advisories clear.",
+          "confidence": "high"
+        },
+        {
+          "severity": "low",
+          "title": "hono / @hono/node-server (9 advisories) — dev-only via @prisma/dev, AWS-Lambda/Windows-specific, not in runtime path",
+          "file": "packages/db-control/package.json:26",
+          "evidence": "`pnpm why hono -r` and `pnpm why @hono/node-server -r` show the ONLY paths are @prisma/client@7.8.0 > prisma@7.8.0 > @prisma/dev@0.24.3 > (@hono/node-server@1.19.11 / hono@4.12.23). @prisma/dev is Prisma's local development server tool; it is not imported or executed by the running API (the API uses @prisma/client + @prisma/adapter-pg against Postgres). The 8 hono advisories (GHSA-88fw-hqm2-52qc CORS wildcard, -wwfh-h76j-fc44 Windows %5C traversal in serve-static, plus 6 AWS-Lambda/Lambda@Edge adapter bugs) and @hono/node-server GHSA-92pp-h63x-v22m all require either the hono HTTP server to be the app's edge server or an AWS Lambda deployment — neither is true for Libriant (NestJS/Express on Node).",
+          "impact": "No production exposure: the vulnerable hono server code never runs in Libriant's request path. Will clear automatically when Prisma ships @prisma/dev with hono >=4.12.25.",
+          "verified": "static",
+          "fix": "No action strictly required. To silence the audit, either wait for a prisma patch release or add pnpm.overrides \"hono\": \">=4.12.25\" and \"@hono/node-server\": \">=1.19.13\" (low risk since the code is unused, but verify prisma generate/dev still works locally).",
+          "confidence": "high"
+        },
+        {
+          "severity": "low",
+          "title": "nodemailer 8.0.9 (prod dep) — vulnerable `raw` option never used; EMAIL_DRIVER=console in prod",
+          "file": "apps/api/src/email/drivers/smtp-driver.ts:50",
+          "evidence": "GHSA-p6gq-j5cr-w38f targets nodemailer's message-level `raw` option bypassing disableFileAccess/disableUrlAccess (arbitrary file read / SSRF). The only call site, smtp-driver.ts:50-60, builds the message from `{ from, to, replyTo, subject, text: input.bodyMarkdown, html: markdownToBasicHtml(...) }` — it never sets `raw`, never sets attachments with file paths/URLs, and bodies are system-generated markdown templates, not attacker-controlled MIME. Per project memory the prod setting is EMAIL_DRIVER=console (no SMTP transport instantiated). Note env.ts:357 defaults emailDriver to 'smtp' when NODE_ENV!=development, so the driver could be active if the env var were unset, but the vulnerable code path still would not be reachable.",
+          "impact": "No reachable exploit path. The file-read/SSRF requires the `raw` option which Libriant does not expose.",
+          "verified": "static",
+          "fix": "Bump apps/api dependency to nodemailer ^9.0.1 (patched) at next convenient maintenance; not blocking for go-live. Keep EMAIL_DRIVER=console until the Resend key is available (per memory).",
+          "confidence": "high"
+        },
+        {
+          "severity": "info",
+          "title": "qs — vulnerable 6.14.2 is dev-only (supertest); production qs is already patched 6.15.2",
+          "file": "apps/api/package.json",
+          "evidence": "`pnpm why qs -r`: production path is @nestjs/platform-express > express@5.2.1 > body-parser/qs@6.15.2, which is ABOVE the advisory range (GHSA-q8mj-m7cp-5q26 affects >=6.11.1 <=6.15.1). The only vulnerable copy is qs@6.14.2 under devDependencies supertest > superagent (test client). The DoS would only fire in test code calling qs.stringify with comma-format arrays + encodeValuesOnly.",
+          "impact": "No production exposure; the runtime querystring parser is patched.",
+          "verified": "static",
+          "fix": "No action needed for prod. The dev copy clears when supertest/superagent updates; optionally pnpm.overrides \"qs\": \">=6.15.2\".",
+          "confidence": "high"
+        },
+        {
+          "severity": "info",
+          "title": "form-data <4.0.6 — dev/build-tool only (supertest + electron-builder), not a runtime dependency",
+          "file": "apps/api/package.json",
+          "evidence": "`pnpm why form-data -r` shows all three paths are non-runtime: apps/api devDependencies @types/supertest and supertest>superagent>form-data@4.0.5, and apps/desktop devDependencies electron-builder>app-builder-lib>electron-publish>form-data@4.0.5. No production code (NestJS API, Next web, Electron main) depends on form-data. The CRLF-injection (GHSA-hmw2-7cc7-3qxx) needs an HTTP client building multipart bodies with attacker-controlled field names — only test/release tooling does that here.",
+          "impact": "No runtime exposure. Worst case is during local test runs or desktop release packaging, both trusted-input contexts.",
+          "verified": "static",
+          "fix": "No action needed for production. Will resolve as supertest/electron-builder update; optionally pnpm.overrides \"form-data\": \">=4.0.6\".",
+          "confidence": "high"
+        },
+        {
+          "severity": "info",
+          "title": "postcss 8.4.31 (bundled in next) — build-time only, not required under next/dist/server",
+          "file": "apps/web/package.json:14",
+          "evidence": "`pnpm why postcss -r`: prod path is apps/web > next@16.2.6 > postcss@8.4.31; other path (vite/vitest) is dev. GHSA-qx2v-qp2m-jg93 is XSS via unescaped </style> in postcss's CSS-stringify output, which requires processing untrusted CSS at runtime. Grep of node_modules/.pnpm/next@16.2.6/node_modules/next/dist/server/ for require('postcss')/from 'postcss' returns nothing — postcss is used only at `next build` to compile the app's own (trusted) CSS, not in the running server.",
+          "impact": "No production exposure: no untrusted CSS is ever passed through postcss at runtime.",
+          "verified": "static",
+          "fix": "No action needed; clears when Next bumps its bundled postcss. (postcss is internal to next, not separately installable, so an override on the top-level postcss only affects the dev/vite copy.)",
+          "confidence": "high"
+        },
+        {
+          "severity": "info",
+          "title": "uuid 8.3.2 (via exceljs) — vulnerable buf-bounds path unreachable; only uuid.v4() is called",
+          "file": "apps/api/package.json",
+          "evidence": "`pnpm why uuid -r`: apps/api > exceljs@4.4.0 > uuid@8.3.2. GHSA-w5hq-g745-h8pq is a missing buffer bounds check in v3/v5/v6 only when a `buf` argument is supplied. exceljs's only usage (node_modules/.pnpm/exceljs@4.4.0/.../cf-rule-ext-xform.js:1 `const {v4: uuidv4} = require('uuid')`, calls `uuidv4()` with no args) uses random v4 with no buffer argument, so the vulnerable code path is never exercised.",
+          "impact": "No exposure; the vulnerable function/argument combination is never called.",
+          "verified": "static",
+          "fix": "No action needed; clears when exceljs updates uuid.",
+          "confidence": "high"
+        },
+        {
+          "severity": "info",
+          "title": "vite / launch-editor / esbuild — build/test tooling only, Windows-dev-server-specific",
+          "file": "apps/api/package.json",
+          "evidence": "`pnpm why vite -r` and `pnpm why esbuild -r`: vite@7.3.3 comes only via apps/api devDependency vitest@4.1.7; esbuild@0.28.0/0.27.7 only via tsx and vitest/vite (all dev/build). Advisories GHSA-fx2h-pf6j-xcff (vite server.fs.deny bypass on Windows), GHSA-v6wh-96g9-6wx3 (launch-editor NTLM hash disclosure on Windows), GHSA-g7r4-m6w7-qqqr (esbuild dev-server arbitrary file read on Windows) all require running a dev server, on Windows, exposed to a malicious request — none of which is part of Libriant's production runtime or its Linux CI/build.",
+          "impact": "No production exposure. Risk is limited to a developer running the dev server on Windows with a hostile local network — not the deployed app.",
+          "verified": "static",
+          "fix": "No action needed for go-live. Bump vitest/tsx to pull vite>=7.3.5 and esbuild>=0.28.1 at routine maintenance to clear the audit noise.",
+          "confidence": "high"
+        },
+        {
+          "severity": "info",
+          "title": "pnpm overrides + lockfile + install scripts — verified safe",
+          "file": "package.json",
+          "evidence": "Root package.json pnpm.overrides pins react ^19.2.6, react-dom ^19.2.6, ioredis ^5.11.0; pnpm-lock.yaml resolves react@19.2.6, react-dom@19.2.6(react@19.2.6), ioredis@5.11.0 — all current, none flagged in G11. `pnpm install --frozen-lockfile` => \"Lockfile is up to date\" / \"Already up to date\" (matches package.json, G1 frozen-lockfile corroborated). No .npmrc and no onlyBuiltDependencies allowlist exist, so pnpm 9 blocks postinstall/build scripts of dependencies by default; no apps/* or packages/* package.json declares preinstall/postinstall/install scripts; production deps are pure-JS (bcryptjs, not native bcrypt — no node-gyp build at install).",
+          "impact": "No supply-chain install-time code-execution surface introduced by the project config; overrides are current.",
+          "verified": "static",
+          "fix": "No change required. Optionally add an explicit pnpm.onlyBuiltDependencies allowlist to make build-script policy intentional rather than relying on the default.",
+          "confidence": "high"
+        }
+      ],
+      "verified": [
+        {
+          "finding": {
+            "severity": "high",
+            "title": "multer 2.1.1 (direct prod dep) — two DoS advisories reachable via 5 live authenticated upload endpoints",
+            "file": "apps/api/package.json:24",
+            "evidence": "apps/api/package.json:24 declares \"multer\": \"^2.1.1\"; installed = 2.1.1 (node_modules/.pnpm/multer@2.1.1). `pnpm why multer -r` shows it as a production dependency of @libriant/api both directly and via @nestjs/platform-express (which pins multer 2.1.1 as a hard dep, peer:none). Two advisories apply: GHSA-72gw-mp4g-v24j (high — DoS via deeply nested field names, <2.2.0) and GHSA-3p4h-7m6x-2hcm (moderate — DoS via incomplete cleanup of aborted uploads, <2.2.0). Reachable: FileInterceptor is wired into live endpoints — import.controller.ts:70 `@UseInterceptors(FileInterceptor('file', { limits: { fileSize: IMPORT_MAX_UPLOAD_BYTES } }))` with `@Body() body: Record<string,string>` (multipart text fields parsed); plus covers.controller.ts:39, photos.controller.ts:39, branding.controller.ts:55, storage-demo.controller.ts:83. The deeply-nested-field-name parse happens in multer before route validation, so the fileSize limit does not prevent it.",
+            "impact": "An authenticated tenant user (endpoints sit behind TenantGuard; import also RolesGuard/PlanGuard) can send a multipart request with deeply nested field names or repeatedly abort uploads to exhaust CPU/memory/disk on the shared API worker, degrading the service for all tenants. Not unauth (hence high, not critical), but it is a real, running, reachable prod path — the one advisory the prior audits should not have waved away.",
+            "verified": "static",
+            "fix": "Add a pnpm override to force the patched line: in root package.json pnpm.overrides add \"multer\": \"^2.2.0\". This is a same-major minor bump compatible with @nestjs/platform-express@11's hard dep on 2.1.1 (the override supersedes it). Then `pnpm install` and re-run G11 to confirm both multer advisories clear.",
+            "confidence": "high"
+          },
+          "verdict": {
+            "real": true,
+            "adjusted_severity": "high",
+            "reason": "Independently confirmed. multer is pinned at exactly 2.1.1 (node_modules/.pnpm/multer@2.1.1), declared as a direct prod dependency in apps/api/package.json:34 (\"multer\": \"^2.1.1\") AND pulled transitively by @nestjs/platform-express@11.1.24. (Claim cites line 24; it is actually line 34 — immaterial cite slip.) `pnpm audit --prod` independently reproduces BOTH advisories against this install: GHSA-72gw-mp4g-v24j (high — DoS via deeply nested field names, vulnerable >=1.0.0 <2.2.0) and GHSA-3p4h-7m6x-2hcm (moderate — incomplete cleanup of aborted uploads, vulnerable >=2.0.0-alpha.1 <2.2.0), both patched in >=2.2.0. multer 2.1.1 is squarely in range. Reachability confirmed: grep finds 5 live FileInterceptor endpoints — import.controller.ts:70, branding.controller.ts:55, covers.controller.ts:39, photos.controller.ts:39, storage-demo.controller.ts:83. I tried to refute via the fileSize limit but it does not mitigate the field-name DoS: GHSA-72gw-mp4g-v24j is a busboy field-NAME parse issue that runs during multipart parsing, independent of the file-content size cap — the claim's technical reasoning holds. Endpoints are authenticated (ImportController @UseGuards(TenantGuard,RolesGuard,PlanGuard) @Roles('owner','admin') @RequiresFeature('bulk_import_enabled'); StorageDemoController upload @UseGuards(TenantGuard)), so this is an authenticated tenant-user DoS against the shared API worker — correctly high, not critical (no unauth, no RCE, no cross-tenant data). No multer pnpm.override exists today, and the repo already uses pnpm.overrides (ioredis/react) at package.json:54-58, so the proposed override to ^2.2.0 is the correct, idiomatic fix. Severity high is appropriate and matches upstream GHSA high + the precondition-gated rubric."
+          }
+        }
+      ]
+    },
+    {
+      "dimension": "A14-observability-errors",
+      "summary": "The error-handling and core logging plumbing is genuinely solid: the global HttpExceptionFilter never leaks stack traces, SQL, internal ids, or file paths to clients (5xx are re-skinned to a generic message + random supportCode; the full trace is logged server-side on one greppable line), and there is no NODE_ENV-gated verbose error path. main.ts and worker.ts both install unhandledRejection/uncaughtException handlers that log loudly and exit non-zero (worker drains first), so the process never dies silently or zombies. Graceful shutdown via enableShutdownHooks + a 25s worker drain deadline is in place. /metrics is genuinely not publicly reachable — Caddy 404s /metrics, /healthz, /readyz on both the public and admin /lbr-api/* paths, the API container publishes no host ports (internal docker network only), and metric labels are aggregate-only (tenant counts by status, capacity gauges) with no per-tenant slug/id PII. The EXP-001 export error path correctly runs redactSecrets() before persisting pg_dump failures to the tenant-visible job.error field, and control-plane exports redact password hashes / MFA secrets / DB-role secrets / tokens via redactRow. Pino does not log request bodies (so login/signup passwords aren't captured) and redacts Authorization + Cookie headers. The two prior audits' \"ready\" verdict on plumbing largely holds. What they MISSED is on the accountability/PII-at-rest side: the most material gap is that sensitive Libriant-staff and billing mutations write NO durable audit row despite a purpose-built audit_log table existing, and Stripe webhook payloads (customer PII) are stored and exported unredacted. These are HIGH/MEDIUM gaps, not plumbing bugs.",
+      "findings": [
+        {
+          "severity": "high",
+          "title": "Sensitive admin & billing mutations write no audit_log row (revenue/entitlement changes are untraceable)",
+          "file": "apps/api/src/billing/billing.service.ts:379-431 (applyAdminPlanChange / applyManualPayment); apps/api/src/admin/admin-overrides.controller.ts:71,119; apps/api/src/admin/admin-plans.controller.ts:116,140; apps/api/src/system-mode/admin-system-mode.controller.ts:101,117,138,146; apps/api/src/billing/billing-admin.controller.ts:46,53",
+          "evidence": "The control-plane AuditEvent model (packages/db-control/prisma/schema.prisma:878, @@map(\"audit_log\")) exists precisely for this — it has actorType/actorId/action/beforeJson/afterJson/ip/userAgent and even documents `subscription.changed` as an example action (line 884). But `auditEvent.create` is called in only 3 places (admin-tenants.controller.ts:204 tenant hard-delete, tenant-audit.service.ts:48, platform-settings/admin-subscriptions.controller.ts:42). billing.service.ts:379-380 comments `audit happen exactly once per state change`, yet applyAdminPlanChange() (l.388) and applyManualPayment() (l.410) just do `controlDb.subscription.update(...)` with NO audit write. Confirmed via grep: admin-overrides, admin-plans, and admin-system-mode controllers contain zero `auditEvent`/`audit`/`logger.` references. So a Libriant operator (or a compromised admin session) can grant a tenant a free paid plan, extend paidUntil indefinitely, flip platform-wide pricing, toggle feature overrides, or trigger a global maintenance/out_of_order takeover with no durable, queryable record of who/when/before/after.",
+          "impact": "No forensic trail for revenue-affecting and platform-wide control actions performed by staff. Defeats insider-abuse detection, fraud investigation (manual paid-until grants), incident reconstruction (who took the fleet down), and any SOC2/GDPR accountability claim. The only trace is the ephemeral pino access log (method+path, no actor identity, no before/after, rotated).",
+          "verified": "static",
+          "fix": "Write an auditEvent.create row (actorType=ADMIN, actorId=admin.sub, ip from client-ip, userAgent, before/after snapshots) in each of these handlers/service methods, mirroring admin-tenants.controller.ts:204. Use actions like subscription.changed, subscription.paid_until_set, plan.updated, feature_override.set, system_mode.set. The schema is already there; only the writes are missing.",
+          "confidence": "high"
+        },
+        {
+          "severity": "medium",
+          "title": "Stripe webhook payloads (customer PII) stored unredacted and shipped in control-plane exports",
+          "file": "apps/api/src/billing/stripe-webhook.controller.ts:79; packages/db-control/prisma/schema.prisma:654; apps/api/src/export/export-processors.ts:52-66,390",
+          "evidence": "stripe-webhook.controller.ts:79 persists the FULL event: `payloadJson: event as never` into stripe_webhook_events.payloadJson (schema.prisma:654 `payloadJson Json`, retained ~30d). For invoice.payment_* and customer.subscription.* events the raw Stripe body contains customer PII — customer_email, customer_name, customer_address/billing_details, and card brand/last4. The control-plane export redactor (export-processors.ts redactRow → isSensitive, l.61-66) only matches column NAMES against /token|secret|passwordhash|password_hash/ or the explicit SENSITIVE_COLUMNS map (l.52-57). The column `payloadjson` matches none of these, so readTables (l.390) emits it verbatim. A control/all-scope CSV/JSON/XLSX export therefore writes customer emails, names and billing addresses into an unencrypted file retained 24h on the shared storage volume.",
+          "impact": "Customer PII at rest in webhook table and exfiltrated into unencrypted export artifacts. GDPR data-minimisation / right-to-erasure exposure and a juicy target if the storage volume or an export download link leaks. Exports are admin-only (mitigating), but the file persists outside auth and the PII is broader than needed for replay.",
+          "verified": "static",
+          "fix": "Either (a) store a slimmed payload (drop customer email/name/address/payment-method details, keep ids + amounts needed for replay), or (b) add `stripe_webhook_events: new Set(['payloadjson'])` to SENSITIVE_COLUMNS so control-plane exports redact it. Also add stripe_webhook_events.error if it can ever carry PII. Set/verify a TTL prune job actually runs (schema says 30d).",
+          "confidence": "high"
+        },
+        {
+          "severity": "low",
+          "title": "/metrics relies solely on Caddy + network topology (no in-app guard) — leaks fleet-wide tenant counts if either layer regresses",
+          "file": "apps/api/src/platform/health.controller.ts:61-146; infra/caddy/Caddyfile:149,196",
+          "evidence": "HealthController is `@Controller()` with no @UseGuards; @Get('metrics') (l.61) returns libriant_tenants_total{status}, libriant_storage_used_bytes, pg connection/cache gauges, redis memory — i.e. whole-fleet operational intelligence. The ONLY protection is Caddy `respond @internal 404` for /metrics on the public and admin /lbr-api/* routes (Caddyfile:149,196) plus the api container publishing no host ports. There is no second layer at the app: any process on the shared `app` docker network (e.g. the web container, or a future side-car) can GET http://api:3001/metrics directly and read fleet tenant counts. A single Caddyfile edit/regression silently re-exposes it.",
+          "impact": "Defense-in-depth gap. Aggregate-only (no per-tenant PII in labels), so impact is limited to leaking total tenant/capacity counts, but it's a single-layer control on data that should be operator-only.",
+          "verified": "static",
+          "fix": "Add a lightweight in-app guard on /metrics (shared-secret bearer token the Prometheus scrape config carries, or bind metrics to a separate internal-only listener). Keeps the Caddy 404 as belt, adds braces.",
+          "confidence": "medium"
+        },
+        {
+          "severity": "low",
+          "title": "redactSecrets() leaks part of a DB password that contains an '@' character",
+          "file": "apps/api/src/export/export-processors.ts:35-36",
+          "evidence": "redactSecrets = s.replace(/(postgres(?:ql)?:\\/\\/[^:@/\\s]+:)[^@/\\s]+@/gi, '$1***@'). The password class [^@/\\s]+ stops at the first '@'. Tested: input `pg_dump postgresql://tenant_role:S3cr3tP@ss@db:5432/...` → output `postgresql://tenant_role:***@ss@db:5432/...`, leaking the `ss` tail of the password into the tenant-visible exportJob.error field. Generated DB-role secrets are normally @-free (hex/base64url), so this only bites if a password (e.g. an operator-set superuser password in a connection URL) contains '@'.",
+          "impact": "Partial credential disclosure into the tenant-readable job.error field, but only for passwords containing '@' (uncommon for generated secrets; possible for operator-chosen superuser creds). Low real-world likelihood.",
+          "verified": "runtime-probed",
+          "fix": "Anchor to the last '@' before host or strip the whole userinfo: e.g. replace(/(postgres(?:ql)?:\\/\\/)[^@\\s]*@/gi, '$1***@') so the entire user:pass segment is masked regardless of '@' in the password.",
+          "confidence": "medium"
+        },
+        {
+          "severity": "info",
+          "title": "export-worker logs raw err.message (possibly an unredacted connection string) to operator stdout",
+          "file": "apps/api/src/export/export-worker.ts:41",
+          "evidence": "`worker.on('failed', (job, err) => console.error(`[export-worker] job ${job?.id} failed: ${err.message}`))`. The export-processors path redacts secrets before persisting to the DB (job.error), but this BullMQ failure handler logs the raw err.message to stderr/container logs. A pg_dump/connection failure message can include `postgresql://user:pass@host`, so a tenant DB credential could land unredacted in operator-visible container logs (not tenant-visible).",
+          "impact": "Operator-only log exposure of a tenant/superuser DB credential on export failure. Container logs are access-controlled, so impact is limited to log-aggregation surface.",
+          "verified": "static",
+          "fix": "Run the existing redactSecrets() over err.message in the worker failed handlers (export-worker.ts:41 and similar in import/email/maintenance workers) before logging.",
+          "confidence": "medium"
+        }
+      ],
+      "verified": [
+        {
+          "finding": {
+            "severity": "high",
+            "title": "Sensitive admin & billing mutations write no audit_log row (revenue/entitlement changes are untraceable)",
+            "file": "apps/api/src/billing/billing.service.ts:379-431 (applyAdminPlanChange / applyManualPayment); apps/api/src/admin/admin-overrides.controller.ts:71,119; apps/api/src/admin/admin-plans.controller.ts:116,140; apps/api/src/system-mode/admin-system-mode.controller.ts:101,117,138,146; apps/api/src/billing/billing-admin.controller.ts:46,53",
+            "evidence": "The control-plane AuditEvent model (packages/db-control/prisma/schema.prisma:878, @@map(\"audit_log\")) exists precisely for this — it has actorType/actorId/action/beforeJson/afterJson/ip/userAgent and even documents `subscription.changed` as an example action (line 884). But `auditEvent.create` is called in only 3 places (admin-tenants.controller.ts:204 tenant hard-delete, tenant-audit.service.ts:48, platform-settings/admin-subscriptions.controller.ts:42). billing.service.ts:379-380 comments `audit happen exactly once per state change`, yet applyAdminPlanChange() (l.388) and applyManualPayment() (l.410) just do `controlDb.subscription.update(...)` with NO audit write. Confirmed via grep: admin-overrides, admin-plans, and admin-system-mode controllers contain zero `auditEvent`/`audit`/`logger.` references. So a Libriant operator (or a compromised admin session) can grant a tenant a free paid plan, extend paidUntil indefinitely, flip platform-wide pricing, toggle feature overrides, or trigger a global maintenance/out_of_order takeover with no durable, queryable record of who/when/before/after.",
+            "impact": "No forensic trail for revenue-affecting and platform-wide control actions performed by staff. Defeats insider-abuse detection, fraud investigation (manual paid-until grants), incident reconstruction (who took the fleet down), and any SOC2/GDPR accountability claim. The only trace is the ephemeral pino access log (method+path, no actor identity, no before/after, rotated).",
+            "verified": "static",
+            "fix": "Write an auditEvent.create row (actorType=ADMIN, actorId=admin.sub, ip from client-ip, userAgent, before/after snapshots) in each of these handlers/service methods, mirroring admin-tenants.controller.ts:204. Use actions like subscription.changed, subscription.paid_until_set, plan.updated, feature_override.set, system_mode.set. The schema is already there; only the writes are missing.",
+            "confidence": "high"
+          },
+          "verdict": {
+            "real": true,
+            "adjusted_severity": "medium",
+            "reason": "Partially confirmed but materially overstated. CONFIRMED: the control-plane AuditEvent model exists with all claimed fields and even documents `subscription.changed` (packages/db-control/prisma/schema.prisma:878-901), yet only 3 production `auditEvent.create` call sites exist (admin-tenants.controller.ts:204, tenant-audit.service.ts:48, admin-subscriptions.controller.ts:42). billing.service.ts:388-431 applyAdminPlanChange/applyManualPayment do a bare `controlDb.subscription.update(...)` with no audit write, and the Subscription model (schema:464-495) has NO actor/history field at all — so admin plan grants and paidUntil extensions are genuinely untraceable (who/when/before). admin-plans.controller.ts:116-138 plan price/feature edits overwrite Plan in place with no audit row either. That billing/plan surface is a real, legitimate observability gap. OVERSTATED / REFUTED in part: the claim's headline impact (\"trigger a global maintenance/out_of_order takeover... with no durable record\" and \"feature overrides... no record\") is wrong. SystemModeEvent (schema:965-982) has a REQUIRED createdByAdminId with a Restrict relation, set at admin-system-mode.controller.ts:112/133 (createdByAdminId: admin.sub), plus startsAt/endsAt/mode/createdAt and a /history endpoint — so \"who took the fleet down\" IS durably and queryably recorded. TenantPlanOverride (schema:439-455) carries createdByAdminId set at admin-overrides.controller.ts:106 with note/expiresAt — override creation is attributed on the row itself (the DELETE at :121 is the only unattributed override action). SEVERITY: this is a forensics/observability concern, not RCE/auth-bypass/cross-tenant/data-loss. Every cited handler is gated by AdminAuthGuard + AdminRolesGuard + @AdminRoles('owner') (owner-only platform staff); the threat model is insider abuse / incident reconstruction, not an external exploit on the running product, and pino access logs capture method/path/timing. Given two of the three asserted surfaces already have per-row attribution, the real blast radius is narrower than the high rating claims. Real and worth fixing for the subscription/plan billing surface, but medium, not high."
+          }
+        }
+      ]
+    }
+  ]
+}

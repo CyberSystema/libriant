@@ -115,6 +115,13 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
     }
   }
   if (!res.ok) {
+    // A10-02: session lost → wipe cached pages/data (PII) NOW, while online, so
+    // the next user on a shared device can't be served them offline. Caches-only
+    // (keeps the offline queue); fire-and-forget; browser-only (dynamic import
+    // avoids pulling IndexedDB helpers into server bundles).
+    if (res.status === 401 && typeof window !== 'undefined') {
+      void import('@/lib/offline').then((m) => m.clearOfflineReadCaches()).catch(() => undefined);
+    }
     throw new ApiError(res.status, (parsed ?? {}) as ApiErrorBody);
   }
   return parsed as T;

@@ -73,6 +73,11 @@ x-app-env: &app-env
   # boot-time failure rather than silent, PII-logging email.
   EMAIL_DRIVER: ${EMAIL_DRIVER:-}
   SMTP_URL: ${SMTP_URL:-}
+  # A5-01: the Resend HTTP driver's key MUST be listed here or it never reaches
+  # the container — `EMAIL_DRIVER=resend` would then crash-loop the api + worker
+  # at boot (env.ts requires it). Compose only injects vars referenced in this
+  # block, so an unlisted .env.prod key is silently dropped.
+  RESEND_API_KEY: ${RESEND_API_KEY:-}
   EMAIL_FROM: ${EMAIL_FROM:-}
   EMAIL_REPLY_TO: ${EMAIL_REPLY_TO:-}
   BCRYPT_COST: '12'
@@ -84,6 +89,12 @@ x-app-env: &app-env
   DESKTOP_RELEASE_REPO: ${DESKTOP_RELEASE_REPO:-CyberSystema/libriant}
   DESKTOP_RELEASE_TOKEN: ${DESKTOP_RELEASE_TOKEN:-}
 
+# A12-01: per-container resource limits. On the single-host topology one runaway
+# or leaking process (a fork bomb, an OOM during a bad import) could otherwise
+# starve Postgres and take the WHOLE cell down. These `mem_limit` / `cpus` /
+# `pids_limit` caps (honoured by `docker compose up`, no Swarm needed) contain
+# the blast radius. Defaults suit a ~4 GB host; raise via .env.prod on bigger
+# boxes (the sum should stay comfortably under host RAM to leave page cache).
 x-restart: &restart
   restart: unless-stopped
 
@@ -99,6 +110,9 @@ services:
   caddy:
     image: caddy:2-alpine
     <<: [*restart, *logging]
+    mem_limit: ${CADDY_MEM_LIMIT:-256m}
+    cpus: ${CADDY_CPUS:-1}
+    pids_limit: 256
     depends_on:
       web:
         condition: service_healthy
@@ -166,6 +180,9 @@ services:
   api:
     image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-api:${IMAGE_TAG:-latest}
     <<: [*restart, *logging]
+    mem_limit: ${API_MEM_LIMIT:-1g}
+    cpus: ${API_CPUS:-1.5}
+    pids_limit: 1024
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
@@ -198,6 +215,9 @@ services:
   web:
     image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-web:${IMAGE_TAG:-latest}
     <<: [*restart, *logging]
+    mem_limit: ${WEB_MEM_LIMIT:-768m}
+    cpus: ${WEB_CPUS:-1}
+    pids_limit: 512
     build:
       context: ../..
       dockerfile: apps/web/Dockerfile
@@ -231,6 +251,9 @@ services:
   worker:
     image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-api:${IMAGE_TAG:-latest}
     <<: [*restart, *logging]
+    mem_limit: ${WORKER_MEM_LIMIT:-1g}
+    cpus: ${WORKER_CPUS:-1}
+    pids_limit: 512
     build:
       context: ../..
       dockerfile: apps/api/Dockerfile
@@ -268,6 +291,12 @@ services:
   postgres:
     image: postgres:16-alpine
     <<: [*restart, *logging]
+    # Keep Postgres's ceiling the highest of the app tier — it's the component
+    # whose death takes the whole cell down. Tune shared_buffers/work_mem in the
+    # command below to stay within this on a larger host.
+    mem_limit: ${PG_MEM_LIMIT:-2g}
+    cpus: ${PG_CPUS:-2}
+    pids_limit: 512
     environment:
       POSTGRES_USER: libriant
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
@@ -292,6 +321,9 @@ services:
   pgbouncer:
     image: edoburu/pgbouncer:v1.24.1-p1
     <<: [*restart, *logging]
+    mem_limit: ${PGBOUNCER_MEM_LIMIT:-256m}
+    cpus: ${PGBOUNCER_CPUS:-0.5}
+    pids_limit: 256
     depends_on:
       postgres:
         condition: service_healthy
@@ -314,6 +346,14 @@ services:
   redis:
     image: redis:7-alpine
     <<: [*restart, *logging]
+    mem_limit: ${REDIS_MEM_LIMIT:-512m}
+    cpus: ${REDIS_CPUS:-1}
+    pids_limit: 256
+    # NOTE: we intentionally do NOT set an internal `--maxmemory` here. Redis
+    # also backs the BullMQ queues; an active eviction policy could drop live job
+    # keys. The durable sources of truth (email_outbox + the A9-01 recovery scan,
+    # ImportBatch, repeatable scheduled jobs) make a container-level OOM
+    # recoverable, which is the safer blast-radius bound for this workload.
     command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'allkeys-lru']
     volumes:
       - redis_data:/data

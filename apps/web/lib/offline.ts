@@ -26,6 +26,19 @@ export function registerServiceWorker(): void {
  * this page yet).
  */
 export async function clearOfflineCaches(): Promise<void> {
+  await clearOfflineReadCaches();
+  await clearQueue().catch(() => undefined);
+}
+
+/**
+ * A10-02: wipe ONLY the cached pages/data (which may hold tenant PII), leaving
+ * the pending circulation queue intact. Called on session loss (a 401), where —
+ * unlike an explicit logout — the same user may re-authenticate and still wants
+ * their queued, idempotent offline writes to flush. Clearing while still online
+ * (at the moment of the 401) is what prevents the NEXT user from being served
+ * the previous user's cached data offline.
+ */
+export async function clearOfflineReadCaches(): Promise<void> {
   try {
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
       const reg = await navigator.serviceWorker.getRegistration();
@@ -46,5 +59,4 @@ export async function clearOfflineCaches(): Promise<void> {
   } catch {
     /* ignore */
   }
-  await clearQueue().catch(() => undefined);
 }

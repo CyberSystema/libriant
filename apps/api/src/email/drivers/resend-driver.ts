@@ -41,6 +41,10 @@ export class ResendEmailDriver implements EmailDriver {
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
+          // A9-03: dedup a retry whose prior send succeeded but whose DB write
+          // didn't. Resend honours `Idempotency-Key`; the outbox row id is
+          // stable across retries of the same message.
+          ...(input.idempotencyKey ? { 'Idempotency-Key': input.idempotencyKey } : {}),
         },
         body: JSON.stringify({
           from: input.from,

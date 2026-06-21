@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { Observable, of, throwError } from 'rxjs';
-import { catchError, tap } from 'rxjs/operators';
+import { catchError, finalize, tap } from 'rxjs/operators';
 import { RedisService } from './redis.service.js';
 
 const HEADER = 'idempotency-key';
@@ -78,8 +78,23 @@ export class IdempotencyInterceptor implements NestInterceptor {
     }
 
     if (claimed === 'OK') {
+      // A9-02: keep the PENDING lease alive while the handler runs. A slow op
+      // (> PENDING_TTL) would otherwise let its marker expire mid-flight, so a
+      // concurrent duplicate could SETNX and re-run a non-idempotent action
+      // (double fine / double return). A heartbeat refreshes the TTL until the
+      // handler settles; finalize() always clears it (success, error, or abort).
+      const heartbeat = setInterval(
+        () => {
+          this.redis.client.expire(rkey, PENDING_TTL_SEC).catch(() => undefined);
+        },
+        Math.max(1000, (PENDING_TTL_SEC * 1000) / 2),
+      );
       return next.handle().pipe(
         tap((body) => {
+          // Store only the body: a replay returns this value and Nest re-applies
+          // the route's declarative status (@HttpCode / POST-default 201) to the
+          // replayed observable exactly as for the original, so the status code
+          // is already re-asserted (A7-04 — no separate status capture needed).
           this.redis.client
             .set(rkey, JSON.stringify({ body: body ?? null }), 'EX', RESULT_TTL_SEC)
             .catch(() => undefined);
@@ -90,6 +105,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
           this.redis.client.del(rkey).catch(() => undefined);
           return throwError(() => err);
         }),
+        finalize(() => clearInterval(heartbeat)),
       );
     }
 

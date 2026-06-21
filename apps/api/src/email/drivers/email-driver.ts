@@ -15,6 +15,14 @@ export type SendInput = {
   replyTo: string | null;
   subject: string;
   bodyMarkdown: string;
+  /**
+   * A9-03: stable per-message key (the outbox row id). The outbox is at-least-
+   * once — a crash between a successful provider send and the `delivered` DB
+   * write makes the worker retry and re-send. A provider that honours this key
+   * (Resend's `Idempotency-Key`) dedups that retry server-side. SMTP has no
+   * portable dedup, so it stays at-least-once (documented in smtp-driver).
+   */
+  idempotencyKey?: string;
 };
 
 export type SendResult = {

@@ -51,9 +51,16 @@ export class SignedUrlService {
 
   /**
    * Verify a download token. Returns the payload on success, null on any
-   * failure. Caller must STILL check that the request's resolved tenant
-   * matches `payload.tid` — defence against a leaked token being used
-   * against a different tenant via a forged Host header.
+   * failure.
+   *
+   * A3-01: the token is SELF-SCOPING — `tid` and `ref` are HMAC-signed, and the
+   * download serves exactly `payload.tid`/`payload.ref`. So a token only ever
+   * grants the one file it was minted for, in its own tenant; it cannot be
+   * replayed to reach a DIFFERENT tenant's file (that would need a different
+   * signed `tid`/`ref`). No separate "request tenant must match payload.tid"
+   * check is required (the prior comment claimed one that the endpoint neither
+   * performs nor needs). A leaked token granting its own file until expiry is
+   * the inherent property of any signed bearer URL — bounded by the short TTL.
    */
   verify(token: string): SignedDownloadPayload | null {
     try {

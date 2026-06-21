@@ -29,6 +29,8 @@ import {
   UpdateReservationDto,
 } from './reservations.dto.js';
 import { ReservationsService } from './reservations.service.js';
+import { RolesGuard } from '../tenancy/roles.guard.js';
+import { StaffWrite } from '../tenancy/roles.decorator.js';
 
 /**
  * Holds queue.
@@ -47,7 +49,7 @@ import { ReservationsService } from './reservations.service.js';
  * customFields validated against active FieldDefinitions for entity_kind='reservation'.
  */
 @Controller('t/:slug/reservations')
-@UseGuards(TenantGuard, PlanGuard)
+@UseGuards(TenantGuard, RolesGuard, PlanGuard)
 export class ReservationsController {
   constructor(
     @Inject(ReservationsService) private readonly svc: ReservationsService,
@@ -83,6 +85,7 @@ export class ReservationsController {
     });
   }
 
+  @StaffWrite()
   @Post()
   @RequiresFeature('reservations_enabled')
   async placeHold(
@@ -99,17 +102,20 @@ export class ReservationsController {
     return this.svc.get(tenant, id);
   }
 
+  @StaffWrite()
   @Patch(':id')
   async update(@TenantCtx() tenant: TenantContext, @Param('id') id: string, @Body() raw: unknown) {
     const dto = await validateDto(UpdateReservationDto, raw);
     return this.svc.update(tenant, id, dto);
   }
 
+  @StaffWrite()
   @Delete(':id')
   async cancel(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.cancel(tenant, id);
   }
 
+  @StaffWrite()
   @Post(':id/expire')
   async expire(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.expire(tenant, id);
@@ -122,6 +128,7 @@ export class ReservationsController {
    * inside its own transaction; this controller is a thin wrapper so the
    * librarian's UI button has a clear name.
    */
+  @StaffWrite()
   @Post(':id/fulfill')
   @RequiresFeature('reservations_enabled')
   async fulfill(

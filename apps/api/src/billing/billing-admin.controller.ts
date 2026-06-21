@@ -1,9 +1,12 @@
-import { Body, Controller, Get, Inject, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Param, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { controlDb } from '@libriant/db-control';
 import { validateDto } from '../auth/validate-dto.js';
-import { AdminAuthGuard } from '../admin/admin-auth.guard.js';
+import { AdminAuthGuard, AdminSess } from '../admin/admin-auth.guard.js';
 import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
 import { AdminRoles } from '../admin/admin-roles.decorator.js';
+import type { AdminSessionPayload } from '../admin/admin-session.service.js';
+import { adminAuditActor } from '../platform/admin-audit.js';
 import { BillingService } from './billing.service.js';
 import { AdminSetPaidUntilDto, AdminSetPlanDto } from './billing.dto.js';
 
@@ -45,15 +48,25 @@ export class BillingAdminController {
 
   @Post('set-plan')
   @AdminRoles('owner')
-  async setPlan(@Param('tenantId') tenantId: string, @Body() raw: unknown) {
+  async setPlan(
+    @Param('tenantId') tenantId: string,
+    @AdminSess() admin: AdminSessionPayload,
+    @Req() req: Request,
+    @Body() raw: unknown,
+  ) {
     const dto = await validateDto(AdminSetPlanDto, raw);
-    return this.svc.applyAdminPlanChange(tenantId, dto);
+    return this.svc.applyAdminPlanChange(tenantId, dto, adminAuditActor(req, admin));
   }
 
   @Post('set-paid-until')
   @AdminRoles('owner')
-  async setPaidUntil(@Param('tenantId') tenantId: string, @Body() raw: unknown) {
+  async setPaidUntil(
+    @Param('tenantId') tenantId: string,
+    @AdminSess() admin: AdminSessionPayload,
+    @Req() req: Request,
+    @Body() raw: unknown,
+  ) {
     const dto = await validateDto(AdminSetPaidUntilDto, raw);
-    return this.svc.applyManualPayment(tenantId, dto);
+    return this.svc.applyManualPayment(tenantId, dto, adminAuditActor(req, admin));
   }
 }

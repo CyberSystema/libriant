@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { queryRawUnsafe, env } = vi.hoisted(() => ({
+const { queryRawUnsafe, subscriptionFindUnique, env } = vi.hoisted(() => ({
   queryRawUnsafe: vi.fn(),
+  // The TTL clamp (PQF-3 extended) reads the subscription's grace/paidUntil
+  // boundaries; default to "no subscription" so the clamp is a no-op here.
+  subscriptionFindUnique: vi.fn().mockResolvedValue(null),
   env: { tenantCacheTtlSec: 60, billingEnabled: true },
 }));
 vi.mock('@libriant/db-control', () => ({
-  controlDb: { $queryRawUnsafe: queryRawUnsafe },
+  controlDb: {
+    $queryRawUnsafe: queryRawUnsafe,
+    subscription: { findUnique: subscriptionFindUnique },
+  },
 }));
 vi.mock('../config/env.js', () => ({
   loadEnv: () => env,

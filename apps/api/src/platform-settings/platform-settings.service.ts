@@ -51,7 +51,25 @@ export class PlatformSettingsService {
     });
     await this.redis.client.del(CACHE_KEY);
     this.logger.log(`Subscriptions ${enabled ? 'ENABLED' : 'DISABLED'} via admin panel.`);
+    // A5-03: enabling enforcement while the Stripe driver is the in-memory
+    // stand-in means checkout/portal silently do nothing real — no charges, no
+    // subscriptions. Loudly warn outside development so an operator can't flip
+    // this on in production against the fake driver without noticing. The admin
+    // status snapshot also exposes `stripeReady` so the UI can surface it.
+    const env = loadEnv();
+    if (enabled && env.stripeDriver !== 'real' && env.nodeEnv !== 'development') {
+      this.logger.warn(
+        'Subscriptions ENABLED but STRIPE_DRIVER is not "real" — checkout/portal ' +
+          'will run the in-memory fake driver (no real charges). Set STRIPE_DRIVER=real ' +
+          '+ STRIPE_API_KEY/STRIPE_WEBHOOK_SECRET before charging customers.',
+      );
+    }
     return enabled;
+  }
+
+  /** Whether real billing can actually transact (real driver, or billing off). */
+  stripeReady(): boolean {
+    return loadEnv().stripeDriver === 'real';
   }
 
   /**
@@ -65,6 +83,7 @@ export class PlatformSettingsService {
     totalTenants: number;
     awaitingChoice: number;
     updatedAt: Date | null;
+    stripeReady: boolean;
   }> {
     const [billingEnabled, row, totalTenants, awaitingChoice] = await Promise.all([
       this.billingEnabled(),
@@ -78,6 +97,9 @@ export class PlatformSettingsService {
       totalTenants,
       awaitingChoice,
       updatedAt: row?.updatedAt ?? null,
+      // A5-03: false when enforcement could be on but the Stripe driver is fake
+      // — the admin UI can warn that checkout won't really charge.
+      stripeReady: this.stripeReady(),
     };
   }
 }

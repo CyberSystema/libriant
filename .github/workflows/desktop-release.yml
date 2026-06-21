@@ -136,10 +136,13 @@ jobs:
               # rejects a fully unsigned .app as "damaged". Still un-notarized, so
               # users open via right-click → Open. mac auto-update stays disabled
               # until a real Developer ID cert is supplied.
-              echo "::warning::No MAC_CSC_LINK — publishing an ad-hoc-signed UNSIGNED macOS build (no notarization → open via right-click → Open; mac auto-update disabled until signed)."
+              echo "::warning::No MAC_CSC_LINK — publishing an ad-hoc-signed UNSIGNED macOS build (no notarization → open via right-click → Open; auto-update DISABLED until signed)."
               unset CSC_LINK CSC_KEY_PASSWORD
               export CSC_IDENTITY_AUTO_DISCOVERY=false
-              pnpm exec electron-builder --publish always $VER_FLAG
+              # A11-01: bake a flag so the app refuses to auto-update an unsigned
+              # build (electron-updater can't verify it → fleet-RCE risk).
+              pnpm exec electron-builder --publish always $VER_FLAG \
+                --config.extraMetadata.libriantAutoUpdate=false
             elif [ -n "${APPLE_API_KEY_P8:-}" ]; then
               # Signed + notarized. The .p8 (App Store Connect API key) goes to a
               # file whose path @electron/notarize reads via APPLE_API_KEY.
@@ -160,11 +163,17 @@ jobs:
                 --config.win.azureSignOptions.codeSigningAccountName="$AZURE_TS_ACCOUNT" \
                 --config.win.azureSignOptions.certificateProfileName="$AZURE_TS_CERT_PROFILE"
             else
-              # No Azure secrets → UNSIGNED build. verifyUpdateCodeSignature=false so
-              # electron-updater still applies the (unsigned) update; SmartScreen
-              # warns on install. Signed builds keep verification on (default true).
-              echo "::warning::No AZURE_CLIENT_ID — publishing an UNSIGNED Windows build (SmartScreen warns; update signature check disabled)."
-              pnpm exec electron-builder --publish always $VER_FLAG --config.win.verifyUpdateCodeSignature=false
+              # A11-01: No Azure secrets → UNSIGNED build. We keep
+              # verifyUpdateCodeSignature at its SECURE DEFAULT (true) and instead
+              # DISABLE auto-update for this build (libriantAutoUpdate=false baked
+              # into the app). Previously we set verifyUpdateCodeSignature=false so
+              # the unsigned update would still apply — that is a fleet-wide RCE
+              # vector (anyone who can publish to Releases ships an arbitrary exe).
+              # The installer is still published for MANUAL download via the panel;
+              # it just won't silently self-update until the build is signed.
+              echo "::warning::No AZURE_CLIENT_ID — publishing an UNSIGNED Windows build (SmartScreen warns; AUTO-UPDATE DISABLED until signed; manual download only)."
+              pnpm exec electron-builder --publish always $VER_FLAG \
+                --config.extraMetadata.libriantAutoUpdate=false
             fi
           else
             pnpm exec electron-builder --publish always $VER_FLAG

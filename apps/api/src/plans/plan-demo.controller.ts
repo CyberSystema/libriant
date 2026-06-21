@@ -15,6 +15,8 @@ import {
 import { controlDb } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
+import { RolesGuard } from '../tenancy/roles.guard.js';
+import { Roles } from '../tenancy/roles.decorator.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { EffectivePlanService } from './effective-plan.service.js';
@@ -65,7 +67,10 @@ export class NonProductionOnlyGuard implements CanActivate {
 @Controller('t/:slug')
 // NonProductionOnlyGuard MUST run first so prod requests 404 before TenantGuard
 // warms a tenant DB pool or PlanGuard touches the plan layer (PQF-1).
-@UseGuards(NonProductionOnlyGuard, TenantGuard, PlanGuard)
+// A2-03: also role-gate (defence-in-depth) so even in dev/test the raw plan /
+// override internals + the demo write aren't exposed to a low-privilege role.
+@UseGuards(NonProductionOnlyGuard, TenantGuard, RolesGuard, PlanGuard)
+@Roles('owner', 'admin')
 @UseInterceptors(QuotaInterceptor)
 export class PlanDemoController {
   constructor(

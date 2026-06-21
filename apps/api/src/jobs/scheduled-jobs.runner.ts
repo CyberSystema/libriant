@@ -35,11 +35,14 @@ export async function startScheduledJobs(
   ctx: JobContext,
 ): Promise<ScheduledJobsHandle> {
   const env = loadEnv();
-  const connection = new Redis(env.redisUrl, {
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
-  });
-  const queue = new Queue(QUEUE_NAME, { connection, prefix: QUEUE_PREFIX });
+  // A9-04: a BullMQ blocking Worker monopolizes its socket with blocking
+  // commands (BZPOPMIN etc.); sharing that socket with the producer Queue can
+  // stall enqueues/reconciliation. Give each its OWN connection (BullMQ's own
+  // guidance), mirroring the email worker.
+  const redisOpts = { maxRetriesPerRequest: null, enableReadyCheck: false } as const;
+  const queueConnection = new Redis(env.redisUrl, redisOpts);
+  const workerConnection = new Redis(env.redisUrl, redisOpts);
+  const queue = new Queue(QUEUE_NAME, { connection: queueConnection, prefix: QUEUE_PREFIX });
 
   // Reconcile schedules: remove any repeat-job whose key doesn't match a
   // currently-registered entry. Stale schedules can otherwise linger after
@@ -108,7 +111,7 @@ export async function startScheduledJobs(
         inFlight--;
       }
     },
-    { connection, prefix: QUEUE_PREFIX, concurrency: 4 },
+    { connection: workerConnection, prefix: QUEUE_PREFIX, concurrency: 4 },
   );
 
   worker.on('failed', (job, err) => {
@@ -128,7 +131,8 @@ export async function startScheduledJobs(
     async stop() {
       await worker.close();
       await queue.close();
-      await connection.quit();
+      await queueConnection.quit();
+      await workerConnection.quit();
     },
   };
 }

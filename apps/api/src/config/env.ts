@@ -221,16 +221,35 @@ export function loadEnv(): AppEnv {
     'dev-only-session-secret-CHANGE-IN-PROD',
     nodeEnv,
   );
+  // A5-04: resolve + validate the MFA master key at BOOT, not lazily at
+  // MfaService construction. AES-256-GCM needs exactly 32 bytes (64 hex chars);
+  // a typo'd/short key must fail the whole process loudly at startup rather than
+  // 500-ing the first admin who tries to enroll.
+  const mfaMasterKey =
+    nodeEnv === 'development'
+      ? optional(
+          'MFA_MASTER_KEY',
+          // Fixed 32-byte dev key — predictable on purpose so the
+          // quickstart doesn't need ceremony. PROD must override.
+          '0011223344556677889900112233445566778899001122334455667788990011',
+        )
+      : required('MFA_MASTER_KEY');
+  if (!/^[0-9a-fA-F]{64}$/.test(mfaMasterKey)) {
+    throw new Error('Env var MFA_MASTER_KEY must be 64 hex characters (a 32-byte key).');
+  }
+
   const cookieSecure = optional('SESSION_COOKIE_SECURE', 'auto');
   const isSecure =
     cookieSecure === 'auto'
-      ? // Default ('auto'): Secure in production NO MATTER WHAT — the app always
-        // runs behind TLS (Cloudflare→Caddy), and a session/admin cookie must
-        // never go out without Secure + the __Host- prefix. Deriving this purely
-        // from PUBLIC_APP_URL meant a prod deploy that left the URL on the http
-        // default would silently ship a non-Secure bearer cookie. Outside prod,
-        // mirror the scheme so dev/test over http still works.
-        nodeEnv === 'production' ||
+      ? // Default ('auto'): Secure in EVERY real deployment — the app always runs
+        // behind TLS (Cloudflare→Caddy), and a session/admin cookie must never
+        // go out without Secure + the __Host- prefix. A5-02: keying this on
+        // `=== 'production'` left `staging` (or any other non-prod NODE_ENV)
+        // silently shipping non-Secure bearer cookies, so treat ANY environment
+        // other than development/test as secure. Dev + test stay non-Secure so
+        // local + http supertest flows still work; an explicit https
+        // PUBLIC_APP_URL still upgrades them.
+        (nodeEnv !== 'development' && nodeEnv !== 'test') ||
         optional('PUBLIC_APP_URL', 'http://localhost:3000').startsWith('https://')
       : cookieSecure === 'true';
   return {
@@ -275,15 +294,7 @@ export function loadEnv(): AppEnv {
     ),
     // MFA mandatory for admins by default outside development (AUTH-06).
     adminMfaRequired: bool('ADMIN_MFA_REQUIRED', !isDev),
-    mfaMasterKey:
-      nodeEnv === 'development'
-        ? optional(
-            'MFA_MASTER_KEY',
-            // Fixed 32-byte dev key — predictable on purpose so the
-            // quickstart doesn't need ceremony. PROD must override.
-            '0011223344556677889900112233445566778899001122334455667788990011',
-          )
-        : required('MFA_MASTER_KEY'),
+    mfaMasterKey,
     impersonationSecret: requiredSecret(
       'IMPERSONATION_SECRET',
       'dev-only-impersonation-secret-CHANGE-IN-PROD',

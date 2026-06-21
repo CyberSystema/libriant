@@ -8,14 +8,18 @@ import {
   Param,
   Patch,
   Put,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { IsBoolean, IsInt, IsOptional, IsString } from 'class-validator';
 import { controlDb } from '@libriant/db-control';
 import { validateDto } from '../auth/validate-dto.js';
-import { AdminAuthGuard } from './admin-auth.guard.js';
+import { AdminAuthGuard, AdminSess } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
 import { AdminRoles } from './admin-roles.decorator.js';
+import type { AdminSessionPayload } from './admin-session.service.js';
+import { adminAuditActor, recordAdminAudit } from '../platform/admin-audit.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 
 class UpdatePlanDto {
@@ -115,7 +119,12 @@ export class AdminPlansController {
 
   @Patch('plans/:slug')
   @AdminRoles('owner')
-  async update(@Param('slug') slug: string, @Body() raw: unknown) {
+  async update(
+    @Param('slug') slug: string,
+    @AdminSess() admin: AdminSessionPayload,
+    @Req() req: Request,
+    @Body() raw: unknown,
+  ) {
     const dto = await validateDto(UpdatePlanDto, raw);
     const existing = await controlDb.plan.findUnique({ where: { slug } });
     if (!existing) throw new NotFoundException('Plan not found.');
@@ -128,18 +137,36 @@ export class AdminPlansController {
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
     if (dto.isPublic !== undefined) data.isPublic = dto.isPublic;
     if (dto.sortOrder !== undefined) data.sortOrder = dto.sortOrder;
+    // Focused before/after diff over exactly the fields this request changed.
+    const before: Record<string, unknown> = {};
+    for (const k of Object.keys(data)) {
+      before[k] = (existing as unknown as Record<string, unknown>)[k];
+    }
     const plan = await controlDb.plan.update({
       where: { id: existing.id },
       data,
       include: { values: true },
     });
     await this.invalidatePlan(plan.id);
+    await recordAdminAudit(adminAuditActor(req, admin), {
+      // Platform-wide: a plan edit affects every tenant on that plan.
+      action: 'plan.updated',
+      targetType: 'plan',
+      targetId: existing.slug,
+      before,
+      after: data,
+    });
     return { plan };
   }
 
   @Put('plans/:slug/features')
   @AdminRoles('owner')
-  async setFeature(@Param('slug') slug: string, @Body() raw: unknown) {
+  async setFeature(
+    @Param('slug') slug: string,
+    @AdminSess() admin: AdminSessionPayload,
+    @Req() req: Request,
+    @Body() raw: unknown,
+  ) {
     const dto = await validateDto(SetPlanFeatureDto, raw);
     const plan = await controlDb.plan.findUnique({ where: { slug } });
     if (!plan) throw new NotFoundException('Plan not found.');
@@ -159,22 +186,32 @@ export class AdminPlansController {
       throw new BadRequestException('This feature expects a text value.');
     }
 
+    const nextValue = {
+      valueInt: feature.type === 'integer' ? (dto.valueInt ?? null) : null,
+      valueBool: feature.type === 'boolean' ? (dto.valueBool ?? null) : null,
+      valueText: feature.type === 'text' ? (dto.valueText ?? null) : null,
+    };
+    // Snapshot the prior value for the audit diff before the upsert overwrites it.
+    const existingValue = await controlDb.planFeatureValue.findUnique({
+      where: { planId_featureKey: { planId: plan.id, featureKey: dto.featureKey } },
+      select: { valueInt: true, valueBool: true, valueText: true },
+    });
     await controlDb.planFeatureValue.upsert({
       where: { planId_featureKey: { planId: plan.id, featureKey: dto.featureKey } },
-      create: {
-        planId: plan.id,
-        featureKey: dto.featureKey,
-        valueInt: feature.type === 'integer' ? (dto.valueInt ?? null) : null,
-        valueBool: feature.type === 'boolean' ? (dto.valueBool ?? null) : null,
-        valueText: feature.type === 'text' ? (dto.valueText ?? null) : null,
-      },
-      update: {
-        valueInt: feature.type === 'integer' ? (dto.valueInt ?? null) : null,
-        valueBool: feature.type === 'boolean' ? (dto.valueBool ?? null) : null,
-        valueText: feature.type === 'text' ? (dto.valueText ?? null) : null,
-      },
+      create: { planId: plan.id, featureKey: dto.featureKey, ...nextValue },
+      update: nextValue,
     });
     await this.invalidatePlan(plan.id);
+    await recordAdminAudit(adminAuditActor(req, admin), {
+      // Platform-wide entitlement edit: affects every tenant on this plan.
+      action: 'plan.features_updated',
+      targetType: 'plan',
+      targetId: plan.slug,
+      before: existingValue
+        ? { featureKey: dto.featureKey, ...existingValue }
+        : { featureKey: dto.featureKey, valueInt: null, valueBool: null, valueText: null },
+      after: { featureKey: dto.featureKey, ...nextValue },
+    });
     const fresh = await controlDb.plan.findUnique({
       where: { id: plan.id },
       include: { values: true },

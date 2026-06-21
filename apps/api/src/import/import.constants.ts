@@ -23,6 +23,17 @@ export const IMPORT_MAX_COLUMNS = 512;
 /** Cap on how many per-row issues we persist for one batch (very dirty file). */
 export const IMPORT_MAX_ISSUES = 5000;
 
+/**
+ * A8-01: ceiling on the TOTAL declared uncompressed size of an .xlsx (a zip)
+ * before we let exceljs inflate it. A decompression bomb is a tiny upload that
+ * inflates to gigabytes, OOM-ing the shared worker (V8 aborts the process —
+ * uncatchable — taking every queue down). We read the zip central directory
+ * (sizes only, no inflation) and reject anything whose declared expansion
+ * exceeds this. 512 MB comfortably covers a legitimate 64 MB-on-disk workbook
+ * (xlsx XML compresses ~5–15×) while blocking pathological ratios.
+ */
+export const IMPORT_MAX_XLSX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024;
+
 export type ImportPhase = 'validate' | 'commit';
 
 export type ImportJobData = {

@@ -8,6 +8,7 @@ import { api } from '@/lib/api';
 import {
   classifyReplayError,
   enqueueAction,
+  isExpired,
   listQueued,
   MAX_REPLAY_ATTEMPTS,
   removeQueued,
@@ -92,6 +93,17 @@ export function OfflineQueueProvider({
         (a) => a.tenantSlug === ctx.current.slug,
       );
       for (const action of queue) {
+        // A7-02: never replay an entry older than the server's idempotency
+        // window — a stale replay would no longer dedupe and could double-apply.
+        // Drop it and tell the librarian to redo it.
+        if (isExpired(action)) {
+          await removeQueued(action.id);
+          ctx.current.toast.show({
+            severity: 'critical',
+            title: ctx.current.t('loans.queue.expired', { label: action.label }),
+          });
+          continue;
+        }
         try {
           await api(action.path, {
             method: 'POST',

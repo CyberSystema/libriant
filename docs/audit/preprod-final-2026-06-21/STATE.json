@@ -1,0 +1,184 @@
+{
+  "audit": "preprod-final",
+  "started": "2026-06-21",
+  "head_commit": "b67e429",
+  "purpose": "Final pre-production audit. Third full pass. Builds on 2026-06-14 and 2026-06-15 audits (both reached 'ready'), with PRIMARY FOCUS on the large body of feature code that landed AFTER the 2026-06-15 'ready' verdict and has never had a full audit: Electron desktop app, PWA + offline circulation queue, persistent login, email verification, barcode scanning, idempotency keys, admin-host routing, Resend email driver, desktop printing/auto-update/download-gating.",
+  "resume_protocol": "A fresh session continues with ZERO loss by: (1) reading this STATE.json; (2) running any gate whose status != 'done'; (3) running any dimension whose status != 'done' (each writes findings/<id>.json + findings/<id>.md, THEN flips its status here to 'done'); (4) once all gates+dimensions are 'done', writing FINAL-REPORT.md and flipping final_report to 'done'. Never re-run a 'done' item. See RESUME.md.",
+  "lesson_from_prior_audits": "Static typecheck/lint/build ALL passed while the admin plane was 500ing at runtime (Reflector DI under tsx). Conclusion: gates alone are insufficient — runtime probing against the live stack (Postgres+Redis are up) is mandatory for any auth/guard/DI-sensitive finding.",
+  "gates": [
+    {
+      "id": "G1-install-generate",
+      "name": "pnpm install --frozen-lockfile + prisma generate (both clients)",
+      "status": "done",
+      "result": "pass",
+      "log": "gates/G1.log"
+    },
+    {
+      "id": "G2-typecheck",
+      "name": "pnpm typecheck (all packages)",
+      "status": "done",
+      "result": "pass",
+      "log": "gates/G2.log"
+    },
+    {
+      "id": "G3-lint",
+      "name": "pnpm lint (eslint --max-warnings 0)",
+      "status": "done",
+      "result": "pass",
+      "log": "gates/G3.log"
+    },
+    {
+      "id": "G4-prettier",
+      "name": "pnpm format:check",
+      "status": "done",
+      "result": "pass-codebase (only failing file is this audit's own STATE.json scratch; codebase clean)",
+      "log": "gates/G4.log"
+    },
+    {
+      "id": "G5-translations",
+      "name": "pnpm check:translations (en/el parity)",
+      "status": "done",
+      "result": "pass",
+      "log": "gates/G5.log"
+    },
+    {
+      "id": "G6-assets",
+      "name": "pnpm check:assets (manifest integrity)",
+      "status": "done",
+      "result": "pass",
+      "log": "gates/G6.log"
+    },
+    {
+      "id": "G7-unit",
+      "name": "vitest run --project unit (api)",
+      "status": "done",
+      "result": "pass (unit suite green)",
+      "log": "gates/G7.log"
+    },
+    {
+      "id": "G8-integration",
+      "name": "vitest run --project integration (real PG+Redis, dedicated audit DB)",
+      "status": "done",
+      "result": "pass (6 files, 30 tests)",
+      "log": "gates/G8.log"
+    },
+    {
+      "id": "G9-build",
+      "name": "build api (tsc) + web (next build, NODE_ENV=production)",
+      "status": "done",
+      "result": "pass (api + web both built)",
+      "log": "gates/G9.log"
+    },
+    {
+      "id": "G10-migrate-smoke",
+      "name": "control migrate+seed idempotency (1,15,5,75) + tenant migrate+seed+smoke",
+      "status": "done",
+      "result": "pass (seed counts 1,15,5,75 idempotent; ALL SMOKE-TEST STEPS PASSED)",
+      "log": "gates/G10.log"
+    },
+    {
+      "id": "G11-deps-audit",
+      "name": "pnpm audit (CVEs) + outdated lockfile review",
+      "status": "done",
+      "result": "ran: 17 advisories (5 high, 10 moderate, 2 low) -> triage in A13",
+      "log": "gates/G11.log"
+    }
+  ],
+  "dimensions": [
+    {
+      "id": "A1-auth-sessions",
+      "name": "Auth & sessions: persistent login (remember-me/sliding), email verification soft-gate, JWT/session epoch, password reset/change session invalidation, lockout/enumeration",
+      "focus": "MOSTLY NEW since 2026-06-15",
+      "status": "done",
+      "findings": "findings/A1.json"
+    },
+    {
+      "id": "A2-authz-roles",
+      "name": "Authorization: tenant RolesGuard, AdminRolesGuard (owner gating), admin-host-only routing, plan/quota guards, email-verified guard",
+      "focus": "regression-prone (prior 500)",
+      "status": "done",
+      "findings": "findings/A2.json"
+    },
+    {
+      "id": "A3-tenancy-isolation",
+      "name": "Multi-tenancy isolation: resolver, middleware, DB-per-tenant client factory/cache, cross-tenant leakage, signed-URL scoping",
+      "status": "done",
+      "findings": "findings/A3.json"
+    },
+    {
+      "id": "A4-injection-input",
+      "name": "Injection & input: Prisma $queryRaw/$executeRaw, ReDoS (custom field regex), path traversal (storage/export/import), SSRF (openlibrary/metadata refresh), upload validation",
+      "status": "done",
+      "findings": "findings/A4.json"
+    },
+    {
+      "id": "A5-secrets-config",
+      "name": "Secrets & config: env.ts validation, .env.prod.example completeness, secrets.ts manager, no hardcoded secrets, key rotation safety",
+      "status": "done",
+      "findings": "findings/A5.json"
+    },
+    {
+      "id": "A6-billing-stripe",
+      "name": "Billing & Stripe: webhook signature+idempotency, period drift, retry-sweep stale replay, plan gating, quota interceptor, manual billing",
+      "status": "done",
+      "findings": "findings/A6.json"
+    },
+    {
+      "id": "A7-circulation-integrity",
+      "name": "Data integrity & circulation: loan/hold/reservation concurrency (advisory locks/CAS), fine accrual, idempotency keys (NEW), offline circulation queue replay (NEW)",
+      "focus": "offline queue NEW",
+      "status": "done",
+      "findings": "findings/A7.json"
+    },
+    {
+      "id": "A8-imports",
+      "name": "Imports: csv/marc/xlsx parsers, encoding, OOM/zip-bomb caps, column/row bounds, mapping/transforms, worker e2e",
+      "status": "done",
+      "findings": "findings/A8.json"
+    },
+    {
+      "id": "A9-reliability-jobs",
+      "name": "Reliability & jobs: worker graceful shutdown/deadline, healthcheck liveness, job idempotency, email drivers (Resend NEW, SMTP timeouts), rate limiting coverage",
+      "status": "done",
+      "findings": "findings/A9.json"
+    },
+    {
+      "id": "A10-web-frontend",
+      "name": "Web/frontend: XSS (dangerouslySetInnerHTML/markdown), CSRF, Next.js prod build, PWA service worker + offline reads (NEW), accessibility, i18n completeness, cookie flags",
+      "focus": "PWA NEW",
+      "status": "done",
+      "findings": "findings/A10.json"
+    },
+    {
+      "id": "A11-desktop-electron",
+      "name": "Desktop/Electron: contextIsolation/nodeIntegration/sandbox, preload IPC surface, remote content loading, auto-update integrity, crash recovery, silent printing, subscription download gating",
+      "focus": "ENTIRELY NEW",
+      "status": "done",
+      "findings": "findings/A11.json"
+    },
+    {
+      "id": "A12-infra-ops",
+      "name": "Infra/ops: Dockerfiles, Caddy (metrics/health blocking, admin host), deploy/rollback safety, backup/restore (relocated tenants), pgbouncer, fleet",
+      "status": "done",
+      "findings": "findings/A12.json"
+    },
+    {
+      "id": "A13-deps-supplychain",
+      "name": "Dependencies & supply chain: CVE triage from pnpm audit, pnpm overrides safety, lockfile integrity, postinstall scripts",
+      "status": "done",
+      "findings": "findings/A13.json"
+    },
+    {
+      "id": "A14-observability-errors",
+      "name": "Observability & error handling: structured logging, secret/PII redaction in logs+errors, metrics endpoint exposure, unhandled rejections, error-message hygiene",
+      "status": "done",
+      "findings": "findings/A14.json"
+    }
+  ],
+  "final_report": {
+    "status": "done",
+    "file": "FINAL-REPORT.md"
+  },
+  "completed": "2026-06-21",
+  "verdict": "Conditionally ready: 0 critical, 11 high, 14 medium, 19 low, 19 info (skeptic-adjusted). No auth bypass / cross-tenant breach / SQLi / RCE. 11 highs must be fixed before GA; see FINAL-REPORT.md."
+}

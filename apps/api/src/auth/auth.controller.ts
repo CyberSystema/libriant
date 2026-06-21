@@ -166,6 +166,7 @@ export class AuthController {
       identifier: dto.identifier,
       password: dto.password,
       remember: dto.remember,
+      ip, // A1-01: per-(account+IP) lockout
     });
     this.cookies.setSession(res, result.token, result.expiresAt, result.remember);
     return { tenant: result.tenant, user: result.user };

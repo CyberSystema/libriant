@@ -1,0 +1,38 @@
+[
+  {
+    "id": "ORCH-001",
+    "severity": "medium",
+    "title": "Controller cancel/expire promotion path lacks the per-book advisory lock + head-promotion CAS, allowing a stranded 'reserved' copy",
+    "file": "apps/api/src/reservations/reservations.service.ts:316 (resolveReservation $transaction) + promoteNextHoldInTx:458-502",
+    "evidence": "resolveReservation() opens client.$transaction WITHOUT pg_advisory_xact_lock (compare loans.service.ts:418 and reservation-expiry.job.ts:112 which both lock `book:<id>`). promoteNextHoldInTx selects head via plain findFirst and promotes with `tx.reservation.update({ where: { id: head.id }, data: { status:'ready', fulfilledByCopyId } })` — an id-only update, NO `status:'queued'` CAS. The copy flip IS CAS-guarded (updateMany where status='available') but on DIFFERENT copies for concurrent callers.",
+    "impact": "On a multi-copy book, two concurrent promotions that DON'T mutually exclude (controller force-expire/cancel has no lock; cron expiry job holds book:<id>; a second controller cancel has no lock) each free a different copy (C1, C2) and both flip it available->reserved. Both id-only updates to the same head reservation R succeed (last-writer-wins), so R points at only one copy; the other copy is left status='reserved' with no reservation referencing it -> stranded forever (no expiry job frees an orphaned reserved copy), permanently reducing availability until manual DB repair.",
+    "repro": "Book with >=2 copies and a queue. Concurrently: (a) librarian force-expires a ready hold via the admin/controller endpoint, and (b) the reservation-expiry cron promotes, OR two controller cancels of two ready holds. Different lock domains -> no mutual exclusion -> double promotion.",
+    "verified": "static (code-confirmed; not runtime-reproduced)",
+    "fix": "In resolveReservation's transaction, take the same advisory lock as the other paths BEFORE promoting: `await tx.$executeRaw\\`SELECT pg_advisory_xact_lock(hashtextextended(${`book:${existing.bookId}`}, 0))\\`;` Additionally harden promoteNextHoldInTx to a CAS head-promotion: `const promoted = await tx.reservation.updateMany({ where: { id: head.id, status: 'queued' }, data: {...} }); if (promoted.count === 0) return null;` so even an unlocked caller can't double-promote one head. NOTE: the return path (loans:418) and cron job (expiry:112) lock `book:<id>` while hold PLACEMENT (reservations:189) and import (import-engine:651) lock `reservation:<id>` — confirm whether placement-vs-promotion ever need to mutually exclude; placement only allocates when liveCount===0 so today they operate in disjoint queue states, but the inconsistent key is a latent footgun worth unifying.",
+    "status": "open"
+  },
+  {
+    "id": "ORCH-002",
+    "severity": "low",
+    "title": "Desktop shell accepts any http:// (not just https) server URL from env/config",
+    "file": "apps/desktop/src/config.ts:21 isValidHttpUrl + resolveStartUrl:58",
+    "evidence": "isValidHttpUrl returns true for protocol 'http:' OR 'https:'. LIBRIANT_APP_URL env and persisted config.serverUrl are accepted as-is and become appOrigin. setServerUrl (main.ts:293) persists any valid http(s) URL.",
+    "impact": "An attacker who can write the per-user config file (userData/libriant-desktop.json) or set LIBRIANT_APP_URL can repoint the shell at an attacker-controlled http origin, which then becomes the 'trusted' appOrigin for the IPC bridge (setServerUrl, open-external, same-origin /print/). Not RCE (sandbox + contextIsolation + nodeIntegration off; install-update requires an update already downloaded from the SIGNED GitHub feed), but enables persistent redirection/phishing and MITM on plain http.",
+    "repro": "Set config.serverUrl to http://evil.example and relaunch; the shell loads it and treats it as trusted.",
+    "verified": "static",
+    "fix": "For packaged builds, require https:// (allow http only when !app.isPackaged for localhost dev), or constrain to an allowlist/the DEFAULT_APP_URL host. Optionally sign/validate the config file. Low because writing userData or env already implies local access.",
+    "status": "open"
+  },
+  {
+    "id": "ORCH-003",
+    "severity": "medium",
+    "title": "Unsigned desktop builds apply unsigned auto-updates (verifyUpdateCodeSignature=false)",
+    "file": "apps/desktop/electron-builder.yml:72-81 + .github/workflows/desktop-release.yml",
+    "evidence": "When Azure signing secrets are absent the release workflow passes --config.win.verifyUpdateCodeSignature=false so electron-updater applies unsigned updates; macOS builds are currently ad-hoc-signed/un-notarized (recent commits). Update integrity then rests solely on TLS + GitHub Releases + the release token.",
+    "impact": "For unsigned builds, anyone able to publish to the GitHub Releases feed (compromised DESKTOP_RELEASE_TOKEN or repo) can push a malicious auto-update to the entire fleet; there is no code-signature gate. Production fleets should ship signed+notarized builds before GA.",
+    "repro": "N/A (supply-chain/release posture).",
+    "verified": "static",
+    "fix": "Before GA, provision real code-signing (Apple Developer ID + notarization; Windows Azure Trusted Signing) so verifyUpdateCodeSignature stays ON. Until then, document that unsigned auto-update trusts the release channel and tightly restrict who can publish releases + rotate the release token.",
+    "status": "open"
+  }
+]

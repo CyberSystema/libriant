@@ -1,0 +1,101 @@
+{
+  "dimension": "A13-deps-supplychain",
+  "summary": "Triaged all 17 G11 advisories (5 high / 10 moderate / 2 low) against actual Libriant usage. The raw severity is misleading: 14 of 17 are dev/build-only or hit unreachable code paths for this app, and the prior \"ready\" audits were not wrong to discount the count — but they MISSED one genuinely prod-reachable issue. The only advisory that lands on a running, reachable production code path is multer 2.1.1 (both the deeply-nested-field-name DoS and the aborted-upload-cleanup DoS): multer is a DIRECT prod dependency of apps/api (apps/api/package.json:24 \"multer\":\"^2.1.1\", resolved 2.1.1) and NestJS FileInterceptor is wired into 5 live upload endpoints (import, book covers, member photos, branding logo, storage-demo), all of which parse attacker-supplied multipart field names. These are behind TenantGuard (auth precondition → high, not critical). Everything else is low/info: the 8 \"hono\" advisories and 1 \"@hono/node-server\" advisory come solely through @prisma/client > prisma > @prisma/dev (a dev-only Prisma local-server tool, never loaded at runtime) and are additionally AWS-Lambda/Windows-specific (Libriant is neither); nodemailer 8.0.9 is prod but the vulnerable `raw` message option is never used (smtp-driver.ts:50-60 only sets from/to/subject/text/html) AND EMAIL_DRIVER=console is the current prod setting; form-data is dev (supertest) + desktop build tool (electron-builder) only; the vulnerable qs@6.14.2 is dev-only (supertest) while prod qs via express is 6.15.2 = already patched; uuid@8.3.2 (via exceljs) only calls uuid.v4() with no `buf` arg so the bounds-check bug is unreachable; postcss@8.4.31 (in next@16.2.6) is build-time only — it is NOT required anywhere under next/dist/server, so the CSS-stringify XSS needs runtime untrusted CSS that never occurs; vite/launch-editor/esbuild are vitest/tsx build tooling and Windows-dev-server-only. pnpm.overrides (react/react-dom 19.2.6, ioredis 5.11.0) are current and safe and resolve correctly in the lockfile. No package runs an unvetted postinstall during install (pnpm 9 blocks build scripts by default; no onlyBuiltDependencies allowlist; prod deps are pure-JS — bcryptjs not native bcrypt). Frozen-lockfile install confirmed: \"Lockfile is up to date\", matches package.json.",
+  "findings": [
+    {
+      "severity": "high",
+      "title": "multer 2.1.1 (direct prod dep) — two DoS advisories reachable via 5 live authenticated upload endpoints",
+      "file": "apps/api/package.json:24",
+      "evidence": "apps/api/package.json:24 declares \"multer\": \"^2.1.1\"; installed = 2.1.1 (node_modules/.pnpm/multer@2.1.1). `pnpm why multer -r` shows it as a production dependency of @libriant/api both directly and via @nestjs/platform-express (which pins multer 2.1.1 as a hard dep, peer:none). Two advisories apply: GHSA-72gw-mp4g-v24j (high — DoS via deeply nested field names, <2.2.0) and GHSA-3p4h-7m6x-2hcm (moderate — DoS via incomplete cleanup of aborted uploads, <2.2.0). Reachable: FileInterceptor is wired into live endpoints — import.controller.ts:70 `@UseInterceptors(FileInterceptor('file', { limits: { fileSize: IMPORT_MAX_UPLOAD_BYTES } }))` with `@Body() body: Record<string,string>` (multipart text fields parsed); plus covers.controller.ts:39, photos.controller.ts:39, branding.controller.ts:55, storage-demo.controller.ts:83. The deeply-nested-field-name parse happens in multer before route validation, so the fileSize limit does not prevent it.",
+      "impact": "An authenticated tenant user (endpoints sit behind TenantGuard; import also RolesGuard/PlanGuard) can send a multipart request with deeply nested field names or repeatedly abort uploads to exhaust CPU/memory/disk on the shared API worker, degrading the service for all tenants. Not unauth (hence high, not critical), but it is a real, running, reachable prod path — the one advisory the prior audits should not have waved away.",
+      "verified": "static",
+      "fix": "Add a pnpm override to force the patched line: in root package.json pnpm.overrides add \"multer\": \"^2.2.0\". This is a same-major minor bump compatible with @nestjs/platform-express@11's hard dep on 2.1.1 (the override supersedes it). Then `pnpm install` and re-run G11 to confirm both multer advisories clear.",
+      "confidence": "high",
+      "adversarial": {
+        "real": true,
+        "adjusted_severity": "high",
+        "reason": "Independently confirmed. multer is pinned at exactly 2.1.1 (node_modules/.pnpm/multer@2.1.1), declared as a direct prod dependency in apps/api/package.json:34 (\"multer\": \"^2.1.1\") AND pulled transitively by @nestjs/platform-express@11.1.24. (Claim cites line 24; it is actually line 34 — immaterial cite slip.) `pnpm audit --prod` independently reproduces BOTH advisories against this install: GHSA-72gw-mp4g-v24j (high — DoS via deeply nested field names, vulnerable >=1.0.0 <2.2.0) and GHSA-3p4h-7m6x-2hcm (moderate — incomplete cleanup of aborted uploads, vulnerable >=2.0.0-alpha.1 <2.2.0), both patched in >=2.2.0. multer 2.1.1 is squarely in range. Reachability confirmed: grep finds 5 live FileInterceptor endpoints — import.controller.ts:70, branding.controller.ts:55, covers.controller.ts:39, photos.controller.ts:39, storage-demo.controller.ts:83. I tried to refute via the fileSize limit but it does not mitigate the field-name DoS: GHSA-72gw-mp4g-v24j is a busboy field-NAME parse issue that runs during multipart parsing, independent of the file-content size cap — the claim's technical reasoning holds. Endpoints are authenticated (ImportController @UseGuards(TenantGuard,RolesGuard,PlanGuard) @Roles('owner','admin') @RequiresFeature('bulk_import_enabled'); StorageDemoController upload @UseGuards(TenantGuard)), so this is an authenticated tenant-user DoS against the shared API worker — correctly high, not critical (no unauth, no RCE, no cross-tenant data). No multer pnpm.override exists today, and the repo already uses pnpm.overrides (ioredis/react) at package.json:54-58, so the proposed override to ^2.2.0 is the correct, idiomatic fix. Severity high is appropriate and matches upstream GHSA high + the precondition-gated rubric."
+      }
+    },
+    {
+      "severity": "low",
+      "title": "hono / @hono/node-server (9 advisories) — dev-only via @prisma/dev, AWS-Lambda/Windows-specific, not in runtime path",
+      "file": "packages/db-control/package.json:26",
+      "evidence": "`pnpm why hono -r` and `pnpm why @hono/node-server -r` show the ONLY paths are @prisma/client@7.8.0 > prisma@7.8.0 > @prisma/dev@0.24.3 > (@hono/node-server@1.19.11 / hono@4.12.23). @prisma/dev is Prisma's local development server tool; it is not imported or executed by the running API (the API uses @prisma/client + @prisma/adapter-pg against Postgres). The 8 hono advisories (GHSA-88fw-hqm2-52qc CORS wildcard, -wwfh-h76j-fc44 Windows %5C traversal in serve-static, plus 6 AWS-Lambda/Lambda@Edge adapter bugs) and @hono/node-server GHSA-92pp-h63x-v22m all require either the hono HTTP server to be the app's edge server or an AWS Lambda deployment — neither is true for Libriant (NestJS/Express on Node).",
+      "impact": "No production exposure: the vulnerable hono server code never runs in Libriant's request path. Will clear automatically when Prisma ships @prisma/dev with hono >=4.12.25.",
+      "verified": "static",
+      "fix": "No action strictly required. To silence the audit, either wait for a prisma patch release or add pnpm.overrides \"hono\": \">=4.12.25\" and \"@hono/node-server\": \">=1.19.13\" (low risk since the code is unused, but verify prisma generate/dev still works locally).",
+      "confidence": "high"
+    },
+    {
+      "severity": "low",
+      "title": "nodemailer 8.0.9 (prod dep) — vulnerable `raw` option never used; EMAIL_DRIVER=console in prod",
+      "file": "apps/api/src/email/drivers/smtp-driver.ts:50",
+      "evidence": "GHSA-p6gq-j5cr-w38f targets nodemailer's message-level `raw` option bypassing disableFileAccess/disableUrlAccess (arbitrary file read / SSRF). The only call site, smtp-driver.ts:50-60, builds the message from `{ from, to, replyTo, subject, text: input.bodyMarkdown, html: markdownToBasicHtml(...) }` — it never sets `raw`, never sets attachments with file paths/URLs, and bodies are system-generated markdown templates, not attacker-controlled MIME. Per project memory the prod setting is EMAIL_DRIVER=console (no SMTP transport instantiated). Note env.ts:357 defaults emailDriver to 'smtp' when NODE_ENV!=development, so the driver could be active if the env var were unset, but the vulnerable code path still would not be reachable.",
+      "impact": "No reachable exploit path. The file-read/SSRF requires the `raw` option which Libriant does not expose.",
+      "verified": "static",
+      "fix": "Bump apps/api dependency to nodemailer ^9.0.1 (patched) at next convenient maintenance; not blocking for go-live. Keep EMAIL_DRIVER=console until the Resend key is available (per memory).",
+      "confidence": "high"
+    },
+    {
+      "severity": "info",
+      "title": "qs — vulnerable 6.14.2 is dev-only (supertest); production qs is already patched 6.15.2",
+      "file": "apps/api/package.json",
+      "evidence": "`pnpm why qs -r`: production path is @nestjs/platform-express > express@5.2.1 > body-parser/qs@6.15.2, which is ABOVE the advisory range (GHSA-q8mj-m7cp-5q26 affects >=6.11.1 <=6.15.1). The only vulnerable copy is qs@6.14.2 under devDependencies supertest > superagent (test client). The DoS would only fire in test code calling qs.stringify with comma-format arrays + encodeValuesOnly.",
+      "impact": "No production exposure; the runtime querystring parser is patched.",
+      "verified": "static",
+      "fix": "No action needed for prod. The dev copy clears when supertest/superagent updates; optionally pnpm.overrides \"qs\": \">=6.15.2\".",
+      "confidence": "high"
+    },
+    {
+      "severity": "info",
+      "title": "form-data <4.0.6 — dev/build-tool only (supertest + electron-builder), not a runtime dependency",
+      "file": "apps/api/package.json",
+      "evidence": "`pnpm why form-data -r` shows all three paths are non-runtime: apps/api devDependencies @types/supertest and supertest>superagent>form-data@4.0.5, and apps/desktop devDependencies electron-builder>app-builder-lib>electron-publish>form-data@4.0.5. No production code (NestJS API, Next web, Electron main) depends on form-data. The CRLF-injection (GHSA-hmw2-7cc7-3qxx) needs an HTTP client building multipart bodies with attacker-controlled field names — only test/release tooling does that here.",
+      "impact": "No runtime exposure. Worst case is during local test runs or desktop release packaging, both trusted-input contexts.",
+      "verified": "static",
+      "fix": "No action needed for production. Will resolve as supertest/electron-builder update; optionally pnpm.overrides \"form-data\": \">=4.0.6\".",
+      "confidence": "high"
+    },
+    {
+      "severity": "info",
+      "title": "postcss 8.4.31 (bundled in next) — build-time only, not required under next/dist/server",
+      "file": "apps/web/package.json:14",
+      "evidence": "`pnpm why postcss -r`: prod path is apps/web > next@16.2.6 > postcss@8.4.31; other path (vite/vitest) is dev. GHSA-qx2v-qp2m-jg93 is XSS via unescaped </style> in postcss's CSS-stringify output, which requires processing untrusted CSS at runtime. Grep of node_modules/.pnpm/next@16.2.6/node_modules/next/dist/server/ for require('postcss')/from 'postcss' returns nothing — postcss is used only at `next build` to compile the app's own (trusted) CSS, not in the running server.",
+      "impact": "No production exposure: no untrusted CSS is ever passed through postcss at runtime.",
+      "verified": "static",
+      "fix": "No action needed; clears when Next bumps its bundled postcss. (postcss is internal to next, not separately installable, so an override on the top-level postcss only affects the dev/vite copy.)",
+      "confidence": "high"
+    },
+    {
+      "severity": "info",
+      "title": "uuid 8.3.2 (via exceljs) — vulnerable buf-bounds path unreachable; only uuid.v4() is called",
+      "file": "apps/api/package.json",
+      "evidence": "`pnpm why uuid -r`: apps/api > exceljs@4.4.0 > uuid@8.3.2. GHSA-w5hq-g745-h8pq is a missing buffer bounds check in v3/v5/v6 only when a `buf` argument is supplied. exceljs's only usage (node_modules/.pnpm/exceljs@4.4.0/.../cf-rule-ext-xform.js:1 `const {v4: uuidv4} = require('uuid')`, calls `uuidv4()` with no args) uses random v4 with no buffer argument, so the vulnerable code path is never exercised.",
+      "impact": "No exposure; the vulnerable function/argument combination is never called.",
+      "verified": "static",
+      "fix": "No action needed; clears when exceljs updates uuid.",
+      "confidence": "high"
+    },
+    {
+      "severity": "info",
+      "title": "vite / launch-editor / esbuild — build/test tooling only, Windows-dev-server-specific",
+      "file": "apps/api/package.json",
+      "evidence": "`pnpm why vite -r` and `pnpm why esbuild -r`: vite@7.3.3 comes only via apps/api devDependency vitest@4.1.7; esbuild@0.28.0/0.27.7 only via tsx and vitest/vite (all dev/build). Advisories GHSA-fx2h-pf6j-xcff (vite server.fs.deny bypass on Windows), GHSA-v6wh-96g9-6wx3 (launch-editor NTLM hash disclosure on Windows), GHSA-g7r4-m6w7-qqqr (esbuild dev-server arbitrary file read on Windows) all require running a dev server, on Windows, exposed to a malicious request — none of which is part of Libriant's production runtime or its Linux CI/build.",
+      "impact": "No production exposure. Risk is limited to a developer running the dev server on Windows with a hostile local network — not the deployed app.",
+      "verified": "static",
+      "fix": "No action needed for go-live. Bump vitest/tsx to pull vite>=7.3.5 and esbuild>=0.28.1 at routine maintenance to clear the audit noise.",
+      "confidence": "high"
+    },
+    {
+      "severity": "info",
+      "title": "pnpm overrides + lockfile + install scripts — verified safe",
+      "file": "package.json",
+      "evidence": "Root package.json pnpm.overrides pins react ^19.2.6, react-dom ^19.2.6, ioredis ^5.11.0; pnpm-lock.yaml resolves react@19.2.6, react-dom@19.2.6(react@19.2.6), ioredis@5.11.0 — all current, none flagged in G11. `pnpm install --frozen-lockfile` => \"Lockfile is up to date\" / \"Already up to date\" (matches package.json, G1 frozen-lockfile corroborated). No .npmrc and no onlyBuiltDependencies allowlist exist, so pnpm 9 blocks postinstall/build scripts of dependencies by default; no apps/* or packages/* package.json declares preinstall/postinstall/install scripts; production deps are pure-JS (bcryptjs, not native bcrypt — no node-gyp build at install).",
+      "impact": "No supply-chain install-time code-execution surface introduced by the project config; overrides are current.",
+      "verified": "static",
+      "fix": "No change required. Optionally add an explicit pnpm.onlyBuiltDependencies allowlist to make build-script policy intentional rather than relying on the default.",
+      "confidence": "high"
+    }
+  ]
+}

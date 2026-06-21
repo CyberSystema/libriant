@@ -198,7 +198,12 @@ export function normalizeIsbn10(raw: string): TransformResult<string> {
 
 /** Split a multi-valued cell. Defaults to `;` / `|` so "Last, First" survives. */
 export function splitMulti(raw: string, separators = ';|'): string[] {
-  const re = new RegExp(`[${separators.replace(/[.*+?^${}()[\]\\]/g, '\\$&')}]`);
+  // A8-03: escape EVERY char-class metacharacter — crucially `-`, which the
+  // prior escape set omitted. Inside `[...]` an unescaped `-` forms a range, so
+  // a user-supplied separator like "a-z" silently mangled data and an
+  // out-of-order range like "z-a" threw "Range out of order", crashing the whole
+  // batch. Leading `-` in the escape class below is itself literal.
+  const re = new RegExp(`[${separators.replace(/[-.*+?^${}()[\]\\]/g, '\\$&')}]`);
   return raw
     .split(re)
     .map((p) => p.trim())

@@ -186,7 +186,13 @@ export class ReservationsService {
         // and landed on the same position). A transaction-scoped advisory
         // lock keyed on the book id auto-releases at commit/rollback and
         // only blocks other holds on this exact book.
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`reservation:${input.bookId}`}, 0))`;
+        //
+        // A7-01: ALL per-book copy-allocation paths (place / promote-on-return /
+        // promote-on-expiry / cancel-expire / bulk-import) share the SAME
+        // `book:<id>` lock domain so they mutually exclude — otherwise two paths
+        // under different keys can both allocate a just-freed copy and strand
+        // one in `reserved`.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`book:${input.bookId}`}, 0))`;
 
         const liveCount = await tx.reservation.count({
           where: {
@@ -314,6 +320,10 @@ export class ReservationsService {
     const nowDate = new Date();
     try {
       await client.$transaction(async (tx) => {
+        // A7-01: take the SAME per-book lock the return path + expiry job use,
+        // so a force-cancel/expire can't promote the queue head concurrently
+        // with another promotion path and strand a freed copy in `reserved`.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`book:${existing.bookId}`}, 0))`;
         const updated = await tx.reservation.updateMany({
           where: { id, status: existing.status },
           data: {
@@ -490,8 +500,13 @@ export class ReservationsService {
 
     const now = new Date();
     const expiresAt = new Date(now.getTime() + holdPickupHours * MS_PER_HOUR);
-    await tx.reservation.update({
-      where: { id: head.id },
+    // A7-01: CAS on status='queued'. Belt-and-braces against the head being
+    // promoted by a concurrent path (the per-book advisory lock should already
+    // serialize promotions, but an unlocked/forgotten caller must NOT be able to
+    // double-promote the same head and strand a second copy). If we lost the
+    // race the copy we'd have used stays `available` for the winner.
+    const promoted = await tx.reservation.updateMany({
+      where: { id: head.id, status: 'queued' },
       data: {
         status: 'ready',
         readyAt: now,
@@ -500,6 +515,7 @@ export class ReservationsService {
         queuePosition: null,
       },
     });
+    if (promoted.count === 0) return null;
     const flipped = await tx.bookCopy.updateMany({
       where: { id: candidateCopyId, status: 'available' },
       data: { status: 'reserved' },

@@ -19,6 +19,7 @@
  * UTF-8 or use the CSV path.
  */
 import { XMLParser } from 'fast-xml-parser';
+import { IMPORT_MAX_COLUMNS } from '../import.constants.js';
 import { decodeBuffer } from './encoding.js';
 import {
   ParseError,
@@ -200,6 +201,14 @@ function recordsToTable(
         order.push(key);
       }
     }
+  }
+  // A8-02: cap the synthesized column union — a crafted MARC file with millions
+  // of distinct tag$code keys would otherwise amplify into multi-GB of objects.
+  if (order.length > IMPORT_MAX_COLUMNS) {
+    throw new ParseError(
+      `The MARC file produces ${order.length} columns, more than the ` +
+        `${IMPORT_MAX_COLUMNS}-column import limit.`,
+    );
   }
   const columns: ParsedColumn[] = order.map((name, index) => ({ index, name }));
 

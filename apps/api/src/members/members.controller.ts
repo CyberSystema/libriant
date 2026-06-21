@@ -22,6 +22,8 @@ import { QuotaInterceptor } from '../plans/quota.interceptor.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { parseLimit } from '../platform/query.js';
 import { MembersService } from './members.service.js';
+import { RolesGuard } from '../tenancy/roles.guard.js';
+import { StaffWrite } from '../tenancy/roles.decorator.js';
 import {
   CreateMemberDto,
   MEMBER_STATUSES,
@@ -40,7 +42,7 @@ import {
  * customFields validated against active FieldDefinitions for entity_kind='member'.
  */
 @Controller('t/:slug/members')
-@UseGuards(TenantGuard)
+@UseGuards(TenantGuard, RolesGuard)
 @UseInterceptors(QuotaInterceptor)
 export class MembersController {
   constructor(@Inject(MembersService) private readonly svc: MembersService) {}
@@ -87,6 +89,7 @@ export class MembersController {
     return this.svc.getByMemberNumber(tenant, value);
   }
 
+  @StaffWrite()
   @Post()
   @RequiresQuota('max_members')
   async create(
@@ -103,6 +106,7 @@ export class MembersController {
     return this.svc.get(tenant, id);
   }
 
+  @StaffWrite()
   @Patch(':id')
   async update(
     @TenantCtx() tenant: TenantContext,
@@ -114,6 +118,7 @@ export class MembersController {
     return this.svc.update(tenant, id, dto, actor);
   }
 
+  @StaffWrite()
   @Put(':id/status')
   async setStatus(
     @TenantCtx() tenant: TenantContext,
@@ -125,6 +130,7 @@ export class MembersController {
     return this.svc.setStatus(tenant, id, dto, actor);
   }
 
+  @StaffWrite()
   @Delete(':id')
   async archive(
     @TenantCtx() tenant: TenantContext,

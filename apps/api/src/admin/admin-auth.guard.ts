@@ -46,7 +46,15 @@ export class AdminAuthGuard implements CanActivate {
     if (!admin || admin.disabledAt || admin.status !== 'active') {
       throw new ForbiddenException('Your admin account is no longer active.');
     }
-    // AUTH-01: reject a session minted before a forced reset/disable.
+    // A1-02 / AUTH-01: reject a session minted before a forced reset/disable.
+    // NOTE: today admins are seed-managed — there is NO in-app admin
+    // password-change/disable endpoint, so nothing WRITES sessionsValidAfter
+    // yet, and immediate revocation is handled by the status/disabledAt checks
+    // above (re-read from the DB on every request, admin sessions TTL = 1h).
+    // This read is the wired-and-ready hook: any FUTURE admin self-service
+    // credential change MUST set `adminUser.sessionsValidAfter = now()` to kill
+    // existing cookies. Keeping the check (rather than deleting it) means that
+    // path is one line away and can't be forgotten.
     const validAfterMs = admin.sessionsValidAfter ? admin.sessionsValidAfter.getTime() : 0;
     if (validAfterMs > 0 && session.iat && session.iat < Math.floor(validAfterMs / 1000)) {
       throw new UnauthorizedException('Your admin session has expired. Please sign in again.');

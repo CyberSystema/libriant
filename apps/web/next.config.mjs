@@ -44,6 +44,14 @@ const nextConfig = {
   // get 'unsafe-inline' for Next's bootstrap/hydration inline scripts (the App
   // Router emits them without a nonce). object-src/base-uri/frame-ancestors are
   // locked down to actually contain an injection.
+  //
+  // A10-04 (documented residual): dropping script-src 'unsafe-inline' requires a
+  // per-request nonce via a Next middleware ('nonce-<v>' + 'strict-dynamic').
+  // That is the right hardening but it must be runtime-verified (a wrong nonce
+  // breaks ALL hydration), so it is tracked as a follow-up rather than shipped
+  // blind. Containment today rests on: no unescaped tenant HTML sinks (help
+  // markdown is server-owned; announcements/branding are React-escaped; SVG
+  // upload is blocked server-side), plus object-src/base-uri/frame-ancestors.
   async headers() {
     const csp = [
       "default-src 'self'",

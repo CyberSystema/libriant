@@ -6,6 +6,7 @@ import { AdminModule } from './admin/admin.module.js';
 import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { SessionMiddleware } from './auth/session.middleware.js';
+import { OriginCheckMiddleware } from './platform/origin-check.middleware.js';
 import { BillingModule } from './billing/billing.module.js';
 import { CatalogModule } from './catalog/catalog.module.js';
 import { CustomizationModule } from './customization/customization.module.js';
@@ -111,6 +112,9 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     consumer
       .apply(
+        // A10-03: CSRF Origin check runs FIRST — reject a cross-site browser
+        // Origin on any state-changing request before it touches session/tenant.
+        OriginCheckMiddleware,
         SessionMiddleware,
         AdminMiddleware,
         ImpersonationMiddleware,

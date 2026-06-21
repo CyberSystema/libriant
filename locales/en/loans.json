@@ -49,6 +49,7 @@
   "queue.queued": "Saved offline — it'll sync automatically when you're back online.",
   "queue.synced": "Synced: {label}",
   "queue.syncFailed": "Couldn't sync \"{label}\": {reason}",
+  "queue.expired": "\"{label}\" was queued too long ago to sync safely — please redo it.",
   "queue.pending": "{count} pending sync",
   "queue.syncing": "Syncing…",
   "queue.saveFailed": "Couldn't save offline on this device — try again when you're back online.",

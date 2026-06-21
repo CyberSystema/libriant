@@ -7,7 +7,7 @@ import {
   EXPORT_QUEUE_PREFIX,
   type ExportJobData,
 } from './export.constants.js';
-import { processExportJob } from './export-processors.js';
+import { processExportJob, redactSecrets } from './export-processors.js';
 
 export type ExportWorkerHandle = {
   worker: Worker;
@@ -38,7 +38,9 @@ export async function startExportWorker(): Promise<ExportWorkerHandle> {
     { connection, concurrency: 1, prefix: EXPORT_QUEUE_PREFIX },
   );
   worker.on('failed', (job, err) => {
-    console.error(`[export-worker] job ${job?.id} failed: ${err.message}`);
+    // A14-05: a pg_dump/connection failure can carry the (super)user DB password
+    // in its message — redact before it hits operator stdout / log aggregation.
+    console.error(`[export-worker] job ${job?.id} failed: ${redactSecrets(err.message)}`);
   });
   // eslint-disable-next-line no-console
   console.log('[export-worker] started');

@@ -16,6 +16,8 @@ import { validateDto } from '../auth/validate-dto.js';
 import { parseLimit } from '../platform/query.js';
 import { AuthorsService } from './authors.service.js';
 import { CreateAuthorDto, UpdateAuthorDto } from './authors.dto.js';
+import { RolesGuard } from '../tenancy/roles.guard.js';
+import { StaffWrite } from '../tenancy/roles.decorator.js';
 
 /**
  *   GET    /t/:slug/catalog/authors?q=&after=&limit=&includeArchived=
@@ -25,7 +27,7 @@ import { CreateAuthorDto, UpdateAuthorDto } from './authors.dto.js';
  *   DELETE /t/:slug/catalog/authors/:id              (archive)
  */
 @Controller('t/:slug/catalog/authors')
-@UseGuards(TenantGuard)
+@UseGuards(TenantGuard, RolesGuard)
 export class AuthorsController {
   constructor(@Inject(AuthorsService) private readonly svc: AuthorsService) {}
 
@@ -45,6 +47,7 @@ export class AuthorsController {
     });
   }
 
+  @StaffWrite()
   @Post()
   async create(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const dto = await validateDto(CreateAuthorDto, raw);
@@ -56,12 +59,14 @@ export class AuthorsController {
     return this.svc.get(tenant, id);
   }
 
+  @StaffWrite()
   @Patch(':id')
   async update(@TenantCtx() tenant: TenantContext, @Param('id') id: string, @Body() raw: unknown) {
     const dto = await validateDto(UpdateAuthorDto, raw);
     return this.svc.update(tenant, id, dto);
   }
 
+  @StaffWrite()
   @Delete(':id')
   async archive(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.archive(tenant, id);

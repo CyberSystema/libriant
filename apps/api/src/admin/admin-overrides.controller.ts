@@ -8,8 +8,10 @@ import {
   NotFoundException,
   Param,
   Put,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { IsBoolean, IsDateString, IsInt, IsOptional, IsString } from 'class-validator';
 import { controlDb } from '@libriant/db-control';
 import { validateDto } from '../auth/validate-dto.js';
@@ -17,7 +19,25 @@ import { AdminAuthGuard, AdminSess } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
 import { AdminRoles } from './admin-roles.decorator.js';
 import type { AdminSessionPayload } from './admin-session.service.js';
+import { adminAuditActor, recordAdminAudit } from '../platform/admin-audit.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
+
+/** Focused JSON-safe snapshot of an override's value fields, for audit diffs. */
+function overrideSnapshot(o: {
+  valueInt: number | null;
+  valueBool: boolean | null;
+  valueText: string | null;
+  expiresAt: Date | null;
+  note: string | null;
+}): Record<string, unknown> {
+  return {
+    valueInt: o.valueInt,
+    valueBool: o.valueBool,
+    valueText: o.valueText,
+    expiresAt: o.expiresAt ? o.expiresAt.toISOString() : null,
+    note: o.note,
+  };
+}
 
 class UpsertOverrideDto {
   @IsString()
@@ -73,6 +93,7 @@ export class AdminOverridesController {
   async upsert(
     @Param('tenantId') tenantId: string,
     @AdminSess() admin: AdminSessionPayload,
+    @Req() req: Request,
     @Body() raw: unknown,
   ) {
     const dto = await validateDto(UpsertOverrideDto, raw);
@@ -113,17 +134,40 @@ export class AdminOverridesController {
         });
 
     await this.effectivePlan.invalidate(tenantId);
+    await recordAdminAudit(adminAuditActor(req, admin), {
+      tenantId,
+      action: 'feature_override.set',
+      targetType: 'feature_override',
+      targetId: dto.featureKey,
+      before: existing ? overrideSnapshot(existing) : undefined,
+      after: overrideSnapshot(row),
+    });
     return { override: row };
   }
 
   @Delete(':featureKey')
   @AdminRoles('owner')
-  async remove(@Param('tenantId') tenantId: string, @Param('featureKey') featureKey: string) {
-    const removed = await controlDb.tenantPlanOverride.deleteMany({
+  async remove(
+    @Param('tenantId') tenantId: string,
+    @Param('featureKey') featureKey: string,
+    @AdminSess() admin: AdminSessionPayload,
+    @Req() req: Request,
+  ) {
+    // Read the row first so the audit can record what was cleared (deleteMany
+    // returns only a count).
+    const existing = await controlDb.tenantPlanOverride.findFirst({
       where: { tenantId, featureKey },
     });
-    if (removed.count === 0) throw new NotFoundException('Override not found.');
+    if (!existing) throw new NotFoundException('Override not found.');
+    await controlDb.tenantPlanOverride.delete({ where: { id: existing.id } });
     await this.effectivePlan.invalidate(tenantId);
+    await recordAdminAudit(adminAuditActor(req, admin), {
+      tenantId,
+      action: 'feature_override.cleared',
+      targetType: 'feature_override',
+      targetId: featureKey,
+      before: overrideSnapshot(existing),
+    });
     return { ok: true };
   }
 }

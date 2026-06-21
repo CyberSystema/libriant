@@ -1,0 +1,258 @@
+{
+  "summary": "Pre-prod security cluster review (A1-A5) with adversarial verification",
+  "agentCount": 7,
+  "logs": [],
+  "result": [
+    {
+      "dimension": "A1-auth-sessions",
+      "summary": "I read the full tenant auth surface (auth.controller/guard, login/signup/password-reset/email-verification services, jwt-session + session.middleware + cookie.service), the admin plane (admin-auth.*, admin-session, admin.middleware, admin-roles.guard), and the support/impersonation flow (impersonation middleware/session/cookie, support-key, support-session, mfa). The claimed-fixed items hold up well under real-code review: AUTH-01 session-epoch revocation is correctly keyed off an IMMUTABLE session start (`ist`), so sliding re-issues cannot launder a revoked session, and every tenant-user credential/disable path bumps `sessionsValidAfter` + busts the Redis cache (role-change relies on live DB re-read in RolesGuard/TenantGuard, which is sound). Reset/verify tokens are 32-byte CSPRNG with atomic GETDEL single-use; MFA uses replay-protected, fail-closed TOTP; DI uses explicit `@Inject(...)` / direct `controlDb` + `new Reflector()` so the prior tsx/Reflector 500 class of bug is avoided. The guards/middleware are correctly wired (RedisModule is @Global). The remaining issues are an account-lockout DoS (lockout is account-wide, not IP-scoped, and renewable), a couple of consistency gaps (admin-side `sessionsValidAfter` is read but never written; impersonation JWT skips the per-claim type checks the other verifiers do), and a weak staff first-login password floor. No auth bypass or cross-tenant breach found in this dimension. The live API was not running on :3001, so findings are static (Postgres/Redis are up but I did not mutate data).",
+      "findings": [
+        {
+          "severity": "medium",
+          "title": "Account-lockout DoS: login lockout is account-wide and renewable, not IP-scoped",
+          "file": "apps/api/src/auth/login.service.ts:103-111,180-196",
+          "evidence": "recordFailure() does `failedLogins: { increment: 1 }` then locks the ACCOUNT (`lockedUntil = now + loginLockoutMs`) once `failedLogins >= maxFailedLogins`. The lock is keyed only on the user row — every wrong password from ANY source IP advances the same counter. maxFailedLogins defaults to 5 and loginLockoutMs to 15 min (config/env.ts:304-305). The per-IP login budget is RL.loginPerIp = { limit: 20, windowSec: 300 } (auth.controller.ts:55), i.e. a single IP can submit 20 attempts / 5 min — comfortably more than the 5 needed to lock an account. There is no IP-scoping, progressive backoff, or CAPTCHA, so an attacker who knows (slug, email) can keep any account — including the owner — perpetually locked by sending 5 bad passwords every 15 minutes.",
+          "impact": "Targeted denial of service against any known account (owners included). Bounded to 15-min windows but trivially renewable and cheap. Does not leak account existence (lockout returns the same generic error), but the availability impact is real and the prior AUTH-02 remediation only closed the enumeration oracle, not the DoS.",
+          "verified": "static",
+          "fix": "Don't hard-lock the account on raw failure count alone. Options: (1) scope the brute-force counter/lock to (account + IP) so one attacker can't lock a victim globally; (2) replace fixed account lock with exponential per-account delay + a CAPTCHA/proof-of-work step after N failures; (3) auto-clear the lock on a successful password+second-factor from a known device. At minimum, require the per-account lock to also consider source diversity so a single IP cannot lock an account it has never authenticated from.",
+          "confidence": "high"
+        },
+        {
+          "severity": "low",
+          "title": "Admin-side session epoch (sessionsValidAfter) is read by the guard but never written anywhere",
+          "file": "apps/api/src/admin/admin-auth.guard.ts:50-53",
+          "evidence": "AdminAuthGuard reads admin.sessionsValidAfter and rejects tokens with `session.iat < validAfterMs/1000`. But a repo-wide grep for writes shows the column is never set: the only adminUser writes are recordFailure/recordSuccess (admin-auth.service.ts:85,91,104) and MFA enrolment (mfa.controller.ts:96) — none touch sessionsValidAfter. There is also no in-app admin password-change or admin-disable endpoint (admins are seed-managed), so the AUTH-01 'forced reset terminates existing admin sessions' guarantee documented in the guard comment (lines 21-23) cannot actually fire.",
+          "impact": "Defense-in-depth that is effectively dead code today. Not exploitable now (a disabled admin is still caught by the status/disabledAt checks at lines 46-48, which run every request), but if an admin password-reset/rotation feature is added later without remembering to bump this column + nothing forces existing admin cookies (1h TTL) to die, the 'kill existing sessions on reset' expectation silently won't hold.",
+          "verified": "static",
+          "fix": "Either remove the unused branch to avoid a false sense of coverage, or — preferably before shipping any admin self-service password/credential change — wire that path to set adminUser.sessionsValidAfter = now() so the existing read becomes meaningful. Add a regression test asserting a post-reset admin cookie is rejected.",
+          "confidence": "high"
+        },
+        {
+          "severity": "low",
+          "title": "Impersonation JWT verify trusts the decoded payload shape without per-claim type checks",
+          "file": "apps/api/src/support/impersonation-session.service.ts:45-55",
+          "evidence": "verify() does `jwt.verify(...) as ImpersonationPayload | undefined` and only checks `payload.imp === true`, then returns the cast object. The tenant and admin verifiers (jwt-session.service.ts:84-92, admin-session.service.ts:44-53) explicitly validate the type of every claim (sub/tid/role/iat/exp) per the AUTH-10 hardening — this one does not.",
+          "impact": "Not exploitable in practice: the token is HMAC-signed with a dedicated impersonationSecret, and ImpersonationMiddleware (impersonation.middleware.ts:49-63) re-loads the SupportSession row by sessionId and cross-checks tenantId/adminId against the payload, so a malformed/forged payload is rejected downstream. It is, however, an inconsistency with the codebase's own AUTH-10 contract and would matter if any consumer ever trusts the payload before the DB cross-check.",
+          "verified": "static",
+          "fix": "Mirror the other two verifiers: validate typeof sub/adminId/tenantId/sessionId === 'string', imp === true, and iat/exp are numbers; return null otherwise instead of casting.",
+          "confidence": "medium"
+        },
+        {
+          "severity": "low",
+          "title": "Staff first-login (complete-setup) allows a 4-character password",
+          "file": "apps/api/src/auth/dto/login.dto.ts:44-46",
+          "evidence": "CompleteSetupDto.newPassword is `@Length(4, 200)`, vs the 12-char minimum enforced on signup (signup.dto.ts:32) and password reset (password-reset.dto.ts:24). login.service.ts completeSetup() hashes whatever is supplied with no extra strength check.",
+          "impact": "A staff member completing first-login setup can set a 4-char password, which is brute-forceable offline if the control-DB password hashes ever leak and is well below the floor applied everywhere else. Mitigated by per-account login lockout and that staff use usernames within one tenant, so it is low severity, but it's an inconsistent and weak floor for an interactive login credential.",
+          "verified": "static",
+          "fix": "Raise the complete-setup newPassword minimum to match the rest of the product (e.g. @MinLength(12)), or at least to a defensible interactive-login floor (>=8). If short staff PINs are intentional, document the threat model; otherwise align the DTO.",
+          "confidence": "high"
+        }
+      ],
+      "verified": []
+    },
+    {
+      "dimension": "A2-authz-roles",
+      "summary": "Audited every guard (AuthGuard, TenantGuard, RolesGuard, AdminAuthGuard, AdminRolesGuard, PlanGuard, QuotaInterceptor, EmailVerifiedGuard, SupportSessionGuard, NonProductionOnlyGuard) and built a full route→guard matrix across all 43 controllers. The authorization plane is in strong shape and the prior Reflector-DI 500 regression has been correctly avoided: the standalone-referenced guards (RolesGuard/TenantGuard/AdminRolesGuard/EmailVerifiedGuard) construct Reflector directly or use the controlDb singleton (no constructor DI), while the DI-injected PlanGuard/QuotaInterceptor are properly registered+exported by PlansModule and every consumer imports it, so DI resolves. Roles are always re-read from the control DB (never from the JWT) so revocation/downgrade is immediate; cross-tenant IDOR is structurally prevented by db-per-tenant (resource IDs from the path are queried against the tenant's own Prisma client); every mutating /admin/* route carries @AdminRoles('owner') (support-only routes like redeem are intentionally any-admin); impersonation bypass of role/plan/quota gates requires a signed JWT bound to a live, tenant-matched support_sessions row; and the admin session cookie is __Host-scoped so the admin API is unreachable from the public host regardless of Host header. Two non-critical observations remain: the least-privileged \"volunteer\" role can fully mutate core circulation/catalog data, and the new admin-host isolation is enforced only in the web UI layer (the API has no host check, relying solely on the host-scoped cookie).",
+      "findings": [
+        {
+          "severity": "medium",
+          "title": "\"volunteer\" role (explicitly \"limited rights\") can create/edit/archive all core data — catalog, members, loans, reservations, copies, custom records — no @Roles gate",
+          "file": "apps/api/src/catalog/books.controller.ts:33-82 (also members.controller.ts:42-134, loans/loans.controller.ts:47-128, reservations/reservations.controller.ts:49-126, catalog/copies.controller.ts:35-75, catalog/authors.controller.ts:27-65, customization/collection-records.controller.ts:33-92)",
+          "evidence": "BooksController is `@Controller('t/:slug/catalog/books') @UseGuards(TenantGuard)` with NO @Roles on `@Post()/@Patch(':id')/@Delete(':id')`, and the handlers pass only `tenant` to the service — role is never read. The UserRole enum (packages/db-control/prisma/schema.prisma:41-46) defines `volunteer // limited rights` as the lowest role, and TenantGuard only proves membership, not role. By contrast staff/settings/branding/import/audit/collections-definitions ARE `@Roles('owner','admin')`-gated, and storage-demo.controller.ts:251 explicitly floors sensitive-file reads above `volunteer` (`if (!user || user.role === 'volunteer') throw ForbiddenException`). So a volunteer who is blocked from viewing a member's photo file can still PATCH/DELETE that member record, edit/delete any book, and check out/return/mark-lost loans.",
+          "impact": "A library account intended as 'limited rights' (e.g. a temporary helper) can destructively mutate the entire catalog, member roster, and circulation ledger. Not a cross-tenant breach (db-per-tenant isolates it) and requires an admin to have created the volunteer account, but it contradicts the documented role semantics and the privacy floor the same codebase applies to member files.",
+          "verified": "static",
+          "fix": "Decide the intended volunteer capability explicitly. If volunteers should only do circulation, add `@UseGuards(RolesGuard) @Roles('owner','admin','librarian')` to the destructive catalog/members routes (POST/PATCH/DELETE) and keep loans open; if the data routes are genuinely meant for all roles, document that and reconcile it with the TEN-06 volunteer file floor so the model is consistent. At minimum gate DELETE/archive and member status changes above volunteer.",
+          "confidence": "low"
+        },
+        {
+          "severity": "low",
+          "title": "Admin-panel host isolation is enforced only in the Next.js web layer; the admin API has no host/Host-header check and relies solely on the __Host- cookie",
+          "file": "apps/web/app/[locale]/admin/layout.tsx:28-34 (API side: apps/api/src/admin/admin-auth.guard.ts:29-64, no host check anywhere in /admin/* controllers)",
+          "evidence": "Commit cd7c9cb added the only host gate, in the web layout: `const adminHost=(process.env.ADMIN_HOST??'')...; if(reqHost && reqHost!==adminHost) notFound();`. The API admin controllers (`@Controller('admin/...')`) are matched on ANY host; AdminAuthGuard authenticates purely from the signed `__Host-libriant_admin` cookie (admin-auth.guard.ts:31-45) with no Host comparison. The commit message asserts 'the admin API was unreachable cross-host' but that property comes only from the cookie's __Host- prefix (env.ts:272-275, set with path:'/' and no Domain in admin-cookie.service.ts:22-30), not from any API-side host enforcement.",
+          "impact": "The defense currently holds because a __Host- cookie set on admin.<apex> is never sent to the public apex, so /admin/* on the public host gets 401. But the protection is implicit and single-layered: if ADMIN_COOKIE_NAME is ever overridden to drop the __Host- prefix, or a future change loosens the cookie scope/Domain, the admin API becomes reachable on the public host with no second barrier. The web 404 is cosmetic and does not protect the API.",
+          "verified": "static",
+          "fix": "Add a defense-in-depth host check on the API admin surface (a middleware/guard that 404s /admin/* when the request Host !== ADMIN_HOST, mirroring the web layout and the TenantMiddleware adminHost handling at tenant.middleware.ts:121), and add a startup assertion that the admin cookie name retains the __Host- prefix in production. Do not trust X-Forwarded-Host for this — use the validated Host that Caddy preserves.",
+          "confidence": "medium"
+        },
+        {
+          "severity": "info",
+          "title": "GET /t/:slug/plan and /plan/usage (effective-plan + raw override internals) are reachable by any tenant role including volunteer, but are 404'd in production by NonProductionOnlyGuard",
+          "file": "apps/api/src/plans/plan-demo.controller.ts:65-105",
+          "evidence": "PlanDemoController is `@UseGuards(NonProductionOnlyGuard, TenantGuard, PlanGuard)` and the guard returns 404 outside development (`private readonly enabled = loadEnv().nodeEnv !== 'production'; if(this.enabled) return true; throw new NotFoundException()`). The guard is listed FIRST so prod requests 404 before TenantGuard warms a pool. Verified nodeEnv defaults to non-production only when NODE_ENV is unset; in prod NODE_ENV=production so these routes are absent.",
+          "impact": "None in production (routes 404). Noted only because the plan/usage read has no @Roles even in dev and exposes plan-source internals; confirm NODE_ENV=production is actually set for the API service at deploy time (the project has a documented web-side NODE_ENV gotcha) so this guard's enabled flag computes false.",
+          "verified": "static",
+          "fix": "No action required if NODE_ENV=production is guaranteed for the API container. Optionally fail-closed: have NonProductionOnlyGuard treat an unrecognized/empty NODE_ENV as production rather than dev, so a missing env var hides the demo routes instead of exposing them.",
+          "confidence": "medium"
+        }
+      ],
+      "verified": []
+    },
+    {
+      "dimension": "A3-tenancy-isolation",
+      "summary": "I audited the full tenant-isolation surface: slug/subdomain resolution and Redis caching (tenancy/tenant-middleware + tenant-resolver), the per-tenant Prisma client LRU (tenant-prisma.service + packages/db-tenant/src/client.ts), TenantGuard/RolesGuard, the storage layer (signed URLs, local driver path safety, per-tenant driver cache), the support-key/impersonation path, provisioning + relocate, background jobs/workers, import + export (incl. admin \"full\" exports), the Stripe webhook tenant mapping, and the admin plane. The architecture is genuinely strong and the two prior audits' fixes hold: each tenant has a physically separate Postgres DB, every data path obtains its client via getClient(resolvedTenantContext) keyed by tenant id with a dbUrl-change rebuild, TenantGuard cross-checks session.tid === resolved tenant.id (and impersonation.tenantId === tenant.id), JWT secrets for session/admin/impersonation/storage-signing are deliberately distinct, signed-download tokens bind ref+tid so they can't be replayed cross-tenant, the local driver refuses path traversal, and admin/full exports are gated to platform owners while the tenant download endpoint hard-rejects non-own/non-tenant-scope jobs. I found NO cross-tenant read/write, auth-bypass, or data-loss defect on the running product. The only items worth recording are a misleading security comment and a couple of defense-in-depth gaps that are not currently exploitable. Static reading was the method (dev data was not mutated).",
+      "findings": [
+        {
+          "severity": "low",
+          "title": "Misleading comment claims a cross-tenant replay check the signed-download endpoint does not (and need not) perform",
+          "file": "apps/api/src/storage/signed-url.service.ts:52-57",
+          "evidence": "JSDoc on verify(): \"Caller must STILL check that the request's resolved tenant matches `payload.tid` — defence against a leaked token being used against a different tenant via a forged Host header.\" But the actual consumer in storage-demo.controller.ts:187-204 (`@Get('_files/signed')`) runs no tenant middleware (the route is not under /t/ and carries no slug), so there is no `req.tenant` to compare. It instead resolves the tenant directly FROM the signed `payload.tid` (resolveTenantById, line 197) and reads `storage.get(tenant, payload.ref)`. That is actually correct and replay-safe (ref+tid are signed together, secret is HMAC-distinct), but the comment describes a check that doesn't exist, inviting a future maintainer to either add a redundant/incorrect check or to wrongly assume one is already enforcing isolation.",
+          "impact": "Documentation/maintainability risk only. No isolation impact today: a token from tenant A cannot be used to read tenant B because the served tenant is derived from the signed tid, not from any attacker-controllable Host/path.",
+          "verified": "static",
+          "fix": "Rewrite the comment to state that isolation is enforced by deriving the tenant from the signed `tid` (not from request context), since `/_files/signed` runs outside tenant middleware. Remove the 'caller must check resolved tenant' sentence so nobody adds a meaningless or breaking comparison.",
+          "confidence": "high"
+        },
+        {
+          "severity": "low",
+          "title": "Announcement dismiss/ack do not verify the announcement targets the caller's tenant (write-safe, but allows no-op cross-tenant probes)",
+          "file": "apps/api/src/announcements/announcement-delivery.service.ts:140-188",
+          "evidence": "dismiss() and acknowledge() look up the announcement by id only (`controlDb.announcement.findUnique({ where: { id: input.announcementId } })`) and never call anns.tenantMatches() to confirm the announcement's audience includes this tenant. They DO scope the write by tenant: `controlDb.announcementDelivery.updateMany({ where: { announcementId, tenantId: input.tenantId, userId } })`. Because the controller (tenant-announcements.controller.ts:48-74) always supplies `tenantId: tenant.id` from the resolved TenantContext behind TenantGuard, a cross-tenant write is impossible — updateMany simply matches 0 rows for a foreign tenant/announcement and returns success.",
+          "impact": "No cross-tenant data write or read. A librarian can POST dismiss/ack for an arbitrary announcement id (incl. one not targeted at their tenant) and get a 200 with zero effect — a minor existence-probe / API-noise issue, not a breach. The 404 'cannot be dismissed' branch already prevents acting on non-dismissible announcements.",
+          "verified": "static",
+          "fix": "For consistency and to return a clean 404 on foreign announcements, gate dismiss/ack on anns.tenantMatches(audienceFromJson(ann.audienceFilter), { id, tags, status }) before the updateMany (the active-set fetcher already does this). Strictly defense-in-depth; not required to close an isolation hole.",
+          "confidence": "high"
+        },
+        {
+          "severity": "info",
+          "title": "Tenant-status reactivation has no cache-invalidation hook, but no reactivation endpoint exists yet (TEN-04 latent)",
+          "file": "apps/api/src/tenancy/tenant-resolver.service.ts:50-68",
+          "evidence": "The resolver positively caches the full TenantContext including `status` for tenantCacheTtlSec; the middleware (tenant.middleware.ts:76-83) enforces archived→410 / suspended→403 AFTER reading the cache. invalidate() exists and is called by hard-delete (admin-tenants.controller.ts:200-202), tags (admin-tenant-tags.controller.ts:75-78) and relocate (scripts/tenant-relocate.ts:462-464). I found NO admin/billing code path that flips tenants.status to suspended/archived/active (grep for tenant.update/updateMany shows only brandColor/brandLogoRef and tags writes; billing past_due acts on Subscription.status + EffectivePlan, not Tenant.status). So today the cached status is always consistent with the row.",
+          "impact": "Latent only: if a suspend/archive/reactivate endpoint is added later WITHOUT calling resolver.invalidate(), every API process would serve the stale status for up to the TTL — a suspended tenant could keep being served, or a reactivated one stay locked out. Not exploitable now because the mutation surface doesn't exist.",
+          "verified": "static",
+          "fix": "When implementing tenant suspend/archive/reactivate (and any billing→tenant.status transition), call TenantResolverService.invalidate({ slug, customSubdomain }) in the same operation, mirroring the existing tags/relocate/delete callers. Consider a control-plane test asserting any tenants.status write is paired with an invalidate.",
+          "confidence": "medium"
+        }
+      ],
+      "verified": []
+    },
+    {
+      "dimension": "A4-injection-input",
+      "summary": "Audited every raw-SQL call site in apps/api (loans, reservations, staff, members, storage, plans, help, admin/fleet, platform/health, export, import, customization/quota), the custom-field ReDoS guard + all save paths, storage path handling, the OpenLibrary SSRF surface, and the xlsx/MARC parsers. SQL is uniformly parameterized (Prisma tagged templates; $queryRawUnsafe uses $1..$N placeholders or constant strings), SSRF is well-defended (pinned host, digits-only ISBN, redirect:'manual', 5s timeout, 1MB cap), local storage blocks traversal (safeResolve rejects .., empty segments, \\0 and verifies root prefix), pg_dump uses execFile with array args + env-passed creds (no shell, no argv credential leak), and MARCXML uses fast-xml-parser (no DTD/external-entity resolution → no XXE). The one real, high-impact defect: the admin-authored regex ReDoS guard (patternLooksCatastrophic) is bypassable by bounded {n} repetition of an ambiguous group — empirically verified to freeze the shared event loop — defeating the very protection it claims to provide.",
+      "findings": [
+        {
+          "severity": "high",
+          "title": "ReDoS guard bypassed by bounded {n} repetition of an ambiguous group — platform-wide event-loop freeze",
+          "file": "apps/api/src/customization/field-types.ts:126",
+          "evidence": "hasAmbiguousRepeatedGroup only treats a group as 'repeated' when followed by * , + , or an OPEN-ENDED brace: `const repeated = next === '*' || next === '+' || (next === '{' && isOpenEndedBrace(p, i + 1));` and isOpenEndedBrace requires a comma: `return /^\\{\\d*,\\d*\\}/.test(p.slice(at));` (field-types.ts:134-135). So a fixed-count brace `{n}` is NOT considered repetition, and a nested-quantifier group repeated a fixed number of times slips past. patternLooksCatastrophic's other gates don't catch it either (length<200, no stacked quantifiers, countUnbounded<=6). Empirically verified against the exact guard code reimplemented from this file: pattern `(a*){5}c` PASSES the guard and `re.test('a'.repeat(40)+'!')` took 319ms; `([a-z]*){8}$` PASSES and never finished within 12s on a 35-char input (exponential). Probe output: `PASSES (a*){5}c  50:1047.0ms  100:10272.8ms ABORT(>4s)` and `PASSES ([a-z]*){8}$  50:64243.2ms ABORT(>4s)`.",
+          "impact": "An owner/admin saves a malicious validation pattern (e.g. `([a-z]*){8}$`) on any built-in custom field (book/member/loan/reservation/book_copy) or collection field — patternSaveError accepts it on all four write paths. Thereafter ANY user who creates/updates such a record and supplies a ~40-char value for that field reaches validateField (field-types.ts:323-334), which re-screens with the SAME bypassed patternLooksCatastrophic (returns false), passes the REGEX_INPUT_CAP=2000 length check, then runs re.test(raw) and freezes the single Node event loop for tens of seconds — a denial of service for EVERY tenant on that API process, per request. The bulk import path (import-engine.ts:164 → validateRecord) runs the same pattern once per row, amplifying the freeze across an entire import. The input cap does not help because blowup is exponential and triggers far below 2000 chars. The code comments (field-types.ts:38-40,55-61,228-229) explicitly claim the exponential class is rejected and only polynomial residual remains — that claim is false.",
+          "verified": "runtime-probed",
+          "fix": "Treat ANY repetition quantifier after a group — including bounded `{n}` and `{n,m}` — as 'repeated' when screening bodyIsAmbiguous: change isOpenEndedBrace to also match exact `{n}` (n>=2) and bounded `{n,m}`, i.e. flag `(ambiguousBody){k}` for k>=2. Also flag a nested unbounded quantifier inside a fixed-repeat group. Add the bypass cases (`(a*){5}c`, `([a-z]*){8}$`, `(a|a){10}`, `(.*){10}`) to redos-guard.spec.ts as must-reject. Strongly recommended: move custom-field regex matching off the main event loop or onto a non-backtracking engine (RE2 / recheck), since heuristic scanners will keep missing shapes; at minimum run validateField's regex with a hard per-call time budget (worker thread / vm timeout).",
+          "confidence": "high"
+        },
+        {
+          "severity": "info",
+          "title": "OpenLibrary outbound fetch is not SSRF-exploitable",
+          "file": "apps/api/src/catalog/openlibrary.ts:44",
+          "evidence": "URL host is hardcoded `https://openlibrary.org/...` and the only injected value is `${isbn}` where isbn = digitsOnly(rawIsbn) (normalize.ts:42-46 strips everything except 0-9Xx) and must pass isValidIsbnShape (len 10 or 13). fetch uses `redirect: 'manual'` (openlibrary.ts:54) so a 3xx to a cloud-metadata/internal address is never chased, a 5s AbortController timeout (line 46), and readCappedJson enforces MAX_RESPONSE_BYTES=1_000_000 (lines 73,84,106).",
+          "impact": "No attacker-controlled host/path; cannot reach internal addresses or metadata endpoints. Documented as verified-clean, not a vulnerability.",
+          "verified": "static",
+          "fix": "No change needed.",
+          "confidence": "high"
+        },
+        {
+          "severity": "info",
+          "title": "Local storage driver and signed-URL ref handling block path traversal",
+          "file": "apps/api/src/storage/drivers/local-driver.ts:111",
+          "evidence": "safeResolve rejects null bytes, any `..` or empty path segment, and verifies `candidate === this.root || candidate.startsWith(this.root + sep)` (local-driver.ts:112-119); requireSafe throws EPERM otherwise. Stored filenames are server-generated (cuidLike + whitelisted extension, lines 55-57,134-153). The only user-facing ref entry (storage-demo.controller.ts:119 `ref = ${resourceType}/${filename}`) and the signed-download path (storage-demo.controller.ts:200 payload.ref) both flow through driver.get→safeResolve, and verify() cross-checks payload.tid against the resolved tenant (signed-url.service.ts:58-75).",
+          "impact": "No path traversal / tenant-prefix escape via storage refs. Documented as verified-clean.",
+          "verified": "static",
+          "fix": "No change needed.",
+          "confidence": "high"
+        },
+        {
+          "severity": "info",
+          "title": "No SQL injection, command injection, or XXE in raw SQL / pg_dump / XML parsing",
+          "file": "apps/api/src/export/export-processors.ts:338",
+          "evidence": "All $executeRaw/$queryRaw use Prisma tagged templates with ${} bound params (loans.service.ts:446-452,897-906; storage.service.ts:76-81,196-204; reservations.service.ts:343,515); $queryRawUnsafe sites use $1..$N placeholders + separate args (help.service.ts:79-95, effective-plan.service.ts:143-166) or a literal 'SELECT 1' (maintenance-processors.ts:149). pg_dump runs via execFile (array args, no shell) with credentials in PG* env not argv (export-processors.ts:327-344); readTables interpolates only table names sourced from pg_tables system catalog (export-processors.ts:373). MARCXML uses fast-xml-parser with no DTD/entity expansion (marc-parser.ts:142-149) → no XXE.",
+          "impact": "No injection vector found across these surfaces. Documented as verified-clean.",
+          "verified": "static",
+          "fix": "No change needed.",
+          "confidence": "high"
+        }
+      ],
+      "verified": [
+        {
+          "finding": {
+            "severity": "high",
+            "title": "ReDoS guard bypassed by bounded {n} repetition of an ambiguous group — platform-wide event-loop freeze",
+            "file": "apps/api/src/customization/field-types.ts:126",
+            "evidence": "hasAmbiguousRepeatedGroup only treats a group as 'repeated' when followed by * , + , or an OPEN-ENDED brace: `const repeated = next === '*' || next === '+' || (next === '{' && isOpenEndedBrace(p, i + 1));` and isOpenEndedBrace requires a comma: `return /^\\{\\d*,\\d*\\}/.test(p.slice(at));` (field-types.ts:134-135). So a fixed-count brace `{n}` is NOT considered repetition, and a nested-quantifier group repeated a fixed number of times slips past. patternLooksCatastrophic's other gates don't catch it either (length<200, no stacked quantifiers, countUnbounded<=6). Empirically verified against the exact guard code reimplemented from this file: pattern `(a*){5}c` PASSES the guard and `re.test('a'.repeat(40)+'!')` took 319ms; `([a-z]*){8}$` PASSES and never finished within 12s on a 35-char input (exponential). Probe output: `PASSES (a*){5}c  50:1047.0ms  100:10272.8ms ABORT(>4s)` and `PASSES ([a-z]*){8}$  50:64243.2ms ABORT(>4s)`.",
+            "impact": "An owner/admin saves a malicious validation pattern (e.g. `([a-z]*){8}$`) on any built-in custom field (book/member/loan/reservation/book_copy) or collection field — patternSaveError accepts it on all four write paths. Thereafter ANY user who creates/updates such a record and supplies a ~40-char value for that field reaches validateField (field-types.ts:323-334), which re-screens with the SAME bypassed patternLooksCatastrophic (returns false), passes the REGEX_INPUT_CAP=2000 length check, then runs re.test(raw) and freezes the single Node event loop for tens of seconds — a denial of service for EVERY tenant on that API process, per request. The bulk import path (import-engine.ts:164 → validateRecord) runs the same pattern once per row, amplifying the freeze across an entire import. The input cap does not help because blowup is exponential and triggers far below 2000 chars. The code comments (field-types.ts:38-40,55-61,228-229) explicitly claim the exponential class is rejected and only polynomial residual remains — that claim is false.",
+            "verified": "runtime-probed",
+            "fix": "Treat ANY repetition quantifier after a group — including bounded `{n}` and `{n,m}` — as 'repeated' when screening bodyIsAmbiguous: change isOpenEndedBrace to also match exact `{n}` (n>=2) and bounded `{n,m}`, i.e. flag `(ambiguousBody){k}` for k>=2. Also flag a nested unbounded quantifier inside a fixed-repeat group. Add the bypass cases (`(a*){5}c`, `([a-z]*){8}$`, `(a|a){10}`, `(.*){10}`) to redos-guard.spec.ts as must-reject. Strongly recommended: move custom-field regex matching off the main event loop or onto a non-backtracking engine (RE2 / recheck), since heuristic scanners will keep missing shapes; at minimum run validateField's regex with a hard per-call time budget (worker thread / vm timeout).",
+            "confidence": "high"
+          },
+          "verdict": {
+            "real": true,
+            "adjusted_severity": "high",
+            "reason": "Independently confirmed. The guard treats a group as repeated only for *, +, or an OPEN-ENDED brace: hasAmbiguousRepeatedGroup at field-types.ts:126 uses `next === '{' && isOpenEndedBrace(p, i + 1)`, and isOpenEndedBrace at field-types.ts:134-135 is `/^\\{\\d*,\\d*\\}/.test(p.slice(at))` which REQUIRES a comma. So a fixed-count brace `(...){n}` (no comma) is never treated as repetition, and its body is never screened by bodyIsAmbiguous. I reimplemented the exact guard from this file: `(a*){5}c`, `([a-z]*){8}$`, `(a|a){10}`, `(.*){10}` all return false (PASS), while open-ended `(a+)+`/`(.*)*` are correctly rejected. The other gates do not catch it: length<200, no stacked `[*+][*+]`, and countUnbounded for `([a-z]*){8}$` is 1 (<=6). Runtime is genuinely exponential and triggers far below REGEX_INPUT_CAP=2000: in fresh node processes `([a-z]*){8}$` on inputs of 23/26/29/32/35 chars took ~1s/2.5s/5.8s/12s/24s (each +3 chars ~doubles), so a single ~35-char value freezes the shared event loop ~24s. The input cap (field-types.ts:329) is useless here. Call paths are real and reachable: both save paths gate only on patternSaveError->patternLooksCatastrophic (collections.service.ts:278,365; field-definitions.service.ts:262), and the match path validateField re-screens with the same bypassed function (field-types.ts:323) then runs re.test(raw) (field-types.ts:333) on every record write via dynamic-validator.ts:51 and once per row in bulk import (import-engine.ts:164). The spec (redos-guard.spec.ts) tests the comma forms `(a+){2,}` and `(.*a){11,}` but never a comma-less `(...){n}`, confirming this shape was missed; the code comments (lines 38-40,55-61,228-229) claiming the exponential class is rejected are false. Severity high rather than critical only because pattern authorship requires owner/admin role; but the blast radius is platform-wide (single Node event loop for all tenants) DoS triggerable per request by any user who supplies a ~40-char value for the field."
+          }
+        }
+      ]
+    },
+    {
+      "dimension": "A5-secrets-config",
+      "summary": "Reviewed apps/api/src/config/env.ts (env schema/validation), scripts/secrets.ts (interactive secrets manager), scripts/ensure-env.sh (deploy-time generator), the .env.example / .env.prod.example templates, and infra/compose/docker-compose.prod.yml. Secret enforcement is genuinely solid: SESSION_SECRET / ADMIN_SESSION_SECRET / IMPERSONATION_SECRET / STORAGE_SIGNING_SECRET / MFA_MASTER_KEY are all REQUIRED in non-dev with a 24-char minimum (64-hex for MFA, validated at MfaService boot), dev-only static fallbacks never apply outside development, Stripe API key + webhook secret both throw at boot when STRIPE_DRIVER=real, numeric coercion fails loudly on bad input, no hardcoded secrets exist in source, and .env.local/.env.prod are gitignored (only the example templates are tracked). The real gaps are two config-drift / fail-open-precondition issues, not weak secrets: (1) RESEND_API_KEY is read by env.ts and the email worker but is injected by NEITHER the api nor worker in the prod compose, so the documented EMAIL_DRIVER=resend path crash-loops at boot; (2) the SESSION_COOKIE_SECURE='auto' default only forces Secure when NODE_ENV==='production' exactly, so a non-production/non-development deploy (e.g. staging) on the http PUBLIC_APP_URL default silently ships non-Secure, non-__Host- session/admin/impersonation cookies.",
+      "findings": [
+        {
+          "severity": "high",
+          "title": "RESEND_API_KEY never reaches the containers — documented EMAIL_DRIVER=resend path crash-loops the api + worker at boot",
+          "file": "infra/compose/docker-compose.prod.yml:74 (x-app-env) and apps/api/src/config/env.ts:360",
+          "evidence": "env.ts reads it: `resendApiKey: process.env.RESEND_API_KEY?.length ? process.env.RESEND_API_KEY : null` (env.ts:360), and the Resend driver hard-fails without it: `if (!env.resendApiKey) { throw new Error('EMAIL_DRIVER=resend requires RESEND_API_KEY (re_...).'); }` (apps/api/src/email/drivers/resend-driver.ts:31-33). The prod compose x-app-env block injects SMTP_URL/EMAIL_FROM/EMAIL_DRIVER but NOT RESEND_API_KEY — `grep -rn RESEND infra/` returns nothing. The block's own comment warns this is load-bearing: 'every driver var the app reads MUST be listed here — Compose only injects variables referenced in this block, not everything in .env.prod' (compose lines 56-57). Deploy sources the file (`set -a; . /srv/libriant/.env.prod; set +a`, deploy.yml) so RESEND_API_KEY is in the host shell, but Compose drops any var it doesn't reference. The worker builds the same driver: `const driver = createEmailDriver()` (apps/api/src/email/email-worker.ts:64) and inherits `<<: *app-env` (compose:239).",
+          "impact": "An operator who follows .env.prod.example (lines 77-78 document RESEND_API_KEY for EMAIL_DRIVER=resend) and sets EMAIL_DRIVER=resend + RESEND_API_KEY in /srv/libriant/.env.prod gets resendApiKey=null inside the container; both the api and the email worker throw at construction and crash-loop. Fail-closed (no silent insecure send), but it breaks a first-class, documented production email backend and would manifest as a failed deploy with a misleading 'requires RESEND_API_KEY' error even though the operator DID set it.",
+          "verified": "static",
+          "fix": "Add `RESEND_API_KEY: ${RESEND_API_KEY:-}` to the x-app-env block in infra/compose/docker-compose.prod.yml (next to SMTP_URL) so it propagates to both api and worker; mirror it in .env.prod.example management if needed.",
+          "confidence": "high"
+        },
+        {
+          "severity": "medium",
+          "title": "Cookie Secure / __Host- prefix fails open on any NODE_ENV that is not exactly 'production' (e.g. staging)",
+          "file": "apps/api/src/config/env.ts:224-235",
+          "evidence": "`const cookieSecure = optional('SESSION_COOKIE_SECURE', 'auto'); const isSecure = cookieSecure === 'auto' ? (nodeEnv === 'production' || optional('PUBLIC_APP_URL','http://localhost:3000').startsWith('https://')) : cookieSecure === 'true';`. The forced-Secure leg checks `nodeEnv === 'production'` EXACTLY. Secret-requirement logic elsewhere uses the safer `isDev = nodeEnv === 'development'` (anything non-dev is treated as prod), but the cookie leg does not. isSecure flows into Secure flag AND the __Host- prefix for all three cookies: cookie.service.ts:18/31, admin-cookie.service.ts:19/25, impersonation-cookie.service.ts:13/19, and the cookie-name defaults at env.ts:272-301 (`isSecure ? '__Host-libriant_session' : 'libriant_session'`).",
+          "impact": "A deploy with NODE_ENV=staging (a common value) that leaves SESSION_COOKIE_SECURE unset/'auto' and PUBLIC_APP_URL on the http default resolves isSecure=false, sending session/admin/impersonation bearer cookies WITHOUT Secure and without the __Host- prefix — they can leak over a plaintext/mixed request. The shipped prod compose hardcodes NODE_ENV=production AND SESSION_COOKIE_SECURE='true', so the official deploy path is safe; the exposure is for any non-compose / staging deploy that relies on the 'auto' default.",
+          "verified": "static",
+          "fix": "Treat all non-development environments as Secure-by-default: change the auto leg to `nodeEnv !== 'development' || PUBLIC_APP_URL.startsWith('https://')`, matching the isDev convention already used for secret enforcement.",
+          "confidence": "medium"
+        },
+        {
+          "severity": "low",
+          "title": "Admin can enable plan/quota billing at runtime while STRIPE_DRIVER=fake — checkout/portal silently run the in-memory stand-in in production",
+          "file": "apps/api/src/platform-settings/platform-settings.service.ts:32-42 and infra/compose/docker-compose.prod.yml:61-62",
+          "evidence": "billingEnabled() returns the platform_settings DB row when present, else the env default (platform-settings.service.ts:39). The admin 'Subscriptions' toggle writes that row (setBillingEnabled, lines 45-55) with no check on the resolved Stripe driver. Prod compose defaults are independent: `BILLING_ENABLED: ${BILLING_ENABLED:-false}` and `STRIPE_DRIVER: ${STRIPE_DRIVER:-fake}` (compose:61-62). billing.service.ts reports them separately (`driver: this.stripe.isReal ? 'real' : 'fake'`, billing.service.ts:155; `billingEnabled: await this.settings.billingEnabled()`, :156) but never asserts real-driver when enforcement is on.",
+          "impact": "If an operator flips Subscriptions ON in the admin UI but has not switched STRIPE_DRIVER to real (the default is fake), enforcement gates engage while checkout/customer-portal calls hit the FakeStripeDriver, which returns canned IDs and records no real charge. No security/data breach (webhooks are still HMAC-verified when real), but tenants could be gated/upgraded against a billing backend that never actually charges — a monetization-correctness foot-gun. Low because billing is OFF by default at launch per the roadmap.",
+          "verified": "static",
+          "fix": "When PlatformSettingsService.setBillingEnabled(true) is called, refuse (or loudly warn in the admin UI) unless the resolved Stripe driver isReal; surface a mismatch banner on the Subscriptions admin page.",
+          "confidence": "medium"
+        },
+        {
+          "severity": "info",
+          "title": "MFA_MASTER_KEY format (64-hex) is validated at MfaService construction, not at env load",
+          "file": "apps/api/src/config/env.ts:278-286 vs apps/api/src/support/mfa.service.ts:31-33",
+          "evidence": "env.ts only enforces presence in prod (`required('MFA_MASTER_KEY')`) and does not run the 64-hex .validate() that secrets.ts defines for the same key (secrets.ts:170-171). The hex/length check lives in MfaService: `if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error('MFA_MASTER_KEY must be 64 hex chars (32 bytes).');` (mfa.service.ts:31-33).",
+          "impact": "A malformed MFA_MASTER_KEY (wrong length / non-hex) passes loadEnv() and only fails when the support/MFA module instantiates. That is still boot-time (DI builds the module at startup) and fail-closed, so impact is limited to a slightly later, less obvious failure point than the other secrets. Noted for consistency, not a vulnerability.",
+          "verified": "static",
+          "fix": "Optional: add the same `/^[0-9a-fA-F]{64}$/` validation in env.ts when reading MFA_MASTER_KEY so all secret validation is centralized and fails at the earliest point.",
+          "confidence": "high"
+        }
+      ],
+      "verified": [
+        {
+          "finding": {
+            "severity": "high",
+            "title": "RESEND_API_KEY never reaches the containers — documented EMAIL_DRIVER=resend path crash-loops the api + worker at boot",
+            "file": "infra/compose/docker-compose.prod.yml:74 (x-app-env) and apps/api/src/config/env.ts:360",
+            "evidence": "env.ts reads it: `resendApiKey: process.env.RESEND_API_KEY?.length ? process.env.RESEND_API_KEY : null` (env.ts:360), and the Resend driver hard-fails without it: `if (!env.resendApiKey) { throw new Error('EMAIL_DRIVER=resend requires RESEND_API_KEY (re_...).'); }` (apps/api/src/email/drivers/resend-driver.ts:31-33). The prod compose x-app-env block injects SMTP_URL/EMAIL_FROM/EMAIL_DRIVER but NOT RESEND_API_KEY — `grep -rn RESEND infra/` returns nothing. The block's own comment warns this is load-bearing: 'every driver var the app reads MUST be listed here — Compose only injects variables referenced in this block, not everything in .env.prod' (compose lines 56-57). Deploy sources the file (`set -a; . /srv/libriant/.env.prod; set +a`, deploy.yml) so RESEND_API_KEY is in the host shell, but Compose drops any var it doesn't reference. The worker builds the same driver: `const driver = createEmailDriver()` (apps/api/src/email/email-worker.ts:64) and inherits `<<: *app-env` (compose:239).",
+            "impact": "An operator who follows .env.prod.example (lines 77-78 document RESEND_API_KEY for EMAIL_DRIVER=resend) and sets EMAIL_DRIVER=resend + RESEND_API_KEY in /srv/libriant/.env.prod gets resendApiKey=null inside the container; both the api and the email worker throw at construction and crash-loop. Fail-closed (no silent insecure send), but it breaks a first-class, documented production email backend and would manifest as a failed deploy with a misleading 'requires RESEND_API_KEY' error even though the operator DID set it.",
+            "verified": "static",
+            "fix": "Add `RESEND_API_KEY: ${RESEND_API_KEY:-}` to the x-app-env block in infra/compose/docker-compose.prod.yml (next to SMTP_URL) so it propagates to both api and worker; mirror it in .env.prod.example management if needed.",
+            "confidence": "high"
+          },
+          "verdict": {
+            "real": true,
+            "adjusted_severity": "high",
+            "reason": "Independently confirmed across the full chain. (1) RESEND_API_KEY is documented in .env.prod.example as the var to set for EMAIL_DRIVER=resend (lines 72 \"EMAIL_DRIVER=resend + RESEND_API_KEY=re_...\" and 78 \"RESEND_API_KEY=\"). (2) env.ts reads it ONLY from process.env: `resendApiKey: process.env.RESEND_API_KEY?.length ? process.env.RESEND_API_KEY : null` (apps/api/src/config/env.ts:360). (3) The factory eagerly constructs the driver when EMAIL_DRIVER=resend: `case 'resend': return new ResendEmailDriver();` (apps/api/src/email/drivers/create-email-driver.ts:18-19), and that constructor throws if the key is absent: `if (!env.resendApiKey) { throw new Error('EMAIL_DRIVER=resend requires RESEND_API_KEY (re_...).'); }` (resend-driver.ts:30-33). (4) The compose x-app-env block (docker-compose.prod.yml:34-86) passes SMTP_URL/EMAIL_FROM/EMAIL_REPLY_TO through with ${VAR:-} but never lists RESEND_API_KEY; `grep -rn RESEND infra/` returns nothing. There is NO env_file: directive anywhere in the compose file, so Compose only injects variables it explicitly references in the environment block — a host-shell var not named there does NOT reach the container. (5) Deploy sources .env.prod into the host shell (`set -a; . /srv/libriant/.env.prod; set +a`, deploy.yml:260,352), so the operator's RESEND_API_KEY lives in the shell but is dropped by Compose. (6) The worker inherits the same block (`<<: *app-env`, compose:239) and builds the same driver. Net effect: an operator who follows the documented resend path and sets EMAIL_DRIVER=resend + RESEND_API_KEY in .env.prod gets resendApiKey=null inside the container, and both the api and worker throw at construction and crash-loop with a misleading 'requires RESEND_API_KEY' error even though they set it. I could not refute it: there is no env_file fallback, no alternate pass-through, and the resend arm is reachable. Severity: high rather than critical — it is fail-closed (no silent insecure send; no data exposure), needs the precondition of choosing the resend backend, and a working SMTP alternative is wired through. But it silently breaks a first-class documented production email backend and produces a deceptive error, which is a real deploy-blocking ops defect. The proposed fix (add `RESEND_API_KEY: ${RESEND_API_KEY:-}` to x-app-env) is correct and mirrors the existing SMTP_URL treatment."
+          }
+        }
+      ]
+    }
+  ]
+}

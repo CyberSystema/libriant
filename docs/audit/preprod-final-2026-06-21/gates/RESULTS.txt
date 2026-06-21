@@ -1,0 +1,27 @@
+==== G1 : bash -c pnpm install --frozen-lockfile && pnpm db:generate ====
+G1: PASS
+==== G2 : pnpm typecheck ====
+G2: PASS
+==== G3 : pnpm lint ====
+G3: PASS
+==== G4 : pnpm format:check ====
+G4: FAIL (exit 1) — tail:
+    
+    > libriant@0.1.0 format:check /Users/leontgmusic/Projects/libriant
+    > prettier --check "**/*.{ts,tsx,js,jsx,json,md,yml,yaml}"
+    
+    Checking formatting...
+    [warn] docs/audit/preprod-final-2026-06-21/STATE.json
+    [warn] Code style issues found in the above file. Run Prettier with --write to fix.
+     ELIFECYCLE  Command failed with exit code 1.
+==== G5 : pnpm check:translations ====
+G5: PASS
+==== G6 : pnpm check:assets ====
+G6: PASS
+==== G7 : pnpm --filter @libriant/api exec vitest run --project unit ====
+G7: PASS
+==== G9a : pnpm --filter @libriant/api build ====
+G9a: PASS
+==== G9b : pnpm --filter @libriant/web build ====
+G9b: PASS
+ALL STATIC GATES DONE
