@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation';
 import { isLocale, createTranslator, LOCALE_DISPLAY, SUPPORTED_LOCALES } from '@libriant/i18n';
 import { Asset, PoweredBy } from '@libriant/ui';
 import { loadCatalog } from '@/lib/locale-loader';
+import { LegalFooterLinks } from '@/components/LegalFooterLinks';
 
 /**
  * Public marketing landing page (the apex `/<locale>`). Introduces Libriant
@@ -151,6 +152,7 @@ export default async function LandingPage(props: { params: Promise<{ locale: str
       <footer className="lbr-landing__footer">
         <PoweredBy />
         <span>{t('landing.footer.tagline')}</span>
+        <LegalFooterLinks locale={locale} />
       </footer>
     </div>
   );

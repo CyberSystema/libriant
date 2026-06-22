@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { controlDb, Prisma } from '@libriant/db-control';
+import { LEGAL_VERSION, type LibraryType } from '@libriant/shared';
 import { PasswordService } from './password.service.js';
 import { JwtSessionService } from './jwt-session.service.js';
 import { EmailVerificationService } from './email-verification.service.js';
@@ -20,6 +21,20 @@ export type SignupInput = {
   password: string;
   /** Optional override for the library's default locale. */
   defaultLocale?: string;
+  /** Source IP, recorded with the legal-consent acceptance (GDPR accountability). */
+  ip?: string;
+  // Library profile collected at signup (location + type required; rest optional).
+  libraryType: LibraryType;
+  addressStreet: string;
+  addressCity: string;
+  addressPostalCode: string;
+  addressRegion?: string;
+  addressCountry: string;
+  publicPhone?: string;
+  publicEmail?: string;
+  website?: string;
+  description?: string;
+  foundedYear?: number;
 };
 
 export type SignupResult = {
@@ -114,6 +129,9 @@ export class SignupService {
       );
     }
     const passwordHash = await this.passwords.hash(input.password);
+    // Record the legal acceptance (the DTO already enforced acceptLegal === true)
+    // with the version the owner saw, on both the tenant + the owner user.
+    const acceptedAt = new Date();
     try {
       const created = await controlDb.$transaction(async (tx) => {
         const tenant = await tx.tenant.create({
@@ -127,6 +145,20 @@ export class SignupService {
             storageUrl: placement.storageUrl,
             primaryEmail: input.email,
             status: 'active',
+            legalAcceptedVersion: LEGAL_VERSION,
+            legalAcceptedAt: acceptedAt,
+            // Library profile (collected at signup).
+            libraryType: input.libraryType,
+            addressStreet: input.addressStreet,
+            addressCity: input.addressCity,
+            addressPostalCode: input.addressPostalCode,
+            addressRegion: input.addressRegion ?? null,
+            addressCountry: input.addressCountry,
+            publicPhone: input.publicPhone ?? null,
+            publicEmail: input.publicEmail ?? null,
+            website: input.website ?? null,
+            description: input.description ?? null,
+            foundedYear: input.foundedYear ?? null,
           },
         });
         const user = await tx.user.create({
@@ -137,6 +169,9 @@ export class SignupService {
             role: 'owner',
             status: 'active',
             passwordHash,
+            legalAcceptedVersion: LEGAL_VERSION,
+            legalAcceptedAt: acceptedAt,
+            legalAcceptedIp: input.ip ?? null,
           },
         });
         await tx.subscription.create({

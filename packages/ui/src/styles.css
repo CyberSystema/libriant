@@ -1518,3 +1518,112 @@ video {
     padding: var(--sp-4);
   }
 }
+
+/* --- Legal layer (public legal documents + signup consent) --------------- */
+.lbr-legal {
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: var(--sp-6) var(--sp-4) var(--sp-8);
+}
+.lbr-legal__list {
+  display: grid;
+  gap: var(--sp-3);
+}
+.lbr-legal__item {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+.lbr-legal__item:hover .lbr-card {
+  border-color: var(--color-primary);
+}
+.lbr-legal__item-title {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-lg);
+}
+.lbr-legal__item-summary {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+.lbr-legal__meta {
+  margin-top: var(--sp-5);
+  color: var(--color-text-muted);
+  font-size: var(--fs-sm);
+}
+.lbr-legal__footer {
+  margin-top: var(--sp-4);
+}
+
+/* Footer link row (landing + auth pages). */
+.lbr-legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+  justify-content: center;
+}
+.lbr-legal-links__item {
+  color: var(--color-text-muted);
+  font-size: var(--fs-sm);
+  text-decoration: none;
+}
+.lbr-legal-links__item:hover {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
+/* Signup consent checkbox. */
+.lbr-consent__label {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-start;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  cursor: pointer;
+}
+.lbr-consent__label input {
+  margin-top: 0.2em;
+  flex: 0 0 auto;
+}
+.lbr-consent__error {
+  margin: var(--sp-1) 0 0;
+  color: var(--color-danger, #b42318);
+  font-size: var(--fs-sm);
+}
+
+/* Grouped form section (signup "About your library" + library-profile editor). */
+.lbr-fieldset {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md, 8px);
+  padding: var(--sp-4);
+  margin: var(--sp-4) 0;
+  min-width: 0;
+}
+.lbr-fieldset > legend {
+  padding: 0 var(--sp-2);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+/* Read-only key/value list (e.g. the library profile's core fields). */
+.lbr-deflist {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12rem) 1fr;
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+}
+.lbr-deflist dt {
+  color: var(--color-text-muted);
+  font-size: var(--fs-sm);
+}
+.lbr-deflist dd {
+  margin: 0;
+}
+@media (max-width: 480px) {
+  .lbr-deflist {
+    grid-template-columns: 1fr;
+    gap: 0 0;
+  }
+  .lbr-deflist dd {
+    margin-bottom: var(--sp-2);
+  }
+}

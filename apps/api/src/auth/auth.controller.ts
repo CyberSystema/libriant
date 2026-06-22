@@ -21,6 +21,7 @@ import { LoginService } from './login.service.js';
 import { PasswordResetService } from './password-reset.service.js';
 import { EmailVerificationService } from './email-verification.service.js';
 import { Sess } from './session-context.js';
+import type { LibraryType } from '@libriant/shared';
 import { SignupService } from './signup.service.js';
 import { SignupDto } from './dto/signup.dto.js';
 import { CompleteSetupDto, LoginDto } from './dto/login.dto.js';
@@ -140,7 +141,13 @@ export class AuthController {
         'engage provisioning-side admission control',
     );
     const dto = await validateDto(SignupDto, raw);
-    const result = await this.signupSvc.signup(dto);
+    // `@IsIn(LIBRARY_TYPES)` already validated libraryType; narrow the DTO's
+    // `string` to the LibraryType union for the typed service input.
+    const result = await this.signupSvc.signup({
+      ...dto,
+      ip,
+      libraryType: dto.libraryType as LibraryType,
+    });
     // Invalidate any negative cache entry for this slug so the next
     // /t/<slug>/... request hits the fresh row.
     await this.tenantResolver.invalidate({ slug: result.tenant.slug });

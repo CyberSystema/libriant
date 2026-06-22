@@ -30,6 +30,7 @@ export function AdminSidebar({ admin }: Props) {
 
   const links = [
     { href: `${base}/tenants`, label: 'Tenants' },
+    { href: `${base}/library-requests`, label: 'Library requests' },
     { href: `${base}/fleet`, label: 'Capacity' },
     { href: `${base}/plans`, label: 'Plans' },
     { href: `${base}/subscriptions`, label: 'Subscriptions' },

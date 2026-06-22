@@ -1,9 +1,10 @@
 'use client';
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Banner, Button, FormField, Input } from '@libriant/ui';
+import { Banner, Button, FormField, Input, Textarea } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
+import { LIBRARY_TYPES } from '@libriant/shared/library';
 import { ApiError, api } from '@/lib/api';
 
 type Props = {
@@ -12,7 +13,21 @@ type Props = {
 };
 
 type Errors = Partial<
-  Record<'libraryName' | 'slug' | 'fullName' | 'email' | 'password' | 'form', string>
+  Record<
+    | 'libraryName'
+    | 'slug'
+    | 'fullName'
+    | 'email'
+    | 'password'
+    | 'accept'
+    | 'libraryType'
+    | 'addressStreet'
+    | 'addressCity'
+    | 'addressPostalCode'
+    | 'addressCountry'
+    | 'form',
+    string
+  >
 >;
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/;
@@ -38,6 +53,19 @@ export function SignupForm({ catalog, locale }: Props) {
   const [fullName, setFullName] = React.useState('');
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
+  const [accept, setAccept] = React.useState(false);
+  // Library profile (collected at signup).
+  const [libraryType, setLibraryType] = React.useState('');
+  const [addressStreet, setAddressStreet] = React.useState('');
+  const [addressCity, setAddressCity] = React.useState('');
+  const [addressPostalCode, setAddressPostalCode] = React.useState('');
+  const [addressRegion, setAddressRegion] = React.useState('');
+  const [addressCountry, setAddressCountry] = React.useState('GR');
+  const [publicPhone, setPublicPhone] = React.useState('');
+  const [publicEmail, setPublicEmail] = React.useState('');
+  const [website, setWebsite] = React.useState('');
+  const [description, setDescription] = React.useState('');
+  const [foundedYear, setFoundedYear] = React.useState('');
   const [errors, setErrors] = React.useState<Errors>({});
   const [submitting, setSubmitting] = React.useState(false);
 
@@ -53,6 +81,13 @@ export function SignupForm({ catalog, locale }: Props) {
     if (!fullName.trim()) next.fullName = t('auth.errors.fullNameRequired');
     if (!EMAIL_RE.test(email)) next.email = t('auth.errors.emailInvalid');
     if (password.length < 12) next.password = t('auth.errors.passwordTooShort', { min: 12 });
+    if (!libraryType) next.libraryType = t('library.field.type');
+    if (!addressStreet.trim()) next.addressStreet = t('library.field.street');
+    if (!addressCity.trim()) next.addressCity = t('library.field.city');
+    if (!addressPostalCode.trim()) next.addressPostalCode = t('library.field.postalCode');
+    if (!/^[A-Za-z]{2}$/.test(addressCountry.trim()))
+      next.addressCountry = t('library.field.country');
+    if (!accept) next.accept = t('legal.consent.required');
     return next;
   }
 
@@ -68,7 +103,26 @@ export function SignupForm({ catalog, locale }: Props) {
     try {
       await api<{ tenant: { slug: string } }>('/auth/signup', {
         method: 'POST',
-        body: { libraryName, slug, fullName, email, password, defaultLocale: locale },
+        body: {
+          libraryName,
+          slug,
+          fullName,
+          email,
+          password,
+          defaultLocale: locale,
+          acceptLegal: accept,
+          libraryType,
+          addressStreet,
+          addressCity,
+          addressPostalCode,
+          addressRegion: addressRegion || undefined,
+          addressCountry,
+          publicPhone: publicPhone || undefined,
+          publicEmail: publicEmail || undefined,
+          website: website || undefined,
+          description: description || undefined,
+          foundedYear: foundedYear ? Number(foundedYear) : undefined,
+        },
       });
       router.push(`/${locale}/t/${slug}`);
       router.refresh();
@@ -171,6 +225,167 @@ export function SignupForm({ catalog, locale }: Props) {
           onChange={(e) => setPassword(e.currentTarget.value)}
         />
       </FormField>
+
+      <fieldset className="lbr-fieldset">
+        <legend>{t('library.signup.heading')}</legend>
+        <p className="lbr-help" style={{ marginTop: 0 }}>
+          {t('library.signup.hint')}
+        </p>
+
+        <FormField
+          id="signup-type"
+          label={t('library.field.type')}
+          required
+          error={errors.libraryType}
+        >
+          <select
+            name="libraryType"
+            className="lbr-input"
+            value={libraryType}
+            onChange={(e) => setLibraryType(e.currentTarget.value)}
+          >
+            <option value="" disabled>
+              —
+            </option>
+            {LIBRARY_TYPES.map((ty) => (
+              <option key={ty} value={ty}>
+                {t(`library.type.${ty}`)}
+              </option>
+            ))}
+          </select>
+        </FormField>
+
+        <FormField
+          id="signup-street"
+          label={t('library.field.street')}
+          required
+          error={errors.addressStreet}
+        >
+          <Input
+            name="addressStreet"
+            autoComplete="street-address"
+            value={addressStreet}
+            onChange={(e) => setAddressStreet(e.currentTarget.value)}
+          />
+        </FormField>
+
+        <div className="lbr-form-grid">
+          <FormField
+            id="signup-city"
+            label={t('library.field.city')}
+            required
+            error={errors.addressCity}
+          >
+            <Input
+              name="addressCity"
+              value={addressCity}
+              onChange={(e) => setAddressCity(e.currentTarget.value)}
+            />
+          </FormField>
+          <FormField
+            id="signup-postal"
+            label={t('library.field.postalCode')}
+            required
+            error={errors.addressPostalCode}
+          >
+            <Input
+              name="addressPostalCode"
+              value={addressPostalCode}
+              onChange={(e) => setAddressPostalCode(e.currentTarget.value)}
+            />
+          </FormField>
+          <FormField id="signup-region" label={t('library.field.region')}>
+            <Input
+              name="addressRegion"
+              value={addressRegion}
+              onChange={(e) => setAddressRegion(e.currentTarget.value)}
+            />
+          </FormField>
+          <FormField
+            id="signup-country"
+            label={t('library.field.country')}
+            required
+            error={errors.addressCountry}
+          >
+            <Input
+              name="addressCountry"
+              maxLength={2}
+              value={addressCountry}
+              onChange={(e) => setAddressCountry(e.currentTarget.value.toUpperCase())}
+            />
+          </FormField>
+        </div>
+
+        <div className="lbr-form-grid">
+          <FormField id="signup-phone" label={t('library.field.phone')}>
+            <Input
+              name="publicPhone"
+              value={publicPhone}
+              onChange={(e) => setPublicPhone(e.currentTarget.value)}
+            />
+          </FormField>
+          <FormField id="signup-pubemail" label={t('library.field.email')}>
+            <Input
+              type="email"
+              name="publicEmail"
+              value={publicEmail}
+              onChange={(e) => setPublicEmail(e.currentTarget.value)}
+            />
+          </FormField>
+          <FormField id="signup-website" label={t('library.field.website')}>
+            <Input
+              name="website"
+              value={website}
+              onChange={(e) => setWebsite(e.currentTarget.value)}
+            />
+          </FormField>
+          <FormField id="signup-founded" label={t('library.field.foundedYear')}>
+            <Input
+              type="number"
+              name="foundedYear"
+              value={foundedYear}
+              onChange={(e) => setFoundedYear(e.currentTarget.value)}
+            />
+          </FormField>
+        </div>
+
+        <FormField id="signup-desc" label={t('library.field.description')}>
+          <Textarea
+            name="description"
+            rows={3}
+            value={description}
+            onChange={(e) => setDescription(e.currentTarget.value)}
+          />
+        </FormField>
+      </fieldset>
+
+      <div className="lbr-consent" style={{ margin: 'var(--sp-4) 0' }}>
+        <label className="lbr-consent__label">
+          <input
+            type="checkbox"
+            name="acceptLegal"
+            checked={accept}
+            onChange={(e) => setAccept(e.currentTarget.checked)}
+            aria-invalid={errors.accept ? true : undefined}
+          />
+          <span>
+            {t('legal.consent.pre')}{' '}
+            <a href={`/${locale}/legal/terms`} target="_blank" rel="noopener noreferrer">
+              {t('legal.docs.terms.title')}
+            </a>{' '}
+            {t('legal.consent.and')}{' '}
+            <a href={`/${locale}/legal/privacy`} target="_blank" rel="noopener noreferrer">
+              {t('legal.docs.privacy.title')}
+            </a>
+            {t('legal.consent.post')}
+          </span>
+        </label>
+        {errors.accept ? (
+          <p className="lbr-consent__error" role="alert">
+            {errors.accept}
+          </p>
+        ) : null}
+      </div>
 
       <Button type="submit" loading={submitting} style={{ width: '100%' }} size="lg">
         {t('auth.signUp.submit')}

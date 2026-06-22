@@ -74,6 +74,12 @@ beforeAll(async () => {
       fullName: `Owner ${slug}`,
       email: `owner@${slug}.test`,
       password,
+      acceptLegal: true,
+      libraryType: 'public',
+      addressStreet: '1 Library St',
+      addressCity: 'Athens',
+      addressPostalCode: '10000',
+      addressCountry: 'GR',
     })
     .expect(201);
   tenantId = res.body.tenant.id as string;

@@ -7,7 +7,9 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./features": "./src/features.ts"
+    "./features": "./src/features.ts",
+    "./legal": "./src/legal.ts",
+    "./library": "./src/library.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

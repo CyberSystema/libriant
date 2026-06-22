@@ -38,6 +38,25 @@ enum TenantStatus {
   archived
 }
 
+/// Library category, collected at signup and shown on the library profile.
+enum LibraryType {
+  public
+  academic
+  school
+  special
+  community
+  other
+}
+
+/// Lifecycle of a tenant-initiated request to change "core" library-profile
+/// fields (name / type / address), which require platform-owner approval.
+enum LibraryEditRequestStatus {
+  pending
+  approved
+  rejected
+  canceled
+}
+
 enum UserRole {
   owner // tenant owner — full library admin
   admin // library admin — almost everything except billing
@@ -129,6 +148,9 @@ enum EmailMessageKind {
   member_hold_ready
   // Generic catch-all for ad-hoc admin-composed mail
   transactional
+  // Library-profile edit-request workflow
+  library_edit_request_submitted
+  library_edit_request_decided
 }
 
 enum SystemModeKind {
@@ -220,38 +242,62 @@ model Cell {
 /// database and storage backend — keeping them on the tenant row means
 /// moving a tenant between hosts is a row update.
 model Tenant {
-  id               String       @id @default(cuid())
+  id                   String       @id @default(cuid())
   /// URL-safe identifier used in `/t/<slug>/...`.
-  slug             String       @unique
+  slug                 String       @unique
   /// Display name (e.g. "Δημοτική Βιβλιοθήκη Καλαμάτας").
-  name             String
+  name                 String
   /// Default locale for this library — individual users can override.
-  defaultLocale    String       @default("el")
-  status           TenantStatus @default(active)
-  cellId           String
+  defaultLocale        String       @default("el")
+  status               TenantStatus @default(active)
+  cellId               String
   /// Canonical Postgres URL for THIS tenant's database. May share host with
   /// others (one Postgres, many DBs) or be on its own host post-sharding.
-  dbUrl            String
+  dbUrl                String
   /// Canonical storage URL for THIS tenant's files. Scheme dictates driver:
   /// `file://...` (LocalDriver), `s3://...` (S3Driver), `smb://...`.
-  storageUrl       String
+  storageUrl           String
   /// Opt-in custom subdomain (Pro/Enterprise feature). When NULL the tenant
   /// is reachable only via `/t/<slug>/`. When set, also reachable at
   /// `<custom_subdomain>.<root domain>` after wildcard DNS is wired.
-  customSubdomain  String?
+  customSubdomain      String?
   /// Free-form tags for audience targeting (announcements, system mode).
-  tags             String[]     @default([])
+  tags                 String[]     @default([])
   /// Cached file-size total (bytes), refreshed by a nightly job. Used by
   /// QuotaInterceptor to fail uploads before they touch disk.
-  storageUsedBytes BigInt       @default(0)
+  storageUsedBytes     BigInt       @default(0)
   /// Contact email for billing / urgent platform notices.
-  primaryEmail     String       @db.Citext
+  primaryEmail         String       @db.Citext
   /// Per-library branding (admin-set). `brandColor` is a hex string applied
   /// as the app's primary colour; `brandLogoRef` is a tenant-storage ref
   /// (served via /t/:slug/storage/<ref>) shown in the app header. Both NULL
   /// fall back to the default Libriant theme + wordmark.
-  brandColor       String?
-  brandLogoRef     String?
+  brandColor           String?
+  brandLogoRef         String?
+  /// Legal consent at the LIBRARY (contracting party) level: the version of the
+  /// Terms of Service + DPA accepted by the owner at signup, and when. Mirrors
+  /// the owner User's record so the contracting entity's acceptance is queryable
+  /// even if the owner account is later changed.
+  legalAcceptedVersion String?
+  legalAcceptedAt      DateTime?
+
+  /// --- Library profile (collected at signup; visible to the tenant + platform
+  /// owner-admins). "Core" fields (name above, libraryType, address*) can only
+  /// be changed via an owner-approved LibraryEditRequest; the "free" fields
+  /// (public contact + description) are editable directly by tenant owner/admin.
+  libraryType       LibraryType?
+  addressStreet     String?
+  addressCity       String?
+  addressPostalCode String?
+  /// Region / prefecture (περιφέρεια / νομός). Free text for flexibility.
+  addressRegion     String?
+  /// ISO-3166 alpha-2 country code (e.g. "GR"). Free text, defaults to GR.
+  addressCountry    String?      @default("GR")
+  publicPhone       String?
+  publicEmail       String?      @db.Citext
+  website           String?
+  description       String?
+  foundedYear       Int?
 
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
@@ -264,6 +310,7 @@ model Tenant {
   billingAccount         BillingAccount?
   planOverrides          TenantPlanOverride[]
   auditEvents            AuditEvent[]
+  libraryEditRequests    LibraryEditRequest[]
   supportKeys            SupportKey[]
   supportSessions        SupportSession[]
   announcementDeliveries AnnouncementDelivery[]
@@ -346,6 +393,13 @@ model User {
   /// actions are blocked until set). Staff accounts have no email, so they are
   /// treated as exempt rather than unverified.
   emailVerifiedAt       DateTime?
+  /// Legal consent (GDPR/contract accountability): which version of the Terms +
+  /// Privacy Policy this user accepted, when, and from which IP. Set for the
+  /// owner at signup; NULL for admin-created staff (they don't sign the SaaS
+  /// terms — the library, as their employer, is the contracting party).
+  legalAcceptedVersion  String?
+  legalAcceptedAt       DateTime?
+  legalAcceptedIp       String?
   createdAt             DateTime   @default(now())
   updatedAt             DateTime   @updatedAt
   archivedAt            DateTime?
@@ -735,26 +789,26 @@ model EmailOutbox {
 // ---------------------------------------------------------------------------
 
 model AdminUser {
-  id              String      @id @default(cuid())
-  email           String      @unique @db.Citext
-  fullName        String
-  role            AdminRole   @default(support)
-  status          AdminStatus @default(active)
-  passwordHash    String
-  mfaSecretCipher Bytes
-  mfaNonce        Bytes
-  mfaKeyId        String
+  id                 String      @id @default(cuid())
+  email              String      @unique @db.Citext
+  fullName           String
+  role               AdminRole   @default(support)
+  status             AdminStatus @default(active)
+  passwordHash       String
+  mfaSecretCipher    Bytes
+  mfaNonce           Bytes
+  mfaKeyId           String
   /// MFA must be enabled before this admin can redeem support keys.
-  mfaEnabled      Boolean     @default(false)
-  lastLoginAt     DateTime?
-  failedAttempts  Int         @default(0)
-  lockedUntil     DateTime?
+  mfaEnabled         Boolean     @default(false)
+  lastLoginAt        DateTime?
+  failedAttempts     Int         @default(0)
+  lockedUntil        DateTime?
   /// Any admin session JWT issued (iat) before this instant is rejected by
   /// AdminAuthGuard — lets a forced password reset / disable end live sessions.
   sessionsValidAfter DateTime?
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
-  disabledAt      DateTime?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+  disabledAt         DateTime?
 
   supportSessions         SupportSession[]
   supportKeysRedeemed     SupportKey[]               @relation("RedeemedByAdmin")
@@ -898,6 +952,39 @@ model AuditEvent {
   @@index([targetType, targetId])
   @@index([action, occurredAt])
   @@map("audit_log")
+}
+
+// ---------------------------------------------------------------------------
+// Library-profile edit requests — a tenant admin proposes new values for the
+// "core" profile fields (name / type / address); a platform owner-admin
+// approves (the proposed values are applied to the Tenant) or rejects. At most
+// one `pending` request per tenant at a time (enforced in the service).
+// ---------------------------------------------------------------------------
+
+model LibraryEditRequest {
+  id                String                   @id @default(cuid())
+  tenantId          String
+  status            LibraryEditRequestStatus @default(pending)
+  /// The proposed new values for the gated fields, as a JSON patch
+  /// (e.g. { "name": "...", "libraryType": "public", "addressCity": "..." }).
+  proposedJson      Json
+  /// Snapshot of the current values at request time, for an auditable diff.
+  beforeJson        Json
+  /// The tenant user who submitted the request (User.id) + optional reason.
+  requestedByUserId String
+  requestNote       String?
+  /// The platform admin who decided (AdminUser.id) + optional note + when.
+  reviewedByAdminId String?
+  decisionNote      String?
+  reviewedAt        DateTime?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([tenantId, createdAt])
+  @@map("library_edit_requests")
 }
 
 // ---------------------------------------------------------------------------

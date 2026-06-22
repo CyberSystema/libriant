@@ -14,6 +14,7 @@
     "@libriant/i18n": "workspace:*",
     "@libriant/shared": "workspace:*",
     "@libriant/ui": "workspace:*",
+    "marked": "^18.0.4",
     "next": "^16.2.6",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"

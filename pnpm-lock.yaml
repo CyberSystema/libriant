@@ -212,6 +212,9 @@ importers:
       '@libriant/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      marked:
+        specifier: ^18.0.4
+        version: 18.0.4
       next:
         specifier: ^16.2.6
         version: 16.2.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
