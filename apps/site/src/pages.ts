@@ -26,11 +26,11 @@ export type RenderOptions = {
 
 /** Library types, mirrored from `packages/shared/src/library.ts` + `locales/el/library.json`. */
 export const LIBRARY_TYPE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: 'public', label: 'Δημόσια βιβλιοθήκη' },
-  { value: 'academic', label: 'Ακαδημαϊκή βιβλιοθήκη' },
+  { value: 'public', label: 'Δημόσια ή δημοτική βιβλιοθήκη' },
+  { value: 'academic', label: 'Ακαδημαϊκή βιβλιοθήκη (ΑΕΙ ή ερευνητικού φορέα)' },
   { value: 'school', label: 'Σχολική βιβλιοθήκη' },
-  { value: 'special', label: 'Ειδική βιβλιοθήκη' },
-  { value: 'community', label: 'Κοινοτική βιβλιοθήκη' },
+  { value: 'special', label: 'Ειδική βιβλιοθήκη (φορέα, ιδρύματος, συλλόγου)' },
+  { value: 'community', label: 'Κοινοτική ή λαϊκή βιβλιοθήκη' },
   { value: 'other', label: 'Άλλο' },
 ];
 
@@ -150,7 +150,7 @@ function applicationForm(c: SiteConfig, o: RenderOptions): string {
   </div>
   <div class="grid2">
     ${field({ name: 'phone', label: 'Τηλέφωνο', type: 'tel', values, errors, autocomplete: 'tel', hint: 'Προαιρετικό.' })}
-    ${field({ name: 'currentSystem', label: 'Τι χρησιμοποιείτε σήμερα;', values, errors, hint: 'π.χ. ABEKT, Excel, τετράδιο, τίποτα.' })}
+    ${field({ name: 'currentSystem', label: 'Τι χρησιμοποιείτε σήμερα;', values, errors, hint: 'π.χ. ΑΒΕΚΤ, Koha, φύλλο Excel, χειρόγραφο αρχείο — ή τίποτα ακόμη.' })}
   </div>
   ${textarea({ name: 'message', label: 'Θέλετε να μας πείτε κάτι άλλο;', values, errors, hint: 'Προαιρετικό — τι σας δυσκολεύει σήμερα, τι θα θέλατε να λύσει το Libriant.' })}
 
@@ -169,7 +169,7 @@ function applicationForm(c: SiteConfig, o: RenderOptions): string {
 
   <div class="form-actions">
     <button type="submit" class="btn btn--primary btn--lg">Στείλτε την αίτηση</button>
-    <span class="hint" style="margin:0">Απαντάμε σε όλους μέσα σε 2 εργάσιμες ημέρες.</span>
+    <span class="hint" style="margin:0">Απαντάμε σε κάθε αίτηση εντός δύο εργάσιμων ημερών.</span>
   </div>
 </form>`;
 }
@@ -253,7 +253,7 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
     <div class="steps">
       <div class="step">
         <h3>Στέλνετε την αίτηση</h3>
-        <p>Δύο λεπτά, χωρίς δεσμεύσεις. Απαντάμε σε όλους μέσα σε δύο εργάσιμες ημέρες.</p>
+        <p>Δύο λεπτά, χωρίς δεσμεύσεις. Απαντάμε σε κάθε αίτηση εντός δύο εργάσιμων ημερών.</p>
       </div>
       <div class="step">
         <h3>Μεταφέρουμε τον κατάλογό σας</h3>
@@ -270,7 +270,7 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
 <section class="alt" aria-labelledby="trust-title">
   <div class="wrap">
     <div class="section-head">
-      <h2 id="trust-title">Γιατί να μας εμπιστευτείτε</h2>
+      <h2 id="trust-title">Τι μπορείτε να επαληθεύσετε πριν αποφασίσετε</h2>
       <p>Ό,τι λέμε εδώ μπορείτε να το ελέγξετε.</p>
     </div>
     <ul class="trust">
@@ -312,11 +312,13 @@ export function renderThanks(c: SiteConfig, draft?: boolean): string {
   <ol>
     <li><strong>Μέσα σε δύο εργάσιμες ημέρες</strong> θα λάβετε απάντηση από το ${esc(c.identity.contactEmail)}, θετική ή αρνητική. Δεν αφήνουμε καμία αίτηση αναπάντητη.</li>
     <li><strong>Αν υπάρχει διαθέσιμη θέση</strong>, θα κανονίσουμε μια σύντομη συζήτηση για να δούμε τι έχετε σήμερα και πώς θα το μεταφέρουμε.</li>
-    <li><strong>Τη μεταφορά του καταλόγου την κάνουμε εμείς.</strong> Εσείς απλώς μας στέλνετε το αρχείο σας.</li>
+    <li><strong>Τη μεταφορά του καταλόγου την κάνουμε εμείς.</strong> Εσείς μας στέλνετε το αρχείο σας όπως το έχετε.</li>
   </ol>
   <p>Αν δεν λάβετε τίποτα μέσα σε τρεις ημέρες, ελέγξτε τον φάκελο ανεπιθύμητης αλληλογραφίας και μετά γράψτε μας απευθείας στο <a href="mailto:${esc(c.identity.contactEmail)}">${esc(c.identity.contactEmail)}</a>.</p>
   <h2>Αλλάξατε γνώμη;</h2>
   <p>Στείλτε ένα email στο <a href="mailto:${esc(c.identity.privacyEmail)}">${esc(c.identity.privacyEmail)}</a> και διαγράφουμε την αίτησή σας. Δεν χρειάζεται να εξηγήσετε τίποτα, και δεν θα σας ξαναγράψουμε.</p>
+  <h2>Στο μεταξύ</h2>
+  <p>Όσο περιμένετε, δείτε <a href="/dynatotites">τι κάνει το Libriant</a> — και, αν έχετε ήδη κατάλογο σε αρχείο, <a href="/metaptosi">πώς γίνεται η μετάπτωση</a>. Αν προκύψει ερώτηση, <a href="/epikoinonia">γράψτε μας</a>.</p>
   <p><a href="/">← Επιστροφή στην αρχική</a></p>
 </div></div></div>`;
   return renderShell({
@@ -351,7 +353,16 @@ ${o.html}
 export function render404(c: SiteConfig, draft?: boolean): string {
   const body = `<div class="page-body"><div class="wrap"><div class="prose">
   <h1>Η σελίδα δεν βρέθηκε</h1>
-  <p>Ο σύνδεσμος που ακολουθήσατε δεν οδηγεί πουθενά. Δοκιμάστε από την <a href="/">αρχική σελίδα</a>, ή πηγαίνετε κατευθείαν στη <a href="/#aitisi">φόρμα αίτησης</a>.</p>
+  <p>Ο σύνδεσμος που ακολουθήσατε δεν οδηγεί πουθενά. Δοκιμάστε από την <a href="/">αρχική σελίδα</a>, ή πηγαίνετε κατευθείαν σε ό,τι ψάχνατε:</p>
+  <ul>
+    <li><a href="/dynatotites">Δυνατότητες</a> — τι κάνει το Libriant σήμερα</li>
+    <li><a href="/times">Πακέτα και τιμές</a></li>
+    <li><a href="/metaptosi">Μετάπτωση</a> — πώς έρχεται ο κατάλογός σας</li>
+    <li><a href="/asfaleia-dedomenon">Ασφάλεια και προστασία δεδομένων</a></li>
+    <li><a href="/syhnes-erotiseis">Συχνές ερωτήσεις</a></li>
+    <li><a href="/epikoinonia">Επικοινωνία</a></li>
+    <li><a href="/#aitisi">Φόρμα αίτησης</a></li>
+  </ul>
 </div></div></div>`;
   return renderShell({
     title: 'Η σελίδα δεν βρέθηκε — Libriant',

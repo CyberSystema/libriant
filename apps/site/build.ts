@@ -206,7 +206,7 @@ const LINT_RULES: LintRule[] = [
   {
     name: 'minimising-adverb',
     level: 'warn',
-    re: /\bΑπλά (ανεβ|κάν|πατ|συμπλ)|\bαπλά (ανεβ|κάν|πατ|συμπλ)/,
+    re: /\bαπλ(ά|ώς) (ανεβ|κάν|πατ|συμπλ|μας|στ[εέ]λ)/i,
     why: 'Telling someone their work is simple blames them when it is not.',
     scrub: (h) => h.replace(/<[^>]+>/g, ' '),
   },

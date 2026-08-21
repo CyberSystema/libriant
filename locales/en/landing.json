@@ -16,7 +16,7 @@
   "features.members.title": "Members at your fingertips",
   "features.members.body": "Keep patron records, contact details, and borrowing history tidy and one click away.",
   "features.reservations.title": "Holds & reservations",
-  "features.reservations.body": "Let readers reserve what's on loan, and notify them the moment it's ready for pickup.",
+  "features.reservations.body": "Staff place holds on a member’s behalf. The queue keeps priority order, and the moment a copy comes back the first person is moved to ready for pickup.",
   "features.import.title": "Bring your data with you",
   "features.import.body": "Move from another system in an afternoon — import your catalog, members, and live loans from CSV, Excel, or MARC.",
   "features.bilingual.title": "English & Greek, out of the box",
