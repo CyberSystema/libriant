@@ -83,6 +83,22 @@ export function brandMark(id = 'm', size = 40): string {
 </svg>`;
 }
 
+/** The site's pages, in nav order. One list feeds the masthead, the footer and
+ *  the sitemap, so a page can never exist without being reachable. */
+export const NAV = [
+  { path: '/dynatotites', label: 'Δυνατότητες' },
+  { path: '/times', label: 'Πακέτα' },
+  { path: '/metaptosi', label: 'Μετάπτωση' },
+  { path: '/asfaleia-dedomenon', label: 'Ασφάλεια' },
+  { path: '/syhnes-erotiseis', label: 'Συχνές ερωτήσεις' },
+] as const;
+
+export const FOOTER_LEGAL = [
+  { path: '/epikoinonia', label: 'Επικοινωνία' },
+  { path: '/oroi-programmatos', label: 'Όροι προσφοράς' },
+  { path: '/aporrito', label: 'Πολιτική Απορρήτου' },
+] as const;
+
 /** Wordmark + mark, as used in the masthead and the footer. */
 export function brandLockup(id: string, size = 38): string {
   return `<span class="lockup">${brandMark(id, size)}<span class="lockup__word">Libriant</span></span>`;
@@ -187,6 +203,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 2.5rem 0; }
 .masthead nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .masthead nav a { padding: 10px 14px; border-radius: 8px; font-size: .95rem; color: var(--on-ink-muted); }
 .masthead nav a:hover { color: var(--on-ink); background: rgba(255,255,255,.07); }
+.masthead nav a[aria-current="page"] { color: var(--on-ink); background: rgba(255,255,255,.10); }
 .masthead nav a.cta {
   background: var(--teal-bright); color: #052925; font-weight: 600;
   padding: 11px 18px; border-radius: 999px;
@@ -376,19 +393,103 @@ input[aria-invalid=true], textarea[aria-invalid=true], select[aria-invalid=true]
 .footer .lockup { color: var(--on-ink); margin-bottom: 12px; }
 .footer__tag { max-width: 22rem; margin: 0; }
 .footer__links { display: flex; flex-direction: column; gap: 10px; }
+.footer__h { font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; color: var(--on-ink-muted); opacity: .75; }
 .footer__bottom { border-top: 1px solid rgba(255,255,255,.13); padding-top: 26px; display: flex; flex-wrap: wrap; gap: 12px 28px; justify-content: space-between; align-items: center; }
 .footer__id { margin: 0; max-width: 46rem; line-height: 1.7; }
 .powered { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 
-@media (max-width: 640px) {
+/* ---------- content pages ---------- */
+.section { padding: clamp(52px, 6vw, 88px) 0; }
+.section.alt { background: var(--surface); border-block: 1px solid var(--border); }
+.lede { font-size: 1.22rem; line-height: 1.65; color: var(--muted); max-width: 44rem; margin: 0; }
+.footnote { margin: 22px 0 0; font-size: .92rem; color: var(--muted); max-width: var(--measure); }
+
+/* tick list — a claim and its qualification, so neither reads alone */
+.ticks { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; max-width: 54rem; }
+.ticks li { position: relative; padding-left: 34px; line-height: 1.65; }
+.ticks li::before {
+  content: ""; position: absolute; left: 0; top: .42em; width: 20px; height: 20px;
+  border-radius: 50%; background: var(--teal); opacity: .16;
+}
+.ticks li::after {
+  content: ""; position: absolute; left: 6px; top: .72em; width: 8px; height: 4px;
+  border-left: 2px solid var(--teal-deep); border-bottom: 2px solid var(--teal-deep);
+  transform: rotate(-45deg);
+}
+.ticks li strong { display: block; }
+.ticks li span { color: var(--muted); }
+
+/* steps */
+.steps { counter-reset: none; list-style: none; padding: 0; }
+.step__n {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 50%; margin-bottom: 12px;
+  background: var(--ink); color: var(--on-ink); font-weight: 700; font-size: .95rem;
+}
+
+/* FAQ — open, linkable, printable */
+.faq { display: grid; gap: 30px; max-width: 52rem; }
+.faq__item h3 { margin: 0 0 .4em; font-size: 1.12rem; }
+.faq__item p { margin: 0; color: var(--muted); line-height: 1.72; }
+
+/* callout — the paragraph a reader must not skim past */
+.callout {
+  border-left: 3px solid var(--gold); background: var(--paper-2);
+  padding: 22px 26px; border-radius: 0 var(--radius) var(--radius) 0;
+  max-width: var(--measure);
+}
+.callout p { margin: 0 0 .8em; }
+.callout p:last-child { margin-bottom: 0; }
+
+/* comparison + ladder tables */
+.cmp { width: 100%; border-collapse: collapse; font-size: .97rem; }
+.cmp th, .cmp td { padding: 13px 16px; text-align: left; border-bottom: 1px solid var(--border); }
+.cmp thead th { font-size: .82rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border-bottom-color: var(--border-strong); }
+.cmp tbody th { font-weight: 600; }
+.cmp td { font-variant-numeric: tabular-nums; }
+.cmp tbody tr:last-child th, .cmp tbody tr:last-child td { border-bottom: none; }
+
+/* closing band */
+.cta-band { background: var(--ink); color: var(--on-ink); text-align: center; }
+.cta-band h2 { color: #fff; }
+.cta-band p { color: var(--on-ink-muted); max-width: 40rem; margin-inline: auto; }
+.cta-band .hero__actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-top: 26px; }
+
+@media (prefers-color-scheme: dark) {
+  .callout { background: rgba(233,169,60,.08); }
+}
+
+@media (max-width: 860px) {
   body { font-size: 16px; }
-  .masthead .wrap { min-height: 64px; }
-  .masthead nav a:not(.cta) { display: none; }
+  .masthead .wrap { min-height: 64px; flex-wrap: nowrap; gap: 12px; }
+  /* Previously display:none on every non-CTA link. That was survivable with
+     three anchors; with a real page set it takes the whole site away from every
+     phone. A horizontally scrollable strip keeps all of it, with no JS. */
+  .masthead nav {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    margin-inline: -4px;
+    padding-inline: 4px;
+    mask-image: linear-gradient(to right, transparent, #000 12px, #000 calc(100% - 12px), transparent);
+  }
+  .masthead nav::-webkit-scrollbar { display: none; }
+  .masthead nav a { white-space: nowrap; padding: 10px 11px; font-size: .9rem; }
   .hero__actions .btn { width: 100%; }
 }
 @media print {
-  .masthead, .footer__links, .hero__actions, .form-section { display: none; }
-  body { color: #000; background: #fff; }
+  /* The pricing and security pages get forwarded to a δήμος finance office and
+     printed. Keep the content, drop only what cannot survive paper. */
+  .masthead nav, .hero__actions, .form-section, .draft, .skip { display: none; }
+  .masthead { background: #fff; color: #000; }
+  .masthead a, .masthead .lockup { color: #000; }
+  body { color: #000; background: #fff; font-size: 11pt; }
+  a { color: #000; text-decoration: underline; }
+  a[href^="/"]::after { content: " (libriant.com" attr(href) ")"; font-size: 9pt; color: #444; }
+  .card, .plan, table { break-inside: avoid; }
+  h1, h2, h3 { break-after: avoid; }
 }
 `;
 
@@ -404,13 +505,15 @@ type ShellOptions = {
 };
 
 /** Masthead used on every page. `home` drops the "back to site" nav links. */
-function masthead(): string {
+function masthead(path: string): string {
+  const links = NAV.map(
+    (n) => `<a href="${n.path}"${path === n.path ? ' aria-current="page"' : ''}>${n.label}</a>`,
+  ).join('\n      ');
   return `<header class="masthead">
   <div class="wrap">
     <a href="/" class="lockup" aria-label="Libriant — αρχική">${brandMark('mh', 34)}<span class="lockup__word">Libriant</span></a>
     <nav aria-label="Κύρια πλοήγηση">
-      <a href="/#ti-kanei">Τι κάνει</a>
-      <a href="/#pos-doulevei">Πώς δουλεύει</a>
+      ${links}
       <a href="/#aitisi" class="cta">Κάντε αίτηση</a>
     </nav>
   </div>
@@ -426,10 +529,14 @@ function footer(c: SiteConfig): string {
         <span class="lockup">${brandMark('ft', 32)}<span class="lockup__word">Libriant</span></span>
         <p class="footer__tag">Διαχείριση βιβλιοθήκης, απλά. Φτιαγμένο στην Ελλάδα, στα ελληνικά και στα αγγλικά.</p>
       </div>
+      <nav class="footer__links" aria-label="Σελίδες">
+        <span class="footer__h">Το Libriant</span>
+        ${NAV.map((n) => `<a href="${n.path}">${n.label}</a>`).join('\n        ')}
+      </nav>
       <nav class="footer__links" aria-label="Πληροφορίες">
+        <span class="footer__h">Πληροφορίες</span>
         <a href="/#aitisi">Κάντε αίτηση</a>
-        <a href="/oroi-programmatos">Όροι προσφοράς</a>
-        <a href="/aporrito">Πολιτική Απορρήτου</a>
+        ${FOOTER_LEGAL.map((n) => `<a href="${n.path}">${n.label}</a>`).join('\n        ')}
         <a href="mailto:${esc(c.identity.contactEmail)}">${esc(c.identity.contactEmail)}</a>
       </nav>
     </div>
@@ -476,7 +583,7 @@ export function renderShell(o: ShellOptions): string {
 <body${o.bodyClass ? ` class="${esc(o.bodyClass)}"` : ''}>
 ${draftBanner}
 <a class="skip" href="#main">Μετάβαση στο περιεχόμενο</a>
-${masthead()}
+${masthead(o.path)}
 <main id="main">
 ${o.body}
 </main>

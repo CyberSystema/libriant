@@ -216,17 +216,17 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
       <div class="offer__grid">
         <div class="stat"><span class="stat__num">${esc(c.offer.spotsRemaining)}</span><span class="stat__label">θέσεις διαθέσιμες${c.offer.spotsRemaining !== c.offer.spotsTotal ? ` από ${esc(c.offer.spotsTotal)}` : ''}</span></div>
         <div class="stat"><span class="stat__num">${esc(c.offer.months)} μήνες</span><span class="stat__label">πλήρους πρόσβασης</span></div>
-        <div class="stat"><span class="stat__num">0€</span><span class="stat__label">για ολόκληρο τον πρώτο χρόνο</span></div>
-        <div class="stat"><span class="stat__num">από ${esc(c.offer.entryMonthlyPriceEur)}€</span><span class="stat__label">τον μήνα, μετά τον πρώτο χρόνο</span></div>
+        <div class="stat"><span class="stat__num">Δωρεάν</span><span class="stat__label">για ολόκληρο τον πρώτο χρόνο</span></div>
+        <div class="stat"><span class="stat__num">από ${esc(c.offer.entryMonthlyPriceEur)} €</span><span class="stat__label">τον μήνα, μετά τον πρώτο χρόνο</span></div>
       </div>
       <div class="offer__caps">
         <strong>Τι περιλαμβάνει το πακέτο ${esc(c.offer.planName)}:</strong>
         30.000 τίτλοι · 7.500 μέλη · 10 λογαριασμοί προσωπικού · 10 GB για αρχεία ·
-        κρατήσεις &amp; αναμονές · μαζική εισαγωγή από CSV/Excel/MARC · ειδοποιήσεις email ·
-        αναζήτηση ISBN · πρόσβαση API · ιστορικό ενεργειών 365 ημερών.
+        κρατήσεις και ουρά κρατήσεων · μαζική εισαγωγή από CSV, Excel ή MARC ·
+        ειδοποιήσεις email · συμπλήρωση στοιχείων με ISBN · δικά σας πεδία σε κάθε είδος εγγραφής.
       </div>
       <p class="offer__fine" style="margin-top:18px">
-        Χωρίς πιστωτική κάρτα και χωρίς αυτόματη ανανέωση. Μετά τους ${esc(c.offer.months)} μήνες επιλέγετε το πακέτο που ταιριάζει στο μέγεθός σας — τα πακέτα ξεκινούν από <strong>${esc(c.offer.entryMonthlyPriceEur)}€ τον μήνα</strong>, ενώ το ${esc(c.offer.planName)}, που παίρνετε δωρεάν τώρα, κοστίζει ${esc(price)}€. Οι ιδρυτικές βιβλιοθήκες κρατούν μόνιμη έκπτωση — και για πολύ μικρές συλλογές (έως 500 τίτλους) υπάρχει δωρεάν πακέτο.
+        Χωρίς πιστωτική κάρτα και χωρίς αυτόματη ανανέωση. Μετά τους ${esc(c.offer.months)} μήνες επιλέγετε το πακέτο που ταιριάζει στο μέγεθός σας — τα πακέτα ξεκινούν από <strong>${esc(c.offer.entryMonthlyPriceEur)} € τον μήνα</strong>, ενώ το ${esc(c.offer.planName)}, που παίρνετε δωρεάν τώρα, κοστίζει ${esc(price)} €. Οι ιδρυτικές βιβλιοθήκες κρατούν μόνιμη έκπτωση — και για πολύ μικρές συλλογές (έως 500 τίτλους) υπάρχει δωρεάν πακέτο.
       </p>
     </div>
   </div>
@@ -278,7 +278,7 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
       <li><strong>Καμία αυτόματη χρέωση.</strong> Δεν καταχωρίζετε κάρτα, άρα δεν υπάρχει τίποτα να χρεωθεί στο τέλος του χρόνου.</li>
       <li><strong>Ελληνικά και αγγλικά εξαρχής.</strong> Όχι μετάφραση που προστέθηκε μετά — και οι δύο γλώσσες είναι ισότιμες σε κάθε οθόνη.</li>
       <li><strong>Δεδομένα στην Ευρωπαϊκή Ένωση.</strong> Καθημερινά αντίγραφα ασφαλείας και σχεδιασμός σύμφωνος με τον ΓΚΠΔ, με Σύμβαση Επεξεργασίας Δεδομένων πριν καταχωρίσετε το πρώτο μέλος.</li>
-      <li><strong>Χωρίς παρακολούθηση.</strong> Ούτε αναλυτικά στοιχεία ούτε cookies παρακολούθησης — γι' αυτό δεν είδατε παράθυρο συγκατάθεσης.</li>
+      <li><strong>Χωρίς παρακολούθηση.</strong> Ούτε αναλυτικά στοιχεία ούτε cookies παρακολούθησης — γι’ αυτό δεν είδατε παράθυρο συγκατάθεσης.</li>
       <li><strong>Ελεγμένο πριν διατεθεί.</strong> Πλήρης έλεγχος ασφαλείας πριν από τη διάθεση, και αυτοματοποιημένες δοκιμές σε κάθε αλλαγή του κώδικα.</li>
     </ul>
   </div>

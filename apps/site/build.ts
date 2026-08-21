@@ -82,6 +82,150 @@ function copyPublic(from: string, to: string): number {
   return n;
 }
 
+/**
+ * Greek months in the genitive, because a date in prose is «21 Αυγούστου 2026»
+ * and not «21 Αύγουστος 2026». Everything machine-readable keeps ISO.
+ */
+const GR_MONTHS_GEN = [
+  'Ιανουαρίου',
+  'Φεβρουαρίου',
+  'Μαρτίου',
+  'Απριλίου',
+  'Μαΐου',
+  'Ιουνίου',
+  'Ιουλίου',
+  'Αυγούστου',
+  'Σεπτεμβρίου',
+  'Οκτωβρίου',
+  'Νοεμβρίου',
+  'Δεκεμβρίου',
+];
+
+function greekDate(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  return `${Number(m[3])} ${GR_MONTHS_GEN[Number(m[2]) - 1]} ${m[1]}`;
+}
+
+type LintRule = {
+  name: string;
+  re: RegExp;
+  level: 'error' | 'warn';
+  why: string;
+  /** Strip regions where a match is legitimate before testing. */
+  scrub?: (html: string) => string;
+};
+
+/**
+ * Copy rules the build enforces, so a claim or a formatting slip cannot reach
+ * production because someone was tired. Each one exists because the alternative
+ * is discovering it in a library director's inbox.
+ */
+const LINT_RULES: LintRule[] = [
+  {
+    name: 'tonos-in-caps',
+    level: 'error',
+    re: /[Α-ΩΪΫ]{2,}[ΆΈΉΊΌΎΏ]|[ΆΈΉΊΌΎΏ][Α-ΩΪΫ]{2,}/,
+    why: 'Greek all-caps drops the tonos: ΠΡΟΣΦΟΡΑ, not ΠΡΟΣΦΟΡΆ.',
+  },
+  {
+    name: 'brand-gender',
+    level: 'error',
+    re: /\b[ΗηΤτ]α? Libriant\b|Λίμπριαντ/,
+    why: 'Libriant is neuter and indeclinable — «το Libriant». «Η Libriant» implies a company that does not exist.',
+  },
+  {
+    name: 'plan-word',
+    level: 'error',
+    re: /πλάν(ο|ου|α|ων)/i,
+    why: 'A tier is a «πακέτο», never a «πλάνο».',
+  },
+  {
+    name: 'loan-word',
+    level: 'error',
+    re: /\bδάνει(ο|ου|α|ων)\b/i,
+    why: '«δάνειο» reads as financial debt. Use «δανεισμός».',
+  },
+  {
+    name: 'company-language',
+    level: 'error',
+    re: /εταιρ[εί]α|ΓΕΜΗ|ΑΦΜ|ΦΠΑ|™|®|\(TM\)|σήμα κατατεθέν|τιμολόγιο|τιμολογ(ούμε|είται)/i,
+    why: 'The business is not registered and nothing is trademarked.',
+  },
+  {
+    name: 'currency-format',
+    level: 'error',
+    re: /€\s*\d|\d€|\b0\s*€/,
+    why: 'Currency is «19 €» with a non-breaking space. Zero is «Δωρεάν», never «0 €».',
+  },
+  {
+    name: 'terminology-drift',
+    level: 'error',
+    re: /ιστορικό ενεργειών|προκράτηση|σε καθυστέρηση|κωδικός ραφιού|πρόσβαση API/,
+    why: 'Glossary violation, or a claim the code does not support.',
+  },
+  {
+    name: 'iso-date-in-prose',
+    level: 'error',
+    re: /\d{4}-\d{2}-\d{2}/,
+    why: 'Dates in prose are «21 Αυγούστου 2026». ISO belongs in datetime, loc and lastmod only.',
+    scrub: (h) =>
+      h
+        .replace(/datetime="[^"]*"/g, '')
+        .replace(/<loc>[^<]*<\/loc>/g, '')
+        .replace(/<lastmod>[^<]*<\/lastmod>/g, ''),
+  },
+  {
+    name: 'straight-quotes',
+    level: 'error',
+    re: /["'][\u0370-\u03FF]|[\u0370-\u03FF]["']/,
+    why: 'Greek text uses « » and the typographic apostrophe ’.',
+    scrub: (h) => h.replace(/<[^>]+>/g, ' '),
+  },
+  {
+    name: 'capitalised-language-name',
+    level: 'warn',
+    re: /(?<![.!?·]\s)(?<!^)\b(Ελληνικά|Αγγλικά)\b/m,
+    why: 'Greek writes language names lowercase mid-sentence.',
+    scrub: (h) => h.replace(/<[^>]+>/g, ' '),
+  },
+  {
+    name: 'gendered-participle',
+    level: 'warn',
+    re: /\b(συνδεδεμένος|μόνος σας|έτοιμος|βέβαιος|ενδιαφερόμενος)\b/,
+    why: 'Rewrite to avoid gender agreement rather than picking one.',
+    scrub: (h) => h.replace(/<[^>]+>/g, ' '),
+  },
+  {
+    name: 'minimising-adverb',
+    level: 'warn',
+    re: /\bΑπλά (ανεβ|κάν|πατ|συμπλ)|\bαπλά (ανεβ|κάν|πατ|συμπλ)/,
+    why: 'Telling someone their work is simple blames them when it is not.',
+    scrub: (h) => h.replace(/<[^>]+>/g, ' '),
+  },
+];
+
+function lint(files: Array<[string, string]>): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  for (const [name, html] of files) {
+    if (!/\.(html|xml)$/.test(name)) continue;
+    for (const rule of LINT_RULES) {
+      const subject = rule.scrub ? rule.scrub(html) : html;
+      const m = rule.re.exec(subject);
+      if (!m) continue;
+      const at = Math.max(0, m.index - 45);
+      const ctx = subject
+        .slice(at, m.index + m[0].length + 45)
+        .replace(/\s+/g, ' ')
+        .trim();
+      const line = `${name} · ${rule.name}: ${rule.why}\n      …${ctx}…`;
+      (rule.level === 'error' ? errors : warnings).push(line);
+    }
+  }
+  return { errors, warnings };
+}
+
 function main(): void {
   const config = readJson<SiteConfig>(join(HERE, 'site.config.json'));
 
@@ -108,7 +252,7 @@ function main(): void {
   // recorded consent. Bump `legal.lastUpdated` in site.config.json instead.
   const lastUpdated = config.legal.lastUpdated;
   const tokens: Record<string, string> = {
-    LAST_UPDATED: lastUpdated,
+    LAST_UPDATED: greekDate(lastUpdated),
     CONTROLLER_NAME: config.identity.controllerName,
     CONTACT_EMAIL: config.identity.contactEmail,
     PRIVACY_EMAIL: config.identity.privacyEmail,
@@ -165,14 +309,36 @@ function main(): void {
     `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`,
   ]);
 
+  const { errors, warnings } = lint(pages);
+  if (warnings.length > 0) {
+    console.warn(
+      `\n⚠  ${warnings.length} copy warning(s):\n` +
+        warnings.map((w) => `    • ${w}`).join('\n') +
+        '\n',
+    );
+  }
+  if (errors.length > 0) {
+    console.error(
+      `\n✗ ${errors.length} copy error(s) — nothing was written:\n\n` +
+        errors.map((e) => `    • ${e}`).join('\n') +
+        `\n\n  These are claims or conventions the site must not break. Fix the copy;\n` +
+        `  do not relax the rule unless the underlying fact has changed.\n`,
+    );
+    process.exit(1);
+  }
+
   for (const [name, contents] of pages) {
     writeFileSync(join(DIST, name), contents, 'utf8');
   }
 
   const copied = copyPublic(join(HERE, 'public'), DIST);
+  // The icons live in the repo-wide asset folder so the site and the app cannot
+  // drift apart visually. Copy only what the pages actually reference.
+  mkdirSync(join(DIST, 'icons'), { recursive: true });
+  const icons = copyPublic(join(REPO, 'assets/icons'), join(DIST, 'icons'));
 
   console.log(
-    `✓ built ${pages.length} files + ${copied} static asset(s) → apps/site/dist${draft ? '  (DRAFT)' : ''}`,
+    `✓ built ${pages.length} files + ${copied + icons} static asset(s) → apps/site/dist${draft ? '  (DRAFT)' : ''}`,
   );
 }
 
