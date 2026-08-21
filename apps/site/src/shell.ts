@@ -87,6 +87,7 @@ export function brandMark(id = 'm', size = 40): string {
  *  the sitemap, so a page can never exist without being reachable. */
 export const NAV = [
   { path: '/dynatotites', label: 'Δυνατότητες' },
+  { path: '/vivliothikes', label: 'Για ποιες βιβλιοθήκες' },
   { path: '/times', label: 'Πακέτα' },
   { path: '/metaptosi', label: 'Μετάπτωση' },
   { path: '/asfaleia-dedomenon', label: 'Ασφάλεια' },
@@ -94,6 +95,7 @@ export const NAV = [
 ] as const;
 
 export const FOOTER_LEGAL = [
+  { path: '/schetika', label: 'Ποιοι είμαστε' },
   { path: '/epikoinonia', label: 'Επικοινωνία' },
   { path: '/oroi-programmatos', label: 'Όροι προσφοράς' },
   { path: '/aporrito', label: 'Πολιτική Απορρήτου' },
@@ -201,7 +203,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 2.5rem 0; }
 .masthead a { color: var(--on-ink); text-decoration: none; }
 .masthead .lockup { color: var(--on-ink); padding: 12px 0; }
 .masthead nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.masthead nav a { padding: 10px 14px; border-radius: 8px; font-size: .95rem; color: var(--on-ink-muted); }
+.masthead nav { gap: 2px; }
+/* Six labels plus the CTA need 1064px against a 1032px content box at the
+   1080px max-width. Tightening the padding keeps every label whole rather
+   than truncating one, and the masthead stays a single row. */
+.masthead nav a { padding: 10px 11px; border-radius: 8px; font-size: .93rem; color: var(--on-ink-muted); }
 .masthead nav a:hover { color: var(--on-ink); background: rgba(255,255,255,.07); }
 .masthead nav a[aria-current="page"] { color: var(--on-ink); background: rgba(255,255,255,.10); }
 .masthead nav a.cta {
