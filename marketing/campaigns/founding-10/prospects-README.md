@@ -1,6 +1,6 @@
 # Prospect list — sources, coverage and gaps
 
-`prospects.csv` holds **306 Greek libraries, 299 of them sendable** (in Greece,
+`prospects.csv` holds **314 Greek libraries, 307 of them sendable** (in Greece,
 with a published email, in a targeted segment).
 
 ## The rule this list was built under
@@ -49,6 +49,29 @@ published email.** Every row's `source_url` points at the exact page it came fro
 42 of the 46 were already in the NLG directory. Of the 4 missing, 2 were traced
 to their own sites and added (Δημητσάνα, Μηλιές).
 
+**3. δήμο-by-δήμο sweep of all 332 Greek municipalities** (2026-08-21).
+`dhmoi.gr` lists every δήμος with its official site. Cross-matching those against
+the list showed **138 already covered, 194 not**. Each of the 194 was crawled —
+official site → any page mentioning βιβλιοθήκη (via links, then via sitemap) →
+published email — under the rule that a municipality's general inbox
+(`info@`, `dimos@`) is _not_ a library contact and was never accepted as one.
+
+Yield: **12 library-specific addresses, of which 8 were new** and every one was
+re-fetched afterwards to confirm it appears on the cited page. The other 4 turned
+out to be libraries already in the list, which is a useful independent check that
+the coverage matching was working.
+
+That is a low yield from 194 municipalities, and the reason is worth knowing: 96
+municipal sites mention βιβλιοθήκη but expose no library page at all, and 52 have
+no library presence on the web. **Most small Greek municipalities do not publish
+a library email — many do not have a separate library service to publish.** The
+remaining reachable ones need a phone call, not a crawl.
+
+`dimoi-to-verify.csv` holds **23 municipalities** where a library page exists but
+only a generic address was published. These are _deliberately excluded_ from the
+sendable list — someone has to look at each and decide whether the address really
+reaches the library. Do not bulk-import that file.
+
 ## Known gaps — read before assuming this is everything
 
 **1. Two state public libraries still have no verified email.**
@@ -67,12 +90,14 @@ the roster with websites is at
 email needs a manual lookup, because scraping a university site is how you end up
 emailing a webmaster.
 
-**3. The long tail of municipal libraries.** Greece is estimated to have ~686
-δημοτικές και κοινοτικές βιβλιοθήκες. This list has 184 δημοτικές, so roughly a
-quarter of the municipal universe. The rest are small branches that publish
-nothing centrally; reaching them means going municipality by municipality
-(δήμος → Πολιτισμός → Βιβλιοθήκη). That is real work with a low yield per hour,
-and 299 sendable addresses is already six waves' worth.
+**3. The municipal long tail is now measured, not guessed.** The δήμο-by-δήμο
+sweep above covered all 332 municipalities and found only 8 more reachable
+libraries. The commonly cited figure of ~686 δημοτικές και κοινοτικές βιβλιοθήκες
+counts branches and reading rooms that have no web presence and no published
+email; they are reachable only by phone or through the δήμος switchboard. In
+other words: **this list is close to the practical ceiling for email outreach in
+Greece.** Going further means picking up the telephone, and 307 sendable
+addresses is already six to ten waves' worth.
 
 **4. School libraries are barely represented.** 18 here, against thousands of
 Greek school libraries. Most have no public web presence at all and are reachable
