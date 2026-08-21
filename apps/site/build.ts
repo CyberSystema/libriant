@@ -18,6 +18,8 @@ import { marked } from 'marked';
 
 import { STYLESHEET, type SiteConfig } from './src/shell.js';
 import { renderIndex, renderThanks, renderDoc, render404, type LandingCopy } from './src/pages.js';
+import { renderContentPage, type PageContent } from './src/render.js';
+import { renderPlanCards, renderComparisonTable } from './src/plans.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../..');
@@ -139,6 +141,11 @@ const LINT_RULES: LintRule[] = [
     level: 'error',
     re: /πλάν(ο|ου|α|ων)/i,
     why: 'A tier is a «πακέτο», never a «πλάνο».',
+    // One exception, and it is not a loophole: «Πλάνο & χρεώσεις» is the real
+    // label of a screen in the app (locales/el/billing.json). Telling a
+    // librarian to click something we have renamed for them would be worse
+    // than the inconsistency. Only the exact quoted title is allowed through.
+    scrub: (h) => h.replace(/«Πλάνο &(amp;)? χρεώσεις»/g, '«…»'),
   },
   {
     name: 'loan-word',
@@ -265,6 +272,47 @@ function main(): void {
     PLANNED_PRICE: String(config.offer.plannedMonthlyPriceEur),
   };
 
+  // Page copy is authored as data in content/pages.json. The pricing page's
+  // plan cards and comparison grid are generated from the product's own plan
+  // definitions instead, so the caps advertised are the caps enforced.
+  const contentPages = readJson<PageContent[]>(join(HERE, 'content/pages.json')).map((page) => {
+    if (page.slug !== '/times') return page;
+    return {
+      ...page,
+      sections: [
+        {
+          type: 'cards' as const,
+          heading: 'Τα πακέτα',
+          intro:
+            'Οι τιμές είναι γραμμένες εδώ. Δεν χρειάζεται να ζητήσετε προσφορά για να μάθετε τι κοστίζει.',
+          html: `<section class="section">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="a-ta-paketa">Τα πακέτα</h2>
+        <p>Οι τιμές είναι γραμμένες εδώ. Δεν χρειάζεται να ζητήσετε προσφορά για να μάθετε τι κοστίζει.</p>
+      </div>
+      ${renderPlanCards(config.offer.planName.toLowerCase())}
+    </div>
+  </section>`,
+        },
+        ...page.sections,
+        {
+          type: 'table' as const,
+          heading: 'Αναλυτική σύγκριση',
+          html: `<section class="section alt">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="a-analytiki-sygkrisi">Αναλυτική σύγκριση</h2>
+        <p>Κάθε γραμμή είναι όριο που εφαρμόζει το ίδιο το λογισμικό — δεν είναι εμπορική περιγραφή.</p>
+      </div>
+      ${renderComparisonTable()}
+    </div>
+  </section>`,
+        },
+      ],
+    };
+  });
+
   rmSync(DIST, { recursive: true, force: true });
   mkdirSync(DIST, { recursive: true });
 
@@ -292,6 +340,10 @@ function main(): void {
         draft,
       }),
     ],
+    ...contentPages.map((page): [string, string] => [
+      `${page.slug.replace(/^\//, '')}.html`,
+      renderContentPage(config, page, draft),
+    ]),
     ['404.html', render404(config, draft)],
     ['styles.css', STYLESHEET],
     [
@@ -301,7 +353,7 @@ function main(): void {
   ];
 
   const origin = config.site.origin.replace(/\/$/, '');
-  const urls = ['/', '/oroi-programmatos', '/aporrito']
+  const urls = ['/', ...contentPages.map((p) => p.slug), '/oroi-programmatos', '/aporrito']
     .map((p) => `  <url><loc>${origin}${p}</loc><lastmod>${lastUpdated}</lastmod></url>`)
     .join('\n');
   pages.push([
