@@ -35,6 +35,12 @@ document.** On the cloud version of this runbook you could reinstall and remount
 here, a reinstall means **restore from backup**. Set up the offsite copy on day
 one and test a restore before your first real library goes live. (See Part 16.)
 
+> **After the box is running**, day-to-day operation lives in
+> **[`server-handbook.md`](server-handbook.md)** — hardware facts, health checks,
+> monitoring, backup drills, symptom-indexed troubleshooting, LVM procedures,
+> and how to host your other projects alongside Libriant. This runbook builds the
+> server; the handbook runs it.
+
 ---
 
 ## Part 0 — What you're building
@@ -289,6 +295,20 @@ ufw default deny incoming && ufw default allow outgoing
 ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443
 ufw --force enable
 ```
+
+**Ubuntu Pro (free — do it now).** A personal token covers up to **5 machines**
+at no cost and buys you two things that matter on a single box with no failover:
+
+```sh
+pro attach <your-token>        # token from https://ubuntu.com/pro/dashboard
+pro enable livepatch
+pro status                     # confirm esm-infra + livepatch are enabled
+```
+
+- **Livepatch** applies kernel CVE fixes **without rebooting**. With libraries
+  mid-circulation and no second server to fail over to, "patch now, reboot at a
+  quiet moment" is worth the five minutes of setup.
+- **ESM** extends security updates to thousands of extra packages, for 10 years.
 
 **SSH hardening** — use a drop-in file (not `sed`), because Ubuntu's cloud image
 ships its own SSH drop-in and sshd uses the _first_ value it finds:
@@ -838,7 +858,7 @@ answer when a library asks what happens if something goes wrong.
 4. **Restore the data** — see `scripts/restore.sh`:
    ```sh
    cd /srv/libriant/app
-   BACKUP_ROOT=/mnt/libriant/backups bash scripts/restore.sh <YYYYMMDD>
+   BACKUP_ROOT=/mnt/libriant/backups bash scripts/restore.sh <YYYYMMDD> --yes
    ```
    This recreates the control database and every tenant database, and unpacks
    uploads back into `/mnt/libriant/storage`.
@@ -884,6 +904,55 @@ Day-to-day you need very little:
 > first. If it reads `[U_]`, the mirror is already carrying you and there is no
 > rush — take a fresh backup, _then_ open the ticket. Do not reboot a degraded
 > array before backing up.
+
+### Reaching your data from the Rescue System
+
+Rescue runs entirely in RAM and never touches your drives, so booting it is safe
+even when you only want to copy one file off a broken box.
+
+Activate it in Robot → _Rescue_ (Linux, 64-bit, select your key), then Robot →
+_Reset_ → _Execute an automatic hardware reset_. **Two things catch people out:**
+activation is armed for **one boot only** and disarms after **60 minutes** if you
+do not reboot, and the rescue system has a **different SSH host key**, so you will
+get `REMOTE HOST IDENTIFICATION HAS CHANGED`. Compare the fingerprint Robot
+displays, then clear the old entry:
+
+```sh
+ssh-keygen -R <your-server-ip>
+ssh root@<your-server-ip>          # also listens on port 222
+```
+
+Once in, your disks are **not** mounted. With RAID + LVM it takes three steps:
+
+```sh
+mdadm --assemble --scan            # bring the mirror up (usually automatic)
+cat /proc/mdstat                   # want [UU]; [U_] = degraded but still readable
+
+vgchange -ay                       # ← THE STEP EVERYONE FORGETS
+lvs                                # you should now see root, data, swap
+
+mkdir -p /mnt/old
+mount /dev/vg0/root /mnt/old
+mount /dev/vg0/data /mnt/old/mnt/libriant
+```
+
+Without `vgchange -ay` the logical volumes never appear as devices and it looks
+exactly as though your data is gone. It is not — the volume group is simply
+inactive. Unmount in reverse order (`data` first) before rebooting.
+
+Pull the backups off **before** you attempt any repair:
+
+```sh
+scp -r /mnt/old/mnt/libriant/backups/ you@laptop:~/libriant-emergency/
+```
+
+**If the box will not answer SSH even in rescue**, escalate: Robot → your server
+→ _Support_ → **Remote Console**. Hetzner attaches a KVM-over-IP and emails you
+the URL — **free for 3 hours**, chargeable after. That is the path for BIOS and
+boot-menu problems. **vKVM** sits in between: it boots your installed OS inside a
+VM, which is the right tool specifically for a firewall lockout.
+
+Escalation order, cheapest first: **rescue → vKVM → KVM console.**
 
 ---
 
