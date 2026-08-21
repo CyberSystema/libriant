@@ -2,20 +2,21 @@
 
 _Libriant is a **[CyberSystema](https://cybersystema.com)** product._
 
-A clean, friendly, step-by-step guide to running Libriant on your Hetzner server
-**CyberSystema-1**, with all data living on the attached **64 GB `libriant`
-volume**. You work mostly from **Termius over SSH**, so every step here is a
-short command you can paste.
+A clean, friendly, step-by-step guide to running Libriant on your Hetzner
+**dedicated** server **CyberSystema-1**. You work mostly from **Termius over
+SSH**, so every step here is a short command you can paste.
 
 **Your setup at a glance**
 
-| Thing       | Value                                                                |
-| ----------- | -------------------------------------------------------------------- |
-| Server      | **CyberSystema-1** (Hetzner CPX32 — 4 AMD vCPU, 8 GB RAM, 160 GB OS) |
-| Data volume | **`libriant`** — 64 GB block volume, mounted at `/mnt/libriant`      |
-| OS          | **Ubuntu 26.04 LTS** (fresh reinstall)                               |
-| Your tools  | **Termius** (SSH) as the main workplace                              |
-| Scale       | a pilot of up to ~20 libraries (tenants)                             |
+| Thing      | Value                                                                |
+| ---------- | -------------------------------------------------------------------- |
+| Server     | **CyberSystema-1** — Hetzner **dedicated** (Server Auction)          |
+| CPU / RAM  | Intel Xeon E3-1275 v6 — 4 cores / 8 threads · **64 GB DDR4 ECC**     |
+| Disks      | **2 × NVMe in software RAID1** (confirm sizes with `lsblk`)          |
+| Data       | `/mnt/libriant` — a partition **on the RAID**, not a separate volume |
+| OS         | **Ubuntu 26.04 LTS** (installed via `installimage` from rescue)      |
+| Your tools | **Termius** (SSH) as the main workplace                              |
+| Scale      | a pilot of up to ~20 libraries (tenants)                             |
 
 > This runbook is filled in for **CyberSystema-1**: apex `libriant.com`, admin
 > `admin.libriant.com`, and public IPv4 `178.104.32.176`. Reusing it for a
@@ -23,10 +24,16 @@ short command you can paste.
 > `/srv/libriant/.env.prod` (`PUBLIC_HOST` / `ADMIN_HOST`) at runtime — the repo
 > defaults just mirror it.
 
-**The big idea — why the volume matters.** A Hetzner **Rebuild** wipes the boot
-disk but **keeps attached volumes**. We put _all your data_ (databases, uploads,
-TLS certificates, backups) on the `libriant` volume. So you can reinstall the OS
-any time, remount the volume, and everything comes straight back. (See Part 16.)
+**The big idea — backups ARE your recovery.** This is a dedicated machine, so
+there is **no detachable volume and no "Rebuild that keeps your data"**. Both
+NVMe drives are mirrored in **RAID1**, which protects you when a _disk_ dies —
+but reinstalling the OS wipes everything, and RAID does not protect against
+`rm -rf`, a bad migration, or ransomware.
+
+That makes **Part 11 (backups) the single most important section in this
+document.** On the cloud version of this runbook you could reinstall and remount;
+here, a reinstall means **restore from backup**. Set up the offsite copy on day
+one and test a restore before your first real library goes live. (See Part 16.)
 
 ---
 
@@ -90,34 +97,95 @@ echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
 
 ---
 
-## Part 2 — Reinstall CyberSystema-1 (clean)
+## Part 2 — Install the OS (rescue + `installimage`)
 
-All in the **Hetzner Cloud Console** (web UI) — these are cloud actions, not
-SSH.
+Dedicated servers are managed from **Hetzner Robot**, not the Cloud Console, and
+they arrive in the **Rescue System** with no OS installed. You install it
+yourself — this is the biggest difference from a cloud server.
 
-**1. Register your SSH public key** (so you can log in by key after the
-rebuild). _Security → SSH keys → Add SSH key_ → paste your **public** key (in
-Termius: your key → _Export Public Key_) → name it `libriant-key`.
+**1. Register your SSH public key.** Robot → _Server → Key management_ → add your
+**public** key (in Termius: your key → _Export Public Key_) → name it
+`libriant-key`. Selecting it in the next step means the rescue system accepts your
+key instead of emailing you a password.
 
-**2. Rebuild the server.** Open **CyberSystema-1** → _Rebuild_ → choose **Ubuntu
-26.04** → make sure `libriant-key` is selected → **Rebuild**.
+**2. Activate the Rescue System.** Robot → **CyberSystema-1** → _Rescue_ tab →
+Linux, 64-bit, pick `libriant-key` → **Activate**. Then _Reset_ → **Execute an
+automatic hardware reset**. After a minute the box boots into rescue.
 
-> ✅ The rebuild wipes the **boot disk** only. Your **`libriant` volume stays
-> attached and untouched** — its data (if any) is preserved. The server keeps
-> the same IP.
+**3. SSH in and run the installer.**
 
-**3. Lock down the network.** _Firewalls → Create Firewall_ → name `libriant-edge`
-→ add these **inbound** rules → **Apply to → CyberSystema-1**:
+```sh
+ssh root@<your-server-ip>       # rescue system
+installimage
+```
 
-| Protocol | Port | Source                                |
-| -------- | ---- | ------------------------------------- |
-| TCP      | 22   | your IP/CIDR (or `0.0.0.0/0`, `::/0`) |
-| TCP      | 80   | `0.0.0.0/0`, `::/0`                   |
-| TCP      | 443  | `0.0.0.0/0`, `::/0`                   |
-| UDP      | 443  | `0.0.0.0/0`, `::/0` (HTTP/3)          |
+In the menu choose **Ubuntu → Ubuntu 26.04 LTS (64-bit)**. An editor opens with
+the install config. Set these:
 
-> Outbound is open by default (needed for TLS certs, image pulls, Stripe,
-> backups). Tighten port 22 to your own IP if it's static.
+```text
+DRIVE1 /dev/nvme0n1
+DRIVE2 /dev/nvme1n1
+
+SWRAID 1
+SWRAIDLEVEL 1
+
+HOSTNAME CyberSystema-1
+
+PART /boot  ext4   1G
+PART swap   swap   8G
+PART /      ext4  80G
+PART /mnt/libriant ext4  all
+```
+
+- **`SWRAID 1` + `SWRAIDLEVEL 1` is not optional.** Two drives mirrored means a
+  single disk failure costs you nothing but a support ticket. Without it, one
+  dead NVMe is a full restore-from-backup.
+- The separate `/mnt/libriant` partition keeps a full root filesystem from taking
+  Postgres down with it. **It does _not_ survive a reinstall** — `installimage`
+  formats what you tell it to. See Part 16.
+- Confirm your device names first with `lsblk`; older boxes may present `sda`/`sdb`.
+
+Save and exit (`F10` in the nano-style editor), confirm, and let it run. Then
+`reboot` and SSH back in on your key.
+
+**4. Verify the mirror came up before you do anything else.**
+
+```sh
+cat /proc/mdstat                # every array should read [UU], not [U_]
+lsblk
+```
+
+**5. Lock down the network.** Dedicated servers have no Cloud Firewall. You have
+two layers; use the host one.
+
+Robot's own packet filter (_Server → Firewall_) is **stateless and limited to a
+few rules** — usable as a coarse outer net, but fiddly. The host firewall is the
+real control:
+
+```sh
+apt-get update && apt-get -y install ufw
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw allow 443/udp                # HTTP/3
+ufw enable
+```
+
+> ⚠️ **Docker bypasses ufw.** Published container ports are inserted into
+> `iptables` ahead of ufw's chains, so `ufw deny` will _not_ stop traffic to a
+> port a container published. Libriant's prod compose deliberately keeps
+> Postgres, Redis and PgBouncer on the private Docker network with **no host
+> port**, so only Caddy is exposed — keep it that way. After Part 8, verify from
+> your laptop:
+>
+> ```sh
+> nmap -Pn -p 22,80,443,5432,6379 <your-server-ip>
+> ```
+>
+> 5432 and 6379 must show `filtered`/`closed`. If either is `open`, a container
+> is publishing it and the firewall will not save you.
 
 ---
 
@@ -135,45 +203,58 @@ apt-get update && apt-get -y upgrade
 
 ---
 
-## Part 4 — Mount the `libriant` volume
+## Part 4 — Check the data partition and RAID
 
-This is the foundation: all data lives here. Do it before installing anything
-else.
+`installimage` already created `/mnt/libriant` on the mirror in Part 2, so there
+is **nothing to format here** — unlike the cloud version of this runbook, where
+`/mnt/libriant` was a separate attachable volume.
 
-**1. Find the volume.** It's the 64 GB disk:
-
-```sh
-lsblk -f
-```
-
-You'll see your boot disk plus a ~64 GB device (e.g. `sdb`). If its `FSTYPE`
-column is **empty**, it's blank and safe to format. If it shows a filesystem you
-want to keep, **skip the next step** and just mount it.
-
-**2. Format it once** (⚠️ this **erases** the volume — you said you want it
-clean):
+**1. Confirm the mirror is healthy and the partition is mounted.**
 
 ```sh
-mkfs.ext4 -L libriant /dev/sdb        # use the device name from lsblk
+cat /proc/mdstat                       # arrays must read [UU]
+df -h /mnt/libriant                    # your data partition
+findmnt /mnt/libriant
 ```
 
-**3. Mount it at `/mnt/libriant` and make it permanent.** We mount by label, so
-it survives reboots and reinstalls:
+If `/proc/mdstat` shows `[U_]` the array is **degraded** — one drive is gone or
+resyncing. Do not put customer data on a degraded array; open a Robot ticket
+(hardware replacement is included in your contract).
 
-```sh
-mkdir -p /mnt/libriant
-echo 'LABEL=libriant /mnt/libriant ext4 defaults,nofail 0 2' >> /etc/fstab
-mount -a
-df -h /mnt/libriant                    # confirm: ~63 GB available
-```
-
-**4. Create the data folders** the app will use:
+**2. Create the data folders** the app will use:
 
 ```sh
 mkdir -p /mnt/libriant/{postgres,redis,storage,caddy,backups}
 ```
 
-That's it — `/mnt/libriant` now holds (or will hold) every byte that matters.
+**3. Turn on RAID and disk-health alerting.** On a cloud volume Hetzner watched
+the storage for you. Here it is your job:
+
+```sh
+apt-get -y install mdadm smartmontools
+# email on a degraded array
+sed -i 's/^MAILADDR.*/MAILADDR you@example.com/' /etc/mdadm/mdadm.conf
+systemctl enable --now mdmonitor
+# weekly SMART self-test on both drives
+systemctl enable --now smartd
+```
+
+> **Watch NVMe wear specifically.** Auction machines often ship with
+> consumer-grade M.2 drives, whose endurance is far lower than datacenter U.2
+> parts. Postgres plus nightly dumps writes steadily, so check every few months:
+>
+> ```sh
+> smartctl -A /dev/nvme0n1 | grep -i -E 'percentage_used|data_units_written'
+> smartctl -A /dev/nvme1n1 | grep -i -E 'percentage_used|data_units_written'
+> ```
+>
+> `percentage_used` is the drive's own wear estimate. Both drives are the same
+> age and take identical writes under RAID1, so they will wear together and can
+> fail together — which is exactly why the **offsite** backup in Part 11 matters
+> more than the mirror does.
+
+`/mnt/libriant` now holds every byte that matters — but unlike a cloud volume, it
+does **not** survive a reinstall. Part 11 is what saves you.
 
 ---
 
@@ -202,7 +283,8 @@ mkdir -p /home/deploy/.ssh
 cp ~/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
 chown -R deploy:deploy /home/deploy/.ssh && chmod 700 /home/deploy/.ssh && chmod 600 /home/deploy/.ssh/authorized_keys
 
-# 5. Host firewall (a second layer behind the Cloud Firewall)
+# 5. Host firewall — on dedicated this is your PRIMARY firewall, not a second
+#    layer. Already configured in Part 2; this is the idempotent re-run.
 ufw default deny incoming && ufw default allow outgoing
 ufw allow 22/tcp && ufw allow 80/tcp && ufw allow 443
 ufw --force enable
@@ -338,8 +420,9 @@ Records** (nameservers already point at Cloudflare since it's your registrar):
 
 **2. Origin certificate** — dashboard → **SSL/TLS → Origin Server → Create
 Certificate**. Keep defaults, hostnames `libriant.com` **and** `*.libriant.com`,
-15-year validity → **Create**. Paste the two PEM blocks onto the box (on the
-volume, so they survive a rebuild):
+15-year validity → **Create**. **Save both PEM blocks in your password manager
+first** — they are not in any backup, and a reinstall wipes the copy on disk.
+Then paste them onto the box:
 
 ```sh
 mkdir -p /mnt/libriant/caddy/origin
@@ -356,13 +439,27 @@ Caddyfile already points `tls` at `origin.crt` / `origin.key`.
 
 **4. Lock the origin to Cloudflare** — so nobody bypasses the proxy to hit the
 box directly (which would also let them spoof the real-client-IP header). In the
-Hetzner firewall (`libriant-edge`, Part 2), change the **source** for ports
-**80** and **443** from `0.0.0.0/0` to **[Cloudflare's IP ranges](https://www.cloudflare.com/ips/)**.
-Leave **22** open to your own IP — SSH deploys reach the box directly.
+host firewall (Part 2), replace the blanket `ufw allow 80,443` with Cloudflare's
+ranges only:
+
+```sh
+ufw delete allow 80/tcp && ufw delete allow 443/tcp && ufw delete allow 443/udp
+for ip in $(curl -s https://www.cloudflare.com/ips-v4) $(curl -s https://www.cloudflare.com/ips-v6); do
+  ufw allow from "$ip" to any port 80  proto tcp
+  ufw allow from "$ip" to any port 443 proto tcp
+  ufw allow from "$ip" to any port 443 proto udp
+done
+ufw status numbered
+```
+
+Leave **22** open to your own IP — SSH deploys reach the box directly. Re-run
+this when Cloudflare publishes new ranges (rarely, but it does happen).
 
 > The real visitor IP arrives via Cloudflare's `CF-Connecting-IP` header, which
 > the Caddyfile forwards to the app as `X-Real-IP` for rate-limiting + audit.
-> Certs live on the volume, so they survive reinstalls.
+> The origin cert does **not** survive a reinstall — restore it from your password
+> manager (Part 16, step 6). A 15-year Cloudflare cert needs no re-validation,
+> so this is a copy-paste, not a re-issue.
 
 **5. Bot protection vs. automated checks.** With **Bot Fight Mode** on, or the
 security level set to **I'm Under Attack**, Cloudflare serves a _managed
@@ -649,21 +746,39 @@ GRAFANA_ADMIN_PASSWORD=pick-one docker compose -f docker-compose.monitoring.yml 
 
 ## Part 15 — Growing the server
 
-**Vertical (first choice): `CPX32 → CCX23`.** Swaps 4 _shared_ vCPU + 8 GB for 4
-_dedicated_ vCPU + 16 GB, on the **same 160 GB boot disk**, and your data volume
-just comes along untouched.
+**There is no vertical scaling on a dedicated box.** You cannot rescale a
+CPU, add RAM, or grow a disk on an auction server — the hardware is fixed for its
+lifetime. Your two permanent ceilings are **4 cores / 8 threads** and the usable
+RAID1 capacity (confirm with `df -h /mnt/libriant`).
 
-1. Back up and confirm it (Part 11).
-2. Soft-stop: admin UI → maintenance, then `dc stop`.
-3. Console → **CyberSystema-1** → _Power → Power off_.
-4. Console → _Rescale_ → pick **`CCX23`** → **Keep disk** → _Rescale_.
-5. Console → _Power on_, then `dc up -d` and re-check `/readyz`.
-6. With 16 GB you can give Postgres more cache — add to the `postgres`
-   `command:` in the prod compose: `-c shared_buffers=4GB -c effective_cache_size=9GB`,
-   then `dc up -d postgres`.
+You do, however, have 64 GB of RAM and a workload that is nowhere near it. Spend
+it on Postgres before you spend money on hardware — add to the `postgres`
+`command:` in the prod compose:
 
-> **Resize the volume** independently any time: Console → Volumes → `libriant` →
-> _Resize_, then on the host `sudo resize2fs /dev/sdb`.
+```text
+-c shared_buffers=8GB -c effective_cache_size=24GB -c work_mem=32MB
+```
+
+then `dc up -d postgres`. With every tenant database cached in RAM, four cores go
+a very long way.
+
+**When you genuinely outgrow it**, the move is to a _different machine_, not a
+bigger one:
+
+1. Order the new server (dedicated is month-to-month, so run both briefly).
+2. Back up and verify (Part 11).
+3. Follow Parts 2–8 on the new box.
+4. Restore (Part 16), re-point DNS, then cancel the old server.
+
+Budget a weekend. The compose stack is portable, which is the whole reason this
+is a migration and not a rebuild.
+
+**Relieve pressure without replacing the box:**
+
+- **Storage** — move uploads to a Storage Box or object storage. The control
+  plane already keeps each tenant's `storage_url`, so this is config, not code.
+- **CPU** — the app and worker can move to a second cheap box before Postgres has
+  to; see `infra/deploy/fleet.yml`.
 
 **Horizontal (later):** move Postgres to its own box, add app nodes behind a
 Hetzner Load Balancer, shard tenants across cells. The architecture already
@@ -673,44 +788,102 @@ config changes, not rewrites — see `infra/deploy/fleet.yml` and the
 
 ---
 
-## Part 16 — Reinstalling later (the volume payoff)
+## Part 16 — Disaster recovery (read this before you need it)
 
-Because all data lives on the `libriant` volume, a clean reinstall is quick and
-loss-free:
+> ⚠️ **This section replaced a cloud-only procedure.** The earlier version of this
+> runbook said a Rebuild kept your data and "no restore needed". **That is false on
+> dedicated hardware.** `installimage` formats the drives, including
+> `/mnt/libriant`. If you follow the old steps you lose everything.
 
-1. Console → **CyberSystema-1** → _Rebuild_ → **Ubuntu 26.04** (volume stays
-   attached, data preserved).
-2. **Part 4**, but **skip the `mkfs` step** — the volume already has your data;
-   just `mkdir -p /mnt/libriant` + the fstab line + `mount -a`.
-3. **Part 5** (base setup) and **Part 6** (clone repo, restore `.env.prod`, add
-   the `~/.bashrc` shortcut).
-4. `dc pull && dc up -d`.
+### What each layer actually protects against
 
-Your databases, uploads, and TLS certs are exactly as you left them — **no
-restore needed**. (Keep a copy of `.env.prod` in your password manager; it's the
-one thing not on the volume.)
+| Failure                             | Protected by                 | Cost to recover                  |
+| ----------------------------------- | ---------------------------- | -------------------------------- |
+| One NVMe dies                       | **RAID1**                    | Nothing — swap the drive, resync |
+| Both drives die / fire / theft      | **Offsite backup** (Part 11) | Full rebuild + restore           |
+| `rm -rf`, bad migration, ransomware | **Offsite backup** only      | Full restore                     |
+| OS broken, reinstall needed         | **Offsite backup** only      | Full rebuild + restore           |
+
+**RAID1 is not a backup.** It mirrors your mistakes instantly and both drives are
+the same age under identical write load. Backups are the only layer that covers
+the bottom three rows.
+
+### Before you need it: prove the restore works
+
+A backup you have never restored is a hope, not a plan. **Do this before your
+first real library goes live**, and again whenever `backup.sh` changes:
+
+```sh
+# pull yesterday's dump from the Storage Box to a scratch dir
+mkdir -p /tmp/restore-drill && cd /tmp/restore-drill
+rclone copy "$BACKUP_REMOTE:$(date -d yesterday +%Y%m%d)" .
+# restore into a throwaway database and count rows
+gunzip -c *.sql.gz | psql -h 127.0.0.1 -U libriant -d postgres
+```
+
+Write down how long it took. That number is your real RTO, and it is the honest
+answer when a library asks what happens if something goes wrong.
+
+### Full recovery, from nothing
+
+1. **Get the machine back.** Same server if the OS broke; a new one from Robot or
+   the auction if the hardware is gone. Dedicated is month-to-month, so ordering a
+   replacement is quick — but **auction stock is one-of-one**, so expect to take
+   whatever is available rather than the identical box.
+2. **Part 2** — rescue → `installimage` → **`SWRAID 1` / `SWRAIDLEVEL 1`** →
+   firewall. Confirm `[UU]` in `/proc/mdstat`.
+3. **Part 5** (base setup) and **Part 6** (clone the repo, restore `.env.prod`).
+   > `.env.prod` is **not** in any backup by design — it holds every secret. Keep
+   > it in your password manager. Without it nothing else here helps.
+4. **Restore the data** — see `scripts/restore.sh`:
+   ```sh
+   cd /srv/libriant/app
+   BACKUP_ROOT=/mnt/libriant/backups bash scripts/restore.sh <YYYYMMDD>
+   ```
+   This recreates the control database and every tenant database, and unpacks
+   uploads back into `/mnt/libriant/storage`.
+5. **Start and verify** — `dc up -d`, then Part 12. Check `/readyz`, log into the
+   admin panel, and open one real tenant's catalogue.
+6. **Re-issue TLS.** Caddy's certificates lived on the old disk. Cloudflare Origin
+   Certificates (Part 7) are the easy path — reinstall the same cert and key from
+   your password manager; nothing needs to be re-validated.
+7. **Tell the libraries.** If data was lost between the last backup and the
+   failure, say so plainly and say what window. Your programme terms promise them
+   an export at any time; a quiet gap is far worse than an honest one.
+
+### The gap you are accepting
+
+Backups run **nightly**. A failure at 23:00 loses up to a day of circulation —
+loans, returns, new members. For a library that is recoverable from memory and
+paper slips, which is why nightly is a reasonable trade at this scale.
+
+If that stops being acceptable — say, at 20+ libraries — turn on Postgres WAL
+archiving to the Storage Box for point-in-time recovery. That is a change to the
+`postgres` service config, not a re-architecture.
 
 ---
 
-## Part 17 — Optional: the `hcloud` CLI
+## Part 17 — Managing the box from Robot
 
-Everything above uses the Console + SSH. If you'd rather script the
-cloud-platform actions from your laptop, install Hetzner's CLI:
+**`hcloud` does not manage dedicated servers.** It is the Hetzner _Cloud_ CLI;
+your machine lives in **Robot**, a separate product with a separate login and its
+own webservice API. Skip it.
 
-```sh
-brew install hcloud
-hcloud context create libriant      # paste an API token (Console → Security)
-```
+Day-to-day you need very little:
 
-Common equivalents:
+| Task                    | Where                                                          |
+| ----------------------- | -------------------------------------------------------------- |
+| Reboot / hardware reset | Robot → **CyberSystema-1** → _Reset_                           |
+| Boot into rescue        | Robot → _Rescue_ tab, then _Reset_                             |
+| Report a failed disk    | Robot → _Support_ → include `/proc/mdstat` output              |
+| Coarse packet filter    | Robot → _Firewall_ (stateless; the host `ufw` is the real one) |
+| Reverse DNS             | Robot → _IPs_ → edit rDNS                                      |
+| Cancel the server       | Robot → _Cancellation_ (month-to-month)                        |
 
-```sh
-hcloud server poweroff CyberSystema-1
-hcloud server change-type --keep-disk CyberSystema-1 ccx23   # rescale
-hcloud server poweron CyberSystema-1
-hcloud server describe CyberSystema-1
-ssh root@"$(hcloud server ip CyberSystema-1)"
-```
+> **Order of operations on a suspected disk failure:** check `/proc/mdstat`
+> first. If it reads `[U_]`, the mirror is already carrying you and there is no
+> rush — take a fresh backup, _then_ open the ticket. Do not reboot a degraded
+> array before backing up.
 
 ---
 
