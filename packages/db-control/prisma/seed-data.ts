@@ -114,7 +114,7 @@ export const planSeeds: PlanSeed[] = [
       max_custom_fields_per_entity: 10,
       reservations_enabled: true,
       isbn_lookup_enabled: true,
-      bulk_import_enabled: false,
+      bulk_import_enabled: true,
       email_notifications_enabled: true,
       audit_log_retention_days: 90,
       api_access_enabled: false,

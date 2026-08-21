@@ -150,7 +150,13 @@ export const PRICING_ROWS: PricingRow[] = [
   },
   {
     key: 'bulk_import_enabled',
+    // Every paid tier self-serves. Starter does not — but the gate is on the
+    // wizard, not on the capability: PlanGuard short-circuits every feature gate
+    // inside a support session, so a Starter library generates a support code
+    // and we run the migration for them. That is a real path, not a sales
+    // promise, and saying so turns the one «—» on the row into an answer.
     label: 'Μαζική εισαγωγή από CSV, Excel ή MARC',
+    note: 'Σε κάθε πακέτο με συνδρομή. Στο δωρεάν Starter τη μετάπτωση την τρέχουμε εμείς, με κωδικό υποστήριξης που δημιουργείτε εσείς.',
     render: (p) => yesNo(p.features.bulk_import_enabled),
   },
   {
@@ -165,3 +171,68 @@ export const PRICING_ROWS: PricingRow[] = [
     render: (p) => grNumber(Number(p.features.max_custom_fields_per_entity)),
   },
 ];
+
+/* ---------------------------------------------------------------------------
+ * Rendering. Values come from the seeds above; only presentation lives here.
+ * ------------------------------------------------------------------------- */
+
+function e(v: unknown): string {
+  return String(v).replace(
+    /[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string,
+  );
+}
+
+/**
+ * Four plan cards. Each carries an audience badge rather than a «most popular»
+ * flag — there are no customers yet, so popularity would be an invention.
+ */
+export function renderPlanCards(offerPlanSlug: string): string {
+  return `<div class="plans">
+      ${PUBLIC_PLANS.map((p) => {
+        const featured = p.slug === offerPlanSlug;
+        return `<article class="plan${featured ? ' plan--featured' : ''}">
+        ${featured ? '<span class="plan__flag">Το πακέτο της προσφοράς</span>' : ''}
+        <h3 class="plan__name">${e(p.name)}</h3>
+        <p class="plan__price">${e(priceLabel(p.priceEur))}${p.priceEur > 0 ? '<span class="plan__per">τον μήνα</span>' : ''}</p>
+        <p class="plan__audience">${e(p.audience)}</p>
+        <p class="plan__cue">${e(p.sizeCue)}</p>
+        <ul class="plan__caps">
+          <li><strong>${e(grNumber(Number(p.features.max_books)))}</strong> τίτλοι</li>
+          <li><strong>${e(grNumber(Number(p.features.max_members)))}</strong> μέλη</li>
+          <li><strong>${e(grNumber(Number(p.features.staff_seats)))}</strong> ${Number(p.features.staff_seats) === 1 ? 'λογαριασμός προσωπικού' : 'λογαριασμοί προσωπικού'}</li>
+          <li><strong>${e(storageLabel(Number(p.features.max_storage_mb)))}</strong> για εξώφυλλα και αρχεία</li>
+        </ul>
+      </article>`;
+      }).join('\n      ')}
+    </div>`;
+}
+
+/** The comparison grid. Rows are chosen in PRICING_ROWS; values are read. */
+export function renderComparisonTable(): string {
+  return `<div class="table-wrap">
+      <table class="cmp cmp--plans">
+        <thead>
+          <tr>
+            <th scope="col">
+              <span class="visually-hidden">Δυνατότητα</span>
+            </th>
+            ${PUBLIC_PLANS.map((p) => `<th scope="col">${e(p.name)}<span class="cmp__price">${e(priceLabel(p.priceEur))}</span></th>`).join('\n            ')}
+          </tr>
+        </thead>
+        <tbody>
+          ${PRICING_ROWS.map(
+            (row) => `<tr>
+            <th scope="row">${e(row.label)}${row.note ? `<span class="cmp__note">${e(row.note)}</span>` : ''}</th>
+            ${PUBLIC_PLANS.map((p) => {
+              const v = row.render(p);
+              const cls = v === '✓' ? ' class="yes"' : v === '—' ? ' class="no"' : '';
+              const label = v === '✓' ? 'Ναι' : v === '—' ? 'Όχι' : v;
+              return `<td${cls}><span class="visually-hidden">${e(label)}</span><span aria-hidden="true">${e(v)}</span></td>`;
+            }).join('\n            ')}
+          </tr>`,
+          ).join('\n          ')}
+        </tbody>
+      </table>
+    </div>`;
+}
