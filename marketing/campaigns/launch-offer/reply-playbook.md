@@ -110,9 +110,9 @@ honour the free year.
 
 The site says N θέσεις and the email says 10. Both have to be true.
 
-- 10 → 0 as you accept libraries
+- 5 → 0 as you accept libraries
 - At 0, the site automatically swaps the form for a waiting-list message
-- Don't quietly raise the number to 12 because two more good ones turned up. Open
+- Don't quietly raise the number to 7 because two more good ones turned up. Open
   a **second cycle** and say so.
 
 ## What to actually learn from the pilot
@@ -125,4 +125,5 @@ breaks. Ask every founding library, at week two and month two:
 - What did you go back to the old system for?
 
 The third question is the important one. Write the answers down somewhere they
-survive — the point of giving away €948 × 10 is the answers, not the goodwill.
+survive — the point of giving away five free years is the references and the
+answers, not the goodwill.

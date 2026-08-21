@@ -10,8 +10,8 @@
     "country": "Ελλάδα"
   },
   "offer": {
-    "spotsTotal": 10,
-    "spotsRemaining": 10,
+    "spotsTotal": 5,
+    "spotsRemaining": 5,
     "months": 12,
     "planName": "Municipal",
     "plannedMonthlyPriceEur": 79,

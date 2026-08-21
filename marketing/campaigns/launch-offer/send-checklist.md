@@ -1,4 +1,4 @@
-# Send checklist — Founding 10
+# Send checklist — launch offer
 
 Work top to bottom. Nothing below the line marked **STOP** should happen until
 everything above it is done.
@@ -118,7 +118,7 @@ For cold institutional B2B at this list size, expect roughly:
 | Applications from 40 sent | 2–6                          |
 | Of those, a good fit      | most — the form filters hard |
 
-You need **10 libraries total**. If wave one yields 3–4, that is a working
+You need **5 libraries total**. If wave one yields 3–4, that is a working
 message, not a failure — send wave two to a fresh 40. If it yields zero from 40,
 the problem is the list or the offer, not the copy; come back and we'll look at it
 before burning more addresses.

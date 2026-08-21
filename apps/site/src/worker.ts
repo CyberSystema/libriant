@@ -4,7 +4,7 @@
  * Static pages are served by the Assets binding; this Worker only owns the
  * handful of routes listed in `run_worker_first` in `wrangler.jsonc`:
  *
- *   POST /apply             the founding-10 application form
+ *   POST /apply             the launch-offer application form
  *   GET  /apply             stray navigation → back to the form
  *   GET  /applications.csv  token-protected export of everything received
  *

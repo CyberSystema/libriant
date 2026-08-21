@@ -7,7 +7,7 @@ continue the subject, never repeat it, and never be left to default.
 ## Recommended
 
 > **Subject:** Βιβλιοθήκη {Όνομα} — ο πρώτος χρόνος δωρεάν
-> **Preheader:** 948€ αξία, 0€ για τις 10 πρώτες βιβλιοθήκες.
+> **Preheader:** Πλήρης πρόσβαση για 12 μήνες, χωρίς κάρτα. Μόνο 5 θέσεις.
 
 Names the library, then states the offer. Nothing is teased and nothing is
 promised that the ad doesn't deliver in its first screen.
@@ -18,7 +18,7 @@ promised that the ad doesn't deliver in its first screen.
 
 **2. Offer only — no personalisation needed**
 
-> **Subject:** Ο πρώτος χρόνος δωρεάν, για 10 βιβλιοθήκες
+> **Subject:** Ο πρώτος χρόνος δωρεάν, για 5 βιβλιοθήκες
 > **Preheader:** Κατάλογος, μέλη, δανεισμοί και κρατήσεις σε ένα σύστημα.
 
 The fallback when the library's name isn't in your list.
@@ -39,7 +39,7 @@ Mirrors the ad's central line, so the open feels continuous.
 **4. Product-first**
 
 > **Subject:** Το σύστημα διαχείρισης για ελληνικές βιβλιοθήκες
-> **Preheader:** Ο πρώτος χρόνος δωρεάν για τις 10 πρώτες.
+> **Preheader:** Ο πρώτος χρόνος δωρεάν για τις 5 πρώτες.
 
 Leads with the category rather than the discount. Lower open rate, higher-intent
 opens — worth using on the segment you care most about.

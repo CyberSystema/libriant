@@ -4,7 +4,7 @@ _A **[CyberSystema](https://cybersystema.com)** product._
 
 A standalone Greek marketing site that runs entirely on Cloudflare's free tier and
 needs **no server**. It introduces Libriant and collects applications for the
-founding-10 free-year programme.
+launch offer — a free first year for the first five libraries.
 
 It exists because the product's own Next.js landing page needs the full stack
 (API, Postgres, Redis) to run, and that stack is not deployed yet. Rather than

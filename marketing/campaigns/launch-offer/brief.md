@@ -1,8 +1,8 @@
-# Campaign brief — Founding 10
+# Campaign brief — launch offer
 
 ## The job
 
-Win the **first 10 Greek libraries** as customers. The product is finished,
+Win the **first 5 Greek libraries** as reference customers. The product is finished,
 audited and in service; this is a launch, not a trial.
 
 The first year is free because it is a **launch offer** for the first ten — a
@@ -26,7 +26,7 @@ long for a pilot) and anything outside Greece.
 
 ## Offer
 
-**Municipal plan, first year free, first 10 libraries.** No card, no
+**Municipal plan, first year free, first 5 libraries.** No card, no
 auto-renewal, catalogue migration done for them, and a permanent founding
 discount afterwards.
 
@@ -114,7 +114,7 @@ the site promises no tracking and it would be hypocritical to embed one.
 | ---------------------- | -------------------------------------------------- |
 | Replies per 40 sent    | 2–6                                                |
 | Applications completed | 2–6                                                |
-| Libraries onboarded    | until 10 total                                     |
+| Libraries onboarded    | until 5 total                                      |
 | Opt-outs (`ΔΙΑΓΡΑΦΗ`)  | < 5% — higher means the list or targeting is wrong |
 
 Zero replies from 40 well-chosen addresses is a list or offer problem, not a copy
@@ -159,6 +159,6 @@ showing the product, not by arguing for it.
 4. List of 30–50 built from published institutional addresses
 5. Wave one, 10–15 sends a day, Tue–Thu mornings
 6. One follow-up after 7–10 days, then stop
-7. Wave two to a fresh list if fewer than 10 accepted
+7. Wave two to a fresh list if fewer than 5 accepted
 
 **Do not send in August** — Greek public institutions are largely closed.
