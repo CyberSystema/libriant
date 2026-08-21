@@ -23,8 +23,10 @@ import type { SiteConfig } from './shell.js';
 const config = rawConfig as unknown as SiteConfig;
 const copy = landing as Record<string, string>;
 
-/** Version stamp recorded with each consent, so we know what was agreed to. */
-const PRIVACY_VERSION = '2026-08-21';
+/** Version stamp recorded with each consent, so we know what was agreed to.
+ *  Read from site.config.json so it is the SAME value the policy page displays.
+ *  It must change only when the policy text changes — never on a rebuild. */
+const PRIVACY_VERSION = config.legal.lastUpdated;
 
 /** Max submissions accepted from one IP hash per hour. */
 const RATE_LIMIT = 5;
@@ -35,6 +37,8 @@ export interface Env {
   EMAIL?: SendEmail;
   ASSETS: Fetcher;
   TURNSTILE_SECRET?: string;
+  /** Secret pepper for the IP hash. Set in production; see README. */
+  HASH_PEPPER?: string;
   EXPORT_TOKEN?: string;
 }
 
@@ -105,15 +109,19 @@ function validate(form: FormData): Parsed {
   }
 
   if (values.consent !== 'yes') {
-    errors.consent = 'Χρειαζόμαστε τη συγκατάθεσή σας για να απαντήσουμε στην αίτηση.';
+    errors.consent = 'Επιβεβαιώστε ότι διαβάσατε την Πολιτική Απορρήτου.';
   }
 
   return { values, errors };
 }
 
-/** SHA-256 of the client IP — we throttle on it without ever storing the address. */
-async function hashIp(ip: string): Promise<string> {
-  const bytes = new TextEncoder().encode(`libriant:${ip}`);
+/** Salted SHA-256 of the client IP — we throttle on it without storing the
+ *  address. The pepper MUST be a secret: the whole IPv4 space is only 2^32, so
+ *  a hash with a publicly-known salt is a rainbow table away from being the IP
+ *  itself. HASH_PEPPER is a Worker secret; the fallback exists only so local
+ *  dev works without one. */
+async function hashIp(ip: string, pepper?: string): Promise<string> {
+  const bytes = new TextEncoder().encode(`${pepper ?? 'libriant-dev-only'}:${ip}`);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -211,11 +219,34 @@ async function handleApply(request: Request, env: Env): Promise<Response> {
 
   const parsed = validate(form);
 
-  if (env.TURNSTILE_SECRET) {
+  // Turnstile needs BOTH halves: the site key renders the widget (and loads its
+  // script — see renderShell), the secret verifies the token it produces.
+  // Enforcing on the secret alone would reject 100% of real applications,
+  // because with no site key there is no widget and no token to send.
+  const turnstileConfigured = config.site.turnstileSiteKey !== '' && !!env.TURNSTILE_SECRET;
+
+  if (env.TURNSTILE_SECRET && config.site.turnstileSiteKey === '') {
+    // Misconfigured: a secret with no widget. Fail closed rather than silently
+    // accepting everything — this is a deployment mistake, not a visitor's.
+    console.error(
+      'TURNSTILE_SECRET is set but site.turnstileSiteKey is empty — refusing to accept applications unverified',
+    );
+    return rerenderWithErrors(
+      parsed,
+      'Ο έλεγχος ασφαλείας δεν είναι διαθέσιμος αυτή τη στιγμή. Δοκιμάστε ξανά αργότερα ή γράψτε μας απευθείας.',
+      503,
+    );
+  }
+
+  if (turnstileConfigured) {
     const token = trim(form, 'cf-turnstile-response');
     const ok =
       token !== '' &&
-      (await verifyTurnstile(token, env.TURNSTILE_SECRET, request.headers.get('cf-connecting-ip')));
+      (await verifyTurnstile(
+        token,
+        env.TURNSTILE_SECRET!,
+        request.headers.get('cf-connecting-ip'),
+      ));
     if (!ok) {
       return rerenderWithErrors(
         parsed,
@@ -232,14 +263,20 @@ async function handleApply(request: Request, env: Env): Promise<Response> {
   }
 
   const ip = request.headers.get('cf-connecting-ip') ?? '0.0.0.0';
-  const ipHash = await hashIp(ip);
+  const ipHash = await hashIp(ip, env.HASH_PEPPER);
   const since = new Date(Date.now() - RATE_WINDOW_MS).toISOString();
 
+  // Degrade OPEN on a throttle-lookup failure: losing a real application is a
+  // far worse outcome than admitting one extra submission from one IP.
   const recent = await env.DB.prepare(
     'SELECT COUNT(*) AS n FROM submit_log WHERE ip_hash = ? AND created_at > ?',
   )
     .bind(ipHash, since)
-    .first<{ n: number }>();
+    .first<{ n: number }>()
+    .catch((err: unknown) => {
+      console.error('rate-limit lookup failed, allowing through:', err);
+      return null;
+    });
 
   if ((recent?.n ?? 0) >= RATE_LIMIT) {
     return rerenderWithErrors(
@@ -252,34 +289,60 @@ async function handleApply(request: Request, env: Env): Promise<Response> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
-  await env.DB.prepare(
-    `INSERT INTO applications
-       (id, created_at, library_name, library_type, city, contact_name, contact_email,
-        phone, collection_size, current_system, message, consent, privacy_version,
-        country, user_agent, notified, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0, 'new')`,
-  )
-    .bind(
-      id,
-      now,
-      parsed.values.libraryName ?? '',
-      parsed.values.libraryType ?? '',
-      parsed.values.city ?? '',
-      parsed.values.contactName ?? '',
-      parsed.values.contactEmail ?? '',
-      parsed.values.phone || null,
-      parsed.values.collectionSize || null,
-      parsed.values.currentSystem || null,
-      parsed.values.message || null,
-      PRIVACY_VERSION,
-      request.headers.get('cf-ipcountry'),
-      (request.headers.get('user-agent') ?? '').slice(0, 300),
+  // `consent` binds the value actually submitted, not a literal — the record is
+  // evidence of what the applicant did, so a hardcoded 1 would be worthless.
+  // country/user_agent are deliberately NOT stored: nothing read them, and
+  // collecting personal data no purpose needs is exactly what Art. 5(1)(c)
+  // forbids. Removing them also keeps the privacy notice's table exhaustive.
+  try {
+    await env.DB.prepare(
+      `INSERT INTO applications
+         (id, created_at, library_name, library_type, city, contact_name, contact_email,
+          phone, collection_size, current_system, message, consent, privacy_version,
+          notified, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'new')`,
     )
-    .run();
+      .bind(
+        id,
+        now,
+        parsed.values.libraryName ?? '',
+        parsed.values.libraryType ?? '',
+        parsed.values.city ?? '',
+        parsed.values.contactName ?? '',
+        parsed.values.contactEmail ?? '',
+        parsed.values.phone || null,
+        parsed.values.collectionSize || null,
+        parsed.values.currentSystem || null,
+        parsed.values.message || null,
+        trim(form, 'consent') !== '' ? 1 : 0,
+        PRIVACY_VERSION,
+      )
+      .run();
+  } catch (err) {
+    // The commit point failed. Do not drop the lead on the floor: try to get it
+    // to the inbox, and tell the applicant honestly how else to reach us.
+    console.error('application insert failed:', err);
+    await notify(env, id, parsed.values).catch(() => undefined);
+    return rerenderWithErrors(
+      parsed,
+      `Δεν καταφέραμε να αποθηκεύσουμε την αίτησή σας. Δοκιμάστε ξανά σε λίγο, ή στείλτε μας email στο ${config.identity.contactEmail}.`,
+      500,
+    );
+  }
 
+  // Throttle bookkeeping and the retention sweep are both non-critical: the
+  // application is already committed and must never fail because of them.
   await env.DB.prepare('INSERT INTO submit_log (ip_hash, created_at) VALUES (?, ?)')
     .bind(ipHash, now)
-    .run();
+    .run()
+    .catch((err: unknown) => console.error('submit_log insert failed:', err));
+
+  // Retention: the hashes exist only to enforce a one-hour window, so anything
+  // older than the window has no purpose and is deleted.
+  await env.DB.prepare('DELETE FROM submit_log WHERE created_at < ?')
+    .bind(since)
+    .run()
+    .catch((err: unknown) => console.error('submit_log sweep failed:', err));
 
   // Best-effort from here on. Everything above is already committed.
   await notify(env, id, parsed.values).catch(() => undefined);
@@ -327,13 +390,23 @@ async function notify(env: Env, id: string, v: FieldValues): Promise<void> {
   }
 }
 
-/** RFC 4180 field: always quote, double any embedded quote. */
+/** RFC 4180 field: always quote, double any embedded quote — and neutralise
+ *  spreadsheet formulas. An applicant who types `=HYPERLINK(...)` into a free
+ *  text field would otherwise get it EXECUTED when the owner opens the export
+ *  in Excel, which the README explicitly tells them to do. */
 function csvCell(value: unknown): string {
-  return `"${String(value ?? '').replace(/"/g, '""')}"`;
+  const raw = String(value ?? '');
+  const safe = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+  return `"${safe.replace(/"/g, '""')}"`;
 }
 
 async function handleExport(request: Request, env: Env): Promise<Response> {
-  const token = new URL(request.url).searchParams.get('token') ?? '';
+  // Prefer the Authorization header: a query string is captured in Workers
+  // Logs, browser history and any intermediary, all of which outlive the request.
+  const auth = request.headers.get('authorization') ?? '';
+  const token = auth.startsWith('Bearer ')
+    ? auth.slice(7)
+    : (new URL(request.url).searchParams.get('token') ?? '');
   if (!env.EXPORT_TOKEN || !safeEqual(token, env.EXPORT_TOKEN)) {
     return new Response('Not found', { status: 404, headers: SECURITY_HEADERS });
   }

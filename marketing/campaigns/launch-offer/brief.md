@@ -5,7 +5,7 @@
 Win the **first 5 Greek libraries** as reference customers. The product is finished,
 audited and in service; this is a launch, not a trial.
 
-The first year is free because it is a **launch offer** for the first ten — a
+The first year is free because it is a **launch offer** for the first five — a
 normal way to open a market where the incumbent is free (ABEKT) or zero-cost
 (Excel), and where an unknown vendor has to take price out of the decision to get
 a fair hearing. It also lets the Hetzner server be sized against real demand
@@ -52,7 +52,7 @@ level and its 500-title cap. Neither surface overstates; the ad leads with one
 number and the site explains all of them.
 
 The €79/month price is stated plainly as the price, with the first 12 months free
-for the first ten. No money changes hands during the offer period and the site
+for the first five. No money changes hands during the offer period and the site
 carries no checkout. See
 `docs/brand/name-clearance-2026-08-21.md` and `apps/site/content/programme-terms.el.md`.
 

@@ -29,8 +29,6 @@ CREATE TABLE IF NOT EXISTS applications (
   privacy_version   TEXT NOT NULL,
 
   -- Operational metadata.
-  country           TEXT,
-  user_agent        TEXT,
   notified          INTEGER NOT NULL DEFAULT 0,
   notify_error      TEXT,
   status            TEXT NOT NULL DEFAULT 'new'

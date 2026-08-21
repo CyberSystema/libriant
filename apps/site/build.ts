@@ -103,7 +103,10 @@ function main(): void {
 
   const landing = readJson<LandingCopy>(join(REPO, 'locales/el/landing.json'));
 
-  const lastUpdated = new Date().toISOString().slice(0, 10);
+  // NOT the build clock: auto-dating a legal page on every rebuild claims a
+  // revision that never happened, and drifts from the version stored with each
+  // recorded consent. Bump `legal.lastUpdated` in site.config.json instead.
+  const lastUpdated = config.legal.lastUpdated;
   const tokens: Record<string, string> = {
     LAST_UPDATED: lastUpdated,
     CONTROLLER_NAME: config.identity.controllerName,

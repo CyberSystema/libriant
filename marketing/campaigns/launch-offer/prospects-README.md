@@ -1,7 +1,11 @@
 # Prospect list — sources, coverage and gaps
 
-`prospects.csv` holds **314 Greek libraries, 307 of them sendable** (in Greece,
-with a published email, in a targeted segment).
+`prospects.csv` holds **314 Greek libraries, 277 of them sendable** — in Greece,
+with a published email, in a targeted segment, and not excluded.
+
+**Counts here are generated from the CSV, not maintained by hand.** Run
+`python3 check-sendable.py` to reproduce them; it is also the pre-send gate and
+exits non-zero if the list has a problem.
 
 ## The rule this list was built under
 
@@ -15,24 +19,23 @@ If you extend the list, hold that line.
 
 ## What is in it
 
-|                                                  | Count   |
-| ------------------------------------------------ | ------- |
-| Total records                                    | 306     |
-| In Greece                                        | 301     |
-| With a published email                           | 305     |
-| **Sendable (Greece + email + in-scope segment)** | **299** |
+|                                                            | Count   |
+| ---------------------------------------------------------- | ------- |
+| Total records                                              | 314     |
+| In Greece                                                  | 309     |
+| With a published email                                     | 313     |
+| Excluded (personal mailbox, general inbox, shared mailbox) | 30      |
+| **Sendable — distinct mailboxes**                          | **277** |
 
 Sendable, by campaign segment (see `email/variants.md`):
 
 | Segment                       | Count | Who                                   |
 | ----------------------------- | ----- | ------------------------------------- |
-| **B** — municipal & community | 256   | δημόσιες, δημοτικές, λαϊκές, παιδικές |
-| **D** — specialist & private  | 25    | ειδικές, ιδιωτικές, φυλακών           |
-| **C** — school & academy      | 18    | σχολικές                              |
+| **B** — municipal & community | 238   | δημόσιες, δημοτικές, λαϊκές, παιδικές |
+| **D** — specialist & private  | 20    | ειδικές, ιδιωτικές, φυλακών           |
+| **C** — school & academy      | 19    | σχολικές                              |
 
-By region: Αττική 86 · Κεντρική Μακεδονία 57 · Θεσσαλία 33 · Πελοπόννησος 24 ·
-Κρήτη 19 · Στερεά Ελλάδα 19 · Αν. Μακεδονία & Θράκη 15 · Δυτική Ελλάδα 12 ·
-Νότιο Αιγαίο 10 · Δυτική Μακεδονία 8 · Ιόνια Νησιά 7 · Βόρειο Αιγαίο 5 · Ήπειρος 4.
+By region: Αττική 82 · Κεντρική Μακεδονία 51 · Θεσσαλία 22 · Πελοπόννησος 22 · Κρήτη 19 · Στερεά Ελλάδα 19 · Αν. Μακεδονία & Θράκη 16 · Δυτική Ελλάδα 12 · Νότιο Αιγαίο 11 · Δυτική Μακεδονία 7 · Ιόνια Νησιά 6 · Ήπειρος 5 · Βόρειο Αιγαίο 5.
 
 ## Sources
 
@@ -96,7 +99,7 @@ libraries. The commonly cited figure of ~686 δημοτικές και κοιν�
 counts branches and reading rooms that have no web presence and no published
 email; they are reachable only by phone or through the δήμος switchboard. In
 other words: **this list is close to the practical ceiling for email outreach in
-Greece.** Going further means picking up the telephone, and 307 sendable
+Greece.** Going further means picking up the telephone, and 277 sendable
 addresses is already six to ten waves' worth.
 
 **4. School libraries are barely represented.** 18 here, against thousands of

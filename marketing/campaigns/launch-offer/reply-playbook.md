@@ -59,7 +59,7 @@ Answer the question directly, then reduce the commitment. The most common ones:
 
 > Είμαι ο {όνομα}, από την {πόλη}, και αναπτύσσω το Libriant. Το σύστημα είναι
 > ολοκληρωμένο και σε λειτουργία· πέρασε πλήρη έλεγχο ασφαλείας πριν διατεθεί.
-> Η προσφορά του πρώτου χρόνου είναι προσφορά έναρξης για τις δέκα πρώτες
+> Η προσφορά του πρώτου χρόνου είναι προσφορά έναρξης για τις πέντε πρώτες
 > βιβλιοθήκες — προτιμώ να ξεκινήσω με λίγες συνεργασίες που θα τις προσέξω
 > πραγματικά, παρά με πολλές που θα τις αφήσω μόνες τους.
 
@@ -108,7 +108,7 @@ honour the free year.
 
 ## Keeping the count honest
 
-The site says N θέσεις and the email says 10. Both have to be true.
+The site says N θέσεις and the email says 5. Both have to be true.
 
 - 5 → 0 as you accept libraries
 - At 0, the site automatically swaps the form for a waiting-list message
@@ -117,7 +117,7 @@ The site says N θέσεις and the email says 10. Both have to be true.
 
 ## What to actually learn from the pilot
 
-You are not running this to get ten customers. You are running it to find out what
+You are not running this to get five customers. You are running it to find out what
 breaks. Ask every founding library, at week two and month two:
 
 - What did you try to do that you couldn't?

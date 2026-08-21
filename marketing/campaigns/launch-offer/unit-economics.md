@@ -95,14 +95,16 @@ small ones on Excel or paper, who fit the cheap tiers.
 
 ## 4. Pipeline — pessimistic, as asked
 
-307 sendable addresses. Cold email to Greek **public institutions**, from an
+277 sendable addresses (distinct mailboxes, after removing personal mailboxes,
+general inboxes and shared-mailbox duplicates — see `check-sendable.py`). Cold
+email to Greek **public institutions**, from an
 unknown vendor, with a months-long decision cycle:
 
 |                 | Reply | → Apply | → Active yr 1 |
 | --------------- | ----- | ------- | ------------- |
 | **Pessimistic** | 3%    | 2%      | **4**         |
-| **Central**     | 6%    | 3.5%    | **8**         |
-| Optimistic      | 12%   | 7%      | **15**        |
+| **Central**     | 6%    | 3.5%    | **7**         |
+| Optimistic      | 12%   | 7%      | **14**        |
 
 (applications × ~70% completing onboarding)
 
@@ -120,7 +122,7 @@ as central. Correcting that.
 | **Statutory shared / already registered** | **€650** | €344       | **2**                   |
 | **Statutory shared / already registered** | **€258** | €722       | **1**                   |
 
-Against a central pipeline of **8 active libraries in year one**, that produces
+Against a central pipeline of **7 active libraries in year one**, that produces
 two completely different answers:
 
 ### If Libriant is the reason you register → **2–3 free vouchers**

@@ -163,7 +163,7 @@ function applicationForm(c: SiteConfig, o: RenderOptions): string {
 
   <div class="consent">
     <input type="checkbox" id="f-consent" name="consent" value="yes" required${values.consent === 'yes' ? ' checked' : ''}${errors.consent ? ' aria-invalid="true"' : ''}>
-    <label for="f-consent">Συμφωνώ να χρησιμοποιήσετε τα παραπάνω στοιχεία <strong>μόνο</strong> για να απαντήσετε στην αίτησή μου, όπως περιγράφεται στην <a href="/aporrito">Πολιτική Απορρήτου</a>.<span class="req" aria-hidden="true">*</span></label>
+    <label for="f-consent">Διάβασα την <a href="/aporrito">Πολιτική Απορρήτου</a> και κατανοώ ότι θα χρησιμοποιήσετε τα παραπάνω στοιχεία <strong>μόνο</strong> για να απαντήσετε στην αίτησή μου.<span class="req" aria-hidden="true">*</span></label>
   </div>
   ${errors.consent ? `<p class="field-error" style="margin-top:-16px;margin-bottom:20px">${esc(errors.consent)}</p>` : ''}
 

@@ -38,6 +38,11 @@ export type SiteConfig = {
     notifyFrom: string;
     turnstileSiteKey: string;
   };
+  legal: {
+    /** Date the legal text last actually changed. Displayed on the policy pages
+     *  and recorded with every consent — never derived from the build clock. */
+    lastUpdated: string;
+  };
 };
 
 /** Escape text for interpolation into HTML element content or an attribute. */
@@ -459,11 +464,14 @@ export function renderShell(o: ShellOptions): string {
 <meta property="og:title" content="${esc(o.title)}">
 <meta property="og:description" content="${esc(o.description)}">
 <meta property="og:url" content="${esc(canonical)}">
-<meta property="og:image" content="${esc(o.config.site.origin.replace(/\/$/, ''))}/og.svg">
-<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:card" content="summary">
 <meta name="theme-color" content="#0A222C">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/styles.css">${
+    o.config.site.turnstileSiteKey
+      ? `\n<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>`
+      : ''
+  }
 </head>
 <body${o.bodyClass ? ` class="${esc(o.bodyClass)}"` : ''}>
 ${draftBanner}
