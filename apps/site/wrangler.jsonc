@@ -1,0 +1,67 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "libriant-site",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-08-20",
+
+  // `run_worker_first: true` sends every request through the Worker, which then
+  // pulls static pages from the ASSETS binding and stamps the security headers
+  // (CSP, HSTS, frame-ancestors) on the way out. At this site's traffic that
+  // costs nothing measurable and means there is exactly one response path.
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page",
+    "run_worker_first": true
+  },
+
+  // Store of record for applications. Created in the EU:
+  //   wrangler d1 create libriant-applications --location weur
+  // then paste the printed id below and run `pnpm db:init:remote`.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "libriant-applications",
+      "database_id": "PASTE_DATABASE_ID_AFTER_wrangler_d1_create"
+    }
+  ],
+
+  // ── Notification email — enable AFTER onboarding the domain ────────────────
+  // Cloudflare Email *Sending* is independent of Email Routing: it only adds
+  // SPF/DKIM records and leaves the iCloud MX (inbound mail) untouched. Run:
+  //
+  //   wrangler email sending enable libriant.com
+  //   wrangler email sending dns get libriant.com
+  //
+  // then MERGE the SPF include into the single existing SPF record — a second
+  // `v=spf1` TXT record is a permerror and would break iCloud sending too.
+  // Finally uncomment the block below and redeploy.
+  //
+  // Until then the site works fine: applications still commit to D1 and are
+  // retrievable at /applications.csv?token=… — only the push notification is
+  // missing.
+  //
+  // "send_email": [
+  //   { "name": "EMAIL", "allowed_destination_addresses": ["info@libriant.com"] }
+  // ],
+
+  // ── Taking over libriant.com — do this AFTER verifying the workers.dev URL ──
+  // The apex currently has proxied A records pointing at the deleted Hetzner box,
+  // so it times out. Adding these custom domains makes Cloudflare replace those
+  // records with the Worker; delete the stale A records for `libriant.com` and
+  // `admin.libriant.com` first, or the deploy will refuse rather than clobber
+  // them. Uncomment, then `pnpm deploy` again.
+  //
+  // "routes": [
+  //   { "pattern": "libriant.com", "custom_domain": true },
+  //   { "pattern": "www.libriant.com", "custom_domain": true }
+  // ],
+
+  "observability": { "enabled": true },
+
+  // Secrets (never in this file) — set with:
+  //   wrangler secret put EXPORT_TOKEN      # required, guards /applications.csv
+  //   wrangler secret put TURNSTILE_SECRET  # optional, enables bot protection
+  "vars": {}
+}

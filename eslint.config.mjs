@@ -25,6 +25,8 @@ export default tseslint.config(
       '**/.next/**',
       '**/node_modules/**',
       '**/.turbo/**',
+      // Wrangler's generated dev/deploy bundles — not source.
+      '**/.wrangler/**',
       '**/coverage/**',
       '**/.prisma/**',
       '.dev-storage/**',
@@ -93,6 +95,7 @@ export default tseslint.config(
       '**/*.spec.ts',
       '**/test/**/*.ts',
       'scripts/**/*.ts',
+      'apps/site/build.ts',
       'packages/*/scripts/**/*.ts',
       'packages/*/prisma/**/*.ts',
     ],

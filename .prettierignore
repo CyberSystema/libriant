@@ -11,3 +11,6 @@ packages/db-tenant/prisma/migrations/
 apps/web/next-env.d.ts
 # Audit deliverables: machine-generated findings JSON + reports, not source.
 docs/audit/
+# Wrangler's generated dev/deploy bundles.
+.wrangler/
+apps/site/dist/

@@ -1,0 +1,26 @@
+{
+  "_README": "FILL IN every value written in [SQUARE BRACKETS] before deploying. `pnpm build` refuses to run while any placeholder remains — see apps/site/README.md.",
+  "identity": {
+    "controllerName": "[ΤΟ ΠΛΗΡΕΣ ΟΝΟΜΑ ΣΑΣ]",
+    "brand": "Libriant",
+    "parentBrand": "CyberSystema",
+    "contactEmail": "info@libriant.com",
+    "privacyEmail": "privacy@libriant.com",
+    "city": "[Η ΠΟΛΗ ΣΑΣ]",
+    "country": "Ελλάδα"
+  },
+  "offer": {
+    "spotsTotal": 10,
+    "spotsRemaining": 10,
+    "months": 12,
+    "planName": "Municipal",
+    "plannedMonthlyPriceEur": 79,
+    "entryMonthlyPriceEur": 19
+  },
+  "site": {
+    "origin": "https://libriant.com",
+    "notifyTo": "info@libriant.com",
+    "notifyFrom": "no-reply@libriant.com",
+    "turnstileSiteKey": ""
+  }
+}

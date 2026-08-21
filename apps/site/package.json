@@ -1,0 +1,28 @@
+{
+  "name": "@libriant/site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsx build.ts",
+    "build:draft": "tsx build.ts --draft",
+    "dev": "pnpm build:draft && wrangler dev",
+    "deploy": "pnpm build && wrangler deploy",
+    "db:init:local": "wrangler d1 execute libriant-applications --local --file ./src/schema.sql",
+    "db:init:remote": "wrangler d1 execute libriant-applications --remote --file ./src/schema.sql",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'lint: ok'",
+    "test": "echo 'tests: none yet' && exit 0"
+  },
+  "dependencies": {
+    "@libriant/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260820.1",
+    "@types/node": "^25.9.1",
+    "marked": "^18.0.4",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.0.0"
+  }
+}
