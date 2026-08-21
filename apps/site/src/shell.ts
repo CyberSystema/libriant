@@ -21,6 +21,9 @@ export type SiteConfig = {
     privacyEmail: string;
     city: string;
     country: string;
+    /** Latin-script forms for the English tree. Fall back to the Greek ones. */
+    cityEn?: string;
+    countryEn?: string;
   };
   offer: {
     spotsTotal: number;
@@ -83,23 +86,106 @@ export function brandMark(id = 'm', size = 40): string {
 </svg>`;
 }
 
+export type Lang = 'el' | 'en';
+
+export const LANGS: readonly Lang[] = ['el', 'en'];
+
+/**
+ * Greek is the site's primary language and lives at the root; English is served
+ * under /en. Paths are shared and English in both trees — /features and
+ * /en/features — so a section anchor is identical in either language and a link
+ * survives a reader switching.
+ */
+export function localePath(lang: Lang, path: string): string {
+  if (lang === 'el') return path;
+  return path === '/' ? '/en/' : `/en${path}`;
+}
+
+/** Strip the /en prefix, to find a page's counterpart in the other language. */
+export function basePath(path: string): string {
+  if (path === '/en/' || path === '/en') return '/';
+  return path.startsWith('/en/') ? path.slice(3) : path;
+}
+
 /** The site's pages, in nav order. One list feeds the masthead, the footer and
  *  the sitemap, so a page can never exist without being reachable. */
-export const NAV = [
-  { path: '/features', label: 'Δυνατότητες' },
-  { path: '/libraries', label: 'Για ποιες βιβλιοθήκες' },
-  { path: '/pricing', label: 'Πακέτα' },
-  { path: '/migration', label: 'Μετάπτωση' },
-  { path: '/security', label: 'Ασφάλεια' },
-  { path: '/faq', label: 'Συχνές ερωτήσεις' },
-] as const;
+export const NAV: Record<Lang, ReadonlyArray<{ path: string; label: string }>> = {
+  el: [
+    { path: '/features', label: 'Δυνατότητες' },
+    { path: '/libraries', label: 'Για ποιες βιβλιοθήκες' },
+    { path: '/pricing', label: 'Πακέτα' },
+    { path: '/migration', label: 'Μετάπτωση' },
+    { path: '/security', label: 'Ασφάλεια' },
+    { path: '/faq', label: 'Συχνές ερωτήσεις' },
+  ],
+  en: [
+    { path: '/features', label: 'Features' },
+    { path: '/libraries', label: 'Which libraries' },
+    { path: '/pricing', label: 'Pricing' },
+    { path: '/migration', label: 'Migration' },
+    { path: '/security', label: 'Security' },
+    { path: '/faq', label: 'FAQ' },
+  ],
+};
 
-export const FOOTER_LEGAL = [
-  { path: '/about', label: 'Ποιοι είμαστε' },
-  { path: '/contact', label: 'Επικοινωνία' },
-  { path: '/offer-terms', label: 'Όροι προσφοράς' },
-  { path: '/privacy', label: 'Πολιτική Απορρήτου' },
-] as const;
+export const FOOTER_LEGAL: Record<Lang, ReadonlyArray<{ path: string; label: string }>> = {
+  el: [
+    { path: '/about', label: 'Ποιοι είμαστε' },
+    { path: '/contact', label: 'Επικοινωνία' },
+    { path: '/offer-terms', label: 'Όροι προσφοράς' },
+    { path: '/privacy', label: 'Πολιτική Απορρήτου' },
+  ],
+  en: [
+    { path: '/about', label: 'About' },
+    { path: '/contact', label: 'Contact' },
+    { path: '/offer-terms', label: 'Offer terms' },
+    { path: '/privacy', label: 'Privacy Policy' },
+  ],
+};
+
+/** Chrome that is not page content: one place, both languages. */
+export const UI: Record<Lang, Record<string, string>> = {
+  el: {
+    htmlLang: 'el',
+    ogLocale: 'el_GR',
+    skip: 'Μετάβαση στο περιεχόμενο',
+    navLabel: 'Κύρια πλοήγηση',
+    homeLabel: 'Libriant — αρχική',
+    apply: 'Κάντε αίτηση',
+    footerPages: 'Το Libriant',
+    footerInfo: 'Πληροφορίες',
+    footerPagesLabel: 'Σελίδες',
+    footerInfoLabel: 'Πληροφορίες',
+    tagline: 'Διαχείριση βιβλιοθήκης, απλά. Φτιαγμένο στην Ελλάδα, στα ελληνικά και στα αγγλικά.',
+    controller: 'Υπεύθυνος επεξεργασίας δεδομένων',
+    switchTo: 'English',
+    switchLabel: 'Switch to English',
+    draft:
+      'ΠΡΟΧΕΙΡΗ ΕΚΔΟΣΗ — το <code>site.config.json</code> έχει ακόμη κενά πεδία. Μη δημοσιεύσετε αυτή τη σελίδα.',
+    ctaHeading: 'Θέλετε να το δείτε στη βιβλιοθήκη σας;',
+    ctaAsk: 'Ρωτήστε πρώτα',
+  },
+  en: {
+    htmlLang: 'en',
+    ogLocale: 'en_GB',
+    skip: 'Skip to content',
+    navLabel: 'Main navigation',
+    homeLabel: 'Libriant — home',
+    apply: 'Apply',
+    footerPages: 'Libriant',
+    footerInfo: 'Information',
+    footerPagesLabel: 'Pages',
+    footerInfoLabel: 'Information',
+    tagline: 'Library management, made simple. Built in Greece, in Greek and in English.',
+    controller: 'Data controller',
+    switchTo: 'Ελληνικά',
+    switchLabel: 'Αλλαγή σε ελληνικά',
+    draft:
+      'DRAFT BUILD — <code>site.config.json</code> still has empty fields. Do not publish this page.',
+    ctaHeading: 'Want to see it in your library?',
+    ctaAsk: 'Ask first',
+  },
+};
 
 /** Wordmark + mark, as used in the masthead and the footer. */
 export function brandLockup(id: string, size = 38): string {
@@ -210,6 +296,8 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 2.5rem 0; }
 .masthead nav a { padding: 10px 11px; border-radius: 8px; font-size: .93rem; color: var(--on-ink-muted); }
 .masthead nav a:hover { color: var(--on-ink); background: rgba(255,255,255,.07); }
 .masthead nav a[aria-current="page"] { color: var(--on-ink); background: rgba(255,255,255,.10); }
+.masthead nav a.lang { border: 1px solid rgba(255,255,255,.28); margin-left: 6px; font-size: .86rem; }
+.masthead nav a.lang:hover { border-color: rgba(255,255,255,.5); }
 .masthead nav a.cta {
   background: var(--teal-bright); color: #052925; font-weight: 600;
   padding: 11px 18px; border-radius: 999px;
@@ -540,48 +628,60 @@ type ShellOptions = {
   /** Set when the build ran with `--draft`; stamps a loud unmissable banner. */
   draft?: boolean;
   bodyClass?: string;
+  /** Defaults to Greek — the site's primary language. */
+  lang?: Lang;
 };
 
-/** Masthead used on every page. `home` drops the "back to site" nav links. */
-function masthead(path: string): string {
-  const links = NAV.map(
-    (n) => `<a href="${n.path}"${path === n.path ? ' aria-current="page"' : ''}>${n.label}</a>`,
-  ).join('\n      ');
+/** Masthead used on every page, in the page's own language. */
+function masthead(path: string, lang: Lang): string {
+  const t = UI[lang];
+  const base = basePath(path);
+  const links = NAV[lang]
+    .map(
+      (n) =>
+        `<a href="${localePath(lang, n.path)}"${base === n.path ? ' aria-current="page"' : ''}>${n.label}</a>`,
+    )
+    .join('\n      ');
+  // The switcher points at the SAME page in the other language, not at its home
+  // page — a reader deep in the pricing table should stay in the pricing table.
+  const other: Lang = lang === 'el' ? 'en' : 'el';
   return `<header class="masthead">
   <div class="wrap">
-    <a href="/" class="lockup" aria-label="Libriant — αρχική">${brandMark('mh', 34)}<span class="lockup__word">Libriant</span></a>
-    <nav aria-label="Κύρια πλοήγηση">
+    <a href="${localePath(lang, '/')}" class="lockup" aria-label="${esc(t.homeLabel)}">${brandMark('mh', 34)}<span class="lockup__word">Libriant</span></a>
+    <nav aria-label="${esc(t.navLabel)}">
       ${links}
-      <a href="/#apply" class="cta">Κάντε αίτηση</a>
+      <a href="${localePath(other, base)}" class="lang" lang="${other}" hreflang="${other}" aria-label="${esc(t.switchLabel)}">${esc(t.switchTo)}</a>
+      <a href="${localePath(lang, '/')}#apply" class="cta">${esc(t.apply)}</a>
     </nav>
   </div>
 </header>`;
 }
 
-function footer(c: SiteConfig): string {
+function footer(c: SiteConfig, lang: Lang): string {
+  const t = UI[lang];
   const year = 2026;
   return `<footer class="footer">
   <div class="wrap">
     <div class="footer__top">
       <div>
         <span class="lockup">${brandMark('ft', 32)}<span class="lockup__word">Libriant</span></span>
-        <p class="footer__tag">Διαχείριση βιβλιοθήκης, απλά. Φτιαγμένο στην Ελλάδα, στα ελληνικά και στα αγγλικά.</p>
+        <p class="footer__tag">${esc(t.tagline)}</p>
       </div>
-      <nav class="footer__links" aria-label="Σελίδες">
-        <span class="footer__h">Το Libriant</span>
-        ${NAV.map((n) => `<a href="${n.path}">${n.label}</a>`).join('\n        ')}
+      <nav class="footer__links" aria-label="${esc(t.footerPagesLabel)}">
+        <span class="footer__h">${esc(t.footerPages)}</span>
+        ${NAV[lang].map((n) => `<a href="${localePath(lang, n.path)}">${n.label}</a>`).join('\n        ')}
       </nav>
-      <nav class="footer__links" aria-label="Πληροφορίες">
-        <span class="footer__h">Πληροφορίες</span>
-        <a href="/#apply">Κάντε αίτηση</a>
-        ${FOOTER_LEGAL.map((n) => `<a href="${n.path}">${n.label}</a>`).join('\n        ')}
+      <nav class="footer__links" aria-label="${esc(t.footerInfoLabel)}">
+        <span class="footer__h">${esc(t.footerInfo)}</span>
+        <a href="${localePath(lang, '/')}#apply">${esc(t.apply)}</a>
+        ${FOOTER_LEGAL[lang].map((n) => `<a href="${localePath(lang, n.path)}">${n.label}</a>`).join('\n        ')}
         <a href="mailto:${esc(c.identity.contactEmail)}">${esc(c.identity.contactEmail)}</a>
       </nav>
     </div>
     <div class="footer__bottom">
       <p class="footer__id">
-        Υπεύθυνος επεξεργασίας δεδομένων: <strong>${esc(c.identity.controllerName)}</strong>,
-        ${esc(c.identity.city)}, ${esc(c.identity.country)} ·
+        ${esc(t.controller)}: <strong>${esc(c.identity.controllerName)}</strong>,
+        ${esc(lang === 'en' ? (c.identity.cityEn ?? c.identity.city) : c.identity.city)}, ${esc(lang === 'en' ? (c.identity.countryEn ?? c.identity.country) : c.identity.country)} ·
         <a href="mailto:${esc(c.identity.privacyEmail)}">${esc(c.identity.privacyEmail)}</a>
       </p>
       <span class="powered">© ${year} · powered by ${esc(c.identity.parentBrand)}</span>
@@ -591,20 +691,31 @@ function footer(c: SiteConfig): string {
 }
 
 export function renderShell(o: ShellOptions): string {
-  const canonical = o.config.site.origin.replace(/\/$/, '') + o.path;
-  const draftBanner = o.draft
-    ? `<div class="draft">ΠΡΟΧΕΙΡΗ ΕΚΔΟΣΗ — το <code>site.config.json</code> έχει ακόμη κενά πεδία. Μη δημοσιεύσετε αυτή τη σελίδα.</div>`
-    : '';
+  const lang: Lang = o.lang ?? 'el';
+  const t = UI[lang];
+  const origin = o.config.site.origin.replace(/\/$/, '');
+  const canonical = origin + o.path;
+  const base = basePath(o.path);
+  // Every page declares both language versions plus x-default, so a search
+  // engine serves a Greek reader the Greek page and everyone else the English
+  // one, instead of guessing from the content.
+  const alternates = [
+    `<link rel="alternate" hreflang="el" href="${esc(origin + localePath('el', base))}">`,
+    `<link rel="alternate" hreflang="en" href="${esc(origin + localePath('en', base))}">`,
+    `<link rel="alternate" hreflang="x-default" href="${esc(origin + localePath('el', base))}">`,
+  ].join('\n');
+  const draftBanner = o.draft ? `<div class="draft">${t.draft}</div>` : '';
   return `<!doctype html>
-<html lang="el">
+<html lang="${t.htmlLang}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(o.title)}</title>
 <meta name="description" content="${esc(o.description)}">
 <link rel="canonical" href="${esc(canonical)}">
+${alternates}
 <meta property="og:type" content="website">
-<meta property="og:locale" content="el_GR">
+<meta property="og:locale" content="${t.ogLocale}">
 <meta property="og:site_name" content="Libriant">
 <meta property="og:title" content="${esc(o.title)}">
 <meta property="og:description" content="${esc(o.description)}">
@@ -620,12 +731,12 @@ export function renderShell(o: ShellOptions): string {
 </head>
 <body${o.bodyClass ? ` class="${esc(o.bodyClass)}"` : ''}>
 ${draftBanner}
-<a class="skip" href="#main">Μετάβαση στο περιεχόμενο</a>
-${masthead(o.path)}
+<a class="skip" href="#main">${esc(t.skip)}</a>
+${masthead(o.path, lang)}
 <main id="main">
 ${o.body}
 </main>
-${footer(o.config)}
+${footer(o.config, lang)}
 </body>
 </html>
 `;

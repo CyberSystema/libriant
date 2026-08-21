@@ -11,6 +11,7 @@
  */
 
 import { planSeeds } from '../../../packages/db-control/prisma/seed-data.js';
+import type { Lang } from './shell.js';
 
 /** Explicit allowlist — this is also what keeps On-prem/Enterprise off the grid. */
 export const PUBLIC_PLAN_SLUGS = ['starter', 'community', 'municipal', 'institutional'] as const;
@@ -28,7 +29,7 @@ export type PublicPlan = {
   features: Record<string, number | boolean | string | null | undefined>;
 };
 
-const AUDIENCE: Record<PublicPlanSlug, { audience: string; sizeCue: string }> = {
+const AUDIENCE_EL: Record<PublicPlanSlug, { audience: string; sizeCue: string }> = {
   starter: {
     audience: 'Για μια μικρή σχολική ή κοινοτική βιβλιοθήκη',
     sizeCue: 'Έως 500 τίτλοι, ένας άνθρωπος στο γραφείο',
@@ -47,14 +48,38 @@ const AUDIENCE: Record<PublicPlanSlug, { audience: string; sizeCue: string }> = 
   },
 };
 
-/** Greek thousands separator is the dot: 5.000, not 5,000 and not 5 000. */
-export function grNumber(n: number): string {
-  return n.toLocaleString('el-GR');
+const AUDIENCE_EN: Record<PublicPlanSlug, { audience: string; sizeCue: string }> = {
+  starter: {
+    audience: 'For a small school or community library',
+    sizeCue: 'Up to 500 titles, one person at the desk',
+  },
+  community: {
+    audience: 'For a village or small-municipality library',
+    sizeCue: 'A few thousand titles, two or three staff',
+  },
+  municipal: {
+    audience: 'For a municipal library with daily traffic',
+    sizeCue: 'Tens of thousands of titles, a staff team, branches',
+  },
+  institutional: {
+    audience: 'For an academic or large public library',
+    sizeCue: 'Over 100,000 titles and a large staff team',
+  },
+};
+
+const AUDIENCE: Record<Lang, Record<PublicPlanSlug, { audience: string; sizeCue: string }>> = {
+  el: AUDIENCE_EL,
+  en: AUDIENCE_EN,
+};
+
+/** Greek groups thousands with a dot (5.000); English with a comma (5,000). */
+export function num(n: number, lang: Lang = 'el'): string {
+  return n.toLocaleString(lang === 'el' ? 'el-GR' : 'en-GB');
 }
 
 /** Storage caps are stored in MB; show GB once that reads more naturally. */
-export function storageLabel(mb: number): string {
-  return mb >= 1024 ? `${grNumber(mb / 1024)} GB` : `${grNumber(mb)} MB`;
+export function storageLabel(mb: number, lang: Lang = 'el'): string {
+  return mb >= 1024 ? `${num(mb / 1024, lang)} GB` : `${num(mb, lang)} MB`;
 }
 
 /**
@@ -62,27 +87,31 @@ export function storageLabel(mb: number): string {
  * space before it, no decimals on whole amounts — and never «0 €», because a
  * zero price is not a price, it is the absence of one.
  */
-export function priceLabel(eur: number): string {
-  return eur === 0 ? 'Δωρεάν' : `${grNumber(eur)} €`;
+export function priceLabel(eur: number, lang: Lang = 'el'): string {
+  if (eur === 0) return lang === 'el' ? 'Δωρεάν' : 'Free';
+  // Greek puts the symbol last after a non-breaking space; English puts it first.
+  return lang === 'el' ? `${num(eur, 'el')}\u00A0€` : `€${num(eur, 'en')}`;
 }
 
-export const PUBLIC_PLANS: PublicPlan[] = PUBLIC_PLAN_SLUGS.map((slug) => {
-  const seed = planSeeds.find((p) => p.slug === slug);
-  if (!seed) {
-    // Fail the build rather than silently ship a table missing a column.
-    throw new Error(
-      `plans.ts: no plan with slug "${slug}" in seed-data.ts. ` +
-        `Either the plan was renamed or PUBLIC_PLAN_SLUGS is stale.`,
-    );
-  }
-  return {
-    slug,
-    name: seed.name,
-    priceEur: seed.monthlyPriceCents / 100,
-    ...AUDIENCE[slug],
-    features: seed.features as PublicPlan['features'],
-  };
-});
+export function publicPlans(lang: Lang = 'el'): PublicPlan[] {
+  return PUBLIC_PLAN_SLUGS.map((slug) => {
+    const seed = planSeeds.find((p) => p.slug === slug);
+    if (!seed) {
+      // Fail the build rather than silently ship a table missing a column.
+      throw new Error(
+        `plans.ts: no plan with slug "${slug}" in seed-data.ts. ` +
+          `Either the plan was renamed or PUBLIC_PLAN_SLUGS is stale.`,
+      );
+    }
+    return {
+      slug,
+      name: seed.name,
+      priceEur: seed.monthlyPriceCents / 100,
+      ...AUDIENCE[lang][slug],
+      features: seed.features as PublicPlan['features'],
+    };
+  });
+}
 
 export type PricingRow = {
   /** Feature key, or a synthetic key for a row the product does not model. */
@@ -93,6 +122,61 @@ export type PricingRow = {
 };
 
 const yesNo = (v: unknown): string => (v === true ? '✓' : '—');
+
+/** Greek and English label + note for each visible row. */
+const ROW_COPY: Record<string, Record<Lang, { label: string; note?: string }>> = {
+  max_books: {
+    el: {
+      label: 'Τίτλοι στον κατάλογο',
+      note: 'Δέκα αντίτυπα του ίδιου βιβλίου μετράνε ως ένας τίτλος.',
+    },
+    en: { label: 'Titles in the catalogue', note: 'Ten copies of one book count as one title.' },
+  },
+  max_members: {
+    el: { label: 'Εγγεγραμμένα μέλη', note: 'Τα αρχειοθετημένα μέλη δεν μετράνε.' },
+    en: { label: 'Registered members', note: 'Archived members do not count.' },
+  },
+  staff_seats: {
+    el: { label: 'Λογαριασμοί προσωπικού', note: 'Οι ανενεργοί λογαριασμοί δεν πιάνουν θέση.' },
+    en: { label: 'Staff seats', note: 'Deactivated accounts do not take up a seat.' },
+  },
+  max_storage_mb: {
+    el: { label: 'Χώρος για εξώφυλλα και αρχεία' },
+    en: { label: 'Space for covers and files' },
+  },
+  reservations_enabled: {
+    el: { label: 'Κρατήσεις και ουρά κρατήσεων' },
+    en: { label: 'Holds and hold queue' },
+  },
+  isbn_lookup_enabled: {
+    el: { label: 'Συμπλήρωση στοιχείων με ISBN' },
+    en: { label: 'Fill in details by ISBN' },
+  },
+  bulk_import_enabled: {
+    el: {
+      label: 'Μαζική εισαγωγή από CSV, Excel ή MARC',
+      note: 'Σε κάθε πακέτο με συνδρομή. Στο δωρεάν Starter τη μετάπτωση την τρέχουμε εμείς, με κωδικό υποστήριξης που δημιουργείτε εσείς.',
+    },
+    en: {
+      label: 'Bulk import from CSV, Excel or MARC',
+      note: 'On every paid plan. On the free Starter tier we run the migration for you, using a support code you generate.',
+    },
+  },
+  email_notifications_enabled: {
+    el: { label: 'Ειδοποιήσεις email προς τα μέλη' },
+    en: { label: 'Email notifications to members' },
+  },
+  max_custom_fields_per_entity: {
+    el: {
+      label: 'Δικά σας πεδία, ανά είδος εγγραφής',
+      note: 'Ισχύει χωριστά για κάθε είδος εγγραφής.',
+    },
+    en: {
+      label: 'Custom fields, per record kind',
+      note: 'Applies separately to each record kind.',
+    },
+  },
+};
 
 /**
  * The rows a visitor sees, in order.
@@ -114,63 +198,33 @@ const yesNo = (v: unknown): string => (v === true ? '✓' : '—');
  *
  * Selling any of them would be selling a cell that no code honours.
  */
-export const PRICING_ROWS: PricingRow[] = [
-  {
-    key: 'max_books',
-    label: 'Τίτλοι στον κατάλογο',
-    note: 'Δέκα αντίτυπα του ίδιου βιβλίου μετράνε ως ένας τίτλος.',
-    render: (p) => grNumber(Number(p.features.max_books)),
-  },
-  {
-    key: 'max_members',
-    label: 'Εγγεγραμμένα μέλη',
-    note: 'Τα αρχειοθετημένα μέλη δεν μετράνε.',
-    render: (p) => grNumber(Number(p.features.max_members)),
-  },
-  {
-    key: 'staff_seats',
-    label: 'Λογαριασμοί προσωπικού',
-    note: 'Οι ανενεργοί λογαριασμοί δεν πιάνουν θέση.',
-    render: (p) => grNumber(Number(p.features.staff_seats)),
-  },
-  {
-    key: 'max_storage_mb',
-    label: 'Χώρος για εξώφυλλα και αρχεία',
-    render: (p) => storageLabel(Number(p.features.max_storage_mb)),
-  },
-  {
-    key: 'reservations_enabled',
-    label: 'Κρατήσεις και ουρά κρατήσεων',
-    render: (p) => yesNo(p.features.reservations_enabled),
-  },
-  {
-    key: 'isbn_lookup_enabled',
-    label: 'Συμπλήρωση στοιχείων με ISBN',
-    render: (p) => yesNo(p.features.isbn_lookup_enabled),
-  },
-  {
-    key: 'bulk_import_enabled',
-    // Every paid tier self-serves. Starter does not — but the gate is on the
-    // wizard, not on the capability: PlanGuard short-circuits every feature gate
-    // inside a support session, so a Starter library generates a support code
-    // and we run the migration for them. That is a real path, not a sales
-    // promise, and saying so turns the one «—» on the row into an answer.
-    label: 'Μαζική εισαγωγή από CSV, Excel ή MARC',
-    note: 'Σε κάθε πακέτο με συνδρομή. Στο δωρεάν Starter τη μετάπτωση την τρέχουμε εμείς, με κωδικό υποστήριξης που δημιουργείτε εσείς.',
-    render: (p) => yesNo(p.features.bulk_import_enabled),
-  },
-  {
-    key: 'email_notifications_enabled',
-    label: 'Ειδοποιήσεις email προς τα μέλη',
-    render: (p) => yesNo(p.features.email_notifications_enabled),
-  },
-  {
-    key: 'max_custom_fields_per_entity',
-    label: 'Δικά σας πεδία, ανά είδος εγγραφής',
-    note: 'Ισχύει χωριστά για κάθε είδος εγγραφής.',
-    render: (p) => grNumber(Number(p.features.max_custom_fields_per_entity)),
-  },
-];
+export function pricingRows(lang: Lang = 'el'): PricingRow[] {
+  const n = (k: string) => (p: PublicPlan) => num(Number(p.features[k]), lang);
+  const b = (k: string) => (p: PublicPlan) => yesNo(p.features[k]);
+  const renderers: Record<string, (p: PublicPlan) => string> = {
+    max_books: n('max_books'),
+    max_members: n('max_members'),
+    staff_seats: n('staff_seats'),
+    max_storage_mb: (p) => storageLabel(Number(p.features.max_storage_mb), lang),
+    reservations_enabled: b('reservations_enabled'),
+    isbn_lookup_enabled: b('isbn_lookup_enabled'),
+    bulk_import_enabled: b('bulk_import_enabled'),
+    email_notifications_enabled: b('email_notifications_enabled'),
+    max_custom_fields_per_entity: n('max_custom_fields_per_entity'),
+  };
+  return Object.keys(ROW_COPY).map((key) => {
+    const copy = ROW_COPY[key]?.[lang];
+    const render = renderers[key];
+    // A row with copy but no renderer, or vice versa, is a build error rather
+    // than an empty cell nobody notices.
+    if (!copy || !render) {
+      throw new Error(
+        `plans.ts: pricing row "${key}" is missing ${!copy ? 'copy' : 'a renderer'}.`,
+      );
+    }
+    return { key, ...copy, render };
+  });
+}
 
 /* ---------------------------------------------------------------------------
  * Rendering. Values come from the seeds above; only presentation lives here.
@@ -183,55 +237,97 @@ function e(v: unknown): string {
   );
 }
 
+const CARD_COPY: Record<
+  Lang,
+  {
+    offerFlag: string;
+    per: string;
+    titles: string;
+    members: string;
+    seat: string;
+    seats: string;
+    storage: string;
+  }
+> = {
+  el: {
+    offerFlag: 'Το πακέτο της προσφοράς',
+    per: 'τον μήνα',
+    titles: 'τίτλοι',
+    members: 'μέλη',
+    seat: 'λογαριασμός προσωπικού',
+    seats: 'λογαριασμοί προσωπικού',
+    storage: 'για εξώφυλλα και αρχεία',
+  },
+  en: {
+    offerFlag: 'The launch-offer plan',
+    per: 'a month',
+    titles: 'titles',
+    members: 'members',
+    seat: 'staff seat',
+    seats: 'staff seats',
+    storage: 'for covers and files',
+  },
+};
+
 /**
  * Four plan cards. Each carries an audience badge rather than a «most popular»
  * flag — there are no customers yet, so popularity would be an invention.
  */
-export function renderPlanCards(offerPlanSlug: string): string {
+export function renderPlanCards(offerPlanSlug: string, lang: Lang = 'el'): string {
+  const t = CARD_COPY[lang];
   return `<div class="plans">
-      ${PUBLIC_PLANS.map((p) => {
-        const featured = p.slug === offerPlanSlug;
-        return `<article class="plan${featured ? ' plan--featured' : ''}">
-        ${featured ? '<span class="plan__flag">Το πακέτο της προσφοράς</span>' : ''}
+      ${publicPlans(lang)
+        .map((p) => {
+          const featured = p.slug === offerPlanSlug;
+          const seats = Number(p.features.staff_seats);
+          return `<article class="plan${featured ? ' plan--featured' : ''}">
+        ${featured ? `<span class="plan__flag">${e(t.offerFlag)}</span>` : ''}
         <h3 class="plan__name">${e(p.name)}</h3>
-        <p class="plan__price">${e(priceLabel(p.priceEur))}${p.priceEur > 0 ? '<span class="plan__per">τον μήνα</span>' : ''}</p>
+        <p class="plan__price">${e(priceLabel(p.priceEur, lang))}${p.priceEur > 0 ? `<span class="plan__per">${e(t.per)}</span>` : ''}</p>
         <p class="plan__audience">${e(p.audience)}</p>
         <p class="plan__cue">${e(p.sizeCue)}</p>
         <ul class="plan__caps">
-          <li><strong>${e(grNumber(Number(p.features.max_books)))}</strong> τίτλοι</li>
-          <li><strong>${e(grNumber(Number(p.features.max_members)))}</strong> μέλη</li>
-          <li><strong>${e(grNumber(Number(p.features.staff_seats)))}</strong> ${Number(p.features.staff_seats) === 1 ? 'λογαριασμός προσωπικού' : 'λογαριασμοί προσωπικού'}</li>
-          <li><strong>${e(storageLabel(Number(p.features.max_storage_mb)))}</strong> για εξώφυλλα και αρχεία</li>
+          <li><strong>${e(num(Number(p.features.max_books), lang))}</strong> ${e(t.titles)}</li>
+          <li><strong>${e(num(Number(p.features.max_members), lang))}</strong> ${e(t.members)}</li>
+          <li><strong>${e(num(seats, lang))}</strong> ${e(seats === 1 ? t.seat : t.seats)}</li>
+          <li><strong>${e(storageLabel(Number(p.features.max_storage_mb), lang))}</strong> ${e(t.storage)}</li>
         </ul>
       </article>`;
-      }).join('\n      ')}
+        })
+        .join('\n      ')}
     </div>`;
 }
 
-/** The comparison grid. Rows are chosen in PRICING_ROWS; values are read. */
-export function renderComparisonTable(): string {
+/** The comparison grid. Rows are chosen in pricingRows; values are read. */
+export function renderComparisonTable(lang: Lang = 'el'): string {
+  const plans = publicPlans(lang);
+  const yes = lang === 'el' ? 'Ναι' : 'Yes';
+  const no = lang === 'el' ? 'Όχι' : 'No';
+  const featureCol = lang === 'el' ? 'Δυνατότητα' : 'Feature';
   return `<div class="table-wrap">
       <table class="cmp cmp--plans">
         <thead>
           <tr>
-            <th scope="col">
-              <span class="visually-hidden">Δυνατότητα</span>
-            </th>
-            ${PUBLIC_PLANS.map((p) => `<th scope="col">${e(p.name)}<span class="cmp__price">${e(priceLabel(p.priceEur))}</span></th>`).join('\n            ')}
+            <th scope="col"><span class="visually-hidden">${e(featureCol)}</span></th>
+            ${plans.map((p) => `<th scope="col">${e(p.name)}<span class="cmp__price">${e(priceLabel(p.priceEur, lang))}</span></th>`).join('\n            ')}
           </tr>
         </thead>
         <tbody>
-          ${PRICING_ROWS.map(
-            (row) => `<tr>
+          ${pricingRows(lang)
+            .map(
+              (row) => `<tr>
             <th scope="row">${e(row.label)}${row.note ? `<span class="cmp__note">${e(row.note)}</span>` : ''}</th>
-            ${PUBLIC_PLANS.map((p) => {
-              const v = row.render(p);
-              const cls = v === '✓' ? ' class="yes"' : v === '—' ? ' class="no"' : '';
-              const label = v === '✓' ? 'Ναι' : v === '—' ? 'Όχι' : v;
-              return `<td${cls}><span class="visually-hidden">${e(label)}</span><span aria-hidden="true">${e(v)}</span></td>`;
-            }).join('\n            ')}
+            ${plans
+              .map((p) => {
+                const v = row.render(p);
+                const cls = v === '✓' ? ' class="yes"' : v === '—' ? ' class="no"' : '';
+                const label = v === '✓' ? yes : v === '—' ? no : v;
+                return `<td${cls}><span class="visually-hidden">${e(label)}</span><span aria-hidden="true">${e(v)}</span></td>`;
+              })
+              .join('\n            ')}
           </tr>`,
-          ).join('\n          ')}
+            )
+            .join('\n          ')}
         </tbody>
       </table>
     </div>`;

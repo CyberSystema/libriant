@@ -1,13 +1,15 @@
 {
   "_README": "FILL IN every value written in [SQUARE BRACKETS] before deploying. `pnpm build` refuses to run while any placeholder remains — see apps/site/README.md.",
   "identity": {
-    "controllerName": "[ΤΟ ΠΛΗΡΕΣ ΟΝΟΜΑ ΣΑΣ]",
+    "controllerName": "Νικόλαος Πινάτσης",
     "brand": "Libriant",
     "parentBrand": "CyberSystema",
     "contactEmail": "info@libriant.com",
     "privacyEmail": "privacy@libriant.com",
-    "city": "[Η ΠΟΛΗ ΣΑΣ]",
-    "country": "Ελλάδα"
+    "city": "Λάρισα",
+    "country": "Ελλάδα",
+    "cityEn": "Larissa",
+    "countryEn": "Greece"
   },
   "offer": {
     "spotsTotal": 5,
@@ -25,6 +27,6 @@
   },
   "legal": {
     "_comment": "Bump ONLY when the text of privacy.el.md or programme-terms.el.md actually changes. It is displayed on those pages AND stored with every consent, so auto-dating it on each rebuild would claim revisions that never happened.",
-    "lastUpdated": "2026-08-21"
+    "lastUpdated": "2026-08-22"
   }
 }

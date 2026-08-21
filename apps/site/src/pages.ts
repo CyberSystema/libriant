@@ -8,7 +8,19 @@
  * browser error — and there is only one copy of the form markup to maintain.
  */
 
-import { esc, renderShell, type SiteConfig } from './shell.js';
+import {
+  esc,
+  renderShell,
+  localePath,
+  UI,
+  NAV as NAV_FOR_404,
+  type Lang,
+  type SiteConfig,
+} from './shell.js';
+import { HOME, FORM, THANKS, NOT_FOUND, LIBRARY_TYPE_OPTIONS } from './copy.js';
+import { publicPlans, num, storageLabel, priceLabel } from './plans.js';
+
+export { LIBRARY_TYPE_OPTIONS };
 
 /** The six capability blurbs, read from `locales/el/landing.json` at build time. */
 export type LandingCopy = Record<string, string>;
@@ -22,17 +34,9 @@ export type RenderOptions = {
   values?: FieldValues;
   /** Summary shown above the form when a submission was rejected. */
   formError?: string;
+  /** Defaults to Greek — the site's primary language. */
+  lang?: Lang;
 };
-
-/** Library types, mirrored from `packages/shared/src/library.ts` + `locales/el/library.json`. */
-export const LIBRARY_TYPE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: 'public', label: 'Δημόσια ή δημοτική βιβλιοθήκη' },
-  { value: 'academic', label: 'Ακαδημαϊκή βιβλιοθήκη (ΑΕΙ ή ερευνητικού φορέα)' },
-  { value: 'school', label: 'Σχολική βιβλιοθήκη' },
-  { value: 'special', label: 'Ειδική βιβλιοθήκη (φορέα, ιδρύματος, συλλόγου)' },
-  { value: 'community', label: 'Κοινοτική ή λαϊκή βιβλιοθήκη' },
-  { value: 'other', label: 'Άλλο' },
-];
 
 /**
  * Line icons for the six feature cards, reusing the exact path geometry from the
@@ -108,54 +112,57 @@ function textarea(opts: {
 </div>`;
 }
 
-function applicationForm(c: SiteConfig, o: RenderOptions): string {
+function applicationForm(c: SiteConfig, o: RenderOptions, lang: Lang): string {
+  const f = FORM[lang];
   const errors = o.errors ?? {};
   const values = o.values ?? {};
   const turnstile = c.site.turnstileSiteKey
-    ? `<div class="cf-turnstile" data-sitekey="${esc(c.site.turnstileSiteKey)}" data-language="el"></div>`
+    ? `<div class="cf-turnstile" data-sitekey="${esc(c.site.turnstileSiteKey)}" data-language="${lang}"></div>`
     : '';
 
-  const typeOptions = LIBRARY_TYPE_OPTIONS.map(
-    (t) =>
-      `<option value="${esc(t.value)}"${values.libraryType === t.value ? ' selected' : ''}>${esc(t.label)}</option>`,
-  ).join('\n      ');
+  const typeOptions = LIBRARY_TYPE_OPTIONS[lang]
+    .map(
+      (t) =>
+        `<option value="${esc(t.value)}"${values.libraryType === t.value ? ' selected' : ''}>${esc(t.label)}</option>`,
+    )
+    .join('\n      ');
 
   const summary = o.formError
     ? `<div class="form-error" role="alert" tabindex="-1" id="form-error">
-    <strong>Η αίτηση δεν στάλθηκε.</strong>
+    <strong>${esc(f.errorTitle)}</strong>
     <ul><li>${esc(o.formError)}</li></ul>
   </div>`
     : '';
 
-  return `<form class="form-card" method="post" action="/apply" novalidate id="application-form">
+  return `<form class="form-card" method="post" action="${localePath(lang, '/apply')}" novalidate id="application-form">
   ${summary}
   <div class="grid2">
-    ${field({ name: 'libraryName', label: 'Όνομα βιβλιοθήκης', required: true, values, errors, autocomplete: 'organization' })}
+    ${field({ name: 'libraryName', label: f.libraryName, required: true, values, errors, autocomplete: 'organization' })}
     <div class="field">
-      <label for="f-libraryType">Τύπος βιβλιοθήκης<span class="req" aria-hidden="true">*</span></label>
+      <label for="f-libraryType">${esc(f.libraryType)}<span class="req" aria-hidden="true">*</span></label>
       <select id="f-libraryType" name="libraryType" required${errors.libraryType ? ' aria-invalid="true"' : ''}>
-        <option value="">Επιλέξτε…</option>
+        <option value="">${esc(f.choose)}</option>
         ${typeOptions}
       </select>
       ${errors.libraryType ? `<p class="field-error">${esc(errors.libraryType)}</p>` : ''}
     </div>
   </div>
   <div class="grid2">
-    ${field({ name: 'city', label: 'Πόλη / δήμος', required: true, values, errors, autocomplete: 'address-level2' })}
-    ${field({ name: 'collectionSize', label: 'Περίπου πόσοι τίτλοι;', values, errors, hint: 'Μια χονδρική εκτίμηση αρκεί.', inputmode: 'numeric' })}
+    ${field({ name: 'city', label: f.city, required: true, values, errors, autocomplete: 'address-level2' })}
+    ${field({ name: 'collectionSize', label: f.collectionSize, values, errors, hint: f.collectionSizeHint, inputmode: 'numeric' })}
   </div>
   <div class="grid2">
-    ${field({ name: 'contactName', label: 'Το όνομά σας', required: true, values, errors, autocomplete: 'name' })}
-    ${field({ name: 'contactEmail', label: 'Email επικοινωνίας', type: 'email', required: true, values, errors, autocomplete: 'email' })}
+    ${field({ name: 'contactName', label: f.contactName, required: true, values, errors, autocomplete: 'name' })}
+    ${field({ name: 'contactEmail', label: f.contactEmail, type: 'email', required: true, values, errors, autocomplete: 'email' })}
   </div>
   <div class="grid2">
-    ${field({ name: 'phone', label: 'Τηλέφωνο', type: 'tel', values, errors, autocomplete: 'tel', hint: 'Προαιρετικό.' })}
-    ${field({ name: 'currentSystem', label: 'Τι χρησιμοποιείτε σήμερα;', values, errors, hint: 'π.χ. ΑΒΕΚΤ, Koha, φύλλο Excel, χειρόγραφο αρχείο — ή τίποτα ακόμη.' })}
+    ${field({ name: 'phone', label: f.phone, type: 'tel', values, errors, autocomplete: 'tel', hint: f.optional })}
+    ${field({ name: 'currentSystem', label: f.currentSystem, values, errors, hint: f.currentSystemHint })}
   </div>
-  ${textarea({ name: 'message', label: 'Θέλετε να μας πείτε κάτι άλλο;', values, errors, hint: 'Προαιρετικό — τι σας δυσκολεύει σήμερα, τι θα θέλατε να λύσει το Libriant.' })}
+  ${textarea({ name: 'message', label: f.message, values, errors, hint: f.messageHint })}
 
   <div class="hp" aria-hidden="true">
-    <label for="f-website">Μη συμπληρώσετε αυτό το πεδίο</label>
+    <label for="f-website">${esc(f.honeypot)}</label>
     <input id="f-website" name="website" type="text" tabindex="-1" autocomplete="off">
   </div>
 
@@ -163,28 +170,58 @@ function applicationForm(c: SiteConfig, o: RenderOptions): string {
 
   <div class="consent">
     <input type="checkbox" id="f-consent" name="consent" value="yes" required${values.consent === 'yes' ? ' checked' : ''}${errors.consent ? ' aria-invalid="true"' : ''}>
-    <label for="f-consent">Διάβασα την <a href="/privacy">Πολιτική Απορρήτου</a> και κατανοώ ότι θα χρησιμοποιήσετε τα παραπάνω στοιχεία <strong>μόνο</strong> για να απαντήσετε στην αίτησή μου.<span class="req" aria-hidden="true">*</span></label>
+    <label for="f-consent">${esc(f.consentBefore)}<a href="${localePath(lang, '/privacy')}">${esc(f.consentLink)}</a>${f.consentAfter}<span class="req" aria-hidden="true">*</span></label>
   </div>
   ${errors.consent ? `<p class="field-error" style="margin-top:-16px;margin-bottom:20px">${esc(errors.consent)}</p>` : ''}
 
   <div class="form-actions">
-    <button type="submit" class="btn btn--primary btn--lg">Στείλτε την αίτηση</button>
-    <span class="hint" style="margin:0">Απαντάμε σε κάθε αίτηση εντός δύο εργάσιμων ημερών.</span>
+    <button type="submit" class="btn btn--primary btn--lg">${esc(f.submit)}</button>
+    <span class="hint" style="margin:0">${esc(f.replyPromise)}</span>
   </div>
 </form>`;
 }
 
-function closedNotice(c: SiteConfig): string {
+function closedNotice(c: SiteConfig, lang: Lang): string {
+  const f = FORM[lang];
   return `<div class="closed">
-  <h2>Οι ${esc(c.offer.spotsTotal)} θέσεις συμπληρώθηκαν</h2>
-  <p>Η προσφορά έναρξης ολοκληρώθηκε. Το Libriant παραμένει διαθέσιμο — επικοινωνήστε μαζί μας για τα τρέχοντα πακέτα.</p>
-  <p>Για την επόμενη προσφορά ή για μια προσφορά στα μέτρα σας, στείλτε μας ένα email στο <a href="mailto:${esc(c.identity.contactEmail)}">${esc(c.identity.contactEmail)}</a> με το όνομα και την πόλη της βιβλιοθήκης σας. Θα σας ειδοποιήσουμε πρώτους.</p>
+  <h2>${esc(f.closedTitle(c.offer.spotsTotal))}</h2>
+  <p>${esc(f.closedBody)}</p>
+  <p>${f.closedContact(esc(c.identity.contactEmail))}</p>
 </div>`;
 }
 
 export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions = {}): string {
+  const lang: Lang = o.lang ?? 'el';
+  const h = HOME[lang];
+  const t = UI[lang];
+  const f = FORM[lang];
   const open = c.offer.spotsRemaining > 0;
-  const price = c.offer.plannedMonthlyPriceEur;
+  const entry = priceLabel(c.offer.entryMonthlyPriceEur, lang);
+  const planned = priceLabel(c.offer.plannedMonthlyPriceEur, lang);
+
+  // The offer panel used to hardcode «30.000 τίτλοι · 7.500 μέλη · …». Those are
+  // the Municipal caps, so read them from the plan the offer actually grants —
+  // a cap change in seed-data.ts can no longer leave this paragraph behind.
+  const offerPlan = publicPlans(lang).find(
+    (p) => p.name.toLowerCase() === c.offer.planName.toLowerCase(),
+  );
+  const caps = offerPlan
+    ? [
+        `${num(Number(offerPlan.features.max_books), lang)} ${lang === 'el' ? 'τίτλοι' : 'titles'}`,
+        `${num(Number(offerPlan.features.max_members), lang)} ${lang === 'el' ? 'μέλη' : 'members'}`,
+        `${num(Number(offerPlan.features.staff_seats), lang)} ${lang === 'el' ? 'λογαριασμοί προσωπικού' : 'staff seats'}`,
+        `${storageLabel(Number(offerPlan.features.max_storage_mb), lang)} ${lang === 'el' ? 'για αρχεία' : 'for files'}`,
+        lang === 'el' ? 'κρατήσεις και ουρά κρατήσεων' : 'holds and hold queue',
+        lang === 'el'
+          ? 'μαζική εισαγωγή από CSV, Excel ή MARC'
+          : 'bulk import from CSV, Excel or MARC',
+        lang === 'el' ? 'ειδοποιήσεις email' : 'email notifications',
+        lang === 'el' ? 'συμπλήρωση στοιχείων με ISBN' : 'fill in details by ISBN',
+        lang === 'el'
+          ? 'δικά σας πεδία σε κάθε είδος εγγραφής'
+          : 'custom fields on every record kind',
+      ].join(' · ')
+    : '';
 
   const features = FEATURE_KEYS.map(
     (k) => `<article class="feature">
@@ -196,37 +233,35 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
 
   const body = `<section class="hero">
   <div class="wrap"><div class="hero__inner">
-    <p class="eyebrow">${esc(copy['hero.eyebrow'] ?? 'Διαχείριση βιβλιοθήκης, απλά')}</p>
+    <p class="eyebrow">${esc(copy['hero.eyebrow'] ?? h.heroEyebrow)}</p>
     <h1>${esc(copy['hero.title'] ?? '')}</h1>
     <p class="hero__sub">${esc(copy['hero.subtitle'] ?? '')}</p>
     <div class="hero__actions">
-      <a href="#apply" class="btn btn--primary btn--lg">${open ? `Κρατήστε μία από τις ${esc(c.offer.spotsTotal)} θέσεις` : 'Λίστα αναμονής'}</a>
-      <a href="#what-it-does" class="btn btn--ghost btn--lg">Δείτε τι κάνει</a>
+      <a href="#apply" class="btn btn--primary btn--lg">${esc(open ? h.heroCtaOpen(c.offer.spotsTotal) : h.heroCtaClosed)}</a>
+      <a href="#what-it-does" class="btn btn--ghost btn--lg">${esc(h.heroSecondary)}</a>
     </div>
-    <p class="hero__note">${open ? `Ο πρώτος χρόνος δωρεάν για τις ${esc(c.offer.spotsTotal)} πρώτες βιβλιοθήκες. Χωρίς κάρτα, χωρίς δέσμευση.` : 'Οι θέσεις του πρώτου κύκλου συμπληρώθηκαν.'}</p>
+    <p class="hero__note">${esc(open ? h.heroNoteOpen(c.offer.spotsTotal) : h.heroNoteClosed)}</p>
   </div></div>
 </section>
 
 <section class="offer" id="prosfora" aria-labelledby="offer-title">
   <div class="wrap">
     <div class="offer__card">
-      <span class="offer__badge">Προσφορά έναρξης</span>
-      <h2 id="offer-title">Ο πρώτος χρόνος δωρεάν για τις ${esc(c.offer.spotsTotal)} πρώτες βιβλιοθήκες</h2>
-      <p class="offer__lede">Το Libriant είναι ολοκληρωμένο και έτοιμο. Για την έναρξή του, οι ${esc(c.offer.spotsTotal)} πρώτες βιβλιοθήκες παίρνουν ολόκληρο το πακέτο ${esc(c.offer.planName)} για ${esc(c.offer.months)} μήνες, χωρίς χρέωση.</p>
+      <span class="offer__badge">${esc(h.offerBadge)}</span>
+      <h2 id="offer-title">${esc(h.offerTitle(c.offer.spotsTotal))}</h2>
+      <p class="offer__lede">${esc(h.offerLede(c.offer.spotsTotal, c.offer.planName, c.offer.months))}</p>
       <div class="offer__grid">
-        <div class="stat"><span class="stat__num">${esc(c.offer.spotsRemaining)}</span><span class="stat__label">θέσεις διαθέσιμες${c.offer.spotsRemaining !== c.offer.spotsTotal ? ` από ${esc(c.offer.spotsTotal)}` : ''}</span></div>
-        <div class="stat"><span class="stat__num">${esc(c.offer.months)} μήνες</span><span class="stat__label">πλήρους πρόσβασης</span></div>
-        <div class="stat"><span class="stat__num">Δωρεάν</span><span class="stat__label">για ολόκληρο τον πρώτο χρόνο</span></div>
-        <div class="stat"><span class="stat__num">από ${esc(c.offer.entryMonthlyPriceEur)} €</span><span class="stat__label">τον μήνα, μετά τον πρώτο χρόνο</span></div>
+        <div class="stat"><span class="stat__num">${esc(c.offer.spotsRemaining)}</span><span class="stat__label">${esc(h.statSpots(c.offer.spotsRemaining, c.offer.spotsTotal))}</span></div>
+        <div class="stat"><span class="stat__num">${esc(h.statMonths(c.offer.months))}</span><span class="stat__label">${esc(h.statMonthsLabel)}</span></div>
+        <div class="stat"><span class="stat__num">${esc(h.statFree)}</span><span class="stat__label">${esc(h.statFreeLabel)}</span></div>
+        <div class="stat"><span class="stat__num">${esc(h.statFrom(entry))}</span><span class="stat__label">${esc(h.statFromLabel)}</span></div>
       </div>
       <div class="offer__caps">
-        <strong>Τι περιλαμβάνει το πακέτο ${esc(c.offer.planName)}:</strong>
-        30.000 τίτλοι · 7.500 μέλη · 10 λογαριασμοί προσωπικού · 10 GB για αρχεία ·
-        κρατήσεις και ουρά κρατήσεων · μαζική εισαγωγή από CSV, Excel ή MARC ·
-        ειδοποιήσεις email · συμπλήρωση στοιχείων με ISBN · δικά σας πεδία σε κάθε είδος εγγραφής.
+        <strong>${esc(h.capsIntro(c.offer.planName))}</strong>
+        ${esc(caps)}.
       </div>
       <p class="offer__fine" style="margin-top:18px">
-        Χωρίς πιστωτική κάρτα και χωρίς αυτόματη ανανέωση. Μετά τους ${esc(c.offer.months)} μήνες επιλέγετε το πακέτο που ταιριάζει στο μέγεθός σας — τα πακέτα ξεκινούν από <strong>${esc(c.offer.entryMonthlyPriceEur)} € τον μήνα</strong>, ενώ το ${esc(c.offer.planName)}, που παίρνετε δωρεάν τώρα, κοστίζει ${esc(price)} €. Οι ιδρυτικές βιβλιοθήκες κρατούν μόνιμη έκπτωση — και για πολύ μικρές συλλογές (έως 500 τίτλους) υπάρχει δωρεάν πακέτο.
+        ${h.offerFine(c.offer.months, esc(entry), esc(c.offer.planName), esc(planned))}
       </p>
     </div>
   </div>
@@ -235,7 +270,7 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
 <section class="alt" id="what-it-does" aria-labelledby="features-title">
   <div class="wrap">
     <div class="section-head">
-      <h2 id="features-title">${esc(copy['features.title'] ?? 'Ό,τι χρειάζεται η βιβλιοθήκη σας')}</h2>
+      <h2 id="features-title">${esc(copy['features.title'] ?? h.featuresFallback)}</h2>
       <p>${esc(copy['features.subtitle'] ?? '')}</p>
     </div>
     <div class="features">
@@ -247,22 +282,18 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
 <section id="how-it-works" aria-labelledby="how-title">
   <div class="wrap">
     <div class="section-head">
-      <h2 id="how-title">Πώς δουλεύει</h2>
-      <p>Τρία βήματα, και το βαρύ κομμάτι το αναλαμβάνουμε εμείς.</p>
+      <h2 id="how-title">${esc(h.howTitle)}</h2>
+      <p>${esc(h.howSubtitle)}</p>
     </div>
     <div class="steps">
-      <div class="step">
-        <h3>Στέλνετε την αίτηση</h3>
-        <p>Δύο λεπτά, χωρίς δεσμεύσεις. Απαντάμε σε κάθε αίτηση εντός δύο εργάσιμων ημερών.</p>
-      </div>
-      <div class="step">
-        <h3>Μεταφέρουμε τον κατάλογό σας</h3>
-        <p>Μας στέλνετε ό,τι έχετε — CSV, Excel, MARC, ακόμη και ένα ακατάστατο υπολογιστικό φύλλο. Την εισαγωγή την αναλαμβάνουμε εμείς.</p>
-      </div>
-      <div class="step">
-        <h3>Δουλεύετε κανονικά</h3>
-        <p>Η βιβλιοθήκη σας είναι έτοιμη από την πρώτη μέρα, με το προσωπικό σας εκπαιδευμένο και τον κατάλογο στη θέση του.</p>
-      </div>
+      ${h.steps
+        .map(
+          (st) => `<div class="step">
+        <h3>${esc(st.title)}</h3>
+        <p>${esc(st.body)}</p>
+      </div>`,
+        )
+        .join('\n      ')}
     </div>
   </div>
 </section>
@@ -270,16 +301,11 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
 <section class="alt" aria-labelledby="trust-title">
   <div class="wrap">
     <div class="section-head">
-      <h2 id="trust-title">Τι μπορείτε να επαληθεύσετε πριν αποφασίσετε</h2>
-      <p>Ό,τι λέμε εδώ μπορείτε να το ελέγξετε.</p>
+      <h2 id="trust-title">${esc(h.trustTitle)}</h2>
+      <p>${esc(h.trustSubtitle)}</p>
     </div>
     <ul class="trust">
-      <li><strong>Τα δεδομένα σας είναι δικά σας.</strong> Εξαγωγή ολόκληρου του καταλόγου με ένα κλικ, όποτε θέλετε, χωρίς να μας ρωτήσετε.</li>
-      <li><strong>Καμία αυτόματη χρέωση.</strong> Δεν καταχωρίζετε κάρτα, άρα δεν υπάρχει τίποτα να χρεωθεί στο τέλος του χρόνου.</li>
-      <li><strong>Ελληνικά και αγγλικά εξαρχής.</strong> Όχι μετάφραση που προστέθηκε μετά — και οι δύο γλώσσες είναι ισότιμες σε κάθε οθόνη.</li>
-      <li><strong>Δεδομένα στην Ευρωπαϊκή Ένωση.</strong> Καθημερινά αντίγραφα ασφαλείας και σχεδιασμός σύμφωνος με τον ΓΚΠΔ, με Σύμβαση Επεξεργασίας Δεδομένων πριν καταχωρίσετε το πρώτο μέλος.</li>
-      <li><strong>Χωρίς παρακολούθηση.</strong> Ούτε αναλυτικά στοιχεία ούτε cookies παρακολούθησης — γι’ αυτό δεν είδατε παράθυρο συγκατάθεσης.</li>
-      <li><strong>Ελεγμένο πριν διατεθεί.</strong> Πλήρης έλεγχος ασφαλείας πριν από τη διάθεση, και αυτοματοποιημένες δοκιμές σε κάθε αλλαγή του κώδικα.</li>
+      ${h.trust.map((it) => `<li><strong>${esc(it.title)}</strong> ${esc(it.body)}</li>`).join('\n      ')}
     </ul>
   </div>
 </section>
@@ -287,44 +313,47 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
 <section class="form-section" id="apply" aria-labelledby="apply-title">
   <div class="wrap">
     <div class="section-head">
-      <h2 id="apply-title">${open ? 'Κάντε αίτηση' : 'Λίστα αναμονής'}</h2>
-      <p>${open ? `Συμπληρώστε τα στοιχεία της βιβλιοθήκης σας και επικοινωνούμε μαζί σας μέσα σε δύο εργάσιμες ημέρες.` : 'Ο πρώτος κύκλος έκλεισε.'}</p>
+      <h2 id="apply-title">${esc(open ? h.applyTitle : h.waitlistTitle)}</h2>
+      <p>${esc(open ? h.applySubtitle : h.waitlistSubtitle)}</p>
     </div>
-    ${open ? applicationForm(c, o) : closedNotice(c)}
+    ${open ? applicationForm(c, o, lang) : closedNotice(c, lang)}
   </div>
 </section>`;
 
   return renderShell({
-    title: 'Libriant — Διαχείριση βιβλιοθήκης, απλά',
-    description: `Πλήρες σύστημα διαχείρισης βιβλιοθήκης στα ελληνικά — κατάλογος, μέλη, δανεισμοί, κρατήσεις. Ο πρώτος χρόνος δωρεάν για τις ${c.offer.spotsTotal} πρώτες βιβλιοθήκες.`,
-    path: '/',
+    title: h.metaTitle,
+    description: h.metaDescription(c.offer.spotsTotal),
+    path: localePath(lang, '/'),
+    lang,
     body,
     config: c,
     draft: o.draft,
   });
 }
 
-export function renderThanks(c: SiteConfig, draft?: boolean): string {
-  const body = `<div class="page-head"><div class="wrap"><h1>Η αίτησή σας στάλθηκε</h1></div></div>
+export function renderThanks(c: SiteConfig, draft?: boolean, lang: Lang = 'el'): string {
+  const k = THANKS[lang];
+  const contact = esc(c.identity.contactEmail);
+  const privacy = esc(c.identity.privacyEmail);
+  const body = `<div class="page-head"><div class="wrap"><h1>${esc(k.h1)}</h1></div></div>
 <div class="page-body"><div class="wrap"><div class="prose">
-  <p>Ευχαριστούμε — τη λάβαμε.</p>
-  <h2>Τι γίνεται τώρα</h2>
+  <p>${esc(k.received)}</p>
+  <h2>${esc(k.nextTitle)}</h2>
   <ol>
-    <li><strong>Μέσα σε δύο εργάσιμες ημέρες</strong> θα λάβετε απάντηση από το ${esc(c.identity.contactEmail)}, θετική ή αρνητική. Δεν αφήνουμε καμία αίτηση αναπάντητη.</li>
-    <li><strong>Αν υπάρχει διαθέσιμη θέση</strong>, θα κανονίσουμε μια σύντομη συζήτηση για να δούμε τι έχετε σήμερα και πώς θα το μεταφέρουμε.</li>
-    <li><strong>Τη μεταφορά του καταλόγου την κάνουμε εμείς.</strong> Εσείς μας στέλνετε το αρχείο σας όπως το έχετε.</li>
+    ${k.steps.map((st) => `<li>${st}</li>`).join('\n    ')}
   </ol>
-  <p>Αν δεν λάβετε τίποτα μέσα σε τρεις ημέρες, ελέγξτε τον φάκελο ανεπιθύμητης αλληλογραφίας και μετά γράψτε μας απευθείας στο <a href="mailto:${esc(c.identity.contactEmail)}">${esc(c.identity.contactEmail)}</a>.</p>
-  <h2>Αλλάξατε γνώμη;</h2>
-  <p>Στείλτε ένα email στο <a href="mailto:${esc(c.identity.privacyEmail)}">${esc(c.identity.privacyEmail)}</a> και διαγράφουμε την αίτησή σας. Δεν χρειάζεται να εξηγήσετε τίποτα, και δεν θα σας ξαναγράψουμε.</p>
-  <h2>Στο μεταξύ</h2>
-  <p>Όσο περιμένετε, δείτε <a href="/features">τι κάνει το Libriant</a> — και, αν έχετε ήδη κατάλογο σε αρχείο, <a href="/migration">πώς γίνεται η μετάπτωση</a>. Αν προκύψει ερώτηση, <a href="/contact">γράψτε μας</a>.</p>
-  <p><a href="/">← Επιστροφή στην αρχική</a></p>
+  <p>${k.spam(contact)}</p>
+  <h2>${esc(k.meanwhileTitle)}</h2>
+  <p>${k.meanwhile}</p>
+  <h2>${esc(k.changedTitle)}</h2>
+  <p>${k.changed(privacy)}</p>
+  <p><a href="${localePath(lang, '/')}">${esc(k.back)}</a></p>
 </div></div></div>`;
   return renderShell({
-    title: 'Η αίτησή σας στάλθηκε — Libriant',
-    description: 'Λάβαμε το αίτημά σας. Επικοινωνούμε μαζί σας μέσα σε δύο εργάσιμες ημέρες.',
-    path: '/thank-you',
+    title: k.title,
+    description: k.metaDescription,
+    path: localePath(lang, '/thank-you'),
+    lang,
     body,
     config: c,
     draft,
@@ -333,41 +362,46 @@ export function renderThanks(c: SiteConfig, draft?: boolean): string {
 
 export function renderDoc(
   c: SiteConfig,
-  o: { title: string; html: string; path: string; description: string; draft?: boolean },
+  o: {
+    title: string;
+    path: string;
+    description: string;
+    html: string;
+    draft?: boolean;
+    lang?: Lang;
+  },
 ): string {
-  const body = `<div class="page-body"><div class="wrap"><div class="prose">
+  const lang: Lang = o.lang ?? 'el';
+  const body = `<div class="page-head"><div class="wrap"><h1>${esc(o.title)}</h1></div></div>
+<div class="page-body"><div class="wrap"><div class="prose">
 ${o.html}
-<hr>
-<p><a href="/">← Επιστροφή στην αρχική</a></p>
 </div></div></div>`;
   return renderShell({
     title: `${o.title} — Libriant`,
     description: o.description,
     path: o.path,
+    lang,
     body,
     config: c,
     draft: o.draft,
   });
 }
 
-export function render404(c: SiteConfig, draft?: boolean): string {
-  const body = `<div class="page-body"><div class="wrap"><div class="prose">
-  <h1>Η σελίδα δεν βρέθηκε</h1>
-  <p>Ο σύνδεσμος που ακολουθήσατε δεν οδηγεί πουθενά. Δοκιμάστε από την <a href="/">αρχική σελίδα</a>, ή πηγαίνετε κατευθείαν σε ό,τι ψάχνατε:</p>
+export function render404(c: SiteConfig, draft?: boolean, lang: Lang = 'el'): string {
+  const nf = NOT_FOUND[lang];
+  const links = [...NAV_FOR_404[lang], { path: '/#apply', label: nf.apply }];
+  const body = `<div class="page-head"><div class="wrap"><h1>${esc(nf.h1)}</h1></div></div>
+<div class="page-body"><div class="wrap"><div class="prose">
+  <p>${nf.lede}</p>
   <ul>
-    <li><a href="/features">Δυνατότητες</a> — τι κάνει το Libriant σήμερα</li>
-    <li><a href="/pricing">Πακέτα και τιμές</a></li>
-    <li><a href="/migration">Μετάπτωση</a> — πώς έρχεται ο κατάλογός σας</li>
-    <li><a href="/security">Ασφάλεια και προστασία δεδομένων</a></li>
-    <li><a href="/faq">Συχνές ερωτήσεις</a></li>
-    <li><a href="/contact">Επικοινωνία</a></li>
-    <li><a href="/#apply">Φόρμα αίτησης</a></li>
+    ${links.map((l) => `<li><a href="${localePath(lang, l.path)}">${esc(l.label)}</a></li>`).join('\n    ')}
   </ul>
 </div></div></div>`;
   return renderShell({
-    title: 'Η σελίδα δεν βρέθηκε — Libriant',
-    description: 'Η σελίδα που ζητήσατε δεν υπάρχει.',
-    path: '/404',
+    title: nf.title,
+    description: nf.h1,
+    path: localePath(lang, '/404'),
+    lang,
     body,
     config: c,
     draft,

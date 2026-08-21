@@ -15,13 +15,28 @@
  * to a mail problem, and `notified = 0` marks the ones that need a manual look.
  */
 
-import landing from '../../../locales/el/landing.json' with { type: 'json' };
+import landingEl from '../../../locales/el/landing.json' with { type: 'json' };
+import landingEn from '../../../locales/en/landing.json' with { type: 'json' };
 import rawConfig from '../site.config.json' with { type: 'json' };
-import { renderIndex, LIBRARY_TYPE_OPTIONS, type FieldErrors, type FieldValues } from './pages.js';
-import type { SiteConfig } from './shell.js';
+import { renderIndex, type FieldErrors, type FieldValues } from './pages.js';
+import { LIBRARY_TYPE_VALUES, LIBRARY_TYPE_OPTIONS, ERRORS } from './copy.js';
+import { localePath, type Lang, type SiteConfig } from './shell.js';
 
 const config = rawConfig as unknown as SiteConfig;
-const copy = landing as Record<string, string>;
+const COPY: Record<Lang, Record<string, string>> = {
+  el: landingEl as Record<string, string>,
+  en: landingEn as Record<string, string>,
+};
+
+/**
+ * Which language a request belongs to, from its path. The form posts to
+ * /apply or /en/apply, so an English visitor gets English validation errors and
+ * lands back on the English page — the alternative is a form that silently
+ * switches language the moment you make a typo.
+ */
+function langOf(pathname: string): Lang {
+  return pathname === '/en' || pathname.startsWith('/en/') ? 'en' : 'el';
+}
 
 /** Version stamp recorded with each consent, so we know what was agreed to.
  *  Read from site.config.json so it is the SAME value the policy page displays.
@@ -71,7 +86,8 @@ function trim(form: FormData, key: string): string {
   return typeof v === 'string' ? v.trim() : '';
 }
 
-function validate(form: FormData): Parsed {
+function validate(form: FormData, lang: Lang): Parsed {
+  const E = ERRORS[lang];
   const values: FieldValues = {};
   const errors: FieldErrors = {};
 
@@ -80,36 +96,29 @@ function validate(form: FormData): Parsed {
   }
   if (trim(form, 'consent') === 'yes') values.consent = 'yes';
 
-  const required: Array<[string, string]> = [
-    ['libraryName', 'Συμπληρώστε το όνομα της βιβλιοθήκης.'],
-    ['libraryType', 'Επιλέξτε τύπο βιβλιοθήκης.'],
-    ['city', 'Συμπληρώστε την πόλη ή τον δήμο.'],
-    ['contactName', 'Συμπληρώστε το όνομά σας.'],
-    ['contactEmail', 'Συμπληρώστε ένα email επικοινωνίας.'],
-  ];
-  for (const [key, msg] of required) {
+  for (const [key, msg] of Object.entries(E.required)) {
     if (!values[key]) errors[key] = msg;
   }
 
   for (const [key, max] of Object.entries(MAX_LEN)) {
     const v = values[key];
     if (v && v.length > max) {
-      errors[key] = `Το πεδίο είναι πολύ μεγάλο (έως ${max} χαρακτήρες).`;
+      errors[key] = E.tooLong(max);
     }
   }
 
   const email = values.contactEmail;
   if (email && !errors.contactEmail && !EMAIL_RE.test(email)) {
-    errors.contactEmail = 'Το email δεν φαίνεται σωστό. Ελέγξτε το και δοκιμάστε ξανά.';
+    errors.contactEmail = E.badEmail;
   }
 
   const type = values.libraryType;
-  if (type && !LIBRARY_TYPE_OPTIONS.some((o) => o.value === type)) {
-    errors.libraryType = 'Επιλέξτε έναν από τους διαθέσιμους τύπους.';
+  if (type && !LIBRARY_TYPE_VALUES.has(type)) {
+    errors.libraryType = E.badType;
   }
 
   if (values.consent !== 'yes') {
-    errors.consent = 'Επιβεβαιώστε ότι διαβάσατε την Πολιτική Απορρήτου.';
+    errors.consent = E.consent;
   }
 
   return { values, errors };
@@ -187,9 +196,10 @@ const SECURITY_HEADERS: Record<string, string> = {
   'permissions-policy': 'geolocation=(), microphone=(), camera=(), interest-cohort=()',
 };
 
-function rerenderWithErrors(parsed: Parsed, formError: string, status = 400): Response {
+function rerenderWithErrors(parsed: Parsed, formError: string, lang: Lang, status = 400): Response {
   return htmlResponse(
-    renderIndex(config, copy, {
+    renderIndex(config, COPY[lang], {
+      lang,
       errors: parsed.errors,
       values: parsed.values,
       formError,
@@ -199,25 +209,34 @@ function rerenderWithErrors(parsed: Parsed, formError: string, status = 400): Re
 }
 
 async function handleApply(request: Request, env: Env): Promise<Response> {
+  // A submission stays in the language it was made in — errors, the re-rendered
+  // form and the thank-you page all follow the /en prefix the form posted to.
+  const lang = langOf(new URL(request.url).pathname);
+  const E = ERRORS[lang];
+  const home = localePath(lang, '/');
+
   if (config.offer.spotsRemaining <= 0) {
-    return Response.redirect(new URL('/#apply', request.url).toString(), 303);
+    return Response.redirect(new URL(`${home}#apply`, request.url).toString(), 303);
   }
 
   let form: FormData;
   try {
     form = await request.formData();
   } catch {
-    return htmlResponse(renderIndex(config, copy, { formError: 'Μη έγκυρη υποβολή.' }), 400);
+    return htmlResponse(
+      renderIndex(config, COPY[lang], { lang, formError: E.invalidSubmission }),
+      400,
+    );
   }
 
   // Honeypot: a field hidden off-screen and marked aria-hidden. A human never
   // fills it; naive scrapers fill every input they find. Answer 303 exactly as
   // for a success so the bot learns nothing from the difference.
   if (trim(form, 'website') !== '') {
-    return Response.redirect(new URL('/thank-you', request.url).toString(), 303);
+    return Response.redirect(new URL(localePath(lang, '/thank-you'), request.url).toString(), 303);
   }
 
-  const parsed = validate(form);
+  const parsed = validate(form, lang);
 
   // Turnstile needs BOTH halves: the site key renders the widget (and loads its
   // script — see renderShell), the secret verifies the token it produces.
@@ -231,11 +250,7 @@ async function handleApply(request: Request, env: Env): Promise<Response> {
     console.error(
       'TURNSTILE_SECRET is set but site.turnstileSiteKey is empty — refusing to accept applications unverified',
     );
-    return rerenderWithErrors(
-      parsed,
-      'Ο έλεγχος ασφαλείας δεν είναι διαθέσιμος αυτή τη στιγμή. Δοκιμάστε ξανά αργότερα ή γράψτε μας απευθείας.',
-      503,
-    );
+    return rerenderWithErrors(parsed, E.turnstileUnavailable, lang, 503);
   }
 
   if (turnstileConfigured) {
@@ -248,18 +263,12 @@ async function handleApply(request: Request, env: Env): Promise<Response> {
         request.headers.get('cf-connecting-ip'),
       ));
     if (!ok) {
-      return rerenderWithErrors(
-        parsed,
-        'Ο έλεγχος ασφαλείας δεν ολοκληρώθηκε. Ανανεώστε τη σελίδα και δοκιμάστε ξανά.',
-      );
+      return rerenderWithErrors(parsed, E.turnstileFailed, lang);
     }
   }
 
   if (Object.keys(parsed.errors).length > 0) {
-    return rerenderWithErrors(
-      parsed,
-      'Ελέγξτε τα πεδία που σημειώνονται παρακάτω και δοκιμάστε ξανά.',
-    );
+    return rerenderWithErrors(parsed, E.checkFields, lang);
   }
 
   const ip = request.headers.get('cf-connecting-ip') ?? '0.0.0.0';
@@ -279,11 +288,7 @@ async function handleApply(request: Request, env: Env): Promise<Response> {
     });
 
   if ((recent?.n ?? 0) >= RATE_LIMIT) {
-    return rerenderWithErrors(
-      parsed,
-      'Λάβαμε ήδη αρκετές υποβολές από εσάς. Δοκιμάστε ξανά σε μία ώρα, ή γράψτε μας απευθείας.',
-      429,
-    );
+    return rerenderWithErrors(parsed, E.rateLimited, lang, 429);
   }
 
   const id = crypto.randomUUID();
@@ -323,11 +328,7 @@ async function handleApply(request: Request, env: Env): Promise<Response> {
     // to the inbox, and tell the applicant honestly how else to reach us.
     console.error('application insert failed:', err);
     await notify(env, id, parsed.values).catch(() => undefined);
-    return rerenderWithErrors(
-      parsed,
-      `Δεν καταφέραμε να αποθηκεύσουμε την αίτησή σας. Δοκιμάστε ξανά σε λίγο, ή στείλτε μας email στο ${config.identity.contactEmail}.`,
-      500,
-    );
+    return rerenderWithErrors(parsed, E.saveFailed(config.identity.contactEmail), lang, 500);
   }
 
   // Throttle bookkeeping and the retention sweep are both non-critical: the
@@ -347,14 +348,14 @@ async function handleApply(request: Request, env: Env): Promise<Response> {
   // Best-effort from here on. Everything above is already committed.
   await notify(env, id, parsed.values).catch(() => undefined);
 
-  return Response.redirect(new URL('/thank-you', request.url).toString(), 303);
+  return Response.redirect(new URL(localePath(lang, '/thank-you'), request.url).toString(), 303);
 }
 
 async function notify(env: Env, id: string, v: FieldValues): Promise<void> {
   if (!env.EMAIL) return;
 
   const typeLabel =
-    LIBRARY_TYPE_OPTIONS.find((o) => o.value === v.libraryType)?.label ?? v.libraryType ?? '—';
+    LIBRARY_TYPE_OPTIONS.el.find((o) => o.value === v.libraryType)?.label ?? v.libraryType ?? '—';
 
   const lines = [
     `Βιβλιοθήκη:      ${v.libraryName ?? ''}`,
@@ -448,10 +449,13 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname === '/apply') {
+    // Both language trees post to their own path so the response stays in the
+    // language the visitor was reading.
+    if (url.pathname === '/apply' || url.pathname === '/en/apply') {
       if (request.method === 'POST') return handleApply(request, env);
       if (request.method === 'GET' || request.method === 'HEAD') {
-        return Response.redirect(new URL('/#apply', request.url).toString(), 303);
+        const home = localePath(langOf(url.pathname), '/');
+        return Response.redirect(new URL(`${home}#apply`, request.url).toString(), 303);
       }
       return new Response('Method not allowed', { status: 405, headers: { allow: 'POST' } });
     }

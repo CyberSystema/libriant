@@ -16,7 +16,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
 
-import { STYLESHEET, type SiteConfig } from './src/shell.js';
+import { STYLESHEET, LANGS, localePath, type Lang, type SiteConfig } from './src/shell.js';
 import { renderIndex, renderThanks, renderDoc, render404, type LandingCopy } from './src/pages.js';
 import { renderContentPage, type PageContent } from './src/render.js';
 import { renderPlanCards, renderComparisonTable } from './src/plans.js';
@@ -103,10 +103,29 @@ const GR_MONTHS_GEN = [
   'Δεκεμβρίου',
 ];
 
-function greekDate(iso: string): string {
+const EN_MONTHS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+function humanDate(iso: string, lang: Lang): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
   if (!m) return iso;
-  return `${Number(m[3])} ${GR_MONTHS_GEN[Number(m[2]) - 1]} ${m[1]}`;
+  const day = Number(m[3]);
+  const month = Number(m[2]) - 1;
+  return lang === 'el'
+    ? `${day} ${GR_MONTHS_GEN[month]} ${m[1]}`
+    : `${day} ${EN_MONTHS[month]} ${m[1]}`;
 }
 
 type LintRule = {
@@ -114,8 +133,10 @@ type LintRule = {
   re: RegExp;
   level: 'error' | 'warn';
   why: string;
+  /** Which language trees this rule applies to. Defaults to Greek only. */
+  langs?: readonly Lang[];
   /** Strip regions where a match is legitimate before testing. */
-  scrub?: (html: string) => string;
+  scrub?: (html: string, lintCtx: { controllerName: string }) => string;
 };
 
 /**
@@ -162,8 +183,40 @@ const LINT_RULES: LintRule[] = [
   {
     name: 'currency-format',
     level: 'error',
+    langs: ['el'],
     re: /€\s*\d|\d€|\b0\s*€/,
-    why: 'Currency is «19 €» with a non-breaking space. Zero is «Δωρεάν», never «0 €».',
+    why: 'Greek currency is «19 €» with a non-breaking space. Zero is «Δωρεάν», never «0 €».',
+  },
+  {
+    // English inverts the convention, so the Greek rule would fail every page.
+    name: 'currency-format-en',
+    level: 'error',
+    langs: ['en'],
+    re: /\d\s*€|€\s+\d|\b€0\b/,
+    why: 'English currency is «€19» — symbol first, no space. Zero is "Free", never "€0".',
+  },
+  {
+    name: 'greek-in-english-page',
+    level: 'error',
+    langs: ['en'],
+    re: /[\u0370-\u03FF]{4,}/,
+    why: 'Untranslated Greek left on an English page.',
+    // Three kinds of Greek are legitimate here and must not trip the rule:
+    // the language switcher, which says «Ελληνικά» on purpose; the controller's
+    // own name, which is a person's name and is not translated; and Greek
+    // quoted as an EXAMPLE, which is the whole point of sentences like
+    // «“καβαφης” finds “Καβάφη”» on a page about Greek-aware search.
+    scrub: (h, lintCtx) =>
+      h
+        // The controller's own name is a person's name. It appears in the
+        // footer and in the privacy notice because GDPR Art. 13 requires them
+        // to be identifiable, and translating it would defeat that.
+        .split(lintCtx.controllerName)
+        .join('')
+        .replace(/<a[^>]*class="lang"[^>]*>[^<]*<\/a>/g, '')
+        .replace(/aria-label="[^"]*"/g, '')
+        .replace(/<p class="footer__id">[\s\S]*?<\/p>/g, '')
+        .replace(/[«“"'][^«»“”"']{0,80}[»”"']/g, ''),
   },
   {
     name: 'terminology-drift',
@@ -212,13 +265,18 @@ const LINT_RULES: LintRule[] = [
   },
 ];
 
-function lint(files: Array<[string, string]>): { errors: string[]; warnings: string[] } {
+function lint(
+  files: Array<[string, string, Lang?]>,
+  lintCtx: { controllerName: string },
+): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
-  for (const [name, html] of files) {
+  for (const [name, html, fileLang] of files) {
     if (!/\.(html|xml)$/.test(name)) continue;
+    const lang: Lang = fileLang ?? 'el';
     for (const rule of LINT_RULES) {
-      const subject = rule.scrub ? rule.scrub(html) : html;
+      if (!(rule.langs ?? ['el']).includes(lang)) continue;
+      const subject = rule.scrub ? rule.scrub(html, lintCtx) : html;
       const m = rule.re.exec(subject);
       if (!m) continue;
       const at = Math.max(0, m.index - 45);
@@ -259,7 +317,7 @@ function main(): void {
   // recorded consent. Bump `legal.lastUpdated` in site.config.json instead.
   const lastUpdated = config.legal.lastUpdated;
   const tokens: Record<string, string> = {
-    LAST_UPDATED: greekDate(lastUpdated),
+    LAST_UPDATED: humanDate(lastUpdated, 'el'),
     CONTROLLER_NAME: config.identity.controllerName,
     CONTACT_EMAIL: config.identity.contactEmail,
     PRIVACY_EMAIL: config.identity.privacyEmail,
@@ -275,93 +333,191 @@ function main(): void {
   // Page copy is authored as data in content/pages.json. The pricing page's
   // plan cards and comparison grid are generated from the product's own plan
   // definitions instead, so the caps advertised are the caps enforced.
-  const contentPages = readJson<PageContent[]>(join(HERE, 'content/pages.json')).map((page) => {
-    if (page.slug !== '/pricing') return page;
-    return {
-      ...page,
-      sections: [
-        {
-          type: 'cards' as const,
-          heading: 'Τα πακέτα',
-          intro:
-            'Οι τιμές είναι γραμμένες εδώ. Δεν χρειάζεται να ζητήσετε προσφορά για να μάθετε τι κοστίζει.',
-          html: `<section class="section">
+  const PRICING_INTRO: Record<
+    Lang,
+    { cards: string; cardsIntro: string; table: string; tableIntro: string }
+  > = {
+    el: {
+      cards: 'Τα πακέτα',
+      cardsIntro:
+        'Κάθε πακέτο περιλαμβάνει ολόκληρη την εφαρμογή. Αυτό που αλλάζει είναι τα όρια — πόσους τίτλους, πόσα μέλη και πόσους λογαριασμούς προσωπικού χωράει.',
+      table: 'Αναλυτική σύγκριση',
+      tableIntro:
+        'Κάθε γραμμή είναι όριο που εφαρμόζει το ίδιο το λογισμικό — δεν είναι εμπορική περιγραφή.',
+    },
+    en: {
+      cards: 'The plans',
+      cardsIntro:
+        'Every plan includes the whole application. What changes are the limits — how many titles, members and staff seats it holds.',
+      table: 'Full comparison',
+      tableIntro:
+        'Every row is a limit the software itself enforces — not a marketing description.',
+    },
+  };
+
+  /** Page copy for one language, with the generated pricing sections spliced in. */
+  function loadContent(lang: Lang): PageContent[] {
+    const t = PRICING_INTRO[lang];
+    return readJson<PageContent[]>(join(HERE, `content/pages.${lang}.json`)).map((page) => {
+      if (page.slug !== localePath(lang, '/pricing')) return page;
+      return {
+        ...page,
+        sections: [
+          {
+            type: 'cards' as const,
+            id: 'the-plans',
+            heading: t.cards,
+            html: `<section class="section">
     <div class="wrap">
       <div class="section-head">
-        <h2 id="a-ta-paketa">Τα πακέτα</h2>
-        <p>Οι τιμές είναι γραμμένες εδώ. Δεν χρειάζεται να ζητήσετε προσφορά για να μάθετε τι κοστίζει.</p>
+        <h2 id="the-plans">${t.cards}</h2>
+        <p>${t.cardsIntro}</p>
       </div>
-      ${renderPlanCards(config.offer.planName.toLowerCase())}
+      ${renderPlanCards(config.offer.planName.toLowerCase(), lang)}
     </div>
   </section>`,
-        },
-        ...page.sections,
-        {
-          type: 'table' as const,
-          heading: 'Αναλυτική σύγκριση',
-          html: `<section class="section alt">
+          },
+          ...page.sections,
+          {
+            type: 'table' as const,
+            id: 'full-comparison',
+            heading: t.table,
+            html: `<section class="section alt">
     <div class="wrap">
       <div class="section-head">
-        <h2 id="a-analytiki-sygkrisi">Αναλυτική σύγκριση</h2>
-        <p>Κάθε γραμμή είναι όριο που εφαρμόζει το ίδιο το λογισμικό — δεν είναι εμπορική περιγραφή.</p>
+        <h2 id="full-comparison">${t.table}</h2>
+        <p>${t.tableIntro}</p>
       </div>
-      ${renderComparisonTable()}
+      ${renderComparisonTable(lang)}
     </div>
   </section>`,
-        },
+          },
+        ],
+      };
+    });
+  }
+
+  const DOC_COPY: Record<
+    Lang,
+    { privacy: [string, string]; terms: (s: number) => [string, string] }
+  > = {
+    el: {
+      privacy: [
+        'Πολιτική Απορρήτου',
+        'Πώς χειριζόμαστε τα στοιχεία που στέλνετε μέσω της φόρμας αίτησης. Χωρίς cookies παρακολούθησης, χωρίς αναλυτικά στοιχεία.',
       ],
-    };
-  });
+      terms: (n) => [
+        'Όροι προσφοράς',
+        `Τι ακριβώς περιλαμβάνει ο δωρεάν πρώτος χρόνος για τις ${n} πρώτες βιβλιοθήκες, και τι ισχύει μετά.`,
+      ],
+    },
+    en: {
+      privacy: [
+        'Privacy Policy',
+        'How we handle the details you send through the application form. No tracking cookies, no analytics.',
+      ],
+      terms: (n) => [
+        'Offer terms',
+        `Exactly what the free first year covers for the first ${n} libraries, and what applies afterwards.`,
+      ],
+    },
+  };
 
   rmSync(DIST, { recursive: true, force: true });
   mkdirSync(DIST, { recursive: true });
 
-  const pages: Array<[string, string]> = [
-    ['index.html', renderIndex(config, landing, { draft })],
-    ['thank-you.html', renderThanks(config, draft)],
-    [
-      'privacy.html',
-      renderDoc(config, {
-        title: 'Πολιτική Απορρήτου',
-        path: '/privacy',
-        description:
-          'Πώς χειριζόμαστε τα στοιχεία που στέλνετε μέσω της φόρμας αίτησης. Χωρίς cookies παρακολούθησης, χωρίς αναλυτικά στοιχεία.',
-        html: renderMarkdown(read(join(HERE, 'content/privacy.el.md')), tokens),
-        draft,
-      }),
-    ],
-    [
-      'offer-terms.html',
-      renderDoc(config, {
-        title: 'Όροι προσφοράς',
-        path: '/offer-terms',
-        description: `Τι ακριβώς περιλαμβάνει ο δωρεάν πρώτος χρόνος για τις ${config.offer.spotsTotal} πρώτες βιβλιοθήκες, και τι ισχύει μετά.`,
-        html: renderMarkdown(read(join(HERE, 'content/programme-terms.el.md')), tokens),
-        draft,
-      }),
-    ],
-    ...contentPages.map((page): [string, string] => [
-      `${page.slug.replace(/^\//, '')}.html`,
-      renderContentPage(config, page, draft),
-    ]),
-    ['404.html', render404(config, draft)],
+  const pages: Array<[string, string, Lang?]> = [];
+  const sitemapPaths: string[] = [];
+
+  for (const lang of LANGS) {
+    const dir = lang === 'el' ? '' : 'en/';
+    if (dir) mkdirSync(join(DIST, 'en'), { recursive: true });
+    const content = loadContent(lang);
+    const landing = readJson<LandingCopy>(join(REPO, `locales/${lang}/landing.json`));
+    const d = DOC_COPY[lang];
+    const langTokens = {
+      ...tokens,
+      LAST_UPDATED: humanDate(lastUpdated, lang),
+      CITY: lang === 'en' ? (config.identity.cityEn ?? config.identity.city) : config.identity.city,
+      COUNTRY:
+        lang === 'en'
+          ? (config.identity.countryEn ?? config.identity.country)
+          : config.identity.country,
+    };
+    const [privacyTitle, privacyDesc] = d.privacy;
+    const [termsTitle, termsDesc] = d.terms(config.offer.spotsTotal);
+
+    pages.push(
+      [`${dir}index.html`, renderIndex(config, landing, { draft, lang }), lang],
+      [`${dir}thank-you.html`, renderThanks(config, draft, lang), lang],
+      [
+        `${dir}privacy.html`,
+        renderDoc(config, {
+          title: privacyTitle,
+          path: localePath(lang, '/privacy'),
+          description: privacyDesc,
+          html: renderMarkdown(read(join(HERE, `content/privacy.${lang}.md`)), langTokens),
+          draft,
+          lang,
+        }),
+        lang,
+      ],
+      [
+        `${dir}offer-terms.html`,
+        renderDoc(config, {
+          title: termsTitle,
+          path: localePath(lang, '/offer-terms'),
+          description: termsDesc,
+          html: renderMarkdown(read(join(HERE, `content/programme-terms.${lang}.md`)), langTokens),
+          draft,
+          lang,
+        }),
+        lang,
+      ],
+      ...content.map((page): [string, string, Lang] => [
+        `${page.slug.replace(/^\//, '')}.html`,
+        renderContentPage(config, page, draft, lang),
+        lang,
+      ]),
+      [`${dir}404.html`, render404(config, draft, lang), lang],
+    );
+
+    sitemapPaths.push(
+      localePath(lang, '/'),
+      ...content.map((p) => p.slug),
+      localePath(lang, '/offer-terms'),
+      localePath(lang, '/privacy'),
+    );
+  }
+
+  const origin = config.site.origin.replace(/\/$/, '');
+  pages.push(
     ['styles.css', STYLESHEET],
     [
       'robots.txt',
-      `User-agent: *\nAllow: /\nDisallow: /apply\n\nSitemap: ${config.site.origin.replace(/\/$/, '')}/sitemap.xml\n`,
+      `User-agent: *\nAllow: /\nDisallow: /apply\nDisallow: /en/apply\n\nSitemap: ${origin}/sitemap.xml\n`,
     ],
-  ];
+  );
 
-  const origin = config.site.origin.replace(/\/$/, '');
-  const urls = ['/', ...contentPages.map((p) => p.slug), '/offer-terms', '/privacy']
-    .map((p) => `  <url><loc>${origin}${p}</loc><lastmod>${lastUpdated}</lastmod></url>`)
+  // Each entry declares its counterpart, so a crawler pairs the two trees
+  // instead of treating the English pages as duplicates of the Greek ones.
+  const urls = sitemapPaths
+    .map((p) => {
+      const base = p.startsWith('/en/') ? p.slice(3) : p === '/en/' ? '/' : p;
+      return (
+        `  <url><loc>${origin}${p}</loc><lastmod>${lastUpdated}</lastmod>\n` +
+        `    <xhtml:link rel="alternate" hreflang="el" href="${origin}${localePath('el', base)}"/>\n` +
+        `    <xhtml:link rel="alternate" hreflang="en" href="${origin}${localePath('en', base)}"/>\n` +
+        `  </url>`
+      );
+    })
     .join('\n');
   pages.push([
     'sitemap.xml',
-    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`,
+    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n${urls}\n</urlset>\n`,
   ]);
 
-  const { errors, warnings } = lint(pages);
+  const { errors, warnings } = lint(pages, { controllerName: config.identity.controllerName });
   if (warnings.length > 0) {
     console.warn(
       `\n⚠  ${warnings.length} copy warning(s):\n` +

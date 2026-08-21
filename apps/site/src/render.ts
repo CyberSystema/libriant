@@ -12,7 +12,7 @@
  * cross-references and nothing else is worth the injection surface.
  */
 
-import { esc, renderShell, type SiteConfig } from './shell.js';
+import { esc, renderShell, localePath, UI, type Lang, type SiteConfig } from './shell.js';
 
 export type SectionType = 'prose' | 'cards' | 'list' | 'steps' | 'faq' | 'callout' | 'table';
 
@@ -201,7 +201,17 @@ function renderSection(s: Section, i: number): string {
   </section>`;
 }
 
-export function renderContentPage(config: SiteConfig, page: PageContent, draft: boolean): string {
+export function renderContentPage(
+  config: SiteConfig,
+  page: PageContent,
+  draft: boolean,
+  lang: Lang = 'el',
+): string {
+  const t = UI[lang];
+  const offer =
+    lang === 'el'
+      ? `Οι ${config.offer.spotsTotal} πρώτες βιβλιοθήκες παίρνουν το πακέτο ${esc(config.offer.planName)} δωρεάν για ${config.offer.months} μήνες.`
+      : `The first ${config.offer.spotsTotal} libraries get the ${esc(config.offer.planName)} plan free for ${config.offer.months} months.`;
   const body = `<div class="page-head">
   <div class="wrap">
     <h1>${inline(page.h1)}</h1>
@@ -211,16 +221,17 @@ export function renderContentPage(config: SiteConfig, page: PageContent, draft: 
 ${page.sections.map(renderSection).join('\n')}
 <section class="section cta-band">
   <div class="wrap">
-    <h2>Θέλετε να το δείτε στη βιβλιοθήκη σας;</h2>
-    <p>Οι ${config.offer.spotsTotal} πρώτες βιβλιοθήκες παίρνουν το πακέτο ${esc(config.offer.planName)} δωρεάν για ${config.offer.months} μήνες.</p>
-    <p class="hero__actions"><a class="btn btn--primary btn--lg" href="/#apply">Κάντε αίτηση</a>
-    <a class="btn btn--ghost" href="/contact">Ρωτήστε πρώτα</a></p>
+    <h2>${esc(t.ctaHeading)}</h2>
+    <p>${offer}</p>
+    <p class="hero__actions"><a class="btn btn--primary btn--lg" href="${localePath(lang, '/')}#apply">${esc(t.apply)}</a>
+    <a class="btn btn--ghost" href="${localePath(lang, '/contact')}">${esc(t.ctaAsk)}</a></p>
   </div>
 </section>`;
 
   return renderShell({
     config,
     draft,
+    lang,
     path: page.slug,
     title: page.title,
     description: page.metaDescription,
