@@ -200,7 +200,7 @@ function rerenderWithErrors(parsed: Parsed, formError: string, status = 400): Re
 
 async function handleApply(request: Request, env: Env): Promise<Response> {
   if (config.offer.spotsRemaining <= 0) {
-    return Response.redirect(new URL('/#aitisi', request.url).toString(), 303);
+    return Response.redirect(new URL('/#apply', request.url).toString(), 303);
   }
 
   let form: FormData;
@@ -214,7 +214,7 @@ async function handleApply(request: Request, env: Env): Promise<Response> {
   // fills it; naive scrapers fill every input they find. Answer 303 exactly as
   // for a success so the bot learns nothing from the difference.
   if (trim(form, 'website') !== '') {
-    return Response.redirect(new URL('/efcharistoume', request.url).toString(), 303);
+    return Response.redirect(new URL('/thank-you', request.url).toString(), 303);
   }
 
   const parsed = validate(form);
@@ -347,7 +347,7 @@ async function handleApply(request: Request, env: Env): Promise<Response> {
   // Best-effort from here on. Everything above is already committed.
   await notify(env, id, parsed.values).catch(() => undefined);
 
-  return Response.redirect(new URL('/efcharistoume', request.url).toString(), 303);
+  return Response.redirect(new URL('/thank-you', request.url).toString(), 303);
 }
 
 async function notify(env: Env, id: string, v: FieldValues): Promise<void> {
@@ -451,7 +451,7 @@ export default {
     if (url.pathname === '/apply') {
       if (request.method === 'POST') return handleApply(request, env);
       if (request.method === 'GET' || request.method === 'HEAD') {
-        return Response.redirect(new URL('/#aitisi', request.url).toString(), 303);
+        return Response.redirect(new URL('/#apply', request.url).toString(), 303);
       }
       return new Response('Method not allowed', { status: 405, headers: { allow: 'POST' } });
     }

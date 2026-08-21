@@ -86,19 +86,19 @@ export function brandMark(id = 'm', size = 40): string {
 /** The site's pages, in nav order. One list feeds the masthead, the footer and
  *  the sitemap, so a page can never exist without being reachable. */
 export const NAV = [
-  { path: '/dynatotites', label: 'Δυνατότητες' },
-  { path: '/vivliothikes', label: 'Για ποιες βιβλιοθήκες' },
-  { path: '/times', label: 'Πακέτα' },
-  { path: '/metaptosi', label: 'Μετάπτωση' },
-  { path: '/asfaleia-dedomenon', label: 'Ασφάλεια' },
-  { path: '/syhnes-erotiseis', label: 'Συχνές ερωτήσεις' },
+  { path: '/features', label: 'Δυνατότητες' },
+  { path: '/libraries', label: 'Για ποιες βιβλιοθήκες' },
+  { path: '/pricing', label: 'Πακέτα' },
+  { path: '/migration', label: 'Μετάπτωση' },
+  { path: '/security', label: 'Ασφάλεια' },
+  { path: '/faq', label: 'Συχνές ερωτήσεις' },
 ] as const;
 
 export const FOOTER_LEGAL = [
-  { path: '/schetika', label: 'Ποιοι είμαστε' },
-  { path: '/epikoinonia', label: 'Επικοινωνία' },
-  { path: '/oroi-programmatos', label: 'Όροι προσφοράς' },
-  { path: '/aporrito', label: 'Πολιτική Απορρήτου' },
+  { path: '/about', label: 'Ποιοι είμαστε' },
+  { path: '/contact', label: 'Επικοινωνία' },
+  { path: '/offer-terms', label: 'Όροι προσφοράς' },
+  { path: '/privacy', label: 'Πολιτική Απορρήτου' },
 ] as const;
 
 /** Wordmark + mark, as used in the masthead and the footer. */
@@ -552,7 +552,7 @@ function masthead(path: string): string {
     <a href="/" class="lockup" aria-label="Libriant — αρχική">${brandMark('mh', 34)}<span class="lockup__word">Libriant</span></a>
     <nav aria-label="Κύρια πλοήγηση">
       ${links}
-      <a href="/#aitisi" class="cta">Κάντε αίτηση</a>
+      <a href="/#apply" class="cta">Κάντε αίτηση</a>
     </nav>
   </div>
 </header>`;
@@ -573,7 +573,7 @@ function footer(c: SiteConfig): string {
       </nav>
       <nav class="footer__links" aria-label="Πληροφορίες">
         <span class="footer__h">Πληροφορίες</span>
-        <a href="/#aitisi">Κάντε αίτηση</a>
+        <a href="/#apply">Κάντε αίτηση</a>
         ${FOOTER_LEGAL.map((n) => `<a href="${n.path}">${n.label}</a>`).join('\n        ')}
         <a href="mailto:${esc(c.identity.contactEmail)}">${esc(c.identity.contactEmail)}</a>
       </nav>

@@ -34,7 +34,7 @@ L I B R I A N T
 
 
           ΚΡΑΤΗΣΤΕ ΘΕΣΗ
-      https://libriant.com/#aitisi
+      https://libriant.com/#apply
 
 
 ---------------------------------------
@@ -43,6 +43,6 @@ L I B R I A N T
 Για διαγραφή, απαντήστε ΔΙΑΓΡΑΦΗ ή γράψτε στο info@libriant.com.
 
 [ΟΝΟΜΑ], [ΠΟΛΗ], Ελλάδα
-Απόρρητο: https://libriant.com/aporrito
-Όροι προσφοράς: https://libriant.com/oroi-programmatos
+Απόρρητο: https://libriant.com/privacy
+Όροι προσφοράς: https://libriant.com/offer-terms
 powered by CyberSystema

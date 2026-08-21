@@ -32,10 +32,10 @@ Every request goes through the Worker (`run_worker_first: true`), which serves
 static pages from the Assets binding and stamps security headers on the way out.
 Only two routes have real logic:
 
-| Route                           | Behaviour                                                                                                                                   |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /apply`                   | validate → honeypot → Turnstile (if configured) → rate-limit → **insert into D1** → notify by email (best-effort) → 303 to `/efcharistoume` |
-| `GET /applications.csv?token=…` | everything received, as CSV with a UTF-8 BOM so Excel opens the Greek correctly                                                             |
+| Route                           | Behaviour                                                                                                                               |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /apply`                   | validate → honeypot → Turnstile (if configured) → rate-limit → **insert into D1** → notify by email (best-effort) → 303 to `/thank-you` |
+| `GET /applications.csv?token=…` | everything received, as CSV with a UTF-8 BOM so Excel opens the Greek correctly                                                         |
 
 **The D1 insert is the commit point.** The notification email is best-effort on
 top of it. If Email Sending is not enabled yet, or a send fails, the row is

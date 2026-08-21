@@ -163,7 +163,7 @@ function applicationForm(c: SiteConfig, o: RenderOptions): string {
 
   <div class="consent">
     <input type="checkbox" id="f-consent" name="consent" value="yes" required${values.consent === 'yes' ? ' checked' : ''}${errors.consent ? ' aria-invalid="true"' : ''}>
-    <label for="f-consent">Διάβασα την <a href="/aporrito">Πολιτική Απορρήτου</a> και κατανοώ ότι θα χρησιμοποιήσετε τα παραπάνω στοιχεία <strong>μόνο</strong> για να απαντήσετε στην αίτησή μου.<span class="req" aria-hidden="true">*</span></label>
+    <label for="f-consent">Διάβασα την <a href="/privacy">Πολιτική Απορρήτου</a> και κατανοώ ότι θα χρησιμοποιήσετε τα παραπάνω στοιχεία <strong>μόνο</strong> για να απαντήσετε στην αίτησή μου.<span class="req" aria-hidden="true">*</span></label>
   </div>
   ${errors.consent ? `<p class="field-error" style="margin-top:-16px;margin-bottom:20px">${esc(errors.consent)}</p>` : ''}
 
@@ -200,8 +200,8 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
     <h1>${esc(copy['hero.title'] ?? '')}</h1>
     <p class="hero__sub">${esc(copy['hero.subtitle'] ?? '')}</p>
     <div class="hero__actions">
-      <a href="#aitisi" class="btn btn--primary btn--lg">${open ? `Κρατήστε μία από τις ${esc(c.offer.spotsTotal)} θέσεις` : 'Λίστα αναμονής'}</a>
-      <a href="#ti-kanei" class="btn btn--ghost btn--lg">Δείτε τι κάνει</a>
+      <a href="#apply" class="btn btn--primary btn--lg">${open ? `Κρατήστε μία από τις ${esc(c.offer.spotsTotal)} θέσεις` : 'Λίστα αναμονής'}</a>
+      <a href="#what-it-does" class="btn btn--ghost btn--lg">Δείτε τι κάνει</a>
     </div>
     <p class="hero__note">${open ? `Ο πρώτος χρόνος δωρεάν για τις ${esc(c.offer.spotsTotal)} πρώτες βιβλιοθήκες. Χωρίς κάρτα, χωρίς δέσμευση.` : 'Οι θέσεις του πρώτου κύκλου συμπληρώθηκαν.'}</p>
   </div></div>
@@ -232,7 +232,7 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
   </div>
 </section>
 
-<section class="alt" id="ti-kanei" aria-labelledby="features-title">
+<section class="alt" id="what-it-does" aria-labelledby="features-title">
   <div class="wrap">
     <div class="section-head">
       <h2 id="features-title">${esc(copy['features.title'] ?? 'Ό,τι χρειάζεται η βιβλιοθήκη σας')}</h2>
@@ -244,7 +244,7 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
   </div>
 </section>
 
-<section id="pos-doulevei" aria-labelledby="how-title">
+<section id="how-it-works" aria-labelledby="how-title">
   <div class="wrap">
     <div class="section-head">
       <h2 id="how-title">Πώς δουλεύει</h2>
@@ -284,7 +284,7 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
   </div>
 </section>
 
-<section class="form-section" id="aitisi" aria-labelledby="apply-title">
+<section class="form-section" id="apply" aria-labelledby="apply-title">
   <div class="wrap">
     <div class="section-head">
       <h2 id="apply-title">${open ? 'Κάντε αίτηση' : 'Λίστα αναμονής'}</h2>
@@ -318,13 +318,13 @@ export function renderThanks(c: SiteConfig, draft?: boolean): string {
   <h2>Αλλάξατε γνώμη;</h2>
   <p>Στείλτε ένα email στο <a href="mailto:${esc(c.identity.privacyEmail)}">${esc(c.identity.privacyEmail)}</a> και διαγράφουμε την αίτησή σας. Δεν χρειάζεται να εξηγήσετε τίποτα, και δεν θα σας ξαναγράψουμε.</p>
   <h2>Στο μεταξύ</h2>
-  <p>Όσο περιμένετε, δείτε <a href="/dynatotites">τι κάνει το Libriant</a> — και, αν έχετε ήδη κατάλογο σε αρχείο, <a href="/metaptosi">πώς γίνεται η μετάπτωση</a>. Αν προκύψει ερώτηση, <a href="/epikoinonia">γράψτε μας</a>.</p>
+  <p>Όσο περιμένετε, δείτε <a href="/features">τι κάνει το Libriant</a> — και, αν έχετε ήδη κατάλογο σε αρχείο, <a href="/migration">πώς γίνεται η μετάπτωση</a>. Αν προκύψει ερώτηση, <a href="/contact">γράψτε μας</a>.</p>
   <p><a href="/">← Επιστροφή στην αρχική</a></p>
 </div></div></div>`;
   return renderShell({
     title: 'Η αίτησή σας στάλθηκε — Libriant',
     description: 'Λάβαμε το αίτημά σας. Επικοινωνούμε μαζί σας μέσα σε δύο εργάσιμες ημέρες.',
-    path: '/efcharistoume',
+    path: '/thank-you',
     body,
     config: c,
     draft,
@@ -355,13 +355,13 @@ export function render404(c: SiteConfig, draft?: boolean): string {
   <h1>Η σελίδα δεν βρέθηκε</h1>
   <p>Ο σύνδεσμος που ακολουθήσατε δεν οδηγεί πουθενά. Δοκιμάστε από την <a href="/">αρχική σελίδα</a>, ή πηγαίνετε κατευθείαν σε ό,τι ψάχνατε:</p>
   <ul>
-    <li><a href="/dynatotites">Δυνατότητες</a> — τι κάνει το Libriant σήμερα</li>
-    <li><a href="/times">Πακέτα και τιμές</a></li>
-    <li><a href="/metaptosi">Μετάπτωση</a> — πώς έρχεται ο κατάλογός σας</li>
-    <li><a href="/asfaleia-dedomenon">Ασφάλεια και προστασία δεδομένων</a></li>
-    <li><a href="/syhnes-erotiseis">Συχνές ερωτήσεις</a></li>
-    <li><a href="/epikoinonia">Επικοινωνία</a></li>
-    <li><a href="/#aitisi">Φόρμα αίτησης</a></li>
+    <li><a href="/features">Δυνατότητες</a> — τι κάνει το Libriant σήμερα</li>
+    <li><a href="/pricing">Πακέτα και τιμές</a></li>
+    <li><a href="/migration">Μετάπτωση</a> — πώς έρχεται ο κατάλογός σας</li>
+    <li><a href="/security">Ασφάλεια και προστασία δεδομένων</a></li>
+    <li><a href="/faq">Συχνές ερωτήσεις</a></li>
+    <li><a href="/contact">Επικοινωνία</a></li>
+    <li><a href="/#apply">Φόρμα αίτησης</a></li>
   </ul>
 </div></div></div>`;
   return renderShell({

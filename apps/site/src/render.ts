@@ -20,11 +20,15 @@ export type SectionItem = {
   title: string;
   body: string;
   icon?: string;
+  /** English anchor, authored with the copy. See `anchor`. */
+  id?: string;
 };
 
 export type Section = {
   type: SectionType;
   heading: string;
+  /** English anchor, authored with the copy. See `anchor`. */
+  id?: string;
   intro?: string;
   body?: string[];
   items?: SectionItem[];
@@ -44,19 +48,21 @@ export type PageContent = {
   sections: Section[];
 };
 
-/** A slug safe for an id attribute, so every section is linkable. */
-function anchor(heading: string): string {
-  return (
-    'a-' +
-    heading
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
-      .replace(/[^\w\s-]/g, '')
-      .trim()
-      .replace(/\s+/g, '-')
-      .slice(0, 48)
-  );
+/**
+ * Section anchors are authored in English alongside the Greek copy, not derived
+ * from it.
+ *
+ * Deriving them looked fine and was not: JavaScript's `\w` is ASCII-only, so
+ * stripping `[^\w\s-]` removed every Greek letter and produced the same empty
+ * id for every heading on the page — 111 duplicates across the site, invalid
+ * HTML, and not one heading linkable. Transliterating instead would have given
+ * Greeklish URLs, which is not what the site's URLs should look like.
+ *
+ * So each section carries an explicit `id`. The fallback exists only to keep a
+ * page renderable while copy is being written.
+ */
+function anchor(s: { id?: string }, i: number): string {
+  return s.id && /^[a-z0-9-]+$/.test(s.id) ? s.id : `section-${i + 1}`;
 }
 
 /**
@@ -91,9 +97,9 @@ function iconMark(name?: string): string {
   return `<span class="feature__icon" aria-hidden="true"><img src="/icons/${name}.svg" alt="" width="22" height="22"></span>`;
 }
 
-function sectionHead(s: Section): string {
+function sectionHead(s: Section, i: number): string {
   return `<div class="section-head">
-      <h2 id="${anchor(s.heading)}">${inline(s.heading)}</h2>
+      <h2 id="${anchor(s, i)}">${inline(s.heading)}</h2>
       ${s.intro ? `<p>${inline(s.intro)}</p>` : ''}
     </div>`;
 }
@@ -154,8 +160,8 @@ function renderSection(s: Section, i: number): string {
       inner = `<div class="faq">
       ${(s.items ?? [])
         .map(
-          (it) => `<div class="faq__item">
-        <h3 id="${anchor(it.title)}">${inline(it.title)}</h3>
+          (it, qi) => `<div class="faq__item">
+        <h3 id="${anchor(it, qi)}">${inline(it.title)}</h3>
         <p>${inline(it.body)}</p>
       </div>`,
         )
@@ -188,7 +194,7 @@ function renderSection(s: Section, i: number): string {
 
   return `<section class="section${alt}">
     <div class="wrap">
-      ${sectionHead(s)}
+      ${sectionHead(s, i)}
       ${inner}
       ${s.footnote ? `<p class="footnote">${inline(s.footnote)}</p>` : ''}
     </div>
@@ -207,8 +213,8 @@ ${page.sections.map(renderSection).join('\n')}
   <div class="wrap">
     <h2>Θέλετε να το δείτε στη βιβλιοθήκη σας;</h2>
     <p>Οι ${config.offer.spotsTotal} πρώτες βιβλιοθήκες παίρνουν το πακέτο ${esc(config.offer.planName)} δωρεάν για ${config.offer.months} μήνες.</p>
-    <p class="hero__actions"><a class="btn btn--primary btn--lg" href="/#aitisi">Κάντε αίτηση</a>
-    <a class="btn btn--ghost" href="/epikoinonia">Ρωτήστε πρώτα</a></p>
+    <p class="hero__actions"><a class="btn btn--primary btn--lg" href="/#apply">Κάντε αίτηση</a>
+    <a class="btn btn--ghost" href="/contact">Ρωτήστε πρώτα</a></p>
   </div>
 </section>`;
 

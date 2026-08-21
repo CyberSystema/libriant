@@ -7,14 +7,14 @@ everything above it is done.
 
 ## Before anything: the site must be live
 
-The email's primary CTA points at `https://libriant.com/#aitisi`. Right now the
+The email's primary CTA points at `https://libriant.com/#apply`. Right now the
 apex **times out** — it still has proxied A records pointing at the deleted
 Hetzner server. Sending before the site is up would send every recipient to a
 broken page, and you only get one first impression per library.
 
 - [ ] `apps/site` deployed and reachable at `libriant.com` (see `apps/site/README.md`)
 - [ ] Submit a real test application yourself and confirm the row lands in D1
-- [ ] `libriant.com/aporrito` and `/oroi-programmatos` both load (the footer links to them)
+- [ ] `libriant.com/privacy` and `/offer-terms` both load (the footer links to them)
 
 ## Sender setup
 

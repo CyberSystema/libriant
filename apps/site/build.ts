@@ -276,7 +276,7 @@ function main(): void {
   // plan cards and comparison grid are generated from the product's own plan
   // definitions instead, so the caps advertised are the caps enforced.
   const contentPages = readJson<PageContent[]>(join(HERE, 'content/pages.json')).map((page) => {
-    if (page.slug !== '/times') return page;
+    if (page.slug !== '/pricing') return page;
     return {
       ...page,
       sections: [
@@ -318,12 +318,12 @@ function main(): void {
 
   const pages: Array<[string, string]> = [
     ['index.html', renderIndex(config, landing, { draft })],
-    ['efcharistoume.html', renderThanks(config, draft)],
+    ['thank-you.html', renderThanks(config, draft)],
     [
-      'aporrito.html',
+      'privacy.html',
       renderDoc(config, {
         title: 'Πολιτική Απορρήτου',
-        path: '/aporrito',
+        path: '/privacy',
         description:
           'Πώς χειριζόμαστε τα στοιχεία που στέλνετε μέσω της φόρμας αίτησης. Χωρίς cookies παρακολούθησης, χωρίς αναλυτικά στοιχεία.',
         html: renderMarkdown(read(join(HERE, 'content/privacy.el.md')), tokens),
@@ -331,10 +331,10 @@ function main(): void {
       }),
     ],
     [
-      'oroi-programmatos.html',
+      'offer-terms.html',
       renderDoc(config, {
         title: 'Όροι προσφοράς',
-        path: '/oroi-programmatos',
+        path: '/offer-terms',
         description: `Τι ακριβώς περιλαμβάνει ο δωρεάν πρώτος χρόνος για τις ${config.offer.spotsTotal} πρώτες βιβλιοθήκες, και τι ισχύει μετά.`,
         html: renderMarkdown(read(join(HERE, 'content/programme-terms.el.md')), tokens),
         draft,
@@ -353,7 +353,7 @@ function main(): void {
   ];
 
   const origin = config.site.origin.replace(/\/$/, '');
-  const urls = ['/', ...contentPages.map((p) => p.slug), '/oroi-programmatos', '/aporrito']
+  const urls = ['/', ...contentPages.map((p) => p.slug), '/offer-terms', '/privacy']
     .map((p) => `  <url><loc>${origin}${p}</loc><lastmod>${lastUpdated}</lastmod></url>`)
     .join('\n');
   pages.push([
