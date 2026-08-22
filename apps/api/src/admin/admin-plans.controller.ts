@@ -41,6 +41,15 @@ class UpdatePlanDto {
 
   @IsOptional()
   @IsString()
+  stripeAnnualPriceId?: string | null;
+
+  /** Null clears the annual option, leaving the plan monthly-only. */
+  @IsOptional()
+  @IsInt()
+  annualPriceCents?: number | null;
+
+  @IsOptional()
+  @IsString()
   currency?: string;
 
   @IsOptional()
@@ -133,6 +142,8 @@ export class AdminPlansController {
     if (dto.description !== undefined) data.description = dto.description;
     if (dto.stripePriceId !== undefined) data.stripePriceId = dto.stripePriceId;
     if (dto.monthlyPriceCents !== undefined) data.monthlyPriceCents = dto.monthlyPriceCents;
+    if (dto.stripeAnnualPriceId !== undefined) data.stripeAnnualPriceId = dto.stripeAnnualPriceId;
+    if (dto.annualPriceCents !== undefined) data.annualPriceCents = dto.annualPriceCents;
     if (dto.currency !== undefined) data.currency = dto.currency;
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
     if (dto.isPublic !== undefined) data.isPublic = dto.isPublic;

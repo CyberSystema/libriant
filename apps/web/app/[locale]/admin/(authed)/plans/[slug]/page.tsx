@@ -15,10 +15,12 @@ type Plan = {
   description: string | null;
   billingMode: 'stripe' | 'manual';
   monthlyPriceCents: number;
+  annualPriceCents: number | null;
   currency: string;
   isActive: boolean;
   isPublic: boolean;
   stripePriceId: string | null;
+  stripeAnnualPriceId: string | null;
   sortOrder: number;
   values: Array<{
     featureKey: string;
@@ -108,10 +110,24 @@ export default async function AdminPlanDetailPage(props: {
               <dd>{plan.billingMode}</dd>
               <dt>Monthly price</dt>
               <dd>{fmtMoney(plan.monthlyPriceCents, plan.currency)}</dd>
-              <dt>Stripe price id</dt>
+              <dt>Stripe price id (monthly)</dt>
               <dd>
                 {plan.stripePriceId ? (
                   <code style={{ fontFamily: 'var(--font-mono)' }}>{plan.stripePriceId}</code>
+                ) : (
+                  '—'
+                )}
+              </dd>
+              <dt>Annual price</dt>
+              <dd>
+                {plan.annualPriceCents != null
+                  ? fmtMoney(plan.annualPriceCents, plan.currency)
+                  : 'not offered annually'}
+              </dd>
+              <dt>Stripe price id (annual)</dt>
+              <dd>
+                {plan.stripeAnnualPriceId ? (
+                  <code style={{ fontFamily: 'var(--font-mono)' }}>{plan.stripeAnnualPriceId}</code>
                 ) : (
                   '—'
                 )}

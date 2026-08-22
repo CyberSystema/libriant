@@ -134,7 +134,9 @@ Stripe Dashboard → Developers → Webhooks → change the endpoint to
 Impact is deferred today (`BILLING_ENABLED=false`, `STRIPE_DRIVER=fake`), but
 Stripe retries for about three days and then drops the event, so this must be
 done before billing is switched on. Send a test event and confirm a 200 in
-`dc logs api`.
+`dc logs api`. The rest of that sequence — two Stripe Prices per plan, and what
+starts being enforced the moment the switch flips — is in
+[billing-go-live.md](billing-go-live.md).
 
 ## Step 7 — Repoint uptime monitors
 

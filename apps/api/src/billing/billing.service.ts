@@ -82,8 +82,11 @@ export class BillingService {
       description: string | null;
       billingMode: BillingMode;
       monthlyPriceCents: number;
+      /** Null when the plan is not offered annually (the free tier). */
+      annualPriceCents: number | null;
       currency: string;
       hasStripePrice: boolean;
+      hasStripeAnnualPrice: boolean;
       isCurrent: boolean;
       sortOrder: number;
     }>
@@ -108,8 +111,10 @@ export class BillingService {
       description: p.description,
       billingMode: p.billingMode,
       monthlyPriceCents: p.monthlyPriceCents,
+      annualPriceCents: p.annualPriceCents,
       currency: p.currency,
       hasStripePrice: !!p.stripePriceId,
+      hasStripeAnnualPrice: !!p.stripeAnnualPriceId,
       isCurrent: p.id === sub?.planId,
       sortOrder: p.sortOrder,
     }));
@@ -245,7 +250,7 @@ export class BillingService {
 
   async startCheckout(
     tenantId: string,
-    input: { planSlug: string; returnPath?: string },
+    input: { planSlug: string; interval?: 'month' | 'year'; returnPath?: string },
   ): Promise<{ url: string; sessionId: string }> {
     await this.assertBillingEnabled();
     const env = loadEnv();
@@ -266,9 +271,13 @@ export class BillingService {
         "That plan is billed manually — contact us and we'll set it up by invoice.",
       );
     }
-    if (!plan.stripePriceId) {
+    const wantsAnnual = input.interval === 'year';
+    const priceId = wantsAnnual ? plan.stripeAnnualPriceId : plan.stripePriceId;
+    if (!priceId) {
       throw new BadRequestException(
-        `Plan "${input.planSlug}" has no Stripe price configured. Ask an admin to fix the plan.`,
+        wantsAnnual
+          ? `Plan "${input.planSlug}" is not offered annually.`
+          : `Plan "${input.planSlug}" has no Stripe price configured. Ask an admin to fix the plan.`,
       );
     }
     if (plan.id === sub.planId && sub.status === 'active') {
@@ -297,7 +306,7 @@ export class BillingService {
 
     return this.stripe.createCheckoutSession({
       customerId,
-      priceId: plan.stripePriceId,
+      priceId,
       successUrl,
       cancelUrl,
       tenantId,
@@ -535,9 +544,16 @@ export class BillingService {
       this.logger.warn(`Webhook: subscription ${payload.id} has no price`);
       return;
     }
-    const plan = await controlDb.plan.findUnique({ where: { stripePriceId: priceId } });
+    // A plan now has TWO Stripe Prices — monthly and annual — because a Stripe
+    // Price is immutable and each interval is its own object. An annual
+    // subscriber's webhook carries the annual id, so matching only the monthly
+    // one would leave their subscription row permanently stale while logging a
+    // warning nobody reads.
+    const plan = await controlDb.plan.findFirst({
+      where: { OR: [{ stripePriceId: priceId }, { stripeAnnualPriceId: priceId }] },
+    });
     if (!plan) {
-      this.logger.warn(`Webhook: no Plan for stripePriceId ${priceId}`);
+      this.logger.warn(`Webhook: no Plan for Stripe price ${priceId}`);
       return;
     }
     const mapStatus: Partial<Record<string, SubscriptionStatus>> = {

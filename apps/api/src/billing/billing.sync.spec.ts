@@ -8,10 +8,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * subscription sync. The fix reads from `items.data[0]` and never builds an
  * Invalid Date.
  */
-const { billingFindFirst, planFindUnique, subUpdate, subUpdateMany, subFindUnique } = vi.hoisted(
+const { billingFindFirst, planFindFirst, subUpdate, subUpdateMany, subFindUnique } = vi.hoisted(
   () => ({
     billingFindFirst: vi.fn(),
-    planFindUnique: vi.fn(),
+    planFindFirst: vi.fn(),
     subUpdate: vi.fn().mockResolvedValue({}),
     subUpdateMany: vi.fn().mockResolvedValue({ count: 0 }),
     // syncStripeSubscription now reads the existing row for the stale-replay
@@ -24,7 +24,9 @@ const { billingFindFirst, planFindUnique, subUpdate, subUpdateMany, subFindUniqu
 vi.mock('@libriant/db-control', () => ({
   controlDb: {
     billingAccount: { findFirst: billingFindFirst },
-    plan: { findUnique: planFindUnique },
+    // The webhook resolves a Stripe price against EITHER cadence (findFirst);
+    // the cancellation downgrade still looks up 'starter' by slug (findUnique).
+    plan: { findFirst: planFindFirst, findUnique: planFindFirst },
     subscription: { update: subUpdate, updateMany: subUpdateMany, findUnique: subFindUnique },
   },
 }));
@@ -72,7 +74,7 @@ function lastUpdateData(): {
 describe('BillingService.syncStripeSubscription (Stripe period shape)', () => {
   beforeEach(() => {
     billingFindFirst.mockReset().mockResolvedValue({ tenantId: 'tnt_1' });
-    planFindUnique.mockReset().mockResolvedValue({ id: 'plan_1' });
+    planFindFirst.mockReset().mockResolvedValue({ id: 'plan_1' });
     subFindUnique.mockReset().mockResolvedValue(null);
     subUpdate.mockClear();
     subUpdateMany.mockClear();
@@ -120,7 +122,7 @@ describe('BillingService.syncStripeSubscription (Stripe period shape)', () => {
 describe('BillingService.handleStripeSubscriptionDeleted (A6-01 stale-delete guard)', () => {
   beforeEach(() => {
     billingFindFirst.mockReset().mockResolvedValue({ tenantId: 'tnt_1' });
-    planFindUnique.mockReset().mockResolvedValue({ id: 'plan_starter', billingMode: 'stripe' });
+    planFindFirst.mockReset().mockResolvedValue({ id: 'plan_starter', billingMode: 'stripe' });
     subFindUnique.mockReset();
     subUpdate.mockClear();
   });

@@ -1,4 +1,4 @@
-import { IsDateString, IsOptional, IsString, Length, Matches } from 'class-validator';
+import { IsDateString, IsIn, IsOptional, IsString, Length, Matches } from 'class-validator';
 
 const PLAN_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/;
 
@@ -7,6 +7,15 @@ export class StartCheckoutDto {
   @IsString()
   @Matches(PLAN_SLUG_RE)
   planSlug!: string;
+
+  /**
+   * Billing cadence. Defaults to monthly so an older client that does not send
+   * it keeps working. Annual is ten months for twelve and is what Greek public
+   * buyers actually contract on.
+   */
+  @IsOptional()
+  @IsIn(['month', 'year'])
+  interval?: 'month' | 'year';
 
   /**
    * Optional path the user should land on after Stripe Checkout completes

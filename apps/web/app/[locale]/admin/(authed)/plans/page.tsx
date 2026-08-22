@@ -14,6 +14,7 @@ type Plan = {
   description: string | null;
   billingMode: 'stripe' | 'manual';
   monthlyPriceCents: number;
+  annualPriceCents: number | null;
   currency: string;
   isActive: boolean;
   isPublic: boolean;
@@ -75,7 +76,15 @@ export default async function AdminPlansPage(props: { params: Promise<{ locale: 
                   </div>
                 </td>
                 <td>{p.billingMode === 'manual' ? 'Manual' : 'Stripe'}</td>
-                <td>{fmtMoney(p.monthlyPriceCents, p.currency)}</td>
+                <td>
+                  {fmtMoney(p.monthlyPriceCents, p.currency)}
+                  {p.annualPriceCents != null ? (
+                    <span style={{ color: 'var(--color-text-muted)' }}>
+                      {' · '}
+                      {fmtMoney(p.annualPriceCents, p.currency)}/yr
+                    </span>
+                  ) : null}
+                </td>
                 <td>{p.values.length}</td>
                 <td>{p.isPublic ? '✓' : '—'}</td>
                 <td>{p.isActive ? '✓' : '—'}</td>

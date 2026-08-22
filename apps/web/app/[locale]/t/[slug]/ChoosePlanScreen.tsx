@@ -5,7 +5,13 @@ import { Asset, Button, Card, PoweredBy, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
-import type { AvailablePlan } from './billing/PlanGrid';
+import {
+  type AvailablePlan,
+  type Cadence,
+  CadenceToggle,
+  anyAnnual,
+  bookableCadence,
+} from './billing/PlanGrid';
 
 type Props = {
   slug: string;
@@ -30,6 +36,7 @@ export function ChoosePlanScreen({ slug, locale, catalog, plans, libraryName }: 
   const router = useRouter();
   const toast = useToast();
   const [busy, setBusy] = React.useState<string | null>(null);
+  const [cadence, setCadence] = React.useState<Cadence>('year');
 
   const fmtMoney = (cents: number, currency: string) =>
     new Intl.NumberFormat(locale, { style: 'currency', currency }).format(cents / 100);
@@ -54,7 +61,10 @@ export function ChoosePlanScreen({ slug, locale, catalog, plans, libraryName }: 
       // Paid plan: off to Stripe Checkout to capture a payment method.
       const { url } = await api<{ url: string; sessionId: string }>(`/t/${slug}/billing/checkout`, {
         method: 'POST',
-        body: { planSlug: plan.slug },
+        // Charge the cadence the card is showing, not the one the reader asked
+        // for — those differ on a plan with no annual price. Send the wrong one
+        // and the card quotes 790 € while Stripe bills 79 €.
+        body: { planSlug: plan.slug, interval: bookableCadence(plan, cadence) },
       });
       window.location.href = url;
     } catch (err) {
@@ -82,60 +92,94 @@ export function ChoosePlanScreen({ slug, locale, catalog, plans, libraryName }: 
             </p>
           </Card>
         ) : (
-          <div className="lbr-choose__grid">
-            {plans.map((plan) => {
-              const isFree = plan.monthlyPriceCents === 0;
-              const isManual = plan.billingMode === 'manual';
-              const bookable = isFree || (plan.billingMode === 'stripe' && plan.hasStripePrice);
-              return (
-                <Card key={plan.id} variant="outlined" className="lbr-choose__card">
-                  <h3 style={{ marginTop: 0 }}>{plan.name}</h3>
-                  <p className="lbr-choose__price">
-                    {isManual ? (
-                      <span style={{ fontSize: 'var(--fs-lg)', color: 'var(--color-text-muted)' }}>
-                        {t('billing.billingMode.manual')}
-                      </span>
-                    ) : isFree ? (
-                      <>{t('billing.free')}</>
-                    ) : (
-                      <>
-                        {fmtMoney(plan.monthlyPriceCents, plan.currency)}
-                        <span className="lbr-choose__per"> {t('billing.perMonth')}</span>
-                      </>
-                    )}
-                  </p>
-                  {plan.description ? <p className="lbr-choose__desc">{plan.description}</p> : null}
-                  <div style={{ marginTop: 'auto', paddingTop: 'var(--sp-3)' }}>
-                    {isManual ? (
-                      <a
-                        href="mailto:hello@libriant.com"
-                        className="lbr-btn lbr-btn--secondary lbr-btn--md"
-                        style={{ width: '100%', textDecoration: 'none' }}
-                      >
-                        {t('billing.actions.contactSales')}
-                      </a>
-                    ) : !bookable ? (
-                      <Button variant="secondary" disabled style={{ width: '100%' }}>
-                        {t('billing.chooser.notBookable')}
-                      </Button>
-                    ) : (
-                      <Button
-                        variant={isFree ? 'secondary' : 'primary'}
-                        style={{ width: '100%' }}
-                        loading={busy === plan.slug}
-                        disabled={busy !== null && busy !== plan.slug}
-                        onClick={() => choose(plan)}
-                      >
-                        {isFree
-                          ? t('billing.chooser.choose', { plan: plan.name })
-                          : t('billing.chooser.subscribe', { plan: plan.name })}
-                      </Button>
-                    )}
-                  </div>
-                </Card>
-              );
-            })}
-          </div>
+          <>
+            {anyAnnual(plans) ? (
+              <CadenceToggle value={cadence} onChange={setCadence} t={t} />
+            ) : null}
+            <div className="lbr-choose__grid">
+              {plans.map((plan) => {
+                const isFree = plan.monthlyPriceCents === 0;
+                const isManual = plan.billingMode === 'manual';
+                const bookable = isFree || (plan.billingMode === 'stripe' && plan.hasStripePrice);
+                // Not `cadence` directly: a plan with no annual price stays
+                // monthly however the toggle is set, and its card must say so.
+                const annual = bookableCadence(plan, cadence) === 'year';
+                return (
+                  <Card key={plan.id} variant="outlined" className="lbr-choose__card">
+                    <h3 style={{ marginTop: 0 }}>{plan.name}</h3>
+                    <p className="lbr-choose__price">
+                      {isManual ? (
+                        <span
+                          style={{ fontSize: 'var(--fs-lg)', color: 'var(--color-text-muted)' }}
+                        >
+                          {t('billing.billingMode.manual')}
+                        </span>
+                      ) : isFree ? (
+                        <>{t('billing.free')}</>
+                      ) : (
+                        <>
+                          {fmtMoney(
+                            annual
+                              ? (plan.annualPriceCents ?? plan.monthlyPriceCents)
+                              : plan.monthlyPriceCents,
+                            plan.currency,
+                          )}
+                          <span className="lbr-choose__per">
+                            {' '}
+                            {annual ? t('billing.perYear') : t('billing.perMonth')}
+                          </span>
+                          {/* The other cadence, so the saving is visible without
+                              flipping the toggle to work it out. */}
+                          {plan.annualPriceCents != null && plan.hasStripeAnnualPrice ? (
+                            <span className="lbr-choose__per" style={{ display: 'block' }}>
+                              {annual
+                                ? t('billing.orPerMonth', {
+                                    price: fmtMoney(plan.monthlyPriceCents, plan.currency),
+                                  })
+                                : t('billing.orPerYear', {
+                                    price: fmtMoney(plan.annualPriceCents, plan.currency),
+                                  })}{' '}
+                              · {t('billing.twoMonthsFree')}
+                            </span>
+                          ) : null}
+                        </>
+                      )}
+                    </p>
+                    {plan.description ? (
+                      <p className="lbr-choose__desc">{plan.description}</p>
+                    ) : null}
+                    <div style={{ marginTop: 'auto', paddingTop: 'var(--sp-3)' }}>
+                      {isManual ? (
+                        <a
+                          href="mailto:hello@libriant.com"
+                          className="lbr-btn lbr-btn--secondary lbr-btn--md"
+                          style={{ width: '100%', textDecoration: 'none' }}
+                        >
+                          {t('billing.actions.contactSales')}
+                        </a>
+                      ) : !bookable ? (
+                        <Button variant="secondary" disabled style={{ width: '100%' }}>
+                          {t('billing.chooser.notBookable')}
+                        </Button>
+                      ) : (
+                        <Button
+                          variant={isFree ? 'secondary' : 'primary'}
+                          style={{ width: '100%' }}
+                          loading={busy === plan.slug}
+                          disabled={busy !== null && busy !== plan.slug}
+                          onClick={() => choose(plan)}
+                        >
+                          {isFree
+                            ? t('billing.chooser.choose', { plan: plan.name })
+                            : t('billing.chooser.subscribe', { plan: plan.name })}
+                        </Button>
+                      )}
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          </>
         )}
 
         {hasPaid ? <p className="lbr-choose__hint">{t('billing.chooser.paidHint')}</p> : null}

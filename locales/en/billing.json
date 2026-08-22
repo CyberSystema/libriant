@@ -47,5 +47,12 @@
   "renewsLabel": "Renews",
   "noPlans": "No plans are configured yet. Ask an admin to seed the plan catalog.",
   "contractPricing": "Contract pricing",
-  "choosePlanGate": "Your library needs to choose a plan before you can continue. Please ask a library admin to set one up."
+  "choosePlanGate": "Your library needs to choose a plan before you can continue. Please ask a library admin to set one up.",
+  "perYear": "/ year",
+  "orPerMonth": "or {price} / month",
+  "twoMonthsFree": "two months free",
+  "chooseAnnual": "Pay yearly",
+  "chooseMonthly": "Pay monthly",
+  "orPerYear": "or {price} / year",
+  "cadenceLabel": "Billing frequency"
 }
