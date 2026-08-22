@@ -92,7 +92,7 @@ Cold email (individual send, personalised subject)
 libriant.com  ← the credibility check; they WILL look you up
    ↓
 Application form (mirrors signup fields exactly)
-   ↓  D1 + email notification
+   ↓  control-plane Postgres + email notification (console driver until a provider is configured)
 Personal reply within 1 working day
    ↓
 20-minute call

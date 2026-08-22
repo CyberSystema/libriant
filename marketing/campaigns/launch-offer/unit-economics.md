@@ -39,7 +39,8 @@ is on file, after which it reverse-charges to €0. Unregistered, add 19%.
 | Domain               | €12          | €12                           |
 | **Total**            | **€258**     | **€650**                      |
 
-Cloudflare is free tier; iCloud mail is already paid for. Infrastructure is
+Cloudflare is DNS + proxy only on the free tier — no Workers, no D1 — and
+iCloud mail is already paid for. Infrastructure is
 **not** the constraint — a 30,000-title tenant database is a few hundred MB, and
 twenty libraries on one box is nothing.
 

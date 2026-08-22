@@ -194,6 +194,16 @@ the trap in §8.
 
 ### The stack
 
+Three hosts, one box. The marketing site adds no process, no port and no
+container — it is static files baked into the Caddy image, which is why an app
+outage leaves it standing.
+
+| Host                 | Serves                                    |
+| -------------------- | ----------------------------------------- |
+| `libriant.com`       | the marketing site + the application form |
+| `app.libriant.com`   | the product                               |
+| `admin.libriant.com` | the admin panel                           |
+
 Docker Compose, from `/srv/libriant/app`, using two overlaid files.
 
 | Service     | Role                                   | Exposed        |
@@ -303,6 +313,7 @@ Two minutes, weekly. Also run it before anything risky and after anything
 unexpected.
 
 ```sh
+curl -sI https://libriant.com | head -1    # marketing site: expect 200
 uptime                                     # load: sustained >8.0 is real trouble
 free -h                                    # available should stay well clear of 0
 df -h / /mnt/libriant                      # both under 80%
@@ -454,7 +465,23 @@ Write down how long it took. That number — not an aspiration — is your real 
 
 Symptom-indexed. Start with the symptom you can see.
 
-### 9.1 The site is down
+### 9.1 Something is down
+
+The marketing site and the app fail **independently**, by design. Establish
+which one you have before diagnosing anything.
+
+```sh
+curl -sI https://libriant.com | head -1        # the marketing site
+curl -sI https://app.libriant.com/healthz      # the app
+```
+
+**Marketing site down, app fine** — `SITE_HOST` unset in `.env.prod` so the
+vhost never matched, or a stale edge image. Check
+`docker compose exec caddy ls /srv/libriant/site/index.html`.
+
+**App down, marketing site fine** — the desired behaviour, not a fault. Read on.
+
+### 9.1.1 The app is down
 
 ```sh
 dc ps                        # is anything Restarting or Exited?
@@ -897,6 +924,9 @@ mdadm --assemble --scan && vgchange -ay && lvs
 3. **`ufw` lies about Docker-published ports.** Verify with `nmap` from outside.
 4. **Never reboot a degraded array** before taking a fresh backup.
 5. **CI `git reset --hard`s the repo.** Host-local edits to tracked files die.
+6. **The marketing site is rebuilt by CI, not on the box.** There is no on-host
+   build command and none should be invented — the host has no Node. Changing
+   marketing copy, or the `spotsRemaining` counter, means a commit.
 
 ---
 

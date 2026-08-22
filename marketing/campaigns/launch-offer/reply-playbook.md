@@ -102,8 +102,9 @@ honour the free year.
 4. **Run their import yourself.** Ask for whatever they have — CSV, Excel, MARC,
    a messy spreadsheet — and do it for them. This is the promise that makes the
    offer real, and it's where you'll learn the most about the product.
-5. **Decrement `offer.spotsRemaining`** in `apps/site/site.config.json` and
-   redeploy the site.
+5. **Decrement `offer.spotsRemaining`** in `apps/site/site.config.json`, commit
+   and push. The site is baked into the edge image, so this is a full CI run
+   rather than the quick deploy it used to be — there is no on-box shortcut.
 6. **Log it** in `prospects.csv` with the date.
 
 ## Keeping the count honest

@@ -5,15 +5,25 @@ everything above it is done.
 
 ---
 
-## Before anything: the site must be live
+## Before anything: the whole server stack must be live
 
-The email's primary CTA points at `https://libriant.com/#apply`. Right now the
-apex **times out** — it still has proxied A records pointing at the deleted
-Hetzner server. Sending before the site is up would send every recipient to a
-broken page, and you only get one first impression per library.
+**This dependency changed, and it is a schedule change rather than a wording
+change.** The campaign used to be sendable off a free Cloudflare deploy that
+needed no server. Everything now runs on the Hetzner box, so the form cannot
+take a single application until Caddy, the api and Postgres are all up and
+verified. Plan the send around the server, not the other way round.
 
-- [ ] `apps/site` deployed and reachable at `libriant.com` (see `apps/site/README.md`)
-- [ ] Submit a real test application yourself and confirm the row lands in D1
+The email's primary CTA points at `https://libriant.com/#apply`. Sending before
+that works puts every recipient on a broken page, and you get one first
+impression per library.
+
+- [ ] The server is built and the stack is deployed — `docs/deployment-hetzner.md`
+- [ ] The cutover is done — `docs/cutover-three-hosts.md`
+- [ ] `libriant.com` returns 200 and renders the Greek home page
+- [ ] Submit a real test application yourself and confirm the row lands:
+      `dc exec -T postgres psql -U libriant -d libriant_control -c 'select id, "libraryName", "createdAt" from applications order by "createdAt" desc limit 1;'`
+- [ ] Submit a deliberately incomplete one and confirm the page comes back with
+      your answers still in the fields — the no-JS path is easy to break unnoticed
 - [ ] `libriant.com/privacy` and `/offer-terms` both load (the footer links to them)
 
 ## Sender setup
@@ -102,7 +112,10 @@ counsel review as the legal drafts in `locales/el/legal/`.
 - [ ] Reply to every response within one working day — the email promises two
 - [ ] Honour every `ΔΙΑΓΡΑΦΗ` **same day**, and add the address to `suppression.csv`
 - [ ] Decrement `offer.spotsRemaining` in `apps/site/site.config.json` for each
-      library you accept, and redeploy. The scarcity claim has to stay true.
+      library you accept. The scarcity claim has to stay true.
+      **This is a commit now, not a twenty-second deploy** — the site is baked
+      into the edge image, so it goes through CI and a full deploy. There is no
+      fast on-box path, by design. Batch acceptances if several land at once.
 - [ ] **One follow-up only**, after 7–10 days, to non-responders. Two or three
       lines, not a resend of the whole email. Then stop — a third message to a
       public institution that has ignored two is not persistence, it's a complaint

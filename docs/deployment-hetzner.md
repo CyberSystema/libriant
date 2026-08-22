@@ -18,11 +18,26 @@ SSH**, so every step here is a short command you can paste.
 | Your tools | **Termius** (SSH) as the main workplace                              |
 | Scale      | a pilot of up to ~20 libraries (tenants)                             |
 
-> This runbook is filled in for **CyberSystema-1**: apex `libriant.com`, admin
-> `admin.libriant.com`, and public IPv4 `178.104.32.176`. Reusing it for a
-> different host? Swap those three values. The app reads the domain from
-> `/srv/libriant/.env.prod` (`PUBLIC_HOST` / `ADMIN_HOST`) at runtime — the repo
-> defaults just mirror it.
+> This runbook is filled in for **CyberSystema-1**, public IPv4
+> `178.104.32.176`. Everything runs on this one box, across three hosts:
+>
+> | Host                 | Serves                           | Variable      |
+> | -------------------- | -------------------------------- | ------------- |
+> | `libriant.com`       | the marketing site, static files | `SITE_HOST`   |
+> | `app.libriant.com`   | the app, `/lbr-api/*`, webhooks  | `PUBLIC_HOST` |
+> | `admin.libriant.com` | the admin panel                  | `ADMIN_HOST`  |
+>
+> **`PUBLIC_HOST` is no longer the apex.** It is the APP host. The registrable
+> domain — which tenant subdomains and the CSRF origin check key off — is
+> `PUBLIC_APEX_DOMAIN`, and it stays `libriant.com`. Confusing those two is the
+> most likely way to break a deploy here.
+>
+> Moving an existing host to this layout is a one-time sequence with two
+> irreversible steps: see **[cutover-three-hosts.md](cutover-three-hosts.md)**.
+>
+> The marketing site adds no process, no port and no container. It is rendered
+> in CI and baked into the Caddy image, because **the host has no Node** —
+> changing marketing copy means a commit, never a command on the box.
 
 **The big idea — backups ARE your recovery.** This is a dedicated machine, so
 there is **no detachable volume and no "Rebuild that keeps your data"**. Both
@@ -384,12 +399,16 @@ re-run, and the deploy workflow runs it again (`--auto`) on every push to fill
 anything missing — meaning a fresh host self-provisions its secrets. The only
 keys you ever touch by hand are the operator settings:
 
-| Key                                                  | What                                                                                     | Default                                                    |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `IMAGE_OWNER`                                        | your GitHub owner/org, **lowercase** (GHCR namespace)                                    | — (asked)                                                  |
-| `ADMIN_BOOTSTRAP_EMAIL` / `ADMIN_BOOTSTRAP_PASSWORD` | first admin login, auto-created on deploy                                                | — (asked)                                                  |
-| `PUBLIC_HOST` / `ADMIN_HOST` / `ACME_EMAIL`          | your domain                                                                              | `libriant.com` / `admin.libriant.com` / `ops@libriant.com` |
-| `STRIPE_DRIVER` / `EMAIL_DRIVER`                     | `fake` / `console` for a trial; flip to `real` / `smtp` (+ keys / `SMTP_URL`) to go live | `fake` / `console`                                         |
+| Key                                                  | What                                                                                     | Default                                   |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `IMAGE_OWNER`                                        | your GitHub owner/org, **lowercase** (GHCR namespace)                                    | — (asked)                                 |
+| `ADMIN_BOOTSTRAP_EMAIL` / `ADMIN_BOOTSTRAP_PASSWORD` | first admin login, auto-created on deploy                                                | — (asked)                                 |
+| `PUBLIC_HOST` — the APP host, **not** the apex       | where the product is served                                                              | `app.libriant.com`                        |
+| `SITE_HOST`                                          | where the marketing site is served                                                       | `libriant.com`                            |
+| `PUBLIC_APEX_DOMAIN`                                 | the registrable domain: tenant subdomains + the CSRF origin check derive from it         | `libriant.com`                            |
+| `ADMIN_HOST` / `ACME_EMAIL`                          | admin panel, ACME contact                                                                | `admin.libriant.com` / `ops@libriant.com` |
+| `HASH_PEPPER`                                        | peppers the IP hash behind the application form's throttle — `openssl rand -hex 32`      | generated by `ensure-env.sh`              |
+| `STRIPE_DRIVER` / `EMAIL_DRIVER`                     | `fake` / `console` for a trial; flip to `real` / `smtp` (+ keys / `SMTP_URL`) to go live | `fake` / `console`                        |
 
 Everything else (the random secrets, `COMPOSE_PROJECT_NAME`,
 `LIBRIANT_DATA_ROOT`, `IMAGE_TAG`, …) is filled automatically. See
@@ -639,6 +658,13 @@ STORAGE_DIR=/mnt/libriant/storage \
 ```
 
 ---
+
+> **Applications are covered by the nightly backup with no extra wiring.** They
+> live in `libriant_control`, which `pg_dumpall` already dumps whole. On
+> Cloudflare D1 they were backed up by nothing at all. Two things are
+> deliberately NOT backed up and do not need to be: the built marketing site
+> (regenerated from the edge image on every deploy) and `spotsRemaining` (which
+> is tracked in git).
 
 ## Part 12 — Verify
 
@@ -988,11 +1014,13 @@ Escalation order, cheapest first: **rescue → vKVM → KVM console.**
 
 ### D. Troubleshooting
 
-| Symptom                     | Check                                                                                                                                                                                                                                                                                   |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Containers won't start      | Is the volume mounted? `df -h /mnt/libriant`                                                                                                                                                                                                                                            |
-| No TLS / cert errors (5xx)  | Cloudflare SSL mode = **Full (strict)**? Origin cert present at `/mnt/libriant/caddy/origin/`? `dc logs caddy`                                                                                                                                                                          |
-| Public URL returns **403**  | Cloudflare _managed challenge_ (browsers fine, `curl` blocked). Lower Security Level / Bot Fight Mode, or add a `/healthz` Skip rule (Part 7.5). Origin itself: `curl -sko /dev/null -w '%{http_code}' --resolve $PUBLIC_HOST:443:127.0.0.1 https://$PUBLIC_HOST/healthz` should be 200 |
-| `api` not ready             | `dc logs api`; is Postgres healthy in `dc ps`?                                                                                                                                                                                                                                          |
-| Out of memory during backup | swap on? (`free -h`); or grow the box (Part 15)                                                                                                                                                                                                                                         |
-| Stripe state stale          | webhook secret set + endpoint reachable? (Part 10)                                                                                                                                                                                                                                      |
+| Symptom                                   | Check                                                                                                                                                                                                                                                                                   |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Containers won't start                    | Is the volume mounted? `df -h /mnt/libriant`                                                                                                                                                                                                                                            |
+| No TLS / cert errors (5xx)                | Cloudflare SSL mode = **Full (strict)**? Origin cert present at `/mnt/libriant/caddy/origin/`? `dc logs caddy`                                                                                                                                                                          |
+| Marketing site 404s or is blank, app fine | `SITE_HOST` unset in `.env.prod` so the vhost never matched, or the edge image is stale. `docker compose $FILES exec caddy ls /srv/libriant/site/index.html`                                                                                                                            |
+| App down, marketing site fine             | Working as designed — the site is files inside Caddy and does not depend on api or web. `MAINTENANCE_HARD=true` blacks out only the vhosts importing `maintenance_takeover`, which the site vhost deliberately does not                                                                 |
+| Public URL returns **403**                | Cloudflare _managed challenge_ (browsers fine, `curl` blocked). Lower Security Level / Bot Fight Mode, or add a `/healthz` Skip rule (Part 7.5). Origin itself: `curl -sko /dev/null -w '%{http_code}' --resolve $PUBLIC_HOST:443:127.0.0.1 https://$PUBLIC_HOST/healthz` should be 200 |
+| `api` not ready                           | `dc logs api`; is Postgres healthy in `dc ps`?                                                                                                                                                                                                                                          |
+| Out of memory during backup               | swap on? (`free -h`); or grow the box (Part 15)                                                                                                                                                                                                                                         |
+| Stripe state stale                        | webhook secret set + endpoint reachable? (Part 10)                                                                                                                                                                                                                                      |
