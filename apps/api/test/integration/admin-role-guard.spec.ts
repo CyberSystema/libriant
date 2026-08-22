@@ -10,6 +10,7 @@ import { controlDb } from '@libriant/db-control';
 import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { RedisService } from '../../src/platform/redis.service.js';
+import { PlatformSettingsService } from '../../src/platform-settings/platform-settings.service.js';
 
 /**
  * Regression guard for the AdminRolesGuard DI bug.
@@ -30,6 +31,7 @@ let app: NestExpressApplication;
 let adminEmail: string;
 const adminPassword = 'role-guard-test-pw-1';
 let adminCookie = '';
+let settings: PlatformSettingsService;
 
 function adminCookieFrom(res: request.Response): string {
   const raw = res.headers['set-cookie'] as unknown as string[] | string | undefined;
@@ -51,6 +53,7 @@ beforeAll(async () => {
   await app.init();
 
   const redis = app.get(RedisService);
+  settings = app.get(PlatformSettingsService);
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     if (await redis.ping()) break;
@@ -82,6 +85,20 @@ beforeAll(async () => {
 afterAll(async () => {
   // Clean up so re-runs + sibling specs aren't polluted (the owner toggle
   // below writes the global billing switch).
+  //
+  // Deleting the row is NOT enough, and getting this wrong is expensive.
+  // PlatformSettingsService caches the resolved switch in Redis for 30s under
+  // a single global key. The toggle below leaves that cache holding 'false';
+  // deleting the row behind the service's back does not touch it, so for the
+  // remaining TTL every sibling spec — in its own process, sharing this Redis
+  // — reads billingEnabled false. EffectivePlanService then hands out
+  // unlimitedPlan(), which turns EVERY bool feature on, so any test asserting
+  // a closed plan gate sees the gate open. Measured: one poisoned run leaked
+  // across six spec files and 25 seconds, and surfaced as import-api.spec.ts
+  // getting 201 instead of 402 roughly one run in ten.
+  //
+  // So restore through the service that owns both halves, then drop the row.
+  await settings.setBillingEnabled(true).catch(() => undefined);
   await controlDb.platformSetting
     .deleteMany({ where: { key: { contains: 'billing' } } })
     .catch(() => undefined);

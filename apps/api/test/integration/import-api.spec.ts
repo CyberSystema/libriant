@@ -106,6 +106,15 @@ describe('bulk import API + worker', () => {
   let batchId = '';
 
   it('blocks upload when bulk_import_enabled is off (402)', async () => {
+    // State the precondition rather than assume it. This assertion exists
+    // because the test spent months failing as a bare "expected 201 to be 402",
+    // which tells you nothing: the real cause was a sibling spec leaving the
+    // global billing switch cached as false, which makes EffectivePlanService
+    // return unlimitedPlan() and opens every gate. Assert the gate is shut
+    // before proving the route respects it, so a future regression names itself.
+    const before = await effective.getEffectivePlan(tenantId);
+    expect(before.features.bulk_import_enabled).toMatchObject({ value: false });
+
     const res = await auth(request(app.getHttpServer()).post(base()))
       .field('entityKind', 'book')
       .attach('file', Buffer.from('Title,ISBN\nDune,9780441013593\n'), 'books.csv');

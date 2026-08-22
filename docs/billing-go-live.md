@@ -76,6 +76,29 @@ STRIPE_API_KEY=sk_live_...
 STRIPE_WEBHOOK_SECRET=whsec_...
 ```
 
+## Never change the switch with SQL
+
+The switch resolves in three steps: a Redis key (`platform_setting:billing.enabled`,
+30-second TTL, shared by every instance), then the `platform_settings` row,
+then `BILLING_ENABLED` from the environment. Only
+`PlatformSettingsService.setBillingEnabled()` — what the admin panel calls —
+writes the row _and_ drops the cache.
+
+Editing or deleting that row in psql therefore does not take effect for up to
+30 seconds, and if you delete it the cache keeps serving the value you just
+removed. This is not theoretical: it is exactly how the integration suite was
+failing intermittently — a spec toggled the switch off, deleted the row
+directly, and left the cache holding `false`, which silently opened every plan
+gate in six subsequent test processes for 25 seconds.
+
+**Flip it from the admin panel, or through the API** — never with SQL. If you
+already have, `DEL` the Redis key or wait out the TTL.
+
+The reason this matters more than a normal caching wrinkle: a `false` here does
+not fail closed. `EffectivePlanService` answers a disabled switch with
+`unlimitedPlan()`, which turns every boolean feature on and every cap off. A
+wrong `false` is not an outage you notice — it is every limit silently gone.
+
 ## Before you flip it: limits start biting that second
 
 `unlimitedPlan()` is what has been answering every quota question so far. The
