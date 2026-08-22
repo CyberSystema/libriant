@@ -334,7 +334,7 @@ services:
       retries: 10
 
   pgbouncer:
-    image: edoburu/pgbouncer:v1.24.1-p1
+    image: edoburu/pgbouncer:v1.25.2-p0
     <<: [*restart, *logging]
     mem_limit: ${PGBOUNCER_MEM_LIMIT:-256m}
     cpus: ${PGBOUNCER_CPUS:-0.5}
@@ -359,7 +359,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     <<: [*restart, *logging]
     mem_limit: ${REDIS_MEM_LIMIT:-512m}
     cpus: ${REDIS_CPUS:-1}

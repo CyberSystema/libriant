@@ -31,7 +31,7 @@ services:
       retries: 10
 
   pgbouncer:
-    image: edoburu/pgbouncer:v1.24.1-p1
+    image: edoburu/pgbouncer:v1.25.2-p0
     container_name: libriant-pgbouncer
     restart: unless-stopped
     depends_on:
@@ -50,7 +50,7 @@ services:
       - '6432:5432'
 
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     container_name: libriant-redis
     restart: unless-stopped
     command: ['redis-server', '--appendonly', 'yes']
