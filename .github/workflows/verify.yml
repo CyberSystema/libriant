@@ -253,7 +253,7 @@ jobs:
               (SELECT count(*) FROM plan_feature_values);
           " | tr -d ' ')
           echo "Counts: $COUNTS"
-          [ "$COUNTS" = "1,15,5,75" ] || { echo "Expected 1,15,5,75 — seed drifted"; exit 1; }
+          [ "$COUNTS" = "1,15,6,90" ] || { echo "Expected 1,15,6,90 — seed drifted"; exit 1; }
 
       - name: Re-run seed (must remain idempotent)
         run: pnpm db:seed
@@ -270,7 +270,35 @@ jobs:
               (SELECT count(*) FROM plan_feature_values);
           " | tr -d ' ')
           echo "Counts: $COUNTS"
-          [ "$COUNTS" = "1,15,5,75" ] || { echo "Seed is not idempotent"; exit 1; }
+          [ "$COUNTS" = "1,15,6,90" ] || { echo "Seed is not idempotent"; exit 1; }
+
+      # Schema migrations are NOT replay-safe and are not meant to be — Prisma
+      # runs each exactly once. Data migrations are different: one that upserts
+      # seeded rows can look fine on the first run and duplicate or drift on the
+      # second, and nothing else here would notice. `ON CONFLICT` is the precise
+      # marker for that class, so any future data migration joins this gate on
+      # its own.
+      - name: Replay data migrations (must be idempotent)
+        run: |
+          set -euo pipefail
+          export PGPASSWORD=libriant
+          Q="SELECT p.slug, p.\"monthlyPriceCents\", p.\"annualPriceCents\", p.\"stripePriceId\",
+                    p.\"stripeAnnualPriceId\", p.\"sortOrder\", p.id,
+                    v.\"featureKey\", v.\"valueInt\", v.\"valueBool\"
+             FROM plans p LEFT JOIN plan_feature_values v ON v.\"planId\" = p.id
+             ORDER BY p.slug, v.\"featureKey\";"
+          psql -h localhost -U libriant -d libriant_control -t -A -F',' -c "$Q" > /tmp/plans-before.csv
+          FOUND=0
+          for f in $(grep -l 'ON CONFLICT' packages/db-control/prisma/migrations/*/migration.sql); do
+            echo "replaying $f"
+            FOUND=1
+            psql -h localhost -U libriant -d libriant_control -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+          [ "$FOUND" = "1" ] || { echo "No data migrations matched — the grep marker has drifted"; exit 1; }
+          psql -h localhost -U libriant -d libriant_control -t -A -F',' -c "$Q" > /tmp/plans-after.csv
+          diff /tmp/plans-before.csv /tmp/plans-after.csv \
+            || { echo "A data migration is not idempotent — plan state changed on replay"; exit 1; }
+          echo "Data migrations are replay-safe."
 
       - name: Apply tenant migration to libriant_demo
         run: pnpm tenant:migrate:deploy

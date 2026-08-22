@@ -91,6 +91,12 @@ async function seedPlans() {
         billingMode: seed.billingMode as BillingMode,
         stripePriceId: seed.stripePriceId,
         monthlyPriceCents: seed.monthlyPriceCents,
+        // Both cadences, or a freshly seeded database comes up with NULL annual
+        // pricing: the API reports hasStripeAnnualPrice false, the web clients
+        // hide the yearly/monthly toggle, and the annual price libriant.com
+        // advertises is unbuyable — with no error anywhere.
+        stripeAnnualPriceId: seed.stripeAnnualPriceId ?? null,
+        annualPriceCents: seed.annualPriceCents ?? null,
         currency: seed.currency,
         isPublic: seed.isPublic,
         sortOrder: seed.sortOrder,
