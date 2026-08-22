@@ -242,24 +242,24 @@
       },
       {
         "type": "prose",
-        "heading": "Why we start with five libraries",
         "id": "why-five",
+        "heading": "Why we start with five libraries",
         "body": [
           "The number is not a scarcity trick. It is how many migrations one person can do properly within a few months, when each one means looking at your file, matching your columns, running a trial, sending back the rows with problems and going through them again with you.",
           "Five libraries using the system every day tell us more than 50 accounts that open, get tried for a week and are forgotten. And five is few enough that we can answer each one as though it were the only one — because in practice it will be.",
-          "Places are given in order of application, and we answer every application within two working days, yes or no. If they fill up before you get there, nothing closes except the offer: Libriant stays available on its normal plans, from the free Starter plan for a very small collection up to the subscription plans, which start at €19 a month."
+          "Places are given in order of application, and we answer every application within two working days, yes or no. If they fill up before you get there, nothing closes except the offer: Libriant stays available on its normal plans, from the free Starter plan, which covers a whole school library, up to the subscription plans, which start at €390 a year."
         ]
       },
       {
         "type": "list",
-        "heading": "What “founding library” means",
         "id": "founding-library",
+        "heading": "What “founding library” means",
         "intro": "The term appears in several places on this site, so let it be defined precisely. A founding library is each of the first five libraries to go live with Libriant. What it means in practice:",
         "items": [
           {
             "icon": "plus",
             "title": "The Municipal plan for twelve months, at no charge",
-            "body": "No card details, no automatic renewal and no payment paperwork, because there is no charge. It does not mean that you will then be paying €79 a month: at the end of the year you choose the plan that fits the size of your library, and plans start at €19 a month."
+            "body": "No card details, no automatic renewal and no payment paperwork, because there is no charge. Municipal is the €790 a year plan, with room for 60,000 titles and 25 staff seats. It does not mean that from the second year you pay that amount: at the end of the year you choose the plan that fits the size of your library, and the subscription plans start at €390 a year."
           },
           {
             "icon": "loan",
@@ -304,7 +304,7 @@
   {
     "slug": "/en/pricing",
     "title": "Plans and pricing — Libriant",
-    "metaDescription": "Four plans with the price written down: free, €19, €79 and €249 a month. See the limits, what each plan includes, and how titles are counted.",
+    "metaDescription": "Five plans with the price written down: free, €390, €790, €1,190 and €1,890 a year — or monthly, if that suits you better. See the limits and how titles are counted.",
     "h1": "Plans and pricing",
     "lede": "The price is written here. You do not have to ask for a quotation to find out what Libriant costs for a library the size of yours.",
     "sections": [
@@ -314,32 +314,37 @@
         "intro": "Two numbers decide the plan: how many titles your catalogue holds, and how many people need a staff seat of their own. Find the row that describes your library.",
         "columns": ["If you have…", "Plan", "Price"],
         "rows": [
-          ["up to 500 titles and up to 100 members, run by one person", "Starter", "Free"],
+          ["up to 5,000 titles — a school or very small library", "Starter", "Free"],
           [
-            "up to 5,000 titles and up to 1,000 members, with two or three staff",
+            "up to 20,000 titles — a community, local or special library",
             "Community",
-            "€19 a month"
+            "€390 a year"
           ],
           [
-            "up to 30,000 titles and up to 7,500 members, with a team of up to ten",
+            "up to 60,000 titles — a municipal library with daily traffic",
             "Municipal",
-            "€79 a month"
+            "€790 a year"
           ],
           [
-            "up to 200,000 titles and up to 50,000 members, with a team of up to thirty",
+            "up to 150,000 titles — a central municipal or public library",
+            "Central",
+            "€1,190 a year"
+          ],
+          [
+            "up to 400,000 titles — an academic or very large collection",
             "Institutional",
-            "€249 a month"
+            "€1,890 a year"
           ]
         ],
-        "footnote": "Between two of them? Start with the smaller one. You change plan from “Plan & billing” and it takes effect straight away — nothing is lost and nothing has to be set up again.",
+        "footnote": "Between two? Start with the smaller — you change plan from «Πλάνο & χρεώσεις» and it takes effect immediately. Titles are what decide your plan; members and staff seats are set high enough that they will not push you into a larger one. Prices are annual and you gain two months: €390 rather than €468, €790 rather than €948. Monthly is available if you prefer it.",
         "id": "what-size-are-you"
       },
       {
         "type": "callout",
         "heading": "The first five libraries pay nothing for twelve months",
         "body": [
-          "You get the whole Municipal plan — the €79 a month row in the table above — for a year, with no charge, no card and no automatic renewal.",
-          "That does not mean you pay €79 afterwards. At the end of the year you choose the plan that suits the size of your library. Plans start at €19 a month, and for very small collections there is a free plan. The five founding libraries also keep a permanent discount.",
+          "You get the whole Municipal plan — the €790 a year row in the table above — for a year, with no charge, no card and no automatic renewal.",
+          "That does not mean you pay €790 afterwards. At the end of the year you choose the plan that suits the size of your library. Plans with a subscription start at €390 a year, which is €39 a month, and for a collection of up to 5,000 titles Starter is free and does not expire. The five founding libraries also keep a permanent discount.",
           "Because nothing is charged, you do not need a committed budget line or an award decision to begin — and twelve months gives you time to put it into next year’s budget."
         ],
         "footnote": "The five places go in the order the applications arrive. The full terms are in the offer terms.",
@@ -421,12 +426,12 @@
             "body": "Archived members do not count — their loan history stays where it is."
           },
           {
-            "title": "Deactivated staff accounts",
-            "body": "Deactivated staff accounts do not hold a seat. Only active accounts count."
+            "title": "Staff seats",
+            "body": "Staff seats do not decide your plan: there are three on the free Starter and ten on Community, and deactivated accounts do not hold a seat. What decides the plan is titles."
           },
           {
             "title": "Custom fields, per record type",
-            "body": "Custom fields are counted per record type. There are six types: book, copy, member, loan, hold, fine. On Starter the three fields apply to each type separately, not three in total."
+            "body": "Custom fields are counted per record type. There are six types: book, copy, member, loan, hold, fine. On Starter the five fields apply to each type separately, not five in total."
           },
           {
             "title": "If you reach a limit",
@@ -434,7 +439,7 @@
           },
           {
             "title": "Prices and charging",
-            "body": "Prices are in euros, per month. Nothing is being charged at present. Before the first charge you will have the full commercial and pricing details in writing, so your finance office can go through them in its own time."
+            "body": "Prices are in euros and written by the year, because a Greek library awards its contract by the year. Every plan with a subscription can also be paid monthly; twelve monthly payments cost two months more than the annual price. Nothing is being charged at present. Before the first charge you will have the full commercial details and the billing terms in writing, so your finance office can go through them in its own time."
           }
         ],
         "id": "how-limits-are-counted"
@@ -455,15 +460,15 @@
         "items": [
           {
             "title": "A written quotation with a cost breakdown",
-            "body": "What the plan includes, what it costs per month and per year, and what is not included."
+            "body": "What the plan includes, what it costs a year and what it costs a month, and what is not included. The annual figure comes first, because that is the one that goes into the award decision."
           },
           {
             "title": "A technical description of the service",
             "body": "What the software does, where the data is hosted, which roles exist and how data is exported — in a form that goes into a proposal without having to be rewritten."
           },
           {
-            "title": "Paying once a year instead of monthly",
-            "body": "For libraries that do not pay by card. Arranged between us."
+            "title": "Annual payment, with two months free",
+            "body": "Paying once a year is the standard and it is the cheaper one: ten months instead of twelve, so €390 instead of €468 on Community and €790 instead of €948 on Municipal. One expense a year, not twelve. If your office pays monthly instead, that works too."
           },
           {
             "title": "A Data Processing Agreement",
@@ -483,12 +488,12 @@
         "items": [
           {
             "title": "Do we have to ask for a quotation to learn the price?",
-            "body": "No. The price is written here: free, €19, €79 or €249 a month, with the limits next to it. You know what it costs before you speak to us, and you can print it and show it to your management without having asked anyone for anything.",
+            "body": "No. The price is written here: free, €390, €790, €1,190 or €1,890 a year, with the limits next to it. If your office pays monthly, the same plans are €39, €79, €119 and €189 a month. You know what it costs before you speak to us, and you can print it and show it to your management without having asked anyone for anything.",
             "id": "do-we-need-a-quote"
           },
           {
             "title": "Do copies count, or titles?",
-            "body": "Titles. Ten copies of the same book are one title. Archived titles and archived members do not count at all, and deactivated staff accounts do not hold a seat. A library with 4,000 titles and 12,000 copies fits inside Community.",
+            "body": "Titles. Ten copies of the same book are one title. Archived titles and archived members do not count at all, and deactivated staff accounts do not hold a seat. A library with 4,000 titles across 12,000 copies fits entirely inside the free Starter; a library with 18,000 titles across 45,000 copies fits inside Community.",
             "id": "copies-or-titles"
           },
           {
@@ -498,12 +503,12 @@
           },
           {
             "title": "Why pay, when ABEKT is free?",
-            "body": "ABEKT is the software many Greek libraries have run for years, and the comparison no longer holds in that form. ABEKT 5.6 is no longer distributed — abekt.gr says so itself. Its successor, openABEKT, is a service with an annual subscription, and you learn the price after you ask. So the choice is not between free and paid; it is between a price you cannot see and a price written on this page. And if your library is small, Starter is free and does not expire: 500 titles, 100 members, one staff seat — a system that works, not a 14-day trial. One more thing, so you do not lose time over it: if what you need is a public catalogue for readers at national level, openABEKT is the right answer and we will tell you so plainly. Libriant is the tool for the staff.",
+            "body": "ABEKT is the software many Greek libraries have run for years, and the comparison no longer holds in that form. ABEKT 5.6 is no longer distributed — abekt.gr says so itself. Its successor, openABEKT, is a service with an annual subscription, and you learn the price after you ask. So the choice is not between free and paid; it is between a price you cannot see and a price written on this page. And for a great many Greek libraries our price is nothing at all: Starter gives you 5,000 titles, 1,500 members and three staff accounts, free and with no expiry date. A typical Greek school library holds 2,000 to 6,000 items — fewer titles again, since copies do not count — and is kept by one or two people. It fits inside the free plan whole: catalogue, lending and the member register, with nothing to pay and no 14-day trial. You start paying when your collection grows past that size, not before. One more thing, so you do not lose time over it: if what you need is a public catalogue for readers at national level, openABEKT is the right answer and we will tell you so plainly. Libriant is the tool for the staff.",
             "id": "why-pay-when-abekt-is-free"
           },
           {
             "title": "We already have a catalogue in a file. Do we have to type it in again from the beginning?",
-            "body": "No. Bulk import from CSV, Excel or MARC is in every plan with a subscription, from Community at €19 upwards, and you run it yourself from your library’s settings. Before anything is written you run a dry run and see exactly what will go in and which rows have a problem. On the free Starter, bulk import is not included: there you generate a support code, send it to us, and we run the migration. Either way, send us your file first — we look at it and tell you what is in it and what would come across cleanly.",
+            "body": "No. Bulk import from CSV, Excel or MARC is in every plan with a subscription, from Community at €390 a year upwards, and you run it yourself from your library’s settings. Before anything is written you run a dry run and see exactly what will go in and which rows have a problem. On the free Starter, bulk import is not included: there you generate a support code, send it to us, and we run the migration. Either way, send us your file first — we look at it and tell you what is in it and what would come across cleanly.",
             "id": "existing-catalogue-file"
           },
           {
@@ -520,6 +525,11 @@
             "title": "If we leave, do we take our data with us?",
             "body": "All of it, whenever you want, without asking us. One button downloads your library’s database as CSV, Excel, JSON or a full PostgreSQL dump that restores exactly as it stands. It is in every plan, including the free one, from the first day — it is not the privilege of an expensive plan and it does not pass through us. One clarification so it does not catch you out: the export does not produce MARC. We read MARC on import; we do not write it on export.",
             "id": "take-our-data"
+          },
+          {
+            "title": "Does it work out cheaper to pay once a year?",
+            "body": "Yes. The annual price is ten months instead of twelve — two months free: €390 instead of €468, €790 instead of €948, €1,190 instead of €1,428, €1,890 instead of €2,268. That is why the annual figure is the one we write first: it is the number that goes into the award decision. And one payment a year means one expense to approve and one line in the budget rather than twelve, which is how a municipality or a school closes its year in any case. If monthly payment suits you better, it stays available on every plan with a subscription.",
+            "id": "annual-or-monthly"
           }
         ],
         "id": "pricing-questions"
@@ -1056,45 +1066,46 @@
     "sections": [
       {
         "type": "callout",
-        "heading": "Two misconceptions, up front",
         "id": "two-misconceptions",
+        "heading": "Two misconceptions, up front",
         "body": [
-          "If you are reading this from a school library of a few hundred titles, looked after by one person between lessons: your library is not too small for Libriant. The free Starter plan gives you a catalogue, members and loans for 500 titles, 100 members and one staff seat — it is not a trial period and it does not expire. We do not ask for card details, and you do not have to talk to anyone to find out what it costs.",
+          "If you are reading this from a school library of a few thousand titles, looked after by one person between lessons: your library is not too small for Libriant — most likely it fits inside the free plan whole. Starter gives you a catalogue, members and loans for 5,000 titles, 1,500 members and three staff seats. A typical Greek school library holds 2,000 to 6,000 items, and titles are fewer than items because copies of the same book count once — so most school libraries in the country sit inside the free plan and never pay anything. It is not a trial period and it does not expire. We do not ask for card details, and you do not have to talk to anyone to find out what it costs.",
           "If you are reading this from a municipal IT department or from an institution’s management: this is not an experimental tool. Each library has its own separate database, data is hosted inside the European Union, permissions are set by three roles, changes to members, loans and settings are recorded with the before and the after, and your library’s entire database downloads with one button whenever you want. What exactly holds true, together with its limits, is on [Security and data protection](/en/security).",
           "One thing holds in both cases: Libriant is the staff’s tool. There is no public catalogue for readers, and members do not sign in anywhere. If that is what you are looking for, the last section of this page tells you where to look instead."
         ]
       },
       {
         "type": "prose",
-        "heading": "What is the same, whichever type you are",
         "id": "what-is-the-same",
+        "heading": "What is the same, whichever type you are",
         "body": [
-          "The type of library is declared on the application form and goes onto the library profile. It does not change the screens, it does not unlock or lock features, and it does not set the price. The plan is decided by two numbers: how many titles your catalogue holds, and how many people need a staff seat of their own.",
+          "The type of library is declared on the application form and goes onto the library profile. It does not change the screens, it does not unlock or lock features, and it does not set the price. The plan is decided mainly by one number: how many titles your catalogue holds. Members and staff seats are set high enough on every plan that they will not move you up a step.",
           "The core is the same everywhere, including on the free plan: a catalogue of titles and copies, a member register, loans, returns, renewals, fines, detail pre-fill from an ISBN, custom fields of your own, Greek and English, your own logo, an activity log, and export of all your data whenever you want it.",
           "Four things are absent from the free Starter and present in every plan with a subscription: holds with a queue, email notices to members, bulk file import, and the desktop app. Everything else is described in [Features](/en/features), and the limits line by line in [Pricing](/en/pricing)."
         ]
       },
       {
         "type": "prose",
-        "heading": "School library",
         "id": "school",
+        "heading": "School library",
         "body": [
           "The day is not continuous. The library opens at break, again after the last lesson, and the work is done by one person who also teaches. Loans arrive in bursts, a whole class at once, and the catalogue grows from donations and from an order that lands once a year. The big moment is June, when everything has to come back before the school closes.",
           "Four things from Libriant count here. Barcode scanning with the device camera, where the browser supports it (Firefox does not today), so that the desk is where you are and not where a computer happens to be. Entering records by hand, which is an equal path and not a fallback: ISBN lookup goes to OpenLibrary, and while an English-language edition is usually there, Greek-published school books frequently are not, so the search will come back empty. A custom “class” field on the member record, so that the class a child belongs to sits next to their name. And the list of overdue loans, which in June is the whole of the last week’s work.",
-          "The size: for up to 500 titles, 100 members and one person, the free Starter is enough. A school library with 1,200 titles is already past that limit and goes to Community — €19 a month, up to 5,000 titles, 1,000 members and three staff seats. One seat does not mean one person carrying everything; it means the one person already carrying it does not have to pay in order to have a system.",
+          "The size: the free Starter covers 5,000 titles, 1,500 members and three staff seats, and a typical Greek school library holds 2,000 to 6,000 items — which means fewer titles than items, since copies of the same book count once. A collection of 1,200 titles, for instance, sits comfortably inside it with room to grow for years. Most school libraries in the country will never pay, and that is not an offer; it is how the limit was written. The three seats mean the person who keeps the library can also give a seat to whoever covers for them, without changing plan.",
+          "What takes a school library off the free plan is rarely its size. More often it is a school complex cataloguing more than one unit in the same catalogue, or the need for holds with a queue, for bulk import you run yourself, and for the desktop app — three of the four things absent from Starter that matter in a school. The next step up is Community: €390 a year, or €39 a month if monthly billing suits you better, with 20,000 titles, 5,000 members and ten staff seats.",
           "If a catalogue already exists in a spreadsheet: bulk import is not included in the free plan. There you generate a support code, send it to us, and we run the migration. From Community upwards you run it yourself from your library’s settings, after a dry run has first shown you what would go in. The steps are on [Migration](/en/migration).",
           "For schools that teach in English and for foreign-language schools: the whole application exists in both languages, and each staff member chooses their own."
         ]
       },
       {
         "type": "prose",
-        "heading": "Community library",
         "id": "community",
+        "heading": "Community library",
         "body": [
           "Open certain hours a week, often with volunteers who change shift and who do not all have the same relationship with a computer. The collection grows mostly from donations, so cataloguing happens in batches — a box of books that has to go in at some point. The members are neighbours, and the library answers to an association or to a community that asks where the books went.",
           "Three things from Libriant count here. The Volunteer role, which sees the catalogue, members and loans without changing anything, so that someone can help at the shelves without being able to affect the data. The activity log, which shows who changed what in members, loans and settings — with rotating shifts that is not bureaucracy, it is how a question gets answered without anyone being blamed. And holds with a queue, for the one copy that five people want.",
-          "The size: a few thousand titles and a few hundred members is Community, €19 a month. If the collection is under 500 titles and one person runs it, Starter is enough, and it is free.",
-          "One point worth knowing before it catches you out: each person needs a seat of their own, because shared accounts void the activity log. And anyone who records loans needs the Librarian role — a Volunteer does not lend and does not record a return. Community gives three seats. If six people take loans across the shifts, the plan you need is Municipal, and a small library then finds itself on a larger plan than its catalogue would suggest. Seats that are deactivated stop counting towards the limit, so someone who has left does not hold one."
+          "The size: a community library with a few thousand titles and a few hundred members fits inside the free Starter, which runs to 5,000 titles, 1,500 members and three staff seats. Community, €390 a year or €39 a month, starts to be needed once the catalogue passes 5,000 titles, or when you want holds with a queue and bulk import you run yourself; it runs to 20,000 titles, 5,000 members and ten staff seats.",
+          "One point worth knowing: each person needs a seat of their own, because shared accounts void the activity log. And anyone who records loans needs the Librarian role — a Volunteer does not lend and does not record a return. That used to carry an unfair cost: seats were few, and a library with six volunteers on shifts was pushed onto a larger plan than its catalogue justified. It was a fair complaint and we have fixed it: the free Starter gives three seats, Community ten and Municipal twenty-five. ELSTAT recorded 1,754 library staff across 338 libraries in 2024 — and since the large libraries are counted in that figure too, the typical one runs on one or two people. How many volunteers you have should not decide your plan, and it no longer does. Seats that are deactivated stop counting towards the limit, so someone who has left does not hold one."
         ]
       },
       {
@@ -1111,45 +1122,45 @@
       },
       {
         "type": "prose",
-        "heading": "Public or municipal library",
         "id": "public-municipal",
+        "heading": "Public or municipal library",
         "body": [
-          "A clarification first, because it matters: in Greece a Public Library is institutionally a separate category from a municipal one. In Libriant both are recorded under the same type, because the daily work at the desk is the same and because the type changes nothing about how the software behaves. The plan is named Municipal, but it rules out neither of the two: size decides, not the name over the door.",
+          "A clarification first, because it matters: in Greece a Public Library is institutionally a separate category from a municipal one. In Libriant both are recorded under the same type, because the daily work at the desk is the same and because the type changes nothing about how the software behaves. The plans that libraries of both kinds end up on are named Municipal and Central, but neither rules out either kind: size decides, not the name over the door.",
           "The day is not yours to control. Returns in the morning, the children’s section in the afternoon, someone who has lost their card, someone asking for a book that is already out on loan, a school visit nobody announced. The staff are more than one person, with different responsibilities, and the library answers upwards.",
           "Four things from Libriant count here. The hold queue: a member asks for a book that is out and the librarian records the hold on their behalf — members do not place holds themselves, because they do not sign in anywhere. The queue keeps the order of priority and, the moment the copy is returned, the first person is promoted automatically to ready for pickup. The three roles and the activity log, which in a public body are not a luxury. The desktop app, which prints the loan receipt and the copy label straight to the printer, without a print dialogue on every loan. And the overdue list, which in a library with thousands of members is standing work rather than an incident.",
           "One thing is better known now than discovered in use: email notices to members exist as a feature, with texts, switches and a regular check of loans, but no mail sender has been set up yet — so today no message reaches a member. We will update this page when that changes.",
-          "The size: up to 30,000 titles, 7,500 members and ten staff seats, which is Municipal, €79 a month. It is also the plan the launch offer gives to the first five libraries, with no charge for twelve months.",
-          "Two pages you will most likely need to forward: [Security and data protection](/en/security) for the IT department, and [Pricing](/en/pricing) for the finance office — where it is also explained that, because nothing is charged during the offer, no budget commitment or procurement decision is needed in order to start."
+          "The size: Municipal covers 60,000 titles, 15,000 members and twenty-five staff seats, at €790 a year — or €79 a month, if monthly billing suits you better. The median Greek public library holds around 67,000 volumes, which works out at roughly 53,000 titles, so the 60,000-title limit was written for exactly that number: an ordinary library has no business sitting on an institutional plan because it holds the books it is supposed to hold. If the collection is larger, or you run branches, the next step up is Central: 150,000 titles, 40,000 members, sixty staff seats, €1,190 a year. Municipal is also the plan the launch offer gives to the first five libraries, with no charge for twelve months.",
+          "For the finance office, a benchmark from public records: we looked at 76 awards for library software published on Diavgeia, the Greek public-spending register. The median Greek library pays around €900 a year, the most common contract is €500, and the range runs from €300 to €1,700. The €790 of Municipal sits inside that range and below the median spend — we are not asking you to change the order of magnitude of your budget in order to change system. Two pages you will most likely need to forward: [Security and data protection](/en/security) for the IT department, and [Pricing](/en/pricing) for the finance office — where it is also explained that, because nothing is charged during the offer, no budget commitment or procurement decision is needed in order to start."
         ]
       },
       {
         "type": "prose",
-        "heading": "Academic library (university or research body)",
         "id": "academic",
+        "heading": "Academic library (university or research body)",
         "body": [
           "The load is not steady: the weeks around the start of each semester carry a disproportionate share of the year. Members run into the thousands and turn over every September. The staff are organised, often with students at the desk, and alongside the central library there are department, laboratory and institute libraries holding their own material and their own loans.",
-          "Three things from Libriant count here: the limits — 200,000 titles, 50,000 members, thirty staff seats; the roles, so that whoever helps at the shelves can look without changing anything, while whoever records loans holds the Librarian role; and full bilingualism, for departments that teach in English and for students who do not read Greek.",
+          "Three things from Libriant count here: the limits — 400,000 titles, 100,000 members, 150 staff seats; the roles, so that whoever helps at the shelves can look without changing anything, while whoever records loans holds the Librarian role; and full bilingualism, for departments that teach in English and for students who do not read Greek.",
           "Here we owe you plain speaking. Libriant has no acquisitions, does not track serial issues, does not speak Z39.50 and does not send records to a union catalogue. If your institution’s central library depends on those, Libriant does not replace it, and we will not tell you otherwise.",
-          "Where it fits cleanly is the department, laboratory or research-institute library: its own catalogue, its own loans, one to three people, and a collection that today lives in a spreadsheet or in a notebook. That size usually lands on Community or Municipal.",
-          "The size: for an institution’s central library, Institutional, €249 a month. For a department or institute library, Community at €19 or Municipal at €79, depending on the catalogue and the staff."
+          "Where it fits cleanly is the department, laboratory or research-institute library: its own catalogue, its own loans, one to three people, and a collection that today lives in a spreadsheet or in a notebook. That size fits inside the free Starter almost every time, and moves to Community once the catalogue passes 5,000 titles or holds with a queue are needed.",
+          "The size: for an institution’s central library, Institutional — 400,000 titles, 100,000 members, 150 staff seats, €1,890 a year or €189 a month. Between Municipal and Institutional there is a step in the middle, Central: 150,000 titles, 40,000 members, sixty staff seats, €1,190 a year. We wrote it for the central municipal or public library with branches, but it also covers the research-body library that is larger than a municipal one and smaller than a university’s central library. For a department or institute library: the free Starter up to 5,000 titles, Community at €390 a year up to 20,000, and Municipal at €790 above that. And if the institution wants Libriant on its own servers, or is a size the table does not hold, the limits and the cost are agreed case by case."
         ]
       },
       {
         "type": "table",
-        "heading": "Which library, which plan",
         "id": "which-plan",
-        "intro": "The type does not set the price — size does. The table shows where the five types usually land, so that you have a starting point.",
+        "heading": "Which library, which plan",
+        "intro": "The type does not set the price — size does. The table shows where libraries of each type and size usually land, so that you have a starting point.",
         "columns": ["Library type", "Indicative size", "Plan"],
         "rows": [
           [
             "School library",
-            "A few hundred to a few thousand titles, one to three staff",
-            "**Starter**, free, up to 500 titles; above that **Community**, €19 a month"
+            "Two to six thousand items, one to three staff",
+            "**Starter**, free, up to 5,000 titles — covers most school libraries"
           ],
           [
             "Community library",
             "A few thousand titles, volunteers on shifts",
-            "**Community**, €19 a month — **Municipal** if more than three staff seats are needed"
+            "**Starter**, free, up to 5,000 titles; above that **Community**, €390 a year"
           ],
           [
             "Special library (organisation, foundation, society)",
@@ -1158,16 +1169,21 @@
           ],
           [
             "Public or municipal library",
-            "Up to 30,000 titles, up to 7,500 members, a team of up to ten",
-            "**Municipal**, €79 a month — the plan the launch offer gives"
+            "Up to 60,000 titles, up to 15,000 members, a team of up to twenty-five",
+            "**Municipal**, €790 a year — the plan the launch offer gives"
+          ],
+          [
+            "Central municipal or public library with branches",
+            "Up to 150,000 titles, up to 40,000 members, a team of up to sixty",
+            "**Central**, €1,190 a year"
           ],
           [
             "Academic library (university or research body)",
-            "An institution’s central library: up to 200,000 titles, up to 50,000 members, a team of up to thirty. A department or laboratory library: much smaller",
-            "**Institutional**, €249 a month — **Community** or **Municipal** for a department library"
+            "An institution’s central library: up to 400,000 titles, up to 100,000 members, a team of up to 150. A department or laboratory library: much smaller",
+            "**Institutional**, €1,890 a year — **Starter** or **Community** for a department library"
           ]
         ],
-        "footnote": "The sizes are indicative, not measurements: we do not know how many titles your library holds and we are not going to guess. The plan is always set by the two numbers, titles in the catalogue and staff seats; every limit, line by line, is on [Pricing](/en/pricing). If your library falls between two plans, start with the smaller one: the change is made from inside the application, takes effect immediately, and you set nothing up a second time."
+        "footnote": "The sizes are indicative, not measurements: we do not know how many titles your library holds and we are not going to guess. The plan is set by the titles in the catalogue; members and staff seats are set high enough on every plan that they will not move you up a step. Prices are annual and come to ten months rather than twelve; monthly billing is there if that is what your finance office prefers. Every limit, line by line, is on [Pricing](/en/pricing). If your library falls between two plans, start with the smaller one: the change is made from inside the application, takes effect immediately, and you set nothing up a second time."
       },
       {
         "type": "list",
@@ -1215,31 +1231,31 @@
     "sections": [
       {
         "type": "faq",
+        "id": "offer-and-plans",
         "heading": "The offer and the plans",
         "intro": "The price and the limits of every plan are written out on the Plans and pricing page. You do not have to request a quote to find out what it costs.",
         "items": [
           {
+            "id": "why-pay-when-abekt-is-free",
             "title": "Why pay, when ABEKT is free?",
-            "body": "The comparison does not hold the way you remember it: ABEKT 5.6 is no longer distributed, as its own page at abekt.gr states. Its successor, openABEKT, is a service with an annual subscription whose price you learn after you request a quote. So the choice is not between free and paid, but between a price you cannot see and a price written down here. And Libriant does have a genuinely free plan, Starter, with 500 titles, 100 members and one staff seat: a system that works for a small school library, not a 14-day trial.",
-            "id": "why-pay-when-abekt-is-free"
+            "body": "The comparison does not hold the way you remember it: ABEKT 5.6 is no longer distributed, as its own page at abekt.gr states. Its successor, openABEKT, is a service with an annual subscription whose price you learn after you request a quote. So the choice is not between free and paid, but between a price you cannot see and a price written down here. And in a great many cases you pay nothing at all: the free Starter plan covers 5,000 titles, 1,500 members and three staff seats. A Greek school library usually holds 2,000 to 6,000 books, and copies of the same title count once — so the whole of it fits, with all of its staff, on no subscription. This is not a 14-day trial, nor a free plan built to be outgrown in the first month: it is the system you will be working in."
           },
           {
+            "id": "what-the-first-five-get",
             "title": "What do the first five libraries get, and what happens after that?",
-            "body": "You get the whole Municipal plan for twelve months — no charge, no card, no automatic renewal — and we move your catalogue across for you. It does not mean you pay €79 a month afterwards. At the end of the year you choose the plan that fits the size of your library; plans start at €19 a month, and for very small collections there is a free plan. We get in touch a month before the twelve months are up, and founding libraries keep a permanent discount on top of whatever they choose. If you never reply to us at all, the account stops being active — it does not turn itself into a subscription.",
-            "id": "what-the-first-five-get"
+            "body": "You get the whole Municipal plan for twelve months — no charge, no card, no automatic renewal — and we move your catalogue across for you. Municipal is the €790 a year plan: 60,000 titles, 15,000 members and 25 staff seats, which covers the median Greek public library. It does not mean you pay that from the second year on: at the end of the twelve months you choose the plan that fits the size of your library. The subscription plans start at €390 a year — or €39 a month, if monthly billing suits you better — and for collections up to 5,000 titles Starter is free. We get in touch a month before the twelve months are up, and founding libraries keep a permanent discount on top of whatever they choose. If you never reply to us at all, the account stops being active — it does not turn itself into a subscription."
           },
           {
+            "id": "we-are-a-municipality",
             "title": "We are a public body — a municipality, a state school, a public college. What do we need in order to start?",
-            "body": "You pay nothing and you sign no procurement contract. We do not ask for a card, there is no automatic renewal, and at the end of the twelve months you decide. Because there is no charge, you do not need a committed budget line or an award decision to begin — and the twelve months give you room to put it into next year’s budget. From the second year on, a normal commercial relationship is needed: before any charge you will receive the full commercial and pricing terms in writing, so your finance office can go through them at its own pace.",
-            "id": "we-are-a-municipality"
+            "body": "You pay nothing and you sign no procurement contract. We do not ask for a card, there is no automatic renewal, and at the end of the twelve months you decide. Because there is no charge, you do not need a committed budget line or an award decision to begin — and the twelve months give you room to put it into next year’s budget. From the second year on, a normal commercial relationship is needed: before any charge you will receive the full commercial and pricing terms in writing, so your finance office can go through them at its own pace."
           },
           {
+            "id": "titles-or-copies",
             "title": "Do titles count, or copies — and what happens if we reach a limit?",
-            "body": "Titles count, not copies: ten copies of the same book are one title. Archived titles and archived members do not count at all, and inactive staff seats do not take up a place. If you reach a limit, nothing you already hold is deleted or hidden — you cannot add new titles or members until you move up a plan. You can see how close you are at any time from Plan & billing, which is also where the plan change happens, and it takes effect immediately.",
-            "id": "titles-or-copies"
+            "body": "Titles count, not copies: ten copies of the same book are one title. Archived titles and archived members do not count at all, and inactive staff seats do not take up a place. If you reach a limit, nothing you already hold is deleted or hidden — you cannot add new titles or members until you move up a plan. You can see how close you are at any time from Plan & billing, which is also where the plan change happens, and it takes effect immediately."
           }
-        ],
-        "id": "offer-and-plans"
+        ]
       },
       {
         "type": "faq",
