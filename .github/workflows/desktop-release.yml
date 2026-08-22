@@ -29,8 +29,22 @@ on:
     branches: [main]
     paths:
       - 'apps/desktop/**'
-      - '.github/workflows/desktop-release.yml'
-      - '.github/workflows/verify.yml'
+      # Just that one path — exactly what the header above promises. Neither
+      # this workflow nor verify.yml is listed, because a run is a RELEASE and
+      # editing the release machinery is not a reason to ship an installer.
+      # (Proof it matters: the commit that removed verify.yml from this list
+      # would itself have published v0.1.9, because it edits this file.) Use
+      # `workflow_dispatch` to exercise the pipeline deliberately.
+      #
+      # NOT '.github/workflows/verify.yml'. Every run of this workflow publishes
+      # a release — the version is MAJOR.MINOR from package.json plus the CI run
+      # number, so there is no such thing as a dry run. verify.yml is the shared
+      # gate and changes often for reasons that have nothing to do with the
+      # desktop shell; including it here shipped v0.1.8 off a Node-version bump
+      # on 2026-08-22, which is also how it contradicted the header above.
+      # Nothing is lost by removing it: ci.yml calls the same reusable verify
+      # workflow on every push, so a change to the gate is still validated —
+      # it just no longer cuts an installer nobody asked for.
   workflow_dispatch:
 
 concurrency:
