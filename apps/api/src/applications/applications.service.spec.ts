@@ -25,7 +25,9 @@ function makeService(
 ) {
   const email = { enqueue: vi.fn().mockResolvedValue(undefined) };
   const rateLimit = { hit };
-  // The constructor reads env; the test env supplies HASH_PEPPER.
+  // The constructor reads env; the loadEnv mock above supplies the pepper.
+  // Nothing sets HASH_PEPPER in the unit environment — the integration suite
+  // has to set it itself, in test/integration/setup.ts.
   const svc = new ApplicationsService(email as never, rateLimit as never);
   return { svc, email, rateLimit };
 }

@@ -19,3 +19,10 @@ process.env.RATE_LIMIT_DISABLED ||= 'true';
 // would 403 those admins onto the enrollment flow; opt the suite out so it
 // tests what it means to. MFA enforcement has its own dedicated coverage.
 process.env.ADMIN_MFA_REQUIRED ||= 'false';
+
+// `loadEnv()` treats HASH_PEPPER as a required secret outside development, and
+// storage.module.ts calls it at import time — so without this the whole suite
+// dies during module resolution, before a single test runs. It peppers the IP
+// hash behind the /apply throttle; any stable value works here, and the length
+// bar is waived under NODE_ENV=test.
+process.env.HASH_PEPPER ||= 'integration-only-pepper';
