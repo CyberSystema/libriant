@@ -11,7 +11,7 @@
 # The cost: Caddy base-image CVE patches now arrive on a rebuild rather than on
 # the next `pull`. Every push to main rebuilds this.
 
-FROM node:24-alpine AS site
+FROM node:26-alpine AS site
 ENV COREPACK_HOME=/opt/corepack
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 WORKDIR /app

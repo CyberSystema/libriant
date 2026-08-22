@@ -5,7 +5,7 @@
   "description": "Libriant — multi-tenant SaaS for library management",
   "packageManager": "pnpm@9.15.4",
   "engines": {
-    "node": ">=22"
+    "node": ">=26"
   },
   "scripts": {
     "build": "turbo run build",
@@ -41,7 +41,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^25.9.5",
+    "@types/node": "^26.2.0",
     "eslint": "^10.9.0",
     "globals": "^17.11.0",
     "marked": "^18.0.10",

@@ -17,7 +17,7 @@
 # Cache hits: changes to source under apps/api/src only invalidate `build`;
 # everything below that re-fetches in seconds.
 
-FROM node:24-alpine AS base
+FROM node:26-alpine AS base
 # postgresql-client provides pg_dump for the SQL-format database export.
 RUN apk add --no-cache openssl tini postgresql-client
 # Pin corepack's cache to a SHARED, world-readable location instead of the

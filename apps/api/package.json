@@ -21,7 +21,7 @@
     "@nestjs/common": "^11.2.1",
     "@nestjs/core": "^11.2.1",
     "@nestjs/platform-express": "^11.2.1",
-    "archiver": "^7.0.1",
+    "archiver": "^8.0.0",
     "bcryptjs": "^3.0.3",
     "bullmq": "^5.81.3",
     "class-transformer": "^0.5.1",
@@ -45,12 +45,12 @@
     "stripe": "^22.5.0"
   },
   "devDependencies": {
-    "@types/archiver": "^6.0.4",
+    "@types/archiver": "^8.0.0",
     "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.2.0",
-    "@types/node": "^25.9.5",
+    "@types/node": "^26.2.0",
     "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.2.1",

@@ -2,7 +2,9 @@ import { execFile } from 'node:child_process';
 import { createWriteStream, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import archiver from 'archiver';
+// archiver 8 dropped the callable default export (and create/registerFormat)
+// in favour of named classes — one per format.
+import { ZipArchive, Archiver } from 'archiver';
 import ExcelJS from 'exceljs';
 import { Client as PgClient } from 'pg';
 import { controlDb } from '@libriant/db-control';
@@ -196,7 +198,7 @@ async function generate(
 
   const outPath = path.join(dir, `${job.id}.zip`);
   const output = createWriteStream(outPath);
-  const archive = archiver('zip', { zlib: { level: 9 } });
+  const archive = new ZipArchive({ zlib: { level: 9 } });
   const closed = new Promise<void>((resolve, reject) => {
     output.on('close', () => resolve());
     output.on('error', reject);
@@ -251,7 +253,7 @@ async function produceSingleFile(
 async function addTargetToArchive(
   format: ExportFormat,
   target: Target,
-  archive: archiver.Archiver,
+  archive: Archiver,
   folder: string,
   tmpDir: string,
   jobId: string,
