@@ -458,16 +458,45 @@ terminates open connections before the DROP wave, restores under
 
 ### The drill — quarterly, non-negotiable
 
-An untested backup is a belief, not a backup. Once a quarter, restore last
-night's backup onto a **throwaway** host (a small Hetzner Cloud VM, destroyed
-afterwards) and verify:
+An untested backup is a belief, not a backup. This is not a hypothetical: on
+2026-08-22 the restore path was found to **drop every database and then abort
+before restoring any of them**. `pg_dumpall --clean` emits
+`DROP ROLE IF EXISTS libriant;` for the very role `restore.sh` connects as,
+Postgres answers `current user cannot be dropped`, and `ON_ERROR_STOP=1` stops
+psql — after the DROP DATABASE wave. Reproduced against a real cluster: psql
+exit 3, zero databases left. It is fixed (`scripts/_lib/pg-restore-filter.sh`),
+and the lesson is that the drill below had never actually been run to
+completion, because step 1 would have failed on the first attempt.
 
-1. The restore completes without error.
+**Every push now runs `pnpm dr:drill` in CI** (against its own throwaway cluster —
+the drill dumps and destroys a whole cluster, so it must never share one), which does a full
+backup → destroy → restore round trip against a real Postgres and asserts the
+restored cluster matches the source — row counts, Greek text through citext,
+sequence positions, grants, other roles, the restoring role's own attributes
+and password hash, and the four extensions in every database. That catches a
+regression in the pipeline. It does **not** replace the quarterly drill, which
+is what proves your actual backups, on your actual host, restore in a time you
+have measured.
+
+Once a quarter, restore last night's backup onto a **throwaway** host (a small
+Hetzner Cloud VM, destroyed afterwards) and verify:
+
+1. The restore completes without error — check `echo $?`, and read the log.
+   A restore that printed errors and kept going is a failed drill.
 2. Control-plane row counts match production.
 3. Each tenant database exists **and has its extensions**.
 4. A file from the uploads tarball opens correctly.
+5. You can still log in — i.e. the roles came back with their passwords, not
+   just the databases.
 
 Write down how long it took. That number — not an aspiration — is your real RTO.
+
+> Whatever drives the cluster from outside a container must use a psql and
+> pg_dumpall matching the server's major version. A newer client emits settings
+> an older server rejects (dumping 16 with the 18 client produces
+> `SET transaction_timeout = 0;`), and the restore aborts. `backup.sh` is safe
+> because it runs inside the postgres container. This is also why a major
+> upgrade must dump with the NEW server's binaries.
 
 ---
 

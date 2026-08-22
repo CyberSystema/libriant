@@ -28,6 +28,11 @@ COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-libriant}"
 LIBRIANT_APP_DIR="${LIBRIANT_APP_DIR:-/srv/libriant/app}"
 COMPOSE_FILE="${COMPOSE_FILE:-${LIBRIANT_APP_DIR}/infra/compose/docker-compose.prod.yml}"
 STORAGE_DIR="${STORAGE_DIR:-/srv/libriant/storage}"
+# The superuser the dump was taken as and is restored as.
+PG_ROLE="${PG_ROLE:-libriant}"
+
+# shellcheck source=_lib/pg-restore-filter.sh
+. "$(dirname "$0")/_lib/pg-restore-filter.sh"
 
 log() { printf '[%s] %s\n' "$(date +'%Y-%m-%d %H:%M:%S')" "$*"; }
 die() { printf 'restore: %s\n' "$*" >&2; exit 1; }
@@ -82,13 +87,34 @@ log "  archives OK"
 # still has open connections, so the api/worker/web containers MUST be stopped
 # first — otherwise the restore aborts under ON_ERROR_STOP=1 ("database is being
 # accessed by other users"). Postgres itself stays up to receive the restore.
+# Pre-flight the stream filter while everything is still intact. If the
+# patterns no longer match — a quoted role name, a future pg_dumpall wording
+# change — the filter silently removes nothing and the restore wipes the
+# cluster exactly as it used to. Refuse here, having touched nothing.
+matches="$(gunzip -c "$dir/postgres.sql.gz" | pg_restore_filter_count "$PG_ROLE")"
+if [ "$matches" != "2" ]; then
+  die "stream filter matched $matches self-role statements for '$PG_ROLE', expected 2.
+     The dump's role prologue is not the shape this filter knows, so restoring
+     would drop every database and then abort. Nothing was touched.
+     Inspect: gunzip -c '$dir/postgres.sql.gz' | sed -n '1,60p'"
+fi
+log "  stream filter pre-flight OK (2 self-role statements for '$PG_ROLE')"
+
 log "stopping application services so databases can be dropped…"
-dc stop api worker web 2>/dev/null || true
+# pgbouncer too: it is `restart: unless-stopped` and holds pooled server
+# connections to libriant_control, which will block the DROP wave.
+dc stop api worker web pgbouncer 2>/dev/null || true
 # Belt-and-braces: terminate any other lingering backends (manual psql, etc.)
 # against the non-system databases before the DROP wave.
-dc exec -T postgres psql -U libriant -d postgres -v ON_ERROR_STOP=0 -c \
+# Terminate EVERY other backend, not just the ones on tenant databases. The
+# dump drops `postgres` and `template1` with a bare DROP DATABASE (no IF
+# EXISTS), and both are dropped LATE — so one lingering session there aborts
+# the restore after every tenant database is already gone. A `psql -d postgres`
+# left open to watch the restore is the likeliest session in the building.
+# template0 is exempt only because datallowconn=false makes it unconnectable.
+dc exec -T postgres psql -U "$PG_ROLE" -d postgres -v ON_ERROR_STOP=0 -c \
   "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-   WHERE datname NOT IN ('postgres','template0','template1') AND pid <> pg_backend_pid();" \
+   WHERE datname IS NOT NULL AND datname <> 'template0' AND pid <> pg_backend_pid();" \
   >/dev/null 2>&1 || true
 
 # Bring the apps back up even if the restore fails partway, so we never leave the
@@ -101,8 +127,11 @@ restart_apps() {
 trap restart_apps EXIT
 
 log "restoring postgres (DROP + recreate via pg_dumpall script)…"
-gunzip -c "$dir/postgres.sql.gz" \
-  | dc exec -T postgres psql -U libriant -d postgres -v ON_ERROR_STOP=1
+# The stream is filtered: a pg_dumpall --clean script tries to DROP and CREATE
+# the very role it is restored as, which aborts psql under ON_ERROR_STOP=1
+# AFTER the DROP DATABASE wave. See scripts/_lib/pg-restore-filter.sh.
+{ pg_self_role_reset_sql "$PG_ROLE"; gunzip -c "$dir/postgres.sql.gz" | pg_restore_filter "$PG_ROLE"; } \
+  | dc exec -T postgres psql -U "$PG_ROLE" -d postgres -v ON_ERROR_STOP=1
 log "  postgres restored"
 
 # ---------- 2. Storage -----------------------------------------------------
@@ -134,17 +163,23 @@ fi
 # ---------- 3. Sanity checks ----------------------------------------------
 log "verifying control-plane seed counts…"
 counts="$(docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" exec -T postgres \
-  psql -U libriant -d libriant_control -tAc \
+  psql -U "$PG_ROLE" -d libriant_control -tAc \
   "SELECT (SELECT count(*) FROM cells) || ',' || (SELECT count(*) FROM plans);" 2>/dev/null || true)"
 log "  cells,plans = ${counts:-<unavailable>}"
 
+# A restore that recovered ZERO tenant databases used to print nothing here and
+# exit 0 — the same silent success as the bug this script was fixed for. Compare
+# against what the control plane says should exist.
+expected_tenants="$(docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" exec -T postgres \
+  psql -U "$PG_ROLE" -d libriant_control -tAc "SELECT count(*) FROM tenants;" 2>/dev/null | tr -d '[:space:]' || echo '')"
+
 log "verifying per-tenant DB extensions…"
 tenant_dbs="$(docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" exec -T postgres \
-  psql -U libriant -d postgres -tAc \
+  psql -U "$PG_ROLE" -d postgres -tAc \
   "SELECT datname FROM pg_database WHERE datname LIKE 'tenant_%';" 2>/dev/null || true)"
 for db in $tenant_dbs; do
   ext="$(docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" exec -T postgres \
-    psql -U libriant -d "$db" -tAc \
+    psql -U "$PG_ROLE" -d "$db" -tAc \
     "SELECT count(*) FROM pg_extension WHERE extname IN ('unaccent','pg_trgm','pgcrypto','citext');" 2>/dev/null || echo 0)"
   if [ "${ext:-0}" -lt 4 ]; then
     log "  WARN: $db has only ${ext:-0}/4 expected extensions — re-run extension install."
@@ -152,5 +187,12 @@ for db in $tenant_dbs; do
     log "  $db extensions OK (4/4)"
   fi
 done
+
+actual_tenants="$(printf '%s\n' $tenant_dbs | grep -c . || true)"
+if [ -n "$expected_tenants" ] && [ "$expected_tenants" != "0" ] \
+   && [ "${actual_tenants:-0}" -lt "$expected_tenants" ]; then
+  die "control plane lists $expected_tenants tenant(s) but only ${actual_tenants:-0} tenant database(s) were restored.
+     The restore did NOT complete correctly — do not put this cluster back into service."
+fi
 
 log "restore complete from $dir"

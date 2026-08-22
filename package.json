@@ -23,6 +23,7 @@
     "db:generate": "pnpm --filter @libriant/db-control prisma:generate && pnpm --filter @libriant/db-tenant prisma:generate",
     "db:migrate:deploy": "pnpm --filter @libriant/db-control prisma:migrate:deploy",
     "db:seed": "pnpm --filter @libriant/db-control seed",
+    "dr:drill": "bash scripts/dr-drill.sh",
     "ingest:help": "tsx scripts/ingest-help-articles.ts",
     "admin:bootstrap": "tsx scripts/bootstrap-admin.ts",
     "db:studio": "pnpm --filter @libriant/db-control prisma:studio",

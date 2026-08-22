@@ -169,6 +169,21 @@ jobs:
     name: Apply control-plane + tenant migrations against real Postgres
     runs-on: ubuntu-latest
     services:
+      # Dedicated, throwaway cluster for the DR drill. Separate from the
+      # service below because the drill dumps and destroys an ENTIRE cluster.
+      postgres-drill:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: libriant
+          POSTGRES_PASSWORD: libriant
+          POSTGRES_DB: postgres
+        ports: ['5433:5432']
+        options: >-
+          --health-cmd "pg_isready -U libriant"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
       postgres:
         image: postgres:16-alpine
         env:
@@ -291,6 +306,24 @@ jobs:
           diff /tmp/plans-before.csv /tmp/plans-after.csv \
             || { echo "A data migration is not idempotent — plan state changed on replay"; exit 1; }
           echo "Data migrations are replay-safe."
+
+      # An untested backup is not a backup. This exercises the real
+      # backup.sh → restore.sh pipeline against the service container and
+      # asserts the restored cluster matches the source, because the restore
+      # path was silently destroying every database and restoring none.
+      - name: DR drill (backup → restore round trip)
+        run: |
+          set -euo pipefail
+          # The client must match the server major (postgres:16-alpine here);
+          # a newer pg_dumpall emits settings 16 rejects. See the script header.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-16
+          # Port 5433, NOT the shared service on 5432: pg_dumpall is
+          # cluster-wide and the drill destroys everything it dumped, which
+          # would take libriant_control and libriant_demo — and every step
+          # after this one — with it.
+          PGHOST=localhost PGPORT=5433 PGUSER=libriant PGPASSWORD=libriant \
+            pnpm dr:drill
 
       - name: Apply tenant migration to libriant_demo
         run: pnpm tenant:migrate:deploy
