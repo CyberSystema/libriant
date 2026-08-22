@@ -30,7 +30,7 @@ export const FEATURES = {
     type: 'int',
     label: 'Maximum books',
     description: 'How many distinct books the library can have in its catalog.',
-    default: 500,
+    default: 5_000,
     unit: 'count',
   },
   max_members: {
@@ -38,7 +38,7 @@ export const FEATURES = {
     type: 'int',
     label: 'Maximum members',
     description: 'How many members can be on file at once.',
-    default: 100,
+    default: 1_500,
     unit: 'count',
   },
   max_storage_mb: {
@@ -47,7 +47,7 @@ export const FEATURES = {
     label: 'Maximum storage (MB)',
     description:
       'Total file storage available to the library for covers, photos, attachments, etc.',
-    default: 100,
+    default: 512,
     unit: 'mb',
   },
   staff_seats: {
@@ -55,7 +55,7 @@ export const FEATURES = {
     type: 'int',
     label: 'Staff seats',
     description: 'How many staff users can log in to the library.',
-    default: 1,
+    default: 3,
     unit: 'seats',
   },
   max_custom_collections: {
@@ -79,7 +79,7 @@ export const FEATURES = {
     type: 'int',
     label: 'Custom fields per entity',
     description: 'How many custom fields the library can add to books, members, loans, etc.',
-    default: 3,
+    default: 5,
     unit: 'count',
   },
   reservations_enabled: {

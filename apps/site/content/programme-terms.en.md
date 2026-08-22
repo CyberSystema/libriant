@@ -22,8 +22,8 @@ For the first {{SPOTS_TOTAL}} libraries, the first {{MONTHS}} months are free.
 **That does not mean you will pay {{PLANNED_PRICE}} afterwards.**
 {{PLAN_NAME}} is the plan you get free now, so that nothing constrains you. At
 the end of the year **you** choose the plan that fits the size of your library.
-Plans start at **€19 a month**, and for very small collections (up to 500
-titles) there is a free plan as well. The {{SPOTS_TOTAL}} founding libraries
+Plans start at **€390 a year** (or €39 a month), and for smaller collections
+(up to 5,000 titles) there is a free plan as well. The {{SPOTS_TOTAL}} founding libraries
 also keep a permanent discount.
 
 ## What we ask in return

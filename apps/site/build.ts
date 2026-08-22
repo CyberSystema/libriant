@@ -370,7 +370,7 @@ function main(): void {
             id: 'the-plans',
             heading: t.cards,
             html: `<section class="section">
-    <div class="wrap">
+    <div class="wrap wrap--wide">
       <div class="section-head">
         <h2 id="the-plans">${t.cards}</h2>
         <p>${t.cardsIntro}</p>
@@ -385,7 +385,7 @@ function main(): void {
             id: 'full-comparison',
             heading: t.table,
             html: `<section class="section alt">
-    <div class="wrap">
+    <div class="wrap wrap--wide">
       <div class="section-head">
         <h2 id="full-comparison">${t.table}</h2>
         <p>${t.tableIntro}</p>

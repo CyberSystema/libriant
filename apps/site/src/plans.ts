@@ -14,7 +14,13 @@ import { planSeeds } from '../../../packages/db-control/prisma/seed-data.js';
 import type { Lang } from './shell.js';
 
 /** Explicit allowlist — this is also what keeps On-prem/Enterprise off the grid. */
-export const PUBLIC_PLAN_SLUGS = ['starter', 'community', 'municipal', 'institutional'] as const;
+export const PUBLIC_PLAN_SLUGS = [
+  'starter',
+  'community',
+  'municipal',
+  'central',
+  'institutional',
+] as const;
 
 export type PublicPlanSlug = (typeof PUBLIC_PLAN_SLUGS)[number];
 
@@ -22,6 +28,8 @@ export type PublicPlan = {
   slug: PublicPlanSlug;
   name: string;
   priceEur: number;
+  /** Annual price, when the plan is offered annually. Ten months for twelve. */
+  annualEur: number | null;
   /** Who this tier is actually for. Never «πιο δημοφιλές» — there are no customers yet. */
   audience: string;
   /** The one-line size cue that lets a librarian self-identify. */
@@ -31,39 +39,47 @@ export type PublicPlan = {
 
 const AUDIENCE_EL: Record<PublicPlanSlug, { audience: string; sizeCue: string }> = {
   starter: {
-    audience: 'Για μια μικρή σχολική ή κοινοτική βιβλιοθήκη',
-    sizeCue: 'Έως 500 τίτλοι, ένας άνθρωπος στο γραφείο',
+    audience: 'Για μια σχολική ή πολύ μικρή βιβλιοθήκη',
+    sizeCue: 'Έως 5.000 τίτλοι — το μέγεθος μιας τυπικής σχολικής βιβλιοθήκης',
   },
   community: {
-    audience: 'Για μια βιβλιοθήκη χωριού ή μικρού δήμου',
-    sizeCue: 'Μερικές χιλιάδες τίτλοι, δύο ή τρία άτομα προσωπικό',
+    audience: 'Για μια κοινοτική, λαϊκή ή ειδική βιβλιοθήκη',
+    sizeCue: 'Έως 20.000 τίτλοι',
   },
   municipal: {
     audience: 'Για μια δημοτική βιβλιοθήκη με καθημερινή κίνηση',
-    sizeCue: 'Δεκάδες χιλιάδες τίτλοι, ομάδα προσωπικού, παραρτήματα',
+    sizeCue: 'Έως 60.000 τίτλοι — καλύπτει τη διάμεση ελληνική δημόσια βιβλιοθήκη',
+  },
+  central: {
+    audience: 'Για κεντρική δημοτική ή δημόσια βιβλιοθήκη',
+    sizeCue: 'Έως 150.000 τίτλοι, με παραρτήματα',
   },
   institutional: {
-    audience: 'Για ακαδημαϊκή ή μεγάλη δημόσια βιβλιοθήκη',
-    sizeCue: 'Πάνω από 100.000 τίτλοι και πολυμελές προσωπικό',
+    audience: 'Για ακαδημαϊκή ή πολύ μεγάλη συλλογή',
+    sizeCue: 'Έως 400.000 τίτλοι',
   },
 };
 
 const AUDIENCE_EN: Record<PublicPlanSlug, { audience: string; sizeCue: string }> = {
   starter: {
-    audience: 'For a small school or community library',
-    sizeCue: 'Up to 500 titles, one person at the desk',
+    audience: 'For a school or very small library',
+    sizeCue: 'Up to 5,000 titles — the size of a typical school library',
   },
   community: {
-    audience: 'For a village or small-municipality library',
-    sizeCue: 'A few thousand titles, two or three staff',
+    audience: 'For a community, local or special library',
+    sizeCue: 'Up to 20,000 titles',
   },
   municipal: {
     audience: 'For a municipal library with daily traffic',
-    sizeCue: 'Tens of thousands of titles, a staff team, branches',
+    sizeCue: 'Up to 60,000 titles — covers the median Greek public library',
+  },
+  central: {
+    audience: 'For a central municipal or public library',
+    sizeCue: 'Up to 150,000 titles, with branches',
   },
   institutional: {
-    audience: 'For an academic or large public library',
-    sizeCue: 'Over 100,000 titles and a large staff team',
+    audience: 'For an academic or very large collection',
+    sizeCue: 'Up to 400,000 titles',
   },
 };
 
@@ -107,6 +123,7 @@ export function publicPlans(lang: Lang = 'el'): PublicPlan[] {
       slug,
       name: seed.name,
       priceEur: seed.monthlyPriceCents / 100,
+      annualEur: seed.annualPriceCents != null ? seed.annualPriceCents / 100 : null,
       ...AUDIENCE[lang][slug],
       features: seed.features as PublicPlan['features'],
     };
@@ -262,6 +279,9 @@ const CARD_COPY: Record<
   {
     offerFlag: string;
     per: string;
+    perYear: string;
+    orMonthly: (price: string) => string;
+    saving: string;
     titles: string;
     members: string;
     seat: string;
@@ -272,6 +292,9 @@ const CARD_COPY: Record<
   el: {
     offerFlag: 'Το πακέτο της προσφοράς',
     per: 'τον μήνα',
+    perYear: 'τον χρόνο',
+    orMonthly: (p) => `ή ${p} τον μήνα`,
+    saving: 'δύο μήνες δωρεάν',
     titles: 'τίτλοι',
     members: 'μέλη',
     seat: 'λογαριασμός προσωπικού',
@@ -281,6 +304,9 @@ const CARD_COPY: Record<
   en: {
     offerFlag: 'The launch-offer plan',
     per: 'a month',
+    perYear: 'a year',
+    orMonthly: (p) => `or ${p} a month`,
+    saving: 'two months free',
     titles: 'titles',
     members: 'members',
     seat: 'staff seat',
@@ -303,7 +329,12 @@ export function renderPlanCards(offerPlanSlug: string, lang: Lang = 'el'): strin
           return `<article class="plan${featured ? ' plan--featured' : ''}">
         ${featured ? `<span class="plan__flag">${e(t.offerFlag)}</span>` : ''}
         <h3 class="plan__name">${e(p.name)}</h3>
-        <p class="plan__price">${e(priceLabel(p.priceEur, lang))}${p.priceEur > 0 ? `<span class="plan__per">${e(t.per)}</span>` : ''}</p>
+        ${
+          p.annualEur != null
+            ? `<p class="plan__price">${e(priceLabel(p.annualEur, lang))}<span class="plan__per">${e(t.perYear)}</span></p>
+        <p class="plan__alt">${e(t.orMonthly(priceLabel(p.priceEur, lang)))} · <span class="plan__save">${e(t.saving)}</span></p>`
+            : `<p class="plan__price">${e(priceLabel(p.priceEur, lang))}${p.priceEur > 0 ? `<span class="plan__per">${e(t.per)}</span>` : ''}</p>`
+        }
         <p class="plan__audience">${e(p.audience)}</p>
         <p class="plan__cue">${e(p.sizeCue)}</p>
         <ul class="plan__caps">
@@ -329,7 +360,15 @@ export function renderComparisonTable(lang: Lang = 'el'): string {
         <thead>
           <tr>
             <th scope="col"><span class="visually-hidden">${e(featureCol)}</span></th>
-            ${plans.map((p) => `<th scope="col">${e(p.name)}<span class="cmp__price">${e(priceLabel(p.priceEur, lang))}</span></th>`).join('\n            ')}
+            ${plans
+              .map((p) => {
+                const price =
+                  p.annualEur != null
+                    ? `${priceLabel(p.annualEur, lang)} ${lang === 'el' ? 'τον χρόνο' : 'a year'}`
+                    : priceLabel(p.priceEur, lang);
+                return `<th scope="col">${e(p.name)}<span class="cmp__price">${e(price)}</span></th>`;
+              })
+              .join('\n            ')}
           </tr>
         </thead>
         <tbody>

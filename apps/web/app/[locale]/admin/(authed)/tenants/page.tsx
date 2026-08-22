@@ -113,6 +113,7 @@ export default async function AdminTenantsPage(props: {
             <option value="starter">Starter</option>
             <option value="community">Community</option>
             <option value="municipal">Municipal</option>
+            <option value="central">Central</option>
             <option value="institutional">Institutional</option>
             <option value="on-prem-enterprise">On-prem / Enterprise</option>
           </select>

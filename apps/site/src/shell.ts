@@ -271,6 +271,9 @@ img, svg { max-width: 100%; }
 hr { border: 0; border-top: 1px solid var(--border); margin: 2.5rem 0; }
 
 .wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+/* The pricing grid and comparison table carry five plan columns, which do not
+   fit the 1080px reading measure. Everything else keeps it. */
+.wrap--wide { max-width: 1280px; }
 .skip {
   position: absolute; left: -9999px; top: 0; z-index: 100;
   background: var(--teal-deep); color: #fff; padding: 12px 20px; border-radius: 0 0 8px 0;
@@ -510,6 +513,8 @@ input[aria-invalid=true], textarea[aria-invalid=true], select[aria-invalid=true]
 .plan__name { margin: 0 0 .1em; font-size: 1.16rem; }
 .plan__price { margin: 0 0 .5em; font-family: var(--serif); font-size: 2rem; line-height: 1.1; color: var(--text); }
 .plan__per { display: block; font-family: var(--sans); font-size: .82rem; color: var(--muted); letter-spacing: .02em; }
+.plan__alt { margin: -6px 0 14px; font-size: .86rem; color: var(--muted); }
+.plan__save { color: var(--teal-deep); font-weight: 600; }
 .plan__audience { margin: 0 0 .3em; font-weight: 600; font-size: .95rem; }
 .plan__cue { margin: 0 0 16px; font-size: .9rem; color: var(--muted); }
 .plan__caps { list-style: none; padding: 16px 0 0; margin: 0; border-top: 1px solid var(--border); display: grid; gap: 7px; font-size: .92rem; }

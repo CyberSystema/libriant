@@ -448,23 +448,34 @@ model PlanFeature {
 /// A subscription plan the owner has defined. Plans are fully managed in
 /// the admin UI — code never assumes specific plan names exist.
 model Plan {
-  id                String      @id @default(cuid())
-  slug              String      @unique
-  name              String
-  description       String?
-  billingMode       BillingMode @default(stripe)
-  /// Stripe Price ID — required when billingMode = stripe.
-  stripePriceId     String?     @unique
-  monthlyPriceCents Int         @default(0)
-  currency          String      @default("EUR")
+  id                  String      @id @default(cuid())
+  slug                String      @unique
+  name                String
+  description         String?
+  billingMode         BillingMode @default(stripe)
+  /// Stripe Price ID for the monthly cadence — required when billingMode = stripe.
+  stripePriceId       String?     @unique
+  monthlyPriceCents   Int         @default(0)
+  /// Stripe Price ID for the annual cadence. Optional: a plan may be
+  /// monthly-only. Separate from stripePriceId because a Stripe Price is
+  /// immutable and each billing interval is its own Price object.
+  stripeAnnualPriceId String?     @unique
+  /// Annual price. NULL means the plan is not offered annually.
+  ///
+  /// Greek public buyers contract annually and pay against a single invoice —
+  /// twelve monthly payments would mean twelve χρηματικά εντάλματα and twelve
+  /// committee receipt protocols a year. The convention here is ten months for
+  /// twelve, so annualPriceCents = monthlyPriceCents × 10.
+  annualPriceCents    Int?
+  currency            String      @default("EUR")
   /// Hide from new-customer self-serve picker (still usable via admin).
-  isActive          Boolean     @default(true)
+  isActive            Boolean     @default(true)
   /// Hide from public plan list entirely (legacy / experimental plans).
-  isPublic          Boolean     @default(true)
-  sortOrder         Int         @default(0)
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
-  archivedAt        DateTime?
+  isPublic            Boolean     @default(true)
+  sortOrder           Int         @default(0)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+  archivedAt          DateTime?
 
   values        PlanFeatureValue[]
   subscriptions Subscription[]

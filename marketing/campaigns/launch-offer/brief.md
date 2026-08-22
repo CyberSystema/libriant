@@ -30,29 +30,37 @@ long for a pilot) and anything outside Greece.
 auto-renewal, catalogue migration done for them, and a permanent founding
 discount afterwards.
 
-**Never anchor on €948.** The annual value of the Municipal tier is real, but
-leading with it makes every reader picture that invoice landing in twelve months —
-and it is wrong for most of them. Libriant runs five plans:
+**Never anchor on the full Municipal price.** €790 a year is real, but leading
+with it makes every reader picture that invoice landing in twelve months — and it
+is the wrong tier for most of them. Libriant runs five paid-or-free plans, priced
+against 76 real contract awards published on ΔΙΑΥΓΕΙΑ — the median Greek library
+pays about €900/yr for openABEKT, the most common contract is €500/yr:
 
-| Plan          | €/mo   | Titles  | Members |
-| ------------- | ------ | ------- | ------- |
-| Starter       | 0      | 500     | 100     |
-| Community     | **19** | 5.000   | 1.000   |
-| Municipal     | 79     | 30.000  | 7.500   |
-| Institutional | 249    | 200.000 | 50.000  |
+| Plan          | €/yr    | €/mo | Titles  | Members |
+| ------------- | ------- | ---- | ------- | ------- |
+| Starter       | Free    | —    | 5.000   | 1.500   |
+| Community     | **390** | 39   | 20.000  | 5.000   |
+| Municipal     | 790     | 79   | 60.000  | 15.000  |
+| Central       | 1.190   | 119  | 150.000 | 40.000  |
+| Institutional | 1.890   | 189  | 400.000 | 100.000 |
 
-**The ad says "μετά, πακέτα από 19€ τον μήνα".** Not €0 — a free tier reads as
-hobby software to a municipal director, and Starter's 500-title cap excludes
-essentially every recipient anyway, so €19 is the honest entry price _for the
-reader being addressed_. Not €79 or €948 — those are the tier they're being given
-free, not the tier they must buy.
+Annual is ten months for twelve. It leads because Greek public buyers contract
+annually, pay against a single invoice, and book it on the συνδρομές line — the
+same budget code as newspapers.
+
+**The ad says «μετά, πακέτα από 390 € τον χρόνο».** Not "free" — a free tier
+reads as hobby software to a municipal director. Not €790 or €1.890 — those are
+the tier they are being given, not the tier they must buy. €390 is the honest
+entry price for the reader being addressed, and it sits above the cheapest
+contract in the whole ΔΙΑΥΓΕΙΑ dataset (€300), which is where it belongs.
 
 The site, which has room to be complete, names the full ladder including the free
-level and its 500-title cap. Neither surface overstates; the ad leads with one
-number and the site explains all of them.
+level. Neither surface overstates; the ad leads with one number and the site
+explains all of them.
 
-The €79/month price is stated plainly as the price, with the first 12 months free
-for the first five. No money changes hands during the offer period and the site
+The Municipal price is stated plainly, with the first 12 months free for the
+first five. Note the offer is worth MORE than before: Municipal keeps its €79
+monthly headline while its capacity doubled to 60.000 titles. No money changes hands during the offer period and the site
 carries no checkout. See
 `docs/brand/name-clearance-2026-08-21.md` and `apps/site/content/programme-terms.el.md`.
 

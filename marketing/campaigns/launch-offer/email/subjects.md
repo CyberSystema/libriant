@@ -30,10 +30,10 @@ The fallback when the library's name isn't in your list.
 
 Mirrors the ad's central line, so the open feels continuous.
 
-> **Never anchor on the full-tier annual price.** An earlier draft led with a
-> struck «948€ → 0€». It fails for a good reason: it makes every reader —
-> including a school library that would never be on that tier — picture a €948
-> invoice twelve months out. The ad now says "πακέτα από 19€ τον μήνα", which is
+> **Never anchor on the full-tier annual price.** An earlier draft led with the
+> Municipal price struck through against zero. It fails for a good reason: it
+> makes every reader — including a school library that now fits the free tier
+> outright — picture that invoice landing twelve months out. The ad now says «πακέτα από 390 € τον χρόνο», which is
 > the real entry price for a library of any size.
 
 **4. Product-first**

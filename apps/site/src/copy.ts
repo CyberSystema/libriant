@@ -99,7 +99,7 @@ export const HOME: Record<Lang, HomeCopy> = {
     statFromLabel: 'τον μήνα, μετά τον πρώτο χρόνο',
     capsIntro: (plan) => `Τι περιλαμβάνει το πακέτο ${plan}:`,
     offerFine: (m, entry, plan, planned) =>
-      `Χωρίς πιστωτική κάρτα και χωρίς αυτόματη ανανέωση. Μετά τους ${m} μήνες επιλέγετε το πακέτο που ταιριάζει στο μέγεθος της βιβλιοθήκης σας — τα πακέτα ξεκινούν από <strong>${entry} τον μήνα</strong>, ενώ το ${plan}, που παίρνετε δωρεάν τώρα, κοστίζει ${planned}. Οι ιδρυτικές βιβλιοθήκες κρατούν μόνιμη έκπτωση — και για πολύ μικρές συλλογές (έως 500 τίτλους) υπάρχει δωρεάν πακέτο.`,
+      `Χωρίς πιστωτική κάρτα και χωρίς αυτόματη ανανέωση. Μετά τους ${m} μήνες επιλέγετε το πακέτο που ταιριάζει στο μέγεθος της βιβλιοθήκης σας — τα πακέτα ξεκινούν από <strong>${entry} τον μήνα</strong>, ενώ το ${plan}, που παίρνετε δωρεάν τώρα, κοστίζει ${planned}. Οι ιδρυτικές βιβλιοθήκες κρατούν μόνιμη έκπτωση — και για μικρές συλλογές (έως 5.000 τίτλους) υπάρχει δωρεάν πακέτο.`,
     featuresFallback: 'Ό,τι χρειάζεται η βιβλιοθήκη σας',
     howTitle: 'Πώς δουλεύει',
     howSubtitle: 'Τρία βήματα, και το βαρύ κομμάτι το αναλαμβάνουμε εμείς.',
@@ -175,7 +175,7 @@ export const HOME: Record<Lang, HomeCopy> = {
     statFromLabel: 'a month, after the first year',
     capsIntro: (plan) => `What the ${plan} plan includes:`,
     offerFine: (m, entry, plan, planned) =>
-      `No credit card and no automatic renewal. After ${m} months you choose the plan that fits your library — plans start at <strong>${entry} a month</strong>, while ${plan}, which you get free now, costs ${planned}. Founding libraries keep a permanent discount — and for very small collections (up to 500 titles) there is a free plan.`,
+      `No credit card and no automatic renewal. After ${m} months you choose the plan that fits your library — plans start at <strong>${entry} a month</strong>, while ${plan}, which you get free now, costs ${planned}. Founding libraries keep a permanent discount — and for smaller collections (up to 5,000 titles) there is a free plan.`,
     featuresFallback: 'Everything your library needs',
     howTitle: 'How it works',
     howSubtitle: 'Three steps, and we take on the heavy part.',

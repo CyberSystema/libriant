@@ -80,19 +80,26 @@ of magnitude more than the server it runs on.
 
 ## 3. Revenue per customer — the assumption that decides everything
 
-Plans: Starter €0 (500 titles) · Community €19 (5k) · Municipal €79 (30k) ·
-Institutional €249 (200k).
+**Repriced 2026-08-22** against 76 real contract awards published on ΔΙΑΥΓΕΙΑ.
+The median Greek library pays about **€900/yr** for openABEKT; the most common
+contract is **€500/yr**; the range is €300–€1,700. The old ladder priced the
+entry tier at €228/yr — below the cheapest contract in the entire dataset.
 
-Greek municipal libraries typically hold 10,000–50,000 volumes, which points at
-Municipal. But **ABEKT is free and state-backed**, so a library already on it
-needs a positive reason to start paying — and the ones easiest to win are the
-small ones on Excel or paper, who fit the cheap tiers.
+Plans (annual, ten months for twelve): Starter free (5k titles) · Community €390
+(20k) · Municipal €790 (60k) · Central €1,190 (150k) · Institutional €1,890
+(400k).
 
-| Mix             | Starter | €19 | €79 | €249 | Avg/customer/yr |
-| --------------- | ------- | --- | --- | ---- | --------------- |
-| **Pessimistic** | 30%     | 50% | 18% | 2%   | **€344**        |
-| **Central**     | 15%     | 40% | 35% | 10%  | **€722**        |
-| Optimistic      | 10%     | 25% | 50% | 15%  | €979            |
+Greek δημοτικές typically hold 10,000–50,000 volumes, which points at Municipal —
+and 60,000 titles now covers the median Greek public library, where the old
+30,000 cap did not. But **ABEKT is free and state-backed**, so a library already
+on it needs a positive reason to start paying, and the ones easiest to win are
+the small ones on Excel or paper.
+
+| Mix             | Starter | €390 | €790 | €1,190 | €1,890 | Avg/customer/yr |
+| --------------- | ------- | ---- | ---- | ------ | ------ | --------------- |
+| **Pessimistic** | 30%     | 50%  | 16%  | 3%     | 1%     | **€376**        |
+| **Central**     | 15%     | 38%  | 32%  | 11%    | 4%     | **€608**        |
+| Optimistic      | 10%     | 25%  | 40%  | 18%    | 7%     | €760            |
 
 ## 4. Pipeline — pessimistic, as asked
 
@@ -118,10 +125,11 @@ as central. Correcting that.
 
 | Scenario                                  | Cost     | €/customer | Paying customers needed |
 | ----------------------------------------- | -------- | ---------- | ----------------------- |
-| Libriant carries full statutory load      | €4,719   | €344       | **14**                  |
-| Libriant carries full statutory load      | €2,763   | €722       | **4**                   |
-| **Statutory shared / already registered** | **€650** | €344       | **2**                   |
-| **Statutory shared / already registered** | **€258** | €722       | **1**                   |
+| Libriant carries full statutory load      | €4,719   | €376       | **13**                  |
+| Libriant carries full statutory load      | €4,719   | €608       | **8**                   |
+| Libriant carries full statutory load      | €2,763   | €608       | **5**                   |
+| **Statutory shared / already registered** | **€650** | €376       | **2**                   |
+| **Statutory shared / already registered** | **€258** | €608       | **1**                   |
 
 Against a central pipeline of **7 active libraries in year one**, that produces
 two completely different answers:

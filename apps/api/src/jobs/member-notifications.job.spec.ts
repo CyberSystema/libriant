@@ -1,14 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { tenantFindMany, tenantGetClient, tenantDestroy, enqueue, emailDestroy, redisDestroy } =
-  vi.hoisted(() => ({
-    tenantFindMany: vi.fn(),
-    tenantGetClient: vi.fn(),
-    tenantDestroy: vi.fn().mockResolvedValue(undefined),
-    enqueue: vi.fn(),
-    emailDestroy: vi.fn().mockResolvedValue(undefined),
-    redisDestroy: vi.fn().mockResolvedValue(undefined),
-  }));
+const {
+  tenantFindMany,
+  tenantGetClient,
+  tenantDestroy,
+  enqueue,
+  emailDestroy,
+  redisDestroy,
+  getBool,
+} = vi.hoisted(() => ({
+  tenantFindMany: vi.fn(),
+  tenantGetClient: vi.fn(),
+  tenantDestroy: vi.fn().mockResolvedValue(undefined),
+  enqueue: vi.fn(),
+  emailDestroy: vi.fn().mockResolvedValue(undefined),
+  redisDestroy: vi.fn().mockResolvedValue(undefined),
+  // Member notifications are a paid feature; the job asks the plan first.
+  getBool: vi.fn().mockResolvedValue(true),
+}));
 
 vi.mock('@libriant/db-control', () => ({ controlDb: { tenant: { findMany: tenantFindMany } } }));
 vi.mock('../config/env.js', () => ({
@@ -27,6 +36,16 @@ vi.mock('../platform/redis.service.js', () => ({
 vi.mock('../email/email.service.js', () => ({
   EmailService: vi.fn(function () {
     return { enqueue, onModuleDestroy: emailDestroy };
+  }),
+}));
+vi.mock('../plans/effective-plan.service.js', () => ({
+  EffectivePlanService: vi.fn(function () {
+    return { getBool };
+  }),
+}));
+vi.mock('../platform-settings/platform-settings.service.js', () => ({
+  PlatformSettingsService: vi.fn(function () {
+    return {};
   }),
 }));
 
@@ -77,6 +96,7 @@ const hold = (id: string) => ({
 describe('sendMemberNotifications', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getBool.mockResolvedValue(true);
     tenantFindMany.mockResolvedValue([TENANT]);
     enqueue.mockResolvedValue({ outboxId: 'o1', alreadyExisted: false });
   });
@@ -181,5 +201,43 @@ describe('sendMemberNotifications', () => {
     expect(emailDestroy).toHaveBeenCalled();
     expect(redisDestroy).toHaveBeenCalled();
     expect(tenantDestroy).toHaveBeenCalled();
+  });
+
+  it('sends nothing when the plan does not include email notifications', async () => {
+    // The pricing table has always advertised member notifications as a paid
+    // feature; until this gate existed, nothing enforced it and a free-plan
+    // library that switched reminders on got them.
+    getBool.mockResolvedValue(false);
+    tenantFindMany.mockResolvedValue([TENANT]);
+    tenantGetClient.mockReturnValue(
+      makeClient({
+        settings: {
+          notifyDueSoon: true,
+          notifyOverdue: true,
+          notifyHoldReady: true,
+          dueSoonDays: 3,
+          notificationTemplates: {},
+        },
+        dueSoon: [loan('l1')],
+      }),
+    );
+
+    const res = await sendMemberNotifications();
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(getBool).toHaveBeenCalledWith('t1', 'email_notifications_enabled');
+    expect(res.counts).toMatchObject({ dueSoon: 0, overdue: 0, holdReady: 0 });
+  });
+
+  it('checks the plan before touching the tenant database', async () => {
+    // Cheap check first: a free-plan tenant should cost one cached plan read,
+    // not a connection and a query against its database.
+    getBool.mockResolvedValue(false);
+    tenantFindMany.mockResolvedValue([TENANT]);
+    tenantGetClient.mockReturnValue(makeClient({ settings: null }));
+
+    await sendMemberNotifications();
+
+    expect(tenantGetClient).not.toHaveBeenCalled();
   });
 });

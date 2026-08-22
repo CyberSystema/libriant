@@ -4,6 +4,8 @@ import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { RedisService } from '../platform/redis.service.js';
 import { EmailService } from '../email/email.service.js';
+import { EffectivePlanService } from '../plans/effective-plan.service.js';
+import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { pinWorkerConnLimit } from './fine-accrual.job.js';
 import type { JobResult } from './jobs.types.js';
 
@@ -135,6 +137,12 @@ export async function sendMemberNotifications(): Promise<JobResult> {
   const tenantPrisma = new TenantPrismaService();
   const redis = new RedisService();
   const emails = new EmailService(redis);
+  // Member notifications are a paid feature, and until now nothing enforced
+  // that: this job gated only on the tenant's own settings, so a free-plan
+  // library that switched reminders on got them — while the pricing table said
+  // otherwise. Sending email costs real money per message, so the free tier
+  // cannot have an open tap.
+  const plans = new EffectivePlanService(redis, new PlatformSettingsService(redis));
   const counts = { dueSoon: 0, overdue: 0, holdReady: 0 };
   let failed = 0;
   try {
@@ -144,7 +152,7 @@ export async function sendMemberNotifications(): Promise<JobResult> {
       // toward Postgres max_connections.
       const ctx: TenantContext = { ...t, dbUrl: pinWorkerConnLimit(t.dbUrl), resolvedFrom: 'path' };
       try {
-        const c = await notifyOneTenant(ctx, tenantPrisma, emails);
+        const c = await notifyOneTenant(ctx, tenantPrisma, emails, plans);
         counts.dueSoon += c.dueSoon;
         counts.overdue += c.overdue;
         counts.holdReady += c.holdReady;
@@ -173,7 +181,14 @@ async function notifyOneTenant(
   ctx: TenantContext,
   tenantPrisma: TenantPrismaService,
   emails: EmailService,
+  plans: EffectivePlanService,
 ): Promise<{ dueSoon: number; overdue: number; holdReady: number }> {
+  // Checked before any tenant-DB work: with subscriptions disabled this
+  // resolves true for everyone, so nothing changes until billing is switched on.
+  if (!(await plans.getBool(ctx.id, 'email_notifications_enabled'))) {
+    return { dueSoon: 0, overdue: 0, holdReady: 0 };
+  }
+
   const client = tenantPrisma.getClient(ctx);
   const settings = await client.tenantSetting.findUnique({ where: { id: 1 } });
   if (!settings) return { dueSoon: 0, overdue: 0, holdReady: 0 };

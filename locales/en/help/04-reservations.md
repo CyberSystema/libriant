@@ -64,5 +64,6 @@ next person in the queue is auto-promoted.
 
 ## Plan note
 
-Reservations require a paid plan (Community and above). Starter
-libraries get a friendly upgrade page if they try to place one.
+Reservations require a plan with a subscription (Community and above).
+Libraries on the free Starter plan get a friendly upgrade page if they try
+to place one.
