@@ -4,7 +4,7 @@
   "private": true,
   "description": "Libriant desktop shell — a thin, secure Electron wrapper around the Libriant web app.",
   "author": "CyberSystema <ops@libriant.com>",
-  "homepage": "https://libriant.com",
+  "homepage": "https://app.libriant.com",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",

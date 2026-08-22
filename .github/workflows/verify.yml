@@ -54,6 +54,20 @@ jobs:
       - name: Prettier formatting
         run: pnpm format:check
 
+      # The marketing site is generated, and build.ts carries two gates that
+      # nothing else exercises: the [PLACEHOLDER] refusal and the copy lint.
+      # Strict (not --draft) so a placeholder or a banned claim fails the build.
+      - name: Build the marketing site
+        run: pnpm --filter @libriant/site build
+
+      - name: Check the site actually emitted
+        run: |
+          test -s apps/site/dist/index.html
+          test -s apps/site/dist/en/index.html
+          test -s apps/site/dist/404.html
+          test -s apps/site/dist/en/404.html
+          test -s apps/site/dist/styles.css
+
   unit-tests:
     name: Unit tests (vitest, mocked)
     runs-on: ubuntu-latest

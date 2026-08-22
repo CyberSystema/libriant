@@ -14,6 +14,11 @@ on:
       - 'apps/**'
       - 'packages/**'
       - 'infra/**'
+      # The marketing site is generated from these at build time
+      # (apps/site/build.ts reads locales/<lang>/landing.json and assets/icons),
+      # so a copy or icon change must trigger a deploy like any code change.
+      - 'locales/**'
+      - 'assets/**'
       - '.github/workflows/deploy.yml'
       - '.github/workflows/verify.yml'
   workflow_dispatch:
@@ -272,6 +277,17 @@ jobs:
             docker image prune -af --filter 'until=72h' || true
             docker builder prune -f --filter 'until=72h' || true
             docker compose \$FILES pull
+            # Validate the Caddyfile BEFORE anything is recreated. Two vhosts
+            # claiming the same hostname is an adapter error, and without this
+            # check the failure sequence is: \`up -d\` succeeds, \`caddy reload\`
+            # fails, the fallback \`up -d --force-recreate caddy\` crash-loops,
+            # and all three hosts go dark. With it, the deploy aborts and the
+            # running stack keeps serving.
+            if ! docker compose \$FILES run --rm --no-deps --entrypoint caddy caddy \\
+                 validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
+              echo "===== deploy aborted: Caddyfile is invalid =====" >&2
+              exit 1
+            fi
             # --force-recreate is deliberate: \`up -d\` alone only recreates a
             # container when compose decides the image/config changed, and with
             # the :latest / re-used tag that check can misfire — leaving the api
