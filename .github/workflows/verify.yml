@@ -180,6 +180,16 @@ jobs:
           POSTGRES_USER: libriant
           POSTGRES_PASSWORD: target-differs-on-purpose
           POSTGRES_DB: postgres
+          # trust, deliberately. The dump replaces this role's password with the
+          # SOURCE's in its prologue, and every `\connect` after that
+          # re-authenticates — so over TCP with scram the rest of the stream
+          # cannot connect and the restore dies half-done. Production never
+          # meets this because it restores over the container's local socket;
+          # a service container has no socket to offer, so trust is the
+          # equivalent. The password is still SET, so the drill can still prove
+          # the verifier was swapped; the live password-flip assertions detect
+          # trust and skip themselves rather than pass vacuously.
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports: ['5434:5432']
         options: >-
           --health-cmd "pg_isready -U libriant"

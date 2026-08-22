@@ -305,6 +305,34 @@ if [ "$CROSS" = "1" ]; then
   T_SOCK="${TARGET_SOCKET_DIR:-}"
 
   tq() { PGPASSWORD="$1" psql -qtAX -v ON_ERROR_STOP=1 -h "$T_HOST" -p "$T_PORT" -U "$PGUSER" -d "$2" -c "$3"; }
+
+  # Precondition, checked before anything is touched. The dump swaps this
+  # role's password in its prologue and every `\connect` after that
+  # re-authenticates, so a password-authenticated TCP restore breaks halfway
+  # through with a bare "password authentication failed" that says nothing
+  # about the cause. Either restore over a local socket (what production does,
+  # via `dc exec -T postgres psql`) or point at a trust target.
+  if [ -z "$T_SOCK" ] && ! PGPASSWORD='definitely-not-the-password' \
+       psql -qtAX -h "$T_HOST" -p "$T_PORT" -U "$PGUSER" -d postgres -c 'SELECT 1' >/dev/null 2>&1; then
+    bad "cross-cluster needs TARGET_SOCKET_DIR, or a target that does not password-authenticate.
+     The dump changes this role's password mid-stream, so every \\connect after
+     that would fail. Give it the target's unix socket directory, or run the
+     target with POSTGRES_HOST_AUTH_METHOD=trust."
+    printf '\n  %s checks passed, %s failed\n' "$ok" "$fail"
+    printf '  \033[31mDR DRILL FAILED\033[0m\n'
+    exit 1
+  fi
+  # Put the target back to its OWN password first. A previous cross-cluster run
+  # ends with the target holding the SOURCE's — that is the finding — so without
+  # this the second run fails on its own leftovers rather than on anything real.
+  # CI gets a fresh container each time and would never notice; a re-run does.
+  for pw in "$T_PW" "$PGPASSWORD"; do
+    PGPASSWORD="$pw" psql -qtAX -h "$T_HOST" -p "$T_PORT" -U "$PGUSER" -d postgres \
+      -c "ALTER ROLE \"$PGUSER\" PASSWORD '$T_PW'" >/dev/null 2>&1 && break
+  done
+  [ -z "$T_SOCK" ] || psql -qtAX -h "$T_SOCK" -p "$T_PORT" -U "$PGUSER" -d postgres \
+    -c "ALTER ROLE \"$PGUSER\" PASSWORD '$T_PW'" >/dev/null 2>&1 || true
+
   chk "target reachable with ITS OWN password" "$(tq "$T_PW" postgres 'SELECT 1' 2>/dev/null || echo AUTH-FAILED)" "1"
   chk "target password differs from source"    "$([ "$T_PW" != "$PGPASSWORD" ] && echo differs || echo same)" "differs"
 
