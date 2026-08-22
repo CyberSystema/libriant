@@ -115,10 +115,6 @@ function applicationForm(c: SiteConfig, o: RenderOptions, lang: Lang): string {
   const f = FORM[lang];
   const errors = o.errors ?? {};
   const values = o.values ?? {};
-  const turnstile = c.site.turnstileSiteKey
-    ? `<div class="cf-turnstile" data-sitekey="${esc(c.site.turnstileSiteKey)}" data-language="${lang}"></div>`
-    : '';
-
   const typeOptions = LIBRARY_TYPE_OPTIONS[lang]
     .map(
       (t) =>
@@ -165,7 +161,6 @@ function applicationForm(c: SiteConfig, o: RenderOptions, lang: Lang): string {
     <input id="f-website" name="website" type="text" tabindex="-1" autocomplete="off">
   </div>
 
-  ${turnstile}
 
   <div class="consent">
     <input type="checkbox" id="f-consent" name="consent" value="yes" required${values.consent === 'yes' ? ' checked' : ''}${errors.consent ? ' aria-invalid="true"' : ''}>

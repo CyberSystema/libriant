@@ -26,7 +26,6 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/.turbo/**',
       // Wrangler's generated dev/deploy bundles — not source.
-      '**/.wrangler/**',
       '**/coverage/**',
       '**/.prisma/**',
       '.dev-storage/**',
@@ -66,7 +65,7 @@ export default tseslint.config(
   {
     // The PWA service worker runs in a ServiceWorkerGlobalScope (self, caches,
     // clients, fetch, …) — not Node or the DOM window.
-    files: ['apps/web/public/sw.js'],
+    files: ['apps/web/public/sw.js', 'apps/site/public/sw.js'],
     languageOptions: {
       globals: { ...globals.serviceworker, ...globals.browser },
     },

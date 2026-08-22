@@ -28,6 +28,3 @@ storage/
 .dev-storage/
 prisma/generated/
 
-# Wrangler local dev secrets (apps/site)
-.dev.vars
-.wrangler/

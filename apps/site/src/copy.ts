@@ -405,8 +405,6 @@ type ErrorCopy = {
   invalidSubmission: string;
   checkFields: string;
   rateLimited: string;
-  turnstileFailed: string;
-  turnstileUnavailable: string;
   saveFailed: (email: string) => string;
 };
 
@@ -428,10 +426,6 @@ export const ERRORS: Record<Lang, ErrorCopy> = {
     checkFields: 'Ελέγξτε τα πεδία που σημειώνονται παρακάτω και δοκιμάστε ξανά.',
     rateLimited:
       'Λάβαμε ήδη αρκετές υποβολές από εσάς. Δοκιμάστε ξανά σε μία ώρα, ή γράψτε μας απευθείας.',
-    turnstileFailed:
-      'Ο έλεγχος ασφαλείας δεν ολοκληρώθηκε. Ανανεώστε τη σελίδα και δοκιμάστε ξανά.',
-    turnstileUnavailable:
-      'Ο έλεγχος ασφαλείας δεν είναι διαθέσιμος αυτή τη στιγμή. Δοκιμάστε ξανά αργότερα ή γράψτε μας απευθείας.',
     saveFailed: (e) =>
       `Δεν καταφέραμε να αποθηκεύσουμε την αίτησή σας. Δοκιμάστε ξανά σε λίγο, ή στείλτε μας email στο ${e}.`,
   },
@@ -451,9 +445,6 @@ export const ERRORS: Record<Lang, ErrorCopy> = {
     checkFields: 'Check the fields marked below and try again.',
     rateLimited:
       'We have already had several submissions from you. Try again in an hour, or write to us directly.',
-    turnstileFailed: 'The security check did not complete. Reload the page and try again.',
-    turnstileUnavailable:
-      'The security check is unavailable right now. Try again later, or write to us directly.',
     saveFailed: (e) =>
       `We could not save your application. Try again shortly, or email us at ${e}.`,
   },

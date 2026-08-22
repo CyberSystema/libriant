@@ -39,7 +39,6 @@ export type SiteConfig = {
     origin: string;
     notifyTo: string;
     notifyFrom: string;
-    turnstileSiteKey: string;
   };
   legal: {
     /** Date the legal text last actually changed. Displayed on the policy pages
@@ -723,11 +722,7 @@ ${alternates}
 <meta name="twitter:card" content="summary">
 <meta name="theme-color" content="#0A222C">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/styles.css">${
-    o.config.site.turnstileSiteKey
-      ? `\n<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>`
-      : ''
-  }
+<link rel="stylesheet" href="/styles.css">
 </head>
 <body${o.bodyClass ? ` class="${esc(o.bodyClass)}"` : ''}>
 ${draftBanner}

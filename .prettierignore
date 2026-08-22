@@ -11,6 +11,6 @@ packages/db-tenant/prisma/migrations/
 apps/web/next-env.d.ts
 # Audit deliverables: machine-generated findings JSON + reports, not source.
 docs/audit/
-# Wrangler's generated dev/deploy bundles.
-.wrangler/
+# Generated: apps/site/dist is the production docroot, rendered by CI and
+# baked into the edge image. Never commit it, never format it.
 apps/site/dist/

@@ -22,8 +22,7 @@
   "site": {
     "origin": "https://libriant.com",
     "notifyTo": "info@libriant.com",
-    "notifyFrom": "no-reply@libriant.com",
-    "turnstileSiteKey": ""
+    "notifyFrom": "no-reply@libriant.com"
   },
   "legal": {
     "_comment": "Bump ONLY when the text of privacy.el.md or programme-terms.el.md actually changes. It is displayed on those pages AND stored with every consent, so auto-dating it on each rebuild would claim revisions that never happened.",

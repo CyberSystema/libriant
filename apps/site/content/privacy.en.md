@@ -43,14 +43,17 @@ anyone.
 
 ## 3. Where it is stored
 
-Your application is stored in a **Cloudflare D1 database located in Western
-Europe**, and we receive an email notification at the same time. Two processors
-are involved:
+Your application is stored in a **PostgreSQL database on a server in the
+European Union**, and we receive an email notification at the same time. Three
+processors are involved:
 
-- **Cloudflare, Inc.** — hosting the website, the application database, sending
-  the notification, and protecting the form against automated submissions.
-  Cloudflare is bound by its Data Processing Addendum and by the EU standard
-  contractual clauses for any transfer outside the EEA.
+- **Hetzner Online GmbH** — the server the service runs on and where the
+  database lives. EU-based company, EU infrastructure, under a Data Processing
+  Agreement.
+- **Cloudflare, Inc.** — purely as the network in front of the server (DNS, TLS,
+  filtering malicious traffic). It does not store your application. Cloudflare
+  is bound by its Data Processing Addendum and by the EU standard contractual
+  clauses for any transfer outside the EEA.
 - **Apple Inc. (iCloud Mail)** — the `{{CONTACT_EMAIL}}` mailbox the
   notification arrives in and from which we reply to you. Our correspondence is
   held there under Apple's own terms of service and may be stored on servers
@@ -58,12 +61,14 @@ are involved:
 
 ## 4. Cookies
 
-This website **sets no cookies of its own**. Cloudflare may set `__cf_bm`, a
-strictly necessary bot-protection cookie with a 30-minute lifetime. If Turnstile
-form protection is enabled, one script is loaded from
-`challenges.cloudflare.com` — **that is the only request to any external server
-anywhere on this site**. There are no analytics, no pixels, no social media
-embeds and no advertising cookies.
+This website **sets no cookies of its own**. Cloudflare, which sits in front of
+the server as a protective network, may set `__cf_bm`, a strictly necessary
+bot-protection cookie with a 30-minute lifetime.
+
+**This site makes no request to any external server at all.** It loads no fonts,
+no scripts, no images and nothing else from third parties. There are no
+analytics, no pixels, no social media embeds and no advertising cookies. You can
+verify all of it by opening the page source.
 
 ## 5. How long we keep it
 
