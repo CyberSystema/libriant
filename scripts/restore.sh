@@ -130,7 +130,7 @@ log "restoring postgres (DROP + recreate via pg_dumpall script)…"
 # The stream is filtered: a pg_dumpall --clean script tries to DROP and CREATE
 # the very role it is restored as, which aborts psql under ON_ERROR_STOP=1
 # AFTER the DROP DATABASE wave. See scripts/_lib/pg-restore-filter.sh.
-{ pg_self_role_reset_sql "$PG_ROLE"; gunzip -c "$dir/postgres.sql.gz" | pg_restore_filter "$PG_ROLE"; } \
+{ pg_restore_preamble "$PG_ROLE"; gunzip -c "$dir/postgres.sql.gz" | pg_restore_filter "$PG_ROLE"; } \
   | dc exec -T postgres psql -U "$PG_ROLE" -d postgres -v ON_ERROR_STOP=1
 log "  postgres restored"
 

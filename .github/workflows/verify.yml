@@ -171,6 +171,22 @@ jobs:
     services:
       # Dedicated, throwaway cluster for the DR drill. Separate from the
       # service below because the drill dumps and destroys an ENTIRE cluster.
+      # Target for the cross-cluster drill: independently initialised with a
+      # DIFFERENT superuser password, which is the whole point — it proves what
+      # a pg_dumpall restore does to a rebuilt host's credentials.
+      postgres-drill-target:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: libriant
+          POSTGRES_PASSWORD: target-differs-on-purpose
+          POSTGRES_DB: postgres
+        ports: ['5434:5432']
+        options: >-
+          --health-cmd "pg_isready -U libriant"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
       postgres-drill:
         image: postgres:16-alpine
         env:
@@ -324,6 +340,18 @@ jobs:
           # after this one — with it.
           PGHOST=localhost PGPORT=5433 PGUSER=libriant PGPASSWORD=libriant \
             pnpm dr:drill
+
+      # The rebuilt-host case: restore this dump into a SECOND cluster whose
+      # superuser password differs. It is what caught the template1 hazard —
+      # a dump from an already-restored cluster cannot be restored onto a
+      # pristine one, which is precisely the DR scenario.
+      - name: DR drill — cross-cluster (rebuilt-host restore)
+        run: |
+          set -euo pipefail
+          PGHOST=localhost PGPORT=5433 PGUSER=libriant PGPASSWORD=libriant \
+          TARGET_PGHOST=localhost TARGET_PGPORT=5434 \
+          TARGET_PGPASSWORD=target-differs-on-purpose \
+            pnpm dr:drill --cross-cluster
 
       - name: Apply tenant migration to libriant_demo
         run: pnpm tenant:migrate:deploy

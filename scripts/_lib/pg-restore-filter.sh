@@ -92,3 +92,28 @@ pg_self_role_reset_sql() {
   printf 'ALTER ROLE "%s" RESET ALL;\n' "$q"
   printf 'ALTER ROLE "%s" WITH CONNECTION LIMIT -1 VALID UNTIL %s;\n' "$q" "'infinity'"
 }
+
+# Everything the restore stream needs in front of it. Emit this, then the
+# filtered dump.
+#
+# Besides the role reset above, this normalises template1. pg_dumpall emits a
+# bare `DROP DATABASE template1;` and only precedes it with
+# `UPDATE pg_database SET datistemplate = false` when the SOURCE's template1 was
+# still marked as a template. It stops being one the first time a cluster is
+# restored into, because pg_dumpall recreates it with plain
+# `CREATE DATABASE template1 WITH TEMPLATE = template0 ...` and never sets the
+# flag back. So a dump taken from a cluster that has itself been restored into
+# carries no UPDATE — and restoring it onto a PRISTINE host dies with
+# `ERROR: cannot drop a template database`, after the DROP DATABASE wave.
+#
+# That is the rebuilt-host path: exactly when you need the backup most. Found by
+# the cross-cluster drill; the single-cluster one cannot see it, because it
+# restores into a cluster already carrying the degraded flag.
+#
+# The statement below is the same one pg_dumpall emits; issuing it
+# unconditionally is idempotent and makes the DROP safe either way.
+pg_restore_preamble() {
+  local role="${1:?pg_restore_preamble: role name required}"
+  printf "UPDATE pg_catalog.pg_database SET datistemplate = false WHERE datname = 'template1';\n"
+  pg_self_role_reset_sql "$role"
+}

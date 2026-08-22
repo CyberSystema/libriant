@@ -491,6 +491,39 @@ Hetzner Cloud VM, destroyed afterwards) and verify:
 
 Write down how long it took. That number — not an aspiration — is your real RTO.
 
+### Restoring onto a REBUILT host — two things that will surprise you
+
+Both were found by `pnpm dr:drill --cross-cluster`, which restores a dump into a
+second, independently-initialised cluster. Neither is visible when you restore
+onto the same machine, which is why they survived until someone looked.
+
+**1. The superuser password becomes the BACKUP's.** A `pg_dumpall` backup
+carries role password hashes, so restoring it overwrites whatever the new host
+was initialised with. `ensure-env.sh` mints a fresh `POSTGRES_PASSWORD` on a
+host with no `.env.prod`; after the restore that value is wrong and the stack
+cannot connect. Measured: target initialised with its own password, restore
+exits 0, and afterwards the target rejects its own password and accepts the
+source's.
+
+So on a rebuilt host, **take `POSTGRES_PASSWORD` from the password-manager entry
+for the SOURCE host**, not from the freshly generated `.env.prod`. Set it before
+bringing api/worker/web up, or they will fail authentication against a database
+that is otherwise perfectly restored.
+
+**2. A dump from an already-restored cluster will not restore onto a pristine
+one — unless you normalise `template1` first.** `pg_dumpall` emits a bare
+`DROP DATABASE template1;` and only precedes it with
+`UPDATE pg_database SET datistemplate = false` when the SOURCE's template1 was
+still a template. It stops being one the first time a cluster is restored into,
+because `pg_dumpall` recreates it with plain
+`CREATE DATABASE template1 WITH TEMPLATE = template0 …` and never restores the
+flag. So the second-generation dump omits the UPDATE, and a pristine target dies
+with `ERROR: cannot drop a template database` — after the DROP DATABASE wave.
+
+`scripts/_lib/pg-restore-filter.sh` now issues that UPDATE unconditionally, so
+both `restore.sh` and the drill are immune. It is the same statement pg_dumpall
+itself emits; issuing it always is idempotent.
+
 > Whatever drives the cluster from outside a container must use a psql and
 > pg_dumpall matching the server's major version. A newer client emits settings
 > an older server rejects (dumping 16 with the 18 client produces

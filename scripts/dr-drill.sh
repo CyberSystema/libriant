@@ -22,13 +22,37 @@
 # driving the cluster from outside has to match deliberately. It is also the
 # reason a major-version upgrade must dump with the NEW server's binaries.
 #
+# --cross-cluster additionally restores the SOURCE cluster's dump into a SECOND,
+# independently-initialised cluster whose superuser password differs. That is
+# the rebuilt-host case from docs/server-handbook.md, and it has a consequence
+# nobody expects until it happens. Needs TARGET_PGPORT (and TARGET_PGPASSWORD,
+# TARGET_PGHOST, TARGET_SOCKET_DIR).
+#
 # DESTRUCTIVE: drops and recreates its own fixture databases (lbrdrill_*) on the
 # target cluster. Never point it at production.
 set -euo pipefail
 
 PGHOST="${PGHOST:-127.0.0.1}"; PGPORT="${PGPORT:-5432}"
 PGUSER="${PGUSER:-libriant}"; export PGHOST PGPORT PGUSER PGPASSWORD
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d)"
+ORIG_PW="${PGPASSWORD:-}"
+restore_password() {
+  [ -n "$ORIG_PW" ] || return 0
+  for pw in "$ORIG_PW" "$DRIFT_PW"; do
+    PGPASSWORD="$pw" psql -qtAX -h "${PGHOST:-127.0.0.1}" -p "${PGPORT:-5432}" -U "${PGUSER:-libriant}" \
+      -d postgres -c "ALTER ROLE \"${PGUSER:-libriant}\" PASSWORD '$ORIG_PW'" >/dev/null 2>&1 && return 0
+  done
+  printf '  \033[31m!\033[0m could not restore the superuser password — it may still be the drifted one\n' >&2
+}
+trap 'restore_password; rm -rf "$WORK"' EXIT
+DRIFT_PW='drifted-not-the-real-one'
+CROSS=0
+for a in "$@"; do
+  case "$a" in
+    --cross-cluster) CROSS=1 ;;
+    *) printf 'dr-drill: unknown flag: %s\n' "$a" >&2; exit 2 ;;
+  esac
+done
 
 # shellcheck source=_lib/pg-restore-filter.sh
 . "$(dirname "$0")/_lib/pg-restore-filter.sh"
@@ -84,6 +108,24 @@ schema_dump() {
   pg_dump --schema-only --no-comments -d "$1" | grep -vE '^\\(un)?restrict '
 }
 
+# Negative control: if the server is not actually checking passwords, every
+# auth assertion below is a tautology. Under `trust` a deliberately wrong
+# password succeeds — prove it fails before trusting anything that follows.
+# Count real errors in a psql -v VERBOSITY=verbose log, without depending on
+# the English word ERROR — compose sets LANG=el_GR.UTF-8 and psql localises
+# every severity. Verbose mode prints the SQLSTATE code, which is not
+# localised: `ERROR:  42809: ...`. NOTICE lines carry 00000 ("successful
+# completion"), so those are excluded rather than counted as failures.
+sqlstate_errors() {
+  grep -E '^[^:]+:[[:space:]]+[0-9A-Z]{5}:' "$1" 2>/dev/null | grep -vcE '[[:space:]]00000:' || true
+}
+
+auth_is_enforced() {
+  PGPASSWORD='definitely-not-the-password' \
+    psql -qtAX -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d postgres -c 'SELECT 1' >/dev/null 2>&1 \
+    && return 1 || return 0
+}
+
 say "Building the fixture cluster"
 # Start from a known-clean self role. A previous run leaves it drifted, and a
 # dump taken from a drifted role bakes the drift in as the expected value —
@@ -91,6 +133,12 @@ say "Building the fixture cluster"
 psql -qtAX -d postgres -v ON_ERROR_STOP=1 >/dev/null <<SQL
 ALTER ROLE $PGUSER RESET ALL;
 ALTER ROLE $PGUSER WITH CONNECTION LIMIT -1 VALID UNTIL 'infinity';
+-- The password too. The drift below changes it, the restore is supposed to put
+-- it back, and if it does not the NEXT run dumps the drifted hash as its
+-- expected value and the assertion compares it against itself. Resetting to
+-- the password we are connecting with makes the run idempotent and gives the
+-- comparison something real to prove.
+ALTER ROLE $PGUSER PASSWORD '$PGPASSWORD';
 SQL
 psql -qtAX -d postgres -v ON_ERROR_STOP=1 <<SQL >/dev/null
 DROP DATABASE IF EXISTS $CTRL; DROP DATABASE IF EXISTS $T1; DROP DATABASE IF EXISTS $T2;
@@ -152,6 +200,12 @@ for v in src_plans src_books2 src_grant src_pw src_aux src_self src_dbset; do
   [ -n "$val" ] || { printf '  \033[31m✗\033[0m fixture fingerprint %s is empty — aborting\n' "$v"; exit 1; }
 done
 
+if auth_is_enforced; then
+  pass "password auth is enforced (negative control)"
+else
+  bad "server accepts ANY password (trust auth) — every auth assertion here would be meaningless"
+fi
+
 say "Taking a backup with backup.sh's exact flags"
 pg_dumpall --clean --if-exists | gzip -9 > "$WORK/postgres.sql.gz"
 printf '  dump: %s bytes\n' "$(wc -c < "$WORK/postgres.sql.gz" | tr -d ' ')"
@@ -163,8 +217,13 @@ say "Drifting the restoring role, so its assertions cannot be tautologies"
 psql -qtAX -d postgres -v ON_ERROR_STOP=1 >/dev/null <<SQL
 ALTER ROLE $PGUSER CONNECTION LIMIT 7;
 ALTER ROLE $PGUSER SET statement_timeout = '1s';
-ALTER ROLE $PGUSER PASSWORD 'drifted-not-the-real-one';
 SQL
+# NOTE: the password is deliberately NOT drifted here. The dump restores the
+# role's password in its prologue and every `\connect` after that
+# re-authenticates, so over TCP the remainder of the stream would fail to
+# connect with the old one. Production restores over the container's local
+# socket and never meets this. The password swap is proven by --cross-cluster,
+# where it is the whole point.
 chk "role drifted before restore" "$(q postgres "SELECT rolconnlimit FROM pg_roles WHERE rolname='$PGUSER'")" "7"
 
 say "The disaster: corrupt two LIVE databases, delete a third"
@@ -191,7 +250,7 @@ say "Restoring with restore.sh's exact pipeline"
 chk "filter pre-flight match count" \
     "$(gunzip -c "$WORK/postgres.sql.gz" | pg_restore_filter_count "$PGUSER")" "2"
 set +e
-{ pg_self_role_reset_sql "$PGUSER"; gunzip -c "$WORK/postgres.sql.gz" | pg_restore_filter "$PGUSER"; } \
+{ pg_restore_preamble "$PGUSER"; gunzip -c "$WORK/postgres.sql.gz" | pg_restore_filter "$PGUSER"; } \
   | psql -qtAX -d postgres -v ON_ERROR_STOP=1 -v VERBOSITY=verbose >"$WORK/out.txt" 2>"$WORK/err.txt"
 rc=$?
 set -e
@@ -200,7 +259,7 @@ chk "psql exit code" "$rc" "0"
 # Do NOT grep for the word "ERROR": compose sets LANG=el_GR.UTF-8 and psql
 # localises — this session's own client reported failures in Greek.
 # VERBOSITY=verbose prints a locale-independent SQLSTATE line instead.
-chk "no SQLSTATE errors in stderr" "$(grep -c 'SQLSTATE' "$WORK/err.txt" || true)" "0"
+chk "no SQLSTATE errors in stderr" "$(sqlstate_errors "$WORK/err.txt" || true)" "0"
 
 say "Verifying the restored cluster matches the source"
 chk "control plans (count:sum)" "$(q "$CTRL" "SELECT count(*)||':'||coalesce(sum(cents),0) FROM plans")" "$src_plans"
@@ -233,12 +292,77 @@ for db in "$CTRL" "$T1" "$T2"; do
   fi
 done
 
+if [ "$CROSS" = "1" ]; then
+  say "Cross-cluster: restoring this dump into a SECOND cluster with a DIFFERENT superuser password"
+  # The rebuilt-host case. ensure-env.sh mints a fresh POSTGRES_PASSWORD on a
+  # host with no .env.prod, initdb uses it — and then the backup's role hash
+  # silently replaces it. Before the stream filter existed this path aborted
+  # loudly having restored nothing; now it succeeds and hands you a cluster
+  # your own .env.prod cannot log into. That is a WORSE failure, so it is
+  # pinned here rather than left to be discovered during an outage.
+  T_HOST="${TARGET_PGHOST:-127.0.0.1}"; T_PORT="${TARGET_PGPORT:?--cross-cluster needs TARGET_PGPORT}"
+  T_PW="${TARGET_PGPASSWORD:?--cross-cluster needs TARGET_PGPASSWORD}"
+  T_SOCK="${TARGET_SOCKET_DIR:-}"
+
+  tq() { PGPASSWORD="$1" psql -qtAX -v ON_ERROR_STOP=1 -h "$T_HOST" -p "$T_PORT" -U "$PGUSER" -d "$2" -c "$3"; }
+  chk "target reachable with ITS OWN password" "$(tq "$T_PW" postgres 'SELECT 1' 2>/dev/null || echo AUTH-FAILED)" "1"
+  chk "target password differs from source"    "$([ "$T_PW" != "$PGPASSWORD" ] && echo differs || echo same)" "differs"
+
+  # Restore over a local socket where available, mirroring `dc exec -T postgres
+  # psql` inside the container; otherwise TCP with the target's own password.
+  if [ -n "$T_SOCK" ]; then t_psql=(psql -qtAX -h "$T_SOCK" -p "$T_PORT" -U "$PGUSER" -d postgres)
+  else t_psql=(env PGPASSWORD="$T_PW" psql -qtAX -h "$T_HOST" -p "$T_PORT" -U "$PGUSER" -d postgres); fi
+  set +e
+  { pg_restore_preamble "$PGUSER"; gunzip -c "$WORK/postgres.sql.gz" | pg_restore_filter "$PGUSER"; } \
+    | "${t_psql[@]}" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose >"$WORK/x.out" 2>"$WORK/x.err"
+  xrc=$?
+  set -e
+  chk "cross-cluster restore exit code" "$xrc" "0"
+  [ "$xrc" = "0" ] || { printf '  --- target stderr ---\n'; sed 's/^/  /' "$WORK/x.err" | tail -12; }
+  chk "no SQLSTATE errors" "$(sqlstate_errors "$WORK/x.err" || true)" "0"
+
+  # The data is genuinely there — this is a successful-looking restore.
+  chk "data landed on the target" \
+      "$(PGPASSWORD="$PGPASSWORD" psql -qtAX -h "$T_HOST" -p "$T_PORT" -U "$PGUSER" -d "$T1" \
+           -c 'SELECT count(*) FROM books' 2>/dev/null || echo UNREACHABLE)" "500"
+
+  # …and this is the sting. Documented as the expected outcome, not a bug:
+  # a pg_dumpall backup carries role passwords, so restoring it makes the
+  # target's superuser password the SOURCE's.
+  # The substantive claim, assertable regardless of how the target
+  # authenticates: the stored verifier is now the SOURCE cluster's.
+  src_hash=$(q postgres "SELECT substr(rolpassword,1,24) FROM pg_authid WHERE rolname='$PGUSER'")
+  tgt_hash=$(PGPASSWORD="$T_PW" psql -qtAX -h "$T_HOST" -p "$T_PORT" -U "$PGUSER" -d postgres \
+               -c "SELECT substr(rolpassword,1,24) FROM pg_authid WHERE rolname='$PGUSER'" 2>/dev/null \
+             || psql -qtAX -h "${T_SOCK:-$T_HOST}" -p "$T_PORT" -U "$PGUSER" -d postgres \
+               -c "SELECT substr(rolpassword,1,24) FROM pg_authid WHERE rolname='$PGUSER'" 2>/dev/null)
+  chk "target's stored verifier is now the SOURCE's" "$tgt_hash" "$src_hash"
+
+  # And the lived consequence — only observable where the target actually
+  # checks passwords. Under trust (a CI throwaway) every password "works", so
+  # asserting the flip there would be a tautology.
+  if PGPASSWORD='definitely-not-the-password' \
+       psql -qtAX -h "$T_HOST" -p "$T_PORT" -U "$PGUSER" -d postgres -c 'SELECT 1' >/dev/null 2>&1; then
+    printf '  \033[33m~\033[0m target uses trust auth — skipping the live password-flip assertions\n'
+  else
+    after_src=$(PGPASSWORD="$PGPASSWORD" psql -qtAX -h "$T_HOST" -p "$T_PORT" -U "$PGUSER" -d postgres -c 'SELECT 1' 2>/dev/null || echo AUTH-FAILED)
+    after_tgt=$(PGPASSWORD="$T_PW"       psql -qtAX -h "$T_HOST" -p "$T_PORT" -U "$PGUSER" -d postgres -c 'SELECT 1' 2>/dev/null || echo AUTH-FAILED)
+    chk "target now accepts the BACKUP's password" "$after_src" "1"
+    chk "target REJECTS its own former password"   "$after_tgt" "AUTH-FAILED"
+  fi
+  printf '  \033[33m!\033[0m After a cross-host restore the superuser password is the one\n'
+  printf '      from the BACKUP, not the one this host was initialised with.\n'
+  printf "      POSTGRES_PASSWORD in the rebuilt host's .env.prod is now wrong; take it\n"
+  printf '      from the password manager entry for the SOURCE host. See server-handbook §8.\n'
+fi
+
 say "Cleaning up"
 psql -qtAX -d postgres >/dev/null 2>&1 <<SQL || true
 DROP DATABASE IF EXISTS $CTRL; DROP DATABASE IF EXISTS $T1; DROP DATABASE IF EXISTS $T2;
 DROP ROLE IF EXISTS $AUX_ROLE;
 ALTER ROLE $PGUSER RESET ALL;
 ALTER ROLE $PGUSER WITH CONNECTION LIMIT -1 VALID UNTIL 'infinity';
+ALTER ROLE $PGUSER PASSWORD '$PGPASSWORD';
 SQL
 
 printf '\n  %s checks passed, %s failed\n' "$ok" "$fail"
