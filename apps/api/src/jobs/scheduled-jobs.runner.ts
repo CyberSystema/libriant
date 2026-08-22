@@ -20,10 +20,11 @@ export type ScheduledJobsHandle = {
 
 /**
  * Boots a BullMQ producer + worker for the scheduled-jobs queue and
- * registers every entry in `jobs`. Repeat-job dedup is keyed on
- * `(name, intervalMs)` so re-running this with the same config is a
- * no-op; changes to the interval get reconciled by removing any
- * repeat-job entry whose name no longer matches the current registry.
+ * registers every entry in `jobs` as a BullMQ Job Scheduler keyed on the job
+ * NAME, so re-running this with the same config is a no-op and an interval
+ * change is an upsert in place. Any scheduler whose id is no longer in the
+ * registry is removed, so a renamed or deleted job stops firing at the next
+ * boot rather than lingering forever.
  *
  * The runner has its own Redis socket (BullMQ insists — sharing the
  * RedisService client breaks LUA script ownership), and uses the same
@@ -44,32 +45,32 @@ export async function startScheduledJobs(
   const workerConnection = new Redis(env.redisUrl, redisOpts);
   const queue = new Queue(QUEUE_NAME, { connection: queueConnection, prefix: QUEUE_PREFIX });
 
-  // Reconcile schedules: remove any repeat-job whose key doesn't match a
-  // currently-registered entry. Stale schedules can otherwise linger after
-  // a deploy that removed or renamed a job — silently firing forever.
-  const existing = await queue.getRepeatableJobs();
-  const wantedKeys = new Set(jobs.map((j) => repeatKey(j.name, j.intervalMs)));
+  // Reconcile schedules: remove any scheduler that no longer corresponds to a
+  // registered job. Stale schedules can otherwise linger after a deploy that
+  // removed or renamed one — silently firing forever.
+  //
+  // BullMQ 6 replaced the legacy repeatable-job API (queue.add({repeat}),
+  // getRepeatableJobs, removeRepeatableByKey) with Job Schedulers, which are
+  // identified by an id WE choose rather than by a key BullMQ derives from
+  // (name, repeat opts). That is a straight simplification here: the interval
+  // no longer participates in identity, so changing a job's interval is an
+  // upsert in place instead of remove-then-add.
+  const existing = await queue.getJobSchedulers();
+  const wanted = new Set(jobs.map((j) => j.name));
   for (const e of existing) {
-    // BullMQ types `every` as `string | number | undefined` (it accepts
-    // both raw ms and stringified ms). Normalise before comparison.
-    const everyMs = typeof e.every === 'string' ? Number(e.every) : (e.every ?? 0);
-    const k = repeatKey(e.name, everyMs);
-    if (!wantedKeys.has(k)) {
-      await queue.removeRepeatableByKey(e.key);
+    if (!wanted.has(e.key)) {
+      await queue.removeJobScheduler(e.key);
       // eslint-disable-next-line no-console
-      console.log(`[scheduled] removed stale repeat job ${e.name}`);
+      console.log(`[scheduled] removed stale scheduler ${e.key}`);
     }
   }
   for (const j of jobs) {
-    await queue.add(
+    // Scheduler id == job name, so it is stable across deploys and interval
+    // changes. The template carries the name the Worker switches on below.
+    await queue.upsertJobScheduler(
       j.name,
-      {},
-      {
-        repeat: { every: j.intervalMs },
-        // No `jobId` — BullMQ infers a stable key from (name, repeat opts).
-        removeOnComplete: 100,
-        removeOnFail: 100,
-      },
+      { every: j.intervalMs },
+      { name: j.name, opts: { removeOnComplete: 100, removeOnFail: 100 } },
     );
   }
 
@@ -135,8 +136,4 @@ export async function startScheduledJobs(
       await workerConnection.quit();
     },
   };
-}
-
-function repeatKey(name: string, intervalMs: number): string {
-  return `${name}:${intervalMs}`;
 }
