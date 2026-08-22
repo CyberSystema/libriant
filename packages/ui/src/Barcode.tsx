@@ -195,7 +195,7 @@ export function Barcode({
   // Collapse the bitmap into runs and keep only the black (bar) runs as rects.
   const bars: Array<{ x: number; w: number }> = [];
   let x = quietZone;
-  for (let i = 0; i < binary.length; ) {
+  for (let i = 0; i < binary.length;) {
     let run = 1;
     while (i + run < binary.length && binary[i + run] === binary[i]) run++;
     if (binary[i] === '1') bars.push({ x, w: run * moduleWidth });

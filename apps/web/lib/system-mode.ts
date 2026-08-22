@@ -1,11 +1,7 @@
 import { ApiError, api } from './api';
 
 export type SystemModeKind =
-  | 'normal'
-  | 'maintenance'
-  | 'read_only'
-  | 'out_of_order'
-  | 'under_construction';
+  'normal' | 'maintenance' | 'read_only' | 'out_of_order' | 'under_construction';
 
 export type ResolvedSystemMode = {
   mode: SystemModeKind;

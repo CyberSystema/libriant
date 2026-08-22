@@ -12,9 +12,9 @@
     "test": "echo 'tests: none yet' && exit 0"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
-    "marked": "^18.0.4",
-    "tsx": "^4.22.3",
+    "@types/node": "^25.9.5",
+    "marked": "^18.0.10",
+    "tsx": "^4.23.12",
     "typescript": "^6.0.3"
   },
   "exports": {

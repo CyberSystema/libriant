@@ -14,15 +14,15 @@
     "@libriant/i18n": "workspace:*",
     "@libriant/shared": "workspace:*",
     "@libriant/ui": "workspace:*",
-    "marked": "^18.0.4",
-    "next": "^16.2.6",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "marked": "^18.0.10",
+    "next": "^16.3.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
-    "@types/node": "^25.9.1",
-    "@types/react": "^19.2.15",
-    "@types/react-dom": "^19.2.3",
+    "@types/node": "^25.9.5",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
     "typescript": "^6.0.3"
   }
 }

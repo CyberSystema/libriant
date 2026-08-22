@@ -38,10 +38,7 @@ export type AnnouncementStats = {
 };
 
 export type AudienceJson =
-  | { all: true }
-  | { tenant_ids: string[] }
-  | { plan_slugs: string[] }
-  | { tags: string[] };
+  { all: true } | { tenant_ids: string[] } | { plan_slugs: string[] } | { tags: string[] };
 
 export function audienceToJson(a: Audience): AudienceJson {
   switch (a.kind) {

@@ -17,8 +17,7 @@ type VerifyPayload = {
 };
 
 export type VerifyResult =
-  | { ok: true; mode: 'signup' | 'change'; slug: string | null }
-  | { ok: false };
+  { ok: true; mode: 'signup' | 'change'; slug: string | null } | { ok: false };
 
 /**
  * Account email verification.

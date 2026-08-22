@@ -2,8 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import { type FieldDef, type FieldError, validateField } from './field-types.js';
 
 export type ValidationOutcome =
-  | { ok: true; cleaned: Record<string, unknown> }
-  | { ok: false; errors: FieldError[] };
+  { ok: true; cleaned: Record<string, unknown> } | { ok: false; errors: FieldError[] };
 
 export type ValidatorOptions = {
   /** How to react when the payload includes a key that isn't defined. */

@@ -35,7 +35,15 @@ export class RealStripeDriver implements StripeDriver {
       // period from Subscription onto SubscriptionItem) and break syncs at
       // runtime with no compile-time signal. A future SDK bump that drops this
       // literal will fail to type-check — forcing a conscious migration.
-      apiVersion: '2026-05-27.dahlia',
+      //
+      // 2026-08-22, stripe-node 22.2 → 22.5: moved 2026-05-27 → 2026-07-29,
+      // both inside the Dahlia series. Stripe's own rule is that only the FIRST
+      // version of a series (2026-03-25.dahlia) carries breaking changes and
+      // "subsequent Dahlia versions will include only additive changes" — the
+      // June and July releases are new payment methods and new fields, nothing
+      // touching subscription periods, Checkout, or the webhook payloads read
+      // in billing.service.ts. Breaking changes arrive with the next flower.
+      apiVersion: '2026-07-29.dahlia',
       // Bound outbound latency so a Stripe incident can't tie up request
       // workers on the default 80s-per-call budget. Retries cover transient
       // network blips; webhooks/sweeps cover anything that still fails.

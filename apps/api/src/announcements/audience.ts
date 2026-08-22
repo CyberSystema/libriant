@@ -18,10 +18,7 @@ export type AudienceFilter =
  * union so service code doesn't have to special-case undefined keys.
  */
 export type AudienceFilterJson =
-  | { all: true }
-  | { tenant_ids: string[] }
-  | { plan_slugs: string[] }
-  | { tags: string[] };
+  { all: true } | { tenant_ids: string[] } | { plan_slugs: string[] } | { tags: string[] };
 
 export function audienceToJson(f: AudienceFilter): AudienceFilterJson {
   switch (f.kind) {

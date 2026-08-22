@@ -5,11 +5,7 @@ import { Banner, Button, FormField, Input, Textarea, useToast } from '@libriant/
 import { ApiError, api } from '@/lib/api';
 
 type SystemModeKind =
-  | 'normal'
-  | 'maintenance'
-  | 'read_only'
-  | 'out_of_order'
-  | 'under_construction';
+  'normal' | 'maintenance' | 'read_only' | 'out_of_order' | 'under_construction';
 
 const NON_NORMAL: Exclude<SystemModeKind, 'normal'>[] = [
   'maintenance',

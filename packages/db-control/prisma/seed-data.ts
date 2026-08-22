@@ -26,9 +26,7 @@ const FEATURE_LIST: ReadonlyArray<FeatureDescriptor> = Object.values(
 export const featureRows = FEATURE_LIST.map((f, i) => ({
   key: f.key as FeatureKey,
   type: (f.type === 'int' ? 'integer' : f.type === 'bool' ? 'boolean' : 'text') as
-    | 'integer'
-    | 'boolean'
-    | 'text',
+    'integer' | 'boolean' | 'text',
   label: f.label,
   description: f.description,
   defaultInt: typeof f.default === 'number' ? f.default : null,
