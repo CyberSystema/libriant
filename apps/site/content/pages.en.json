@@ -29,7 +29,7 @@
           {
             "title": "privacy@libriant.com",
             "icon": "check",
-            "body": "Anything to do with data protection: access to, correction of or deletion of the details you gave us on the form, withdrawal of your application, or questions about where your members' data sits and who is able to see it."
+            "body": "Anything to do with data protection: access to, correction of or deletion of the details you gave us on the form, withdrawal of your application, or questions about where your members’ data sits and who is able to see it."
           }
         ],
         "footnote": "There is no call centre and no service desk with opening hours — these two addresses are all there is. If we need to talk, we arrange a call by email."
@@ -68,7 +68,7 @@
         "id": "for-municipalities-and-schools",
         "body": [
           "If you have to put this to a head teacher, a director, a bursar or a committee, ask us for a written description of the service. We send it in everyday language, without technical jargon, in a form that goes into a file: what Libriant does, what it does not do yet, where the data sits, who is able to see it, what applies during the twelve months of the launch offer, and what you decide at the end of them.",
-          "During the offer you pay nothing and you sign no supply agreement: we ask for no card and there is no automatic renewal. Before you register your first member we sign a Data Processing Agreement, so that your institution has in writing exactly what we are permitted to do with your members' data.",
+          "During the offer you pay nothing and you sign no supply agreement: we ask for no card and there is no automatic renewal. Before you register your first member we sign a Data Processing Agreement, so that your institution has in writing exactly what we are permitted to do with your members’ data.",
           "If your management wants to know now what will apply in the second year, the plans and the prices are written out at libriant.com/en/pricing. The full commercial and pricing details reach you in writing before any charge."
         ]
       },
@@ -78,7 +78,7 @@
         "id": "data-requests",
         "body": [
           "If you have sent us an application and you want to see, correct or delete what we hold, write to privacy@libriant.com. We answer within 30 days, as the GDPR requires, and you do not have to give a reason. Deletion takes the application with it, and you hear nothing further from us.",
-          "For the data of your library's members the position is a different one: your library is the controller and we are the processor acting on its behalf. If one of your members comes to us, we refer them back to you and give you whatever you need in order to answer them.",
+          "For the data of your library’s members the position is a different one: your library is the controller and we are the processor acting on its behalf. If one of your members comes to us, we refer them back to you and give you whatever you need in order to answer them.",
           "Exactly what we keep from the application form, and for how long, is set out in the Privacy Policy at libriant.com/en/privacy."
         ]
       },
@@ -105,7 +105,7 @@
         "heading": "Who builds Libriant",
         "id": "who-builds-it",
         "body": [
-          "Libriant is built by one person. That person's full name and city are printed in the footer of every page on this site and in the Privacy Policy, as the data controller — not hidden behind a contact form.",
+          "Libriant is built by one person. That person’s full name and city are printed in the footer of every page on this site and in the Privacy Policy, as the data controller — not hidden behind a contact form.",
           "The same person writes the code, answers your messages, looks at your catalogue file, and signs the Data Processing Agreement that we put in place before you register your first member. It is one person in all four cases.",
           "Everywhere else on this site you will read “we”. We keep it, because commitments are written in the plural — and behind them there is someone with a name. It does not mean departments, shifts and a second office.",
           "We say it at the top of this page rather than at the bottom, because you would have worked it out in the first week of working together anyway."
@@ -151,7 +151,7 @@
           {
             "icon": "book",
             "title": "Case studies",
-            "body": "Nor any text along the lines of “how library X cut 40% off the time spent at the issue desk”. Everything this site says about what Libriant does comes from the software itself, not from measurements in real use that have not been made."
+            "body": "Nor any text along the lines of “how library X cut 40% off the time spent at the circulation desk”. Everything this site says about what Libriant does comes from the software itself, not from measurements in real use that have not been made."
           },
           {
             "icon": "globe",
@@ -173,7 +173,7 @@
         "body": [
           "It is the right question, and we put it before your management does. Libriant is new and one person builds it. That is a real risk and we will not tell you otherwise — an organisation of thirty people would give you a different answer at this point, and we do not have it.",
           "What we can do is not to reduce the probability to zero. It is to make sure that, if it happens, you lose nothing.",
-          "A staff seat with the Admin role starts an export from inside the application, without asking us, without a support request and without a notice period. There is no plan that blocks it: it holds on the free Starter plan too, from the first day. The formats are four — CSV, Excel, JSON and SQL, that is, a complete copy of your library's PostgreSQL database.",
+          "A staff seat with the Admin role starts an export from inside the application, without asking us, without a support request and without a notice period. There is no plan that blocks it: it holds on the free Starter plan too, from the first day. The formats are four — CSV, Excel, JSON and SQL, that is, a complete copy of your library’s PostgreSQL database.",
           "The last one is the answer that actually matters. The SQL copy does not depend on us in order to be read: it restores onto any PostgreSQL server, by any technician, with no permission and no key from our side. If you keep a recent copy, the worst case for your library is that it changes system. Unwelcome, but not the same as losing its catalogue.",
           "Two things we will not promise, because they do not exist. There is no deposit of the source code with a third party, and there is no continuity plan guaranteed by somebody else; Libriant is not open-source software and the code is not handed over. The commitment is about your data, not about the software: the data leaves with you, in full, whenever you decide.",
           "The same question is worth putting everywhere. The answer that counts is not how many years someone has been around, but on what terms your data leaves on the day you want to leave."
@@ -216,7 +216,7 @@
           {
             "icon": "member",
             "title": "The first libraries set the order",
-            "body": "What gets built next will be decided by the five founding libraries, out of what they find missing in their daily work. There is no investor setting a different order of priorities, and no reason for us to pretend we know better than an issue desk."
+            "body": "What gets built next will be decided by the five founding libraries, out of what they find missing in their daily work. There is no investor setting a different order of priorities, and no reason for us to pretend we know better than a circulation desk."
           },
           {
             "icon": "check",
@@ -279,7 +279,7 @@
           {
             "icon": "help",
             "title": "What we do not ask for in return",
-            "body": "Nothing binding. We do not ask for a public statement, we do not use your library's name in promotional material without your written permission, and we publish nothing about you. If at some point you want to tell us what could be done better, we will listen carefully — but it is not a condition."
+            "body": "Nothing binding. We do not ask for a public statement, we do not use your library’s name in promotional material without your written permission, and we publish nothing about you. If at some point you want to tell us what could be done better, we will listen carefully — but it is not a condition."
           },
           {
             "icon": "book",
@@ -340,7 +340,7 @@
         "body": [
           "You get the whole Municipal plan — the €79 a month row in the table above — for a year, with no charge, no card and no automatic renewal.",
           "That does not mean you pay €79 afterwards. At the end of the year you choose the plan that suits the size of your library. Plans start at €19 a month, and for very small collections there is a free plan. The five founding libraries also keep a permanent discount.",
-          "Because nothing is charged, no purchase order or procurement decision is needed to start — and twelve months gives you time to put it into next year's budget."
+          "Because nothing is charged, you do not need a committed budget line or an award decision to begin — and twelve months gives you time to put it into next year’s budget."
         ],
         "footnote": "The five places go in the order the applications arrive. The full terms are in the offer terms.",
         "id": "launch-offer"
@@ -372,7 +372,7 @@
           },
           {
             "title": "Export all of your data, whenever you want",
-            "body": "One button downloads your library's whole database: CSV, Excel, JSON, or a full PostgreSQL dump that restores exactly as it stands. Without asking us, without a request, without a notice period. The export does not include MARC.",
+            "body": "One button downloads your library’s whole database: CSV, Excel, JSON, or a full PostgreSQL dump that restores exactly as it stands. Without asking us, without a request, without a notice period. The export does not include MARC.",
             "icon": "check"
           },
           {
@@ -397,30 +397,11 @@
           },
           {
             "title": "A Data Processing Agreement before you register your first member",
-            "body": "For your members' data you are the controller and we are the processor. We sign it before the first member goes into the system, not after.",
+            "body": "For your members’ data you are the controller and we are the processor. We sign it before the first member goes into the system, not after.",
             "icon": "member"
           }
         ],
         "id": "in-every-plan"
-      },
-      {
-        "type": "table",
-        "heading": "What changes from plan to plan",
-        "intro": "The limits, and the four things that are not in every plan. Everything else described on this page is in every plan, including the free one.",
-        "columns": ["Limit or feature", "Starter", "Community", "Municipal", "Institutional"],
-        "rows": [
-          ["Titles in the catalogue", "500", "5,000", "30,000", "200,000"],
-          ["Registered members", "100", "1,000", "7,500", "50,000"],
-          ["Staff seats", "1", "3", "10", "30"],
-          ["Space for covers and files", "100 MB", "1 GB", "10 GB", "50 GB"],
-          ["Holds and the hold queue", "—", "✓", "✓", "✓"],
-          ["Email notices to members (due-soon reminder, overdue, hold ready)", "—", "✓", "✓", "✓"],
-          ["Bulk import from CSV, Excel or MARC", "—", "✓", "✓", "✓"],
-          ["Desktop app (silent printing of loan receipts and barcode labels)", "—", "✓", "✓", "✓"],
-          ["Custom fields per record type", "3", "10", "25", "60"]
-        ],
-        "footnote": "A dash means it is not included in that plan. The desktop app comes with every plan that has a price, not with the free Starter. The prices are in the first table.",
-        "id": "plan-comparison"
       },
       {
         "type": "list",
@@ -470,7 +451,7 @@
       {
         "type": "list",
         "heading": "For your finance office",
-        "intro": "You pay nothing and there is nothing to procure. We do not ask for a card, there is no automatic renewal, and at the end of the twelve months you decide. Because nothing is charged, no purchase order or procurement decision is needed to start. For the moment you do put it in the budget, there are documents — ask and we send them to you.",
+        "intro": "You pay nothing and you sign no procurement contract. We do not ask for a card, there is no automatic renewal, and at the end of the twelve months you decide. Because nothing is charged, you do not need a committed budget line or an award decision to begin. For the moment you do put it in the budget, there are documents — ask and we send them to you.",
         "items": [
           {
             "title": "A written quotation with a cost breakdown",
@@ -522,7 +503,7 @@
           },
           {
             "title": "We already have a catalogue in a file. Do we have to type it in again from the beginning?",
-            "body": "No. Bulk import from CSV, Excel or MARC is in every plan with a subscription, from Community at €19 upwards, and you run it yourself from your library's settings. Before anything is written you run a dry run and see exactly what will go in and which rows have a problem. On the free Starter, bulk import is not included: there you generate a support code, send it to us, and we run the migration. Either way, send us your file first — we look at it and tell you what is in it and what would come across cleanly.",
+            "body": "No. Bulk import from CSV, Excel or MARC is in every plan with a subscription, from Community at €19 upwards, and you run it yourself from your library’s settings. Before anything is written you run a dry run and see exactly what will go in and which rows have a problem. On the free Starter, bulk import is not included: there you generate a support code, send it to us, and we run the migration. Either way, send us your file first — we look at it and tell you what is in it and what would come across cleanly.",
             "id": "existing-catalogue-file"
           },
           {
@@ -537,7 +518,7 @@
           },
           {
             "title": "If we leave, do we take our data with us?",
-            "body": "All of it, whenever you want, without asking us. One button downloads your library's database as CSV, Excel, JSON or a full PostgreSQL dump that restores exactly as it stands. It is in every plan, including the free one, from the first day — it is not the privilege of an expensive plan and it does not pass through us. One clarification so it does not catch you out: the export does not produce MARC. We read MARC on import; we do not write it on export.",
+            "body": "All of it, whenever you want, without asking us. One button downloads your library’s database as CSV, Excel, JSON or a full PostgreSQL dump that restores exactly as it stands. It is in every plan, including the free one, from the first day — it is not the privilege of an expensive plan and it does not pass through us. One clarification so it does not catch you out: the export does not produce MARC. We read MARC on import; we do not write it on export.",
             "id": "take-our-data"
           }
         ],
@@ -557,15 +538,15 @@
   {
     "slug": "/en/security",
     "title": "Security and data protection — Libriant",
-    "metaDescription": "Where your library's data is kept, who can see it and under what conditions, what gets recorded, and how you download all of it whenever you want.",
+    "metaDescription": "Where your library’s data is kept, who can see it and under what conditions, what gets recorded, and how you download all of it whenever you want.",
     "h1": "Security and data protection",
-    "lede": "This page is written to be forwarded as it stands to your IT department or to your institution's data protection officer. It describes what is true today — and where something does not exist yet, or needs a step through us, it says so.",
+    "lede": "This page is written to be forwarded as it stands to your IT department or to your institution’s data protection officer. It describes what is true today — and where something does not exist yet, or needs a step through us, it says so.",
     "sections": [
       {
         "type": "callout",
         "heading": "The summary, in five lines",
         "body": [
-          "Your library's data is kept on servers inside the European Union.",
+          "Your library’s data is kept on servers inside the European Union.",
           "Every library has its own separate database — not shared tables with a column marking which row belongs to whom.",
           "Nobody on our side enters your library without a one-time code that you create; the access expires after four hours and you end it whenever you want.",
           "Under the GDPR you are the controller; we are the processor, and we work on your instructions.",
@@ -577,10 +558,10 @@
         "type": "prose",
         "heading": "Where your data lives",
         "body": [
-          "The servers that run the application, and the libraries' databases, are inside the European Union.",
+          "The servers that run the application, and the libraries’ databases, are inside the European Union.",
           "We do not name a specific country or hosting provider here. Not because it is a secret, but because it is the kind of detail that ought to bind: the exact location, the provider and every other organisation involved in the processing are recorded in the Data Processing Agreement and in the accompanying list of sub-processors, which you receive before you start. A web page changes without you noticing; a signed annex does not.",
           "If your IT department needs those details earlier, for its own assessment, ask and we send them in writing.",
-          "The site you are reading right now is separate infrastructure from the application and has no access to any library's data."
+          "The site you are reading right now is separate infrastructure from the application and has no access to any library’s data."
         ],
         "id": "where-your-data-lives"
       },
@@ -589,8 +570,8 @@
         "heading": "A separate database for every library",
         "body": [
           "The usual way to build a service like this is to put every organisation into shared tables and tell them apart with a column. Isolation then rests on whether every query, everywhere in the code, remembered to apply the right filter.",
-          "Libriant does not work that way. When a library is created, its own PostgreSQL database is created with it, with its own schema and its own connection address. One library's catalogue, members, loans, holds, fines and activity log are never in the same tables as another library's data.",
-          "We are not asking you to take that on trust. An automated check runs against a real database on every change to the code: it sets up two libraries from scratch, catalogues a book in the first, then confirms three things. That the second library is refused access when it asks for the first one's address. That its own catalogue stays empty — the first library's record appears nowhere. And that a request with no session gets an authentication challenge instead of data. If that check fails, the change does not ship.",
+          "Libriant does not work that way. When a library is created, its own PostgreSQL database is created with it, with its own schema and its own connection address. One library’s catalogue, members, loans, holds, fines and activity log are never in the same tables as another library’s data.",
+          "We are not asking you to take that on trust. An automated check runs against a real database on every change to the code: it sets up two libraries from scratch, catalogues a book in the first, then confirms three things. That the second library is refused access when it asks for the first one’s address. That its own catalogue stays empty — the first library’s record appears nowhere. And that a request with no session gets an authentication challenge instead of data. If that check fails, the change does not ship.",
           "The same principle holds at the end of the relationship: when a library closes, its database is deleted in full, not marked inactive."
         ],
         "id": "database-per-library"
@@ -606,7 +587,7 @@
           },
           {
             "title": "You create the code",
-            "body": "From your library's settings, an account with the Admin role generates a one-time code. It is shown exactly once and is not stored anywhere in readable form, not even in our own logs. It is valid for one hour and, as long as it has not been used, you revoke it with one click."
+            "body": "From your library’s settings, an account with the Admin role generates a one-time code. It is shown exactly once and is not stored anywhere in readable form, not even in our own logs. It is valid for one hour and, as long as it has not been used, you revoke it with one click."
           },
           {
             "title": "It is used once, with a second factor",
@@ -622,7 +603,7 @@
           },
           {
             "title": "You see what happened",
-            "body": "Every request inside the session is recorded with time, method, path and result, and appears on that same screen — live or after the fact. Changes that the activity log covers are marked there as \"via Libriant support\", so they can never be confused with something your staff did."
+            "body": "Every request inside the session is recorded with time, method, path and result, and appears on that same screen — live or after the fact. Changes that the activity log covers are marked there as “via Libriant support”, so they can never be confused with something your staff did."
           },
           {
             "title": "Two things we do not do inside a support session",
@@ -630,7 +611,7 @@
           },
           {
             "title": "What this procedure does not cover",
-            "body": "It covers entry into your library through the application. It does not abolish the obvious: somebody maintains the servers and the databases, and at that level access exists — as it does with any hosted service. The admin panel also has the ability to export a library's database, restricted to the top-level administrative account. We will not tell you it is technically impossible. We will tell you that every entry into your library goes through the steps above, and that this ability is not used to look at your data."
+            "body": "It covers entry into your library through the application. It does not abolish the obvious: somebody maintains the servers and the databases, and at that level access exists — as it does with any hosted service. The admin panel also has the ability to export a library’s database, restricted to the top-level administrative account. We will not tell you it is technically impossible. We will tell you that every entry into your library goes through the steps above, and that this ability is not used to look at your data."
           }
         ],
         "id": "who-on-our-side-can-see"
@@ -639,8 +620,8 @@
         "type": "prose",
         "heading": "Backups",
         "body": [
-          "We take daily backups: the libraries' databases and the files you upload — covers, member photos, attachments.",
-          "The job is built to stop with an error rather than produce a backup that merely looks successful. It verifies that the file it produced decompresses correctly before keeping it. If the folder holding uploaded files is missing, it stops rather than backing up the databases alone. And if a library's database has been moved to another server, it stops rather than skipping it quietly.",
+          "We take daily backups: the libraries’ databases and the files you upload — covers, member photos, attachments.",
+          "The job is built to stop with an error rather than produce a backup that merely looks successful. It verifies that the file it produced decompresses correctly before keeping it. If the folder holding uploaded files is missing, it stops rather than backing up the databases alone. And if a library’s database has been moved to another server, it stops rather than skipping it quietly.",
           "A backup that stays on the same server as the data does not protect against much, so it is copied off that server as well — and if that setting is missing, a warning is logged on every run instead of passing unnoticed. There is a reverse procedure too, written alongside the first: restoring a particular day, databases and files.",
           "Beyond that we do not publish recovery times, availability percentages or guarantees. Availability and support terms are agreed with you in writing before you start; that is where commitments belong.",
           "Your own independent copy you take whenever you want with the data export, further down this page."
@@ -650,7 +631,7 @@
       {
         "type": "table",
         "heading": "Who sees what inside your library",
-        "intro": "It is your staff who sign in to Libriant. There is no member sign-in and no public catalogue, so there is no public screen standing in front of your members' data. Inside the library, permissions are set by three roles.",
+        "intro": "It is your staff who sign in to Libriant. There is no member sign-in and no public catalogue, so there is no public screen standing in front of your members’ data. Inside the library, permissions are set by three roles.",
         "columns": ["Role", "What they can do"],
         "rows": [
           [
@@ -666,7 +647,7 @@
             "Sees the records, does not change them. The role exists for exactly that: so somebody can help without being able to do damage."
           ]
         ],
-        "footnote": "The account that created the library holds the Admin permissions and is the contact for the subscription. Every person gets their own account — shared accounts make the activity log meaningless. An account that is no longer needed is deactivated by an Admin; it then cannot sign in and no longer counts towards your plan's staff-seat limit.",
+        "footnote": "The account that created the library holds the Admin permissions and is the contact for the subscription. Every person gets their own account — shared accounts make the activity log meaningless. An account that is no longer needed is deactivated by an Admin; it then cannot sign in and no longer counts towards your plan’s staff-seat limit.",
         "id": "roles"
       },
       {
@@ -674,10 +655,10 @@
         "heading": "Activity log",
         "body": [
           "The activity log shows who did what and when, with the before and after of the change.",
-          "Today it covers: creating, updating, changing the status of and archiving a member; lending, returning, renewing and marking a copy lost; and changes to the library's settings.",
+          "Today it covers: creating, updating, changing the status of and archiving a member; lending, returning, renewing and marking a copy lost; and changes to the library’s settings.",
           "It does not yet cover additions and corrections to the catalogue. We write that out plainly because the difference counts in an audit: if a title or a call number is changed today, you will not find it there. It is planned, and we will not present it to you as though it already exists.",
           "Entries are not deleted after any period and are not limited by your plan. Nowhere does the application offer a way to edit or delete an entry in the log.",
-          "Anything done inside a support session carries the marking \"via Libriant support\"."
+          "Anything done inside a support session carries the marking “via Libriant support”."
         ],
         "id": "activity-log"
       },
@@ -686,22 +667,22 @@
         "heading": "GDPR: who is responsible for what",
         "body": [
           "The controller is your library, or the institution it belongs to. You decide which member details are collected, for what purpose and for how long.",
-          "The processor is us. We process your members' data in order to run the service, and on your instructions — not for purposes of our own.",
+          "The processor is us. We process your members’ data in order to run the service, and on your instructions — not for purposes of our own.",
           "That relationship is set out in a Data Processing Agreement under Article 28 of the GDPR, together with the list of organisations involved as sub-processors. The text is not published yet: it is with legal review and will be provided when it is ready. We will not ask you to enter the details of a single member before you have it in your hands, signed.",
-          "Nowhere do we write that we are \"GDPR compliant\". Compliance is not a stamp collected once; it is documented, reviewed again, and part of it is your own responsibility as controller. What we can state is specific things, such as the ones described on this page.",
+          "Nowhere do we write that we are “GDPR compliant”. Compliance is not a stamp collected once; it is documented, reviewed again, and part of it is your own responsibility as controller. What we can state is specific things, such as the ones described on this page.",
           "We hold no ISO or SOC certification and will not claim that we do. If your institution requires such a certification from the service it chooses, tell us early: it is a criterion we do not meet today."
         ],
         "id": "gdpr-roles"
       },
       {
         "type": "list",
-        "heading": "Your members' rights, in practice",
+        "heading": "Your members’ rights, in practice",
         "intro": "Requests from members come to you, as the controller. Here is what you do from inside the application, and where a step through us is needed.",
         "items": [
           {
             "icon": "member",
             "title": "Access and portability",
-            "body": "A member's record and their loan history are visible on their card and are included in the data export, in formats that open anywhere. There is nothing you need to ask us for."
+            "body": "A member’s record and their loan history are visible on their card and are included in the data export, in formats that open anywhere. There is nothing you need to ask us for."
           },
           {
             "icon": "check",
@@ -710,23 +691,23 @@
           },
           {
             "icon": "settings",
-            "title": "Erasing a member's details",
-            "body": "This one needs care, so we say it before you meet it. What the application offers today is archiving a member, not permanent deletion from the screen: an archived member drops out of the working lists and no longer counts towards your plan's limits, but the record remains. For permanent erasure of a particular member's details, send us a request and we carry it out."
+            "title": "Erasing a member’s details",
+            "body": "This one needs care, so we say it before you meet it. What the application offers today is archiving a member, not permanent deletion from the screen: an archived member drops out of the working lists and no longer counts towards your plan’s limits, but the record remains. For permanent erasure of a particular member’s details, send us a request and we carry it out."
           },
           {
             "icon": "book",
             "title": "Deleting the whole library",
-            "body": "Done at your written request. The action requires the library's exact identifier to be typed as confirmation, deletes its database and its files, and is recorded. It cannot be undone — download your export first. Backups already taken hold a trace for a limited period, which is set out in the Data Processing Agreement."
+            "body": "Done at your written request. The action requires the library’s exact identifier to be typed as confirmation, deletes its database and its files, and is recorded. It cannot be undone — download your export first. Backups already taken hold a trace for a limited period, which is set out in the Data Processing Agreement."
           },
           {
             "icon": "help",
             "title": "Members who are minors",
-            "body": "In school libraries, and in the children's section of a community library, many members are under 18. The legal basis, and informing parents or guardians, are your responsibility as controller. On our side, the service does not ask for and does not need special categories of data in order to work; if you choose to add such data in fields of your own, that is on your responsibility and it is best to tell us."
+            "body": "In school libraries, and in the children’s section of a community library, many members are under 18. The legal basis, and informing parents or guardians, are your responsibility as controller. On our side, the service does not ask for and does not need special categories of data in order to work; if you choose to add such data in fields of your own, that is on your responsibility and it is best to tell us."
           },
           {
             "icon": "globe",
             "title": "No other use",
-            "body": "We do not use your members' data for any other purpose. We do not sell it, we do not release it for advertising, we do not build profiles, and we do not train artificial-intelligence models on it."
+            "body": "We do not use your members’ data for any other purpose. We do not sell it, we do not release it for advertising, we do not build profiles, and we do not train artificial-intelligence models on it."
           }
         ],
         "id": "member-rights"
@@ -736,9 +717,9 @@
         "heading": "You take your data whenever you want",
         "body": [
           "An account with the Admin role starts an export from inside the application. There is no request to us, no notice period, and no plan that blocks it: it works on the free Starter plan too.",
-          "Four formats, depending on what you want to do. CSV for spreadsheets, Excel, JSON for moving into another system, and SQL — a full copy of your library's PostgreSQL database, which restores as it is onto a server of your own.",
+          "Four formats, depending on what you want to do. CSV for spreadsheets, Excel, JSON for moving into another system, and SQL — a full copy of your library’s PostgreSQL database, which restores as it is onto a server of your own.",
           "The download link is valid for 24 hours. After that you ask for a fresh export; nothing is lost.",
-          "This is also the substantive answer to the question your management will put to you: \"and what if they stop?\". The SQL copy does not need us in order to be read. It is an ordinary PostgreSQL database, and any technician can restore it."
+          "This is also the substantive answer to the question your management will put to you: “and what if they stop?”. The SQL copy does not need us in order to be read. It is an ordinary PostgreSQL database, and any technician can restore it."
         ],
         "footnote": "The export does not produce MARC. MARC is supported on import, not on export. If you need MARC for a reason of your own, tell us before you decide.",
         "id": "export"
@@ -748,7 +729,7 @@
         "heading": "This site does not track you",
         "body": [
           "No analytics, no tracking cookies, no third-party fonts, no social-network code. That is why you saw no consent window: there is nothing for us to ask your consent about.",
-          "Do not take that on trust — check it. View the page source, or open your browser's developer tools on the network tab and reload: you will see this site's own files and, if the form protection is switched on, the one script described just below.",
+          "Do not take that on trust — check it. View the page source, or open your browser’s developer tools on the network tab and reload: you will see this site’s own files and, if the form protection is switched on, the one script described just below.",
           "The single exception concerns protecting the application form from automated submissions. When it is switched on, one script loads for exactly that purpose — the only request to an outside server anywhere on this site. The network provider in front of the site may also set a strictly necessary bot-protection cookie lasting half an hour. It does not count visits and does not follow you elsewhere. Both are described in detail in the Privacy Policy.",
           "In the application there is a session cookie, because without it there is no signing in. There is no advertising or analytics cookie there either."
         ],
@@ -762,7 +743,7 @@
           {
             "icon": "check",
             "title": "Static checks",
-            "body": "Type checking across the whole codebase, style and formatting checks, and a check that the application's English and Greek texts are in full correspondence, so that neither of the two languages falls behind."
+            "body": "Type checking across the whole codebase, style and formatting checks, and a check that the application’s English and Greek texts are in full correspondence, so that neither of the two languages falls behind."
           },
           {
             "icon": "search",
@@ -802,7 +783,7 @@
           },
           {
             "title": "Does anything need installing on staff computers?",
-            "body": "No. Libriant works in the browser. There is also a desktop app on the plans with a subscription, for silent printing of loan receipts and labels without a dialog box — it is an option, not a prerequisite.",
+            "body": "No. Libriant works in the browser. There is also a desktop app on the plans with a subscription, for silent printing of loan receipts and labels without a dialogue box — it is an option, not a prerequisite.",
             "id": "installation-needed"
           },
           {
@@ -812,7 +793,7 @@
           },
           {
             "title": "Do readers have access?",
-            "body": "No. There is no member sign-in and no public catalogue. It is your staff who sign in to the application. It is a design choice, and it also narrows the exposed surface: there is no public screen standing in front of your members' data.",
+            "body": "No. There is no member sign-in and no public catalogue. It is your staff who sign in to the application. It is a design choice, and it also narrows the exposed surface: there is no public screen standing in front of your members’ data.",
             "id": "reader-access"
           },
           {
@@ -822,7 +803,7 @@
           },
           {
             "title": "What happens if a member of staff leaves?",
-            "body": "The Admin deactivates the account. They can no longer sign in, their actions stay in the activity log under their name, and the account no longer counts towards your plan's limit.",
+            "body": "The Admin deactivates the account. They can no longer sign in, their actions stay in the activity log under their name, and the account no longer counts towards your plan’s limit.",
             "id": "staff-departure"
           }
         ],
@@ -853,7 +834,7 @@
         "body": [
           "For the first five libraries, we do the migration ourselves. You send us whatever you have — an export from your current system, an Excel sheet, or a file you already know is in a poor state — and we hand your library back set up, together with a report of everything that could not go in and why.",
           "You do not need to clean the file before you send it. Cleaning it is part of the work, not a condition for starting.",
-          "If you would rather do it yourself, migration is a feature inside Libriant and you run it from your library's settings. Bulk file import is included in every plan with a subscription — Community, Municipal and Institutional — and the launch offer gives you Municipal. It is not part of the free Starter plan: if you have a file to bring across and you are considering the free plan, write to us before you decide."
+          "If you would rather do it yourself, migration is a feature inside Libriant and you run it from your library’s settings. Bulk file import is included in every plan with a subscription — Community, Municipal and Institutional — and the launch offer gives you Municipal. It is not part of the free Starter plan: if you have a file to bring across and you are considering the free plan, write to us before you decide."
         ],
         "id": "we-do-the-migration"
       },
@@ -875,7 +856,7 @@
           {
             "icon": "plus",
             "title": "An Excel, CSV or TSV sheet",
-            "body": ".xlsx is read directly, and if the workbook holds several sheets you choose which one. In CSV the separator is detected automatically — comma, semicolon, tab or pipe — because the \"CSV\" that Excel writes in a Greek or most European locales is usually semicolon-separated. Dates are read in European order, day first, and the order can be switched per column if your file runs the other way."
+            "body": ".xlsx is read directly, and if the workbook holds several sheets you choose which one. In CSV the separator is detected automatically — comma, semicolon, tab or pipe — because the “CSV” that Excel writes in a Greek or most European locales is usually semicolon-separated. Dates are read in European order, day first, and the order can be switched per column if your file runs the other way."
           },
           {
             "icon": "search",
@@ -938,7 +919,7 @@
           },
           {
             "title": "Map columns",
-            "body": "For each column in your file you choose where it goes. The ones that are recognised arrive already filled in: headings are matched with accents, capitals and punctuation ignored, and Greek headings are recognised as readily as English ones — “τίτλος” as well as “title”, “γραμμωτός κώδικας” as well as “barcode”, “ημερομηνία επιστροφής” as well as “due date” — alongside the MARC21 tags. Anything you do not want to bring across, you leave on \"Don't import\". That is also where a column matching no Libriant field stays: it does not transfer, so if it holds something you need, tell us before you run the import. This is also where you say what happens to records that already exist."
+            "body": "For each column in your file you choose where it goes. The ones that are recognised arrive already filled in: headings are matched with accents, capitals and punctuation ignored, and Greek headings are recognised as readily as English ones — “τίτλος” as well as “title”, “γραμμωτός κώδικας” as well as “barcode”, “ημερομηνία επιστροφής” as well as “due date” — alongside the MARC21 tags. Anything you do not want to bring across, you leave on “Don’t import”. That is also where a column matching no Libriant field stays: it does not transfer, so if it holds something you need, tell us before you run the import. This is also where you say what happens to records that already exist."
           },
           {
             "title": "Review",
@@ -955,11 +936,11 @@
         "type": "prose",
         "heading": "The dry run: you see what will land, before it lands",
         "body": [
-          "The dry run is not a check of the file format. It is the real import with writing switched off: every row is read, every value converted, every reference looked up — the book a copy points at, the member and the copy a loan points at — and your plan's limits are checked as well. Then nothing is written.",
+          "The dry run is not a check of the file format. It is the real import with writing switched off: every row is read, every value converted, every reference looked up — the book a copy points at, the member and the copy a loan points at — and your plan’s limits are checked as well. Then nothing is written.",
           "The report gives four numbers: how many rows the file holds, how many will import, how many errors, how many warnings. Below them the problems appear one by one, with row number, field and what is wrong: no four-digit year found; the due date is not after the checkout date; no matching book was found for this copy, import the books first.",
           "And you download them: a CSV with one line per problem — row number, field, code, message. You open it beside your file and correct precisely, instead of going through 5,000 rows by eye.",
           "Warnings stop nothing, but they are worth reading: that is where you see, for instance, that a loan marked as returned carried no return date and the current date was used in its place.",
-          "If you change the mapping, the previous dry run is discarded, so that you never read a report belonging to a different mapping. And an import that stopped halfway starts again from the beginning: with \"Skip it\" chosen, the authors, books, copies and members that had already gone through are recognised by their stable keys and skipped, rather than written a second time."
+          "If you change the mapping, the previous dry run is discarded, so that you never read a report belonging to a different mapping. And an import that stopped halfway starts again from the beginning: with “Skip it” chosen, the authors, books, copies and members that had already gone through are recognised by their stable keys and skipped, rather than written a second time."
         ],
         "id": "dry-run"
       },
@@ -1007,7 +988,7 @@
           "We do know where the time goes, though, and it does not go on the machine. It goes on mapping the columns, which is done once per record type, and on the second and third dry run, where you look at what came back with errors and decide whether it can be corrected in the file or is better left out.",
           "Plan it as two separate sittings rather than one: the catalogue first, meaning books and copies, and the members with their open loans at a second sitting. The second is worth doing as close as you can to the day you start working in Libriant, so that it is current.",
           "Keep your present system running until you have checked the result. There is no reason to close it the same day, and if something needs running again you will want it open.",
-          "If a file goes over 64 MB or 250,000 rows, you split it into parts and run them one after another. With \"Skip it\" chosen, a part that goes through twice by mistake does not create duplicate books, copies or members."
+          "If a file goes over 64 MB or 250,000 rows, you split it into parts and run them one after another. With “Skip it” chosen, a part that goes through twice by mistake does not create duplicate books, copies or members."
         ],
         "id": "how-long"
       },
@@ -1048,7 +1029,7 @@
         "body": [
           "We write this before you ask, because it is a fair question to put to a system with no history behind it: your data comes out whenever you want, without asking our permission and without notice.",
           "Export is not a capability you buy. It is on every plan, the free one included, from the first day. You start it from settings, the file is prepared in the background, and it appears for download when it is ready. It is kept for about a day, and you can ask for it again whenever you like.",
-          "There are four formats. CSV: one file per table, inside a zip. Excel (.xlsx): one sheet per table. JSON: for whoever writes the conversion into your next system. SQL: a complete copy of your library's database, made with pg_dump, without owners and privileges, which restores into any PostgreSQL installation. The last one is not an extract and not a report; it is your database.",
+          "There are four formats. CSV: one file per table, inside a zip. Excel (.xlsx): one sheet per table. JSON: for whoever writes the conversion into your next system. SQL: a complete copy of your library’s database, made with pg_dump, without owners and privileges, which restores into any PostgreSQL installation. The last one is not an extract and not a report; it is your database.",
           "One thing the export does not do: it does not produce MARC. MARC is read on the way in, not written on the way out. If your next system requires MARC, a conversion from the CSV will be needed, and Libriant does not hand you that ready-made today. We write it here so that you do not discover it on the day you need it.",
           "Every library has a separate database of its own. What you download is yours, whole."
         ],
@@ -1060,7 +1041,7 @@
         "body": [
           "20 rows are enough. We look at them and write back telling you what reads, what will take work and what does not transfer at all — before you decide anything, with no application to fill in and no commitment of any kind.",
           "Send it to info@libriant.com, with a line or two about what the file is and which system produced it. We answer every message within two working days.",
-          "If the sample is of members, send the headings without real details: the column names are enough for us to understand the structure. Members' personal data does not need to be seen by us before there is a signed Data Processing Agreement."
+          "If the sample is of members, send the headings without real details: the column names are enough for us to understand the structure. Members’ personal data does not need to be seen by us before there is a signed Data Processing Agreement."
         ],
         "id": "send-us-a-sample"
       }
@@ -1079,8 +1060,8 @@
         "id": "two-misconceptions",
         "body": [
           "If you are reading this from a school library of a few hundred titles, looked after by one person between lessons: your library is not too small for Libriant. The free Starter plan gives you a catalogue, members and loans for 500 titles, 100 members and one staff seat — it is not a trial period and it does not expire. We do not ask for card details, and you do not have to talk to anyone to find out what it costs.",
-          "If you are reading this from a municipal IT department or from an institution's management: this is not an experimental tool. Each library has its own separate database, data is hosted inside the European Union, permissions are set by three roles, changes to members, loans and settings are recorded with the before and the after, and your library's entire database downloads with one button whenever you want. What exactly holds true, together with its limits, is on [Security and data protection](/en/security).",
-          "One thing holds in both cases: Libriant is the staff's tool. There is no public catalogue for readers, and members do not sign in anywhere. If that is what you are looking for, the last section of this page tells you where to look instead."
+          "If you are reading this from a municipal IT department or from an institution’s management: this is not an experimental tool. Each library has its own separate database, data is hosted inside the European Union, permissions are set by three roles, changes to members, loans and settings are recorded with the before and the after, and your library’s entire database downloads with one button whenever you want. What exactly holds true, together with its limits, is on [Security and data protection](/en/security).",
+          "One thing holds in both cases: Libriant is the staff’s tool. There is no public catalogue for readers, and members do not sign in anywhere. If that is what you are looking for, the last section of this page tells you where to look instead."
         ]
       },
       {
@@ -1099,9 +1080,9 @@
         "id": "school",
         "body": [
           "The day is not continuous. The library opens at break, again after the last lesson, and the work is done by one person who also teaches. Loans arrive in bursts, a whole class at once, and the catalogue grows from donations and from an order that lands once a year. The big moment is June, when everything has to come back before the school closes.",
-          "Four things from Libriant count here. Barcode scanning with the device camera, where the browser supports it (Firefox does not today), so that the desk is where you are and not where a computer happens to be. Entering records by hand, which is an equal path and not a fallback: ISBN lookup goes to OpenLibrary, and while an English-language edition is usually there, Greek-published school books frequently are not, so the search will come back empty. A custom “class” field on the member record, so that the class a child belongs to sits next to their name. And the list of overdue loans, which in June is the whole of the last week's work.",
+          "Four things from Libriant count here. Barcode scanning with the device camera, where the browser supports it (Firefox does not today), so that the desk is where you are and not where a computer happens to be. Entering records by hand, which is an equal path and not a fallback: ISBN lookup goes to OpenLibrary, and while an English-language edition is usually there, Greek-published school books frequently are not, so the search will come back empty. A custom “class” field on the member record, so that the class a child belongs to sits next to their name. And the list of overdue loans, which in June is the whole of the last week’s work.",
           "The size: for up to 500 titles, 100 members and one person, the free Starter is enough. A school library with 1,200 titles is already past that limit and goes to Community — €19 a month, up to 5,000 titles, 1,000 members and three staff seats. One seat does not mean one person carrying everything; it means the one person already carrying it does not have to pay in order to have a system.",
-          "If a catalogue already exists in a spreadsheet: bulk import is not included in the free plan. There you generate a support code, send it to us, and we run the migration. From Community upwards you run it yourself from your library's settings, after a dry run has first shown you what would go in. The steps are on [Migration](/en/migration).",
+          "If a catalogue already exists in a spreadsheet: bulk import is not included in the free plan. There you generate a support code, send it to us, and we run the migration. From Community upwards you run it yourself from your library’s settings, after a dry run has first shown you what would go in. The steps are on [Migration](/en/migration).",
           "For schools that teach in English and for foreign-language schools: the whole application exists in both languages, and each staff member chooses their own."
         ]
       },
@@ -1118,7 +1099,7 @@
       },
       {
         "type": "prose",
-        "heading": "Special library (organisation, institute, association)",
+        "heading": "Special library (organisation, foundation, society)",
         "id": "special",
         "body": [
           "The collection is closed and focused: legal, medical, technical, a museum, a foreign cultural institute, a learned society. The members are few and known by name — colleagues at the organisation, perhaps outside researchers by arrangement. Loans are few but long, and the question that hurts is not how many books there are, but where that one book is and who has been holding it for two years.",
@@ -1134,8 +1115,8 @@
         "id": "public-municipal",
         "body": [
           "A clarification first, because it matters: in Greece a Public Library is institutionally a separate category from a municipal one. In Libriant both are recorded under the same type, because the daily work at the desk is the same and because the type changes nothing about how the software behaves. The plan is named Municipal, but it rules out neither of the two: size decides, not the name over the door.",
-          "The day is not yours to control. Returns in the morning, the children's section in the afternoon, someone who has lost their card, someone asking for a book that is already out on loan, a school visit nobody announced. The staff are more than one person, with different responsibilities, and the library answers upwards.",
-          "Four things from Libriant count here. The hold queue: a member asks for a book that is out and the librarian records the hold on their behalf — members do not place holds themselves, because they do not sign in anywhere. The queue keeps the order of priority and, the moment the copy is returned, the first person is promoted automatically to ready for pickup. The three roles and the activity log, which in a public body are not a luxury. The desktop app, which prints the loan receipt and the copy label straight to the printer, without a print dialog on every loan. And the overdue list, which in a library with thousands of members is standing work rather than an incident.",
+          "The day is not yours to control. Returns in the morning, the children’s section in the afternoon, someone who has lost their card, someone asking for a book that is already out on loan, a school visit nobody announced. The staff are more than one person, with different responsibilities, and the library answers upwards.",
+          "Four things from Libriant count here. The hold queue: a member asks for a book that is out and the librarian records the hold on their behalf — members do not place holds themselves, because they do not sign in anywhere. The queue keeps the order of priority and, the moment the copy is returned, the first person is promoted automatically to ready for pickup. The three roles and the activity log, which in a public body are not a luxury. The desktop app, which prints the loan receipt and the copy label straight to the printer, without a print dialogue on every loan. And the overdue list, which in a library with thousands of members is standing work rather than an incident.",
           "One thing is better known now than discovered in use: email notices to members exist as a feature, with texts, switches and a regular check of loans, but no mail sender has been set up yet — so today no message reaches a member. We will update this page when that changes.",
           "The size: up to 30,000 titles, 7,500 members and ten staff seats, which is Municipal, €79 a month. It is also the plan the launch offer gives to the first five libraries, with no charge for twelve months.",
           "Two pages you will most likely need to forward: [Security and data protection](/en/security) for the IT department, and [Pricing](/en/pricing) for the finance office — where it is also explained that, because nothing is charged during the offer, no budget commitment or procurement decision is needed in order to start."
@@ -1143,14 +1124,14 @@
       },
       {
         "type": "prose",
-        "heading": "Academic library (university or research institute)",
+        "heading": "Academic library (university or research body)",
         "id": "academic",
         "body": [
           "The load is not steady: the weeks around the start of each semester carry a disproportionate share of the year. Members run into the thousands and turn over every September. The staff are organised, often with students at the desk, and alongside the central library there are department, laboratory and institute libraries holding their own material and their own loans.",
-          "Three things from Libriant count here: the limits — 200,000 titles, 50,000 members, thirty staff seats; the roles, so that whoever helps at the shelves can look without changing anything, while whoever records loans holds the librarian role; and full bilingualism, for departments that teach in English and for students who do not read Greek.",
-          "Here we owe you plain speaking. Libriant has no acquisitions, does not track serial issues, does not speak Z39.50 and does not send records to a union catalogue. If your institution's central library depends on those, Libriant does not replace it, and we will not tell you otherwise.",
+          "Three things from Libriant count here: the limits — 200,000 titles, 50,000 members, thirty staff seats; the roles, so that whoever helps at the shelves can look without changing anything, while whoever records loans holds the Librarian role; and full bilingualism, for departments that teach in English and for students who do not read Greek.",
+          "Here we owe you plain speaking. Libriant has no acquisitions, does not track serial issues, does not speak Z39.50 and does not send records to a union catalogue. If your institution’s central library depends on those, Libriant does not replace it, and we will not tell you otherwise.",
           "Where it fits cleanly is the department, laboratory or research-institute library: its own catalogue, its own loans, one to three people, and a collection that today lives in a spreadsheet or in a notebook. That size usually lands on Community or Municipal.",
-          "The size: for an institution's central library, Institutional, €249 a month. For a department or institute library, Community at €19 or Municipal at €79, depending on the catalogue and the staff."
+          "The size: for an institution’s central library, Institutional, €249 a month. For a department or institute library, Community at €19 or Municipal at €79, depending on the catalogue and the staff."
         ]
       },
       {
@@ -1171,7 +1152,7 @@
             "**Community**, €19 a month — **Municipal** if more than three staff seats are needed"
           ],
           [
-            "Special library (organisation, institute, association)",
+            "Special library (organisation, foundation, society)",
             "From a few hundred to tens of thousands of titles, few members",
             "**Starter**, **Community** or **Municipal**, depending on the catalogue"
           ],
@@ -1181,8 +1162,8 @@
             "**Municipal**, €79 a month — the plan the launch offer gives"
           ],
           [
-            "Academic library (university or research institute)",
-            "An institution's central library: up to 200,000 titles, up to 50,000 members, a team of up to thirty. A department or laboratory library: much smaller",
+            "Academic library (university or research body)",
+            "An institution’s central library: up to 200,000 titles, up to 50,000 members, a team of up to thirty. A department or laboratory library: much smaller",
             "**Institutional**, €249 a month — **Community** or **Municipal** for a department library"
           ]
         ],
@@ -1286,7 +1267,7 @@
           },
           {
             "title": "What does not exist yet?",
-            "body": "There is no public catalogue for readers and no member log-in. There is no API and no integrations with other systems, no Z39.50 and no union catalogue, and the export does not produce MARC: we read MARC on the way in, we do not write it on the way out. There is no SMS, no phone notifications, no separate mobile app, no RFID and no self-service machines. You cannot yet define your own material types (for DVDs or board games) from inside the application. What is missing is missing; we do not charge for it as though it were there.",
+            "body": "There is no public catalogue for readers and no member sign-in. There is no API and no integrations with other systems, no Z39.50 and no union catalogue, and the export does not produce MARC: we read MARC on the way in, we do not write it on the way out. There is no SMS, no phone notifications, no separate mobile app, no RFID and no self-service machines. You cannot yet define your own material types (for DVDs or board games) from inside the application. What is missing is missing; we do not charge for it as though it were there.",
             "id": "what-is-missing"
           }
         ],
@@ -1317,7 +1298,7 @@
             "id": "scanner-and-label-printer"
           },
           {
-            "title": "What can a volunteer do, and what can they not?",
+            "title": "What can a Volunteer do, and what can they not?",
             "body": "There are three roles: Admin, Librarian, Volunteer. A Volunteer sees the catalogue, the members and the loans, but changes nothing: no lending, no recording a return, no adding a title or a member. It is the role for the people who help at the shelves and need to find things without being able to affect the data. A Librarian does all the day-to-day circulation, while an Admin additionally changes settings, adds staff and downloads the data export.",
             "id": "what-a-volunteer-can-do"
           },
@@ -1432,7 +1413,7 @@
         "body": [
           "The catalogue has two levels: the title and its copies. The title holds the bibliographic detail — title, subtitle, authors in the order you enter them, publisher, year of publication, ISBN-13 and ISBN-10, edition, page count, language, classification or call number, description and cover. Each copy carries its own barcode, shelf location, circulation status and notes on its physical condition.",
           "Plan limits count titles, not copies: ten copies of the same book are one title.",
-          "Type an ISBN and the book's details are filled in for you. The source is OpenLibrary, and it is the only one. English-language publishing is reasonably well covered there; Greek-language titles are often absent — which is why entering a record by hand is an equal path through the software and not a fallback.",
+          "Type an ISBN and the book’s details are filled in for you. The source is OpenLibrary, and it is the only one. English-language publishing is reasonably well covered there; Greek-language titles are often absent — which is why entering a record by hand is an equal path through the software and not a fallback.",
           "Search ignores accents and letter case, in either alphabet: “cafe” finds “Café”, “καβαφης” finds “Καβάφη”. It looks at title, subtitle, authors, publisher, year and ISBN at the same time.",
           "A title that is no longer in circulation is archived rather than deleted. It leaves the working lists, it stops counting towards your plan limit, and everything recorded against it stays."
         ]
@@ -1529,10 +1510,10 @@
         "heading": "Your own fields",
         "id": "custom-fields",
         "body": [
-          "No library fits a ready-made form. You add fields of your own to six kinds of record: book, copy, member, loan, hold and fine.",
+          "No library fits a ready-made form. You add custom fields to six kinds of record: book, copy, member, loan, hold and fine.",
           "There are ten field types: short text, long text, number, yes/no, date, date and time, pick one, pick many, link and email. Each field takes a label in both Greek and English, is marked required or optional, and is dragged into the order you want.",
           "Beside the list is a live preview of the form your staff will fill in. Changes take effect the next time a form loads: the records you already have are untouched, there is nothing to wait for, and nothing has to be requested from us.",
-          "A field you no longer need is archived rather than deleted, and older records keep their values. Custom fields are counted per kind of record, not in total — so your plan's limit applies six times over."
+          "A field you no longer need is archived rather than deleted, and older records keep their values. Custom fields are counted per kind of record, not in total — so your plan’s limit applies six times over."
         ]
       },
       {
@@ -1540,11 +1521,11 @@
         "heading": "Barcode scanning, mobile and offline",
         "id": "scanning-mobile-offline",
         "body": [
-          "At checkout, at return and when cataloguing a book you can scan instead of typing: the ISBN from the back cover, a copy barcode, a membership card. Scanning uses the device's own camera, with no extra hardware.",
+          "At checkout, at return and when cataloguing a book you can scan instead of typing: the ISBN from the back cover, a copy barcode, a membership card. Scanning uses the device’s own camera, with no extra hardware.",
           "It rests, though, on a browser capability that not every browser has. It works in Chrome, Edge, Android and recent versions of Safari; it does not work in Firefox; and it needs a secure connection and permission for the camera. Where it is not supported the scan button does not appear at all and the number is typed, as it always was. Nothing in the workflow depends on scanning.",
           "Libriant installs on a phone or tablet as an app, from the browser itself. In practice that means working between the shelves with the device in your hand, instead of notes that are typed up again afterwards.",
           "When the connection drops, the four desk actions — checkout, return, renewal and marking a copy lost — queue up inside the device and are sent as soon as the network returns. Each action carries a key of its own, so that sending it twice does not become two loans.",
-          "Pages you have looked at recently are shown offline as well, from the device's local storage. On sign-out that storage is cleared, so a shared machine does not show the previous person's data."
+          "Pages you have looked at recently are shown offline as well, from the device’s local storage. On sign-out that storage is cleared, so a shared machine does not show the previous person’s data."
         ]
       },
       {
@@ -1553,7 +1534,7 @@
         "id": "desktop-app",
         "body": [
           "There is also a desktop app, for Windows, macOS and Linux. It is the same application in a window of its own, with the things a browser is not permitted to do.",
-          "The most important of those is silent printing. The checkout receipt and the copy label go straight to the printer, without a print dialogue opening at every loan. The label prints your library's name, the title, the copy's barcode in Code 128, and the shelf location.",
+          "The most important of those is silent printing. The checkout receipt and the copy label go straight to the printer, without a print dialogue opening at every loan. The label prints your library’s name, the title, the copy’s barcode in Code 128, and the shelf location.",
           "The app updates itself, remembers the size and position of its window, asks for camera permission so that you can scan from the desk, and when the server does not answer it shows a recovery screen rather than a blank window.",
           "The desktop app comes with the plans that carry a subscription. It is not part of the free plan."
         ]
@@ -1565,7 +1546,7 @@
         "body": [
           "Libriant has three ready-made messages to your members: a reminder that a due date is approaching, a notice that a loan is overdue, and a notice that a hold is ready for pickup.",
           "All three are off to begin with. You switch them on one at a time, and the members contacted are those with an email address on file. No library should start sending messages to its members because it opened an account.",
-          "The wording of each notice is yours: there is a default text and you replace it from the settings. Messages are written in your library's own language.",
+          "The wording of each notice is yours: there is a default text and you replace it from the settings. Messages are written in your library’s own language.",
           "Today no email leaves for a member. No mail sender has been configured yet, so the switches, the wording and the regular sweep of the loans all exist, but nothing goes out. We will write it here when that changes.",
           "Email notifications are not part of the free plan."
         ]
@@ -1583,7 +1564,7 @@
           },
           {
             "title": "Librarian",
-            "body": "The daily work: catalogue, members, loans, holds. No access to the library's settings.",
+            "body": "The daily work: catalogue, members, loans, holds. No access to the library’s settings.",
             "icon": "member"
           },
           {
@@ -1598,7 +1579,7 @@
           },
           {
             "title": "Staff seats",
-            "body": "A new account is created with a username and a temporary password, which you hand to the person themselves; at their first sign-in they set their own name and password. An account that is deactivated stops counting towards your plan's limit.",
+            "body": "A new account is created with a username and a temporary password, which you hand to the person themselves; at their first sign-in they set their own name and password. An account that is deactivated stops counting towards your plan’s limit.",
             "icon": "plus"
           },
           {
@@ -1614,9 +1595,9 @@
         "heading": "Greek and English",
         "id": "greek-and-english",
         "body": [
-          "Every screen exists in both languages. Not a translation that arrived afterwards, but two texts of equal standing from the start — the same is true of the help articles inside the app.",
-          "The language is set by the page's address: /en/ for English, /el/ for Greek. Two people at the same desk can work in different languages, with nothing changing for the library.",
-          "The library's default language is set at signup, taken from the language the signup is made in, and messages to members are written in it. Your own fields take a label in both languages, so that one form reads in either.",
+          "Every screen exists in both languages. Not a translation that arrived afterwards, but two texts of equal standing from the start — the same is true of the help articles inside the application.",
+          "The language is set by the page’s address: /en/ for English, /el/ for Greek. Two people at the same desk can work in different languages, with nothing changing for the library.",
+          "The library’s default language is set at signup, taken from the language the signup is made in, and messages to members are written in it. Your own fields take a label in both languages, so that one form reads in either.",
           "If you teach in English inside Greece, run a foreign-language college, keep a special library inside an organisation, or work in Cyprus, this is the part that decides whether a system is usable at your desk. Staff who prefer English and staff who prefer Greek are reading the same records."
         ]
       },
@@ -1625,11 +1606,11 @@
         "heading": "Import and export",
         "id": "import-and-export",
         "body": [
-          "You upload what you have — CSV, TSV, an Excel sheet, MARC21 or MARCXML — match your columns to Libriant's fields, and run a dry run first. The dry run tells you how many rows will go in, which carry an error and which a warning, and gives you a CSV of the rows that need attention. All of that before anything is written.",
+          "You upload what you have — CSV, TSV, an Excel sheet, MARC21 or MARCXML — match your columns to Libriant’s fields, and run a dry run first. The dry run tells you how many rows will go in, which carry an error and which a warning, and gives you a CSV of the rows that need attention. All of that before anything is written.",
           "Seven kinds of record come across: authors, books, copies, members, loans, holds and fines. Alongside the catalogue, that is, the open loans and the outstanding holds arrive too.",
           "We also read files in Windows-1253, the legacy Greek code page, so that Greek text does not arrive broken. On duplicates you decide: skip, update the existing record, or report an error.",
           "Bulk import is included in every plan that carries a subscription. It is not part of the free Starter plan — there, if you have a file to bring over, we run the migration ourselves with a support code that you generate. The steps, the limits and the traps — MARC-8, Greek Excel files with a semicolon instead of a comma — are on the [Migration](/en/migration) page.",
-          "Export, by contrast, is on every plan including the free one, without asking us and without giving anyone notice. You download your library's whole database in four formats: CSV in a zip archive, JSON, Excel, or a full PostgreSQL dump that restores as it stands. MARC we read on the way in; we do not produce it on the way out."
+          "Export, by contrast, is on every plan including the free one, without asking us and without giving anyone notice. You download your library’s whole database in four formats: CSV in a zip archive, JSON, Excel, or a full PostgreSQL dump that restores as it stands. MARC we read on the way in; we do not produce it on the way out."
         ]
       },
       {
@@ -1640,7 +1621,7 @@
         "items": [
           {
             "title": "A public catalogue for readers (OPAC)",
-            "body": "There is none. Libriant today is the staff's tool, and there is no screen a reader ever sees. If what you need is for the public to find your collection in a national catalogue, openABEKT is the right answer for a library in Greece, and we will tell you so plainly. Libriant solves the internal problem: who has which book, and when it comes back."
+            "body": "There is none. Libriant today is the staff’s tool, and there is no screen a reader ever sees. If what you need is for the public to find your collection in a national catalogue, openABEKT is the right answer for a library in Greece, and we will tell you so plainly. Libriant solves the internal problem: who has which book, and when it comes back."
           },
           {
             "title": "Accounts for members",
@@ -1676,11 +1657,11 @@
           },
           {
             "title": "Separate material types (DVDs, board games, archival material)",
-            "body": "Every record in the catalogue is a book. You cannot define a collection type of your own with screens of its own. If your holdings are mixed, the practical route today is a field of your own — “material type” — on the record."
+            "body": "Every record in the catalogue is a book. You cannot define a material type of your own with screens of its own. If your holdings are mixed, the practical route today is a field of your own — “material type” — on the record."
           },
           {
             "title": "Paying and writing off a fine",
-            "body": "Fines are calculated automatically and the outstanding amount shows on the member's record. There is no screen yet on which to record that a fine was paid or written off. If you collect fines, recording the payment happens outside Libriant for now."
+            "body": "Fines are calculated automatically and the outstanding amount shows on the member’s record. There is no screen yet on which to record that a fine was paid or written off. If you collect fines, recording the payment happens outside Libriant for now."
           },
           {
             "title": "Recording changes to the catalogue",

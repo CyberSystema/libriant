@@ -146,7 +146,7 @@ const ROW_COPY: Record<string, Record<Lang, { label: string; note?: string }>> =
   },
   reservations_enabled: {
     el: { label: 'Κρατήσεις και ουρά κρατήσεων' },
-    en: { label: 'Holds and hold queue' },
+    en: { label: 'Holds and the hold queue' },
   },
   isbn_lookup_enabled: {
     el: { label: 'Συμπλήρωση στοιχείων με ISBN' },
@@ -159,20 +159,39 @@ const ROW_COPY: Record<string, Record<Lang, { label: string; note?: string }>> =
     },
     en: {
       label: 'Bulk import from CSV, Excel or MARC',
-      note: 'On every paid plan. On the free Starter tier we run the migration for you, using a support code you generate.',
+      note: 'On every paid plan. On the free Starter plan we run the migration for you, using a support code you generate.',
     },
   },
   email_notifications_enabled: {
-    el: { label: 'Ειδοποιήσεις email προς τα μέλη' },
-    en: { label: 'Email notifications to members' },
+    el: {
+      label: 'Ειδοποιήσεις email προς τα μέλη',
+      note: 'Υπενθύμιση λήξης, εκπρόθεσμο, έτοιμη κράτηση.',
+    },
+    en: {
+      label: 'Email notifications to members',
+      note: 'Due-soon reminder, overdue, hold ready.',
+    },
+  },
+  // Not a feature key: desktop access is decided by BillingService, which
+  // blocks FREE plans and allows paid ones. Deriving the cell from the price
+  // states exactly that rule rather than restating it by hand.
+  desktop_app: {
+    el: {
+      label: 'Εφαρμογή για υπολογιστή',
+      note: 'Σιωπηλή εκτύπωση αποδείξεων δανεισμού και ετικετών.',
+    },
+    en: {
+      label: 'Desktop app',
+      note: 'Silent printing of loan receipts and barcode labels.',
+    },
   },
   max_custom_fields_per_entity: {
     el: {
-      label: 'Δικά σας πεδία, ανά είδος εγγραφής',
+      label: 'Δικά σας πεδία ανά είδος εγγραφής',
       note: 'Ισχύει χωριστά για κάθε είδος εγγραφής.',
     },
     en: {
-      label: 'Custom fields, per record kind',
+      label: 'Custom fields per record kind',
       note: 'Applies separately to each record kind.',
     },
   },
@@ -211,6 +230,7 @@ export function pricingRows(lang: Lang = 'el'): PricingRow[] {
     bulk_import_enabled: b('bulk_import_enabled'),
     email_notifications_enabled: b('email_notifications_enabled'),
     max_custom_fields_per_entity: n('max_custom_fields_per_entity'),
+    desktop_app: (p) => yesNo(p.priceEur > 0),
   };
   return Object.keys(ROW_COPY).map((key) => {
     const copy = ROW_COPY[key]?.[lang];

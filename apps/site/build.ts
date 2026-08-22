@@ -335,23 +335,27 @@ function main(): void {
   // definitions instead, so the caps advertised are the caps enforced.
   const PRICING_INTRO: Record<
     Lang,
-    { cards: string; cardsIntro: string; table: string; tableIntro: string }
+    { cards: string; cardsIntro: string; table: string; tableIntro: string; tableNote: string }
   > = {
     el: {
       cards: 'Τα πακέτα',
       cardsIntro:
         'Κάθε πακέτο περιλαμβάνει ολόκληρη την εφαρμογή. Αυτό που αλλάζει είναι τα όρια — πόσους τίτλους, πόσα μέλη και πόσους λογαριασμούς προσωπικού χωράει.',
-      table: 'Αναλυτική σύγκριση',
+      table: 'Τι αλλάζει από πακέτο σε πακέτο',
       tableIntro:
-        'Κάθε γραμμή είναι όριο που εφαρμόζει το ίδιο το λογισμικό — δεν είναι εμπορική περιγραφή.',
+        'Τα όρια και οι τέσσερις δυνατότητες που δεν υπάρχουν σε κάθε πακέτο. Ό,τι άλλο περιγράφουμε σε αυτή τη σελίδα υπάρχει σε κάθε πακέτο, και στο δωρεάν.',
+      tableNote:
+        'Η παύλα σημαίνει ότι δεν περιλαμβάνεται στο πακέτο. Η εφαρμογή για υπολογιστή δίνεται σε κάθε πακέτο με τιμή, όχι στο δωρεάν Starter. Τις τιμές θα τις βρείτε στον πρώτο πίνακα.',
     },
     en: {
       cards: 'The plans',
       cardsIntro:
         'Every plan includes the whole application. What changes are the limits — how many titles, members and staff seats it holds.',
-      table: 'Full comparison',
+      table: 'What changes from plan to plan',
       tableIntro:
-        'Every row is a limit the software itself enforces — not a marketing description.',
+        'The limits, and the four things that are not in every plan. Everything else described on this page is in every plan, including the free one.',
+      tableNote:
+        'A dash means it is not included in that plan. The desktop app comes with every plan that has a price, not with the free Starter. The prices are in the first table.',
     },
   };
 
@@ -389,6 +393,7 @@ function main(): void {
         <p>${t.tableIntro}</p>
       </div>
       ${renderComparisonTable(lang)}
+      <p class="footnote">${t.tableNote}</p>
     </div>
   </section>`,
           },
