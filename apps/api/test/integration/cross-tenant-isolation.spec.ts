@@ -11,6 +11,7 @@ import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { RedisService } from '../../src/platform/redis.service.js';
 import { loadEnv } from '../../src/config/env.js';
+import { listenOnce } from './listen-once.js';
 
 /**
  * Drill 3 from the plan, verbatim:
@@ -100,6 +101,8 @@ beforeAll(async () => {
   app.use(cookieParser());
   app.useGlobalFilters(new HttpExceptionFilter());
   await app.init();
+  // One ephemeral port for the file — see listen-once.ts.
+  await listenOnce(app);
 
   // The RedisService opens a non-blocking connection in its constructor.
   // `app.init()` doesn't await that, so a request that fires before the

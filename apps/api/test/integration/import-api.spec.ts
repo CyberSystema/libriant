@@ -13,6 +13,7 @@ import { RedisService } from '../../src/platform/redis.service.js';
 import { EffectivePlanService } from '../../src/plans/effective-plan.service.js';
 import { processImportJob } from '../../src/import/import-worker.js';
 import { loadEnv } from '../../src/config/env.js';
+import { listenOnce } from './listen-once.js';
 
 /**
  * Full bulk-import API + worker drill: upload → map → validate → commit,
@@ -57,6 +58,8 @@ beforeAll(async () => {
   app.use(cookieParser());
   app.useGlobalFilters(new HttpExceptionFilter());
   await app.init();
+  // One ephemeral port for the file — see listen-once.ts.
+  await listenOnce(app);
 
   const redis = app.get(RedisService);
   effective = app.get(EffectivePlanService);

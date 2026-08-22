@@ -11,6 +11,7 @@ import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { RedisService } from '../../src/platform/redis.service.js';
 import { PlatformSettingsService } from '../../src/platform-settings/platform-settings.service.js';
+import { listenOnce } from './listen-once.js';
 
 /**
  * Regression guard for the AdminRolesGuard DI bug.
@@ -51,6 +52,8 @@ beforeAll(async () => {
   app.use(cookieParser());
   app.useGlobalFilters(new HttpExceptionFilter());
   await app.init();
+  // One ephemeral port for the file — see listen-once.ts.
+  await listenOnce(app);
 
   const redis = app.get(RedisService);
   settings = app.get(PlatformSettingsService);

@@ -16,6 +16,7 @@ import { parseDelimited } from '../../src/import/parsers/csv-parser.js';
 import { autoMap } from '../../src/import/mapping/auto-map.js';
 import { executeImport } from '../../src/import/engine/runner.js';
 import type { EngineContext } from '../../src/import/engine/import-engine.js';
+import { listenOnce } from './listen-once.js';
 
 /**
  * End-to-end import engine drill against a real tenant DB. Boots Nest, signs
@@ -73,6 +74,8 @@ beforeAll(async () => {
   app.use(cookieParser());
   app.useGlobalFilters(new HttpExceptionFilter());
   await app.init();
+  // One ephemeral port for the file — see listen-once.ts.
+  await listenOnce(app);
 
   const redis = app.get(RedisService);
   const deadline = Date.now() + 5_000;

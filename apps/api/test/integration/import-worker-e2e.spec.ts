@@ -13,6 +13,7 @@ import { RedisService } from '../../src/platform/redis.service.js';
 import { EffectivePlanService } from '../../src/plans/effective-plan.service.js';
 import { startImportWorker, type ImportWorkerHandle } from '../../src/import/import-worker.js';
 import { loadEnv } from '../../src/config/env.js';
+import { listenOnce } from './listen-once.js';
 
 /**
  * True end-to-end: the LIVE BullMQ import worker drains the queue. We POST the
@@ -56,6 +57,8 @@ beforeAll(async () => {
   app.use(cookieParser());
   app.useGlobalFilters(new HttpExceptionFilter());
   await app.init();
+  // One ephemeral port for the file — see listen-once.ts.
+  await listenOnce(app);
 
   const redis = app.get(RedisService);
   const effective = app.get(EffectivePlanService);

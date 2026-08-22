@@ -11,6 +11,7 @@ import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { RedisService } from '../../src/platform/redis.service.js';
 import { loadEnv } from '../../src/config/env.js';
+import { listenOnce } from './listen-once.js';
 
 /**
  * End-to-end check for the desktop download + entitlement endpoints. Boots the
@@ -96,6 +97,8 @@ beforeAll(async () => {
   app.use(cookieParser());
   app.useGlobalFilters(new HttpExceptionFilter());
   await app.init();
+  // One ephemeral port for the file — see listen-once.ts.
+  await listenOnce(app);
 
   const redis = app.get(RedisService);
   const deadline = Date.now() + 5_000;
