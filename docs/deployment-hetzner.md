@@ -19,7 +19,12 @@ SSH**, so every step here is a short command you can paste.
 | Scale      | a pilot of up to ~20 libraries (tenants)                             |
 
 > This runbook is filled in for **CyberSystema-1**, public IPv4
-> `178.104.32.176`. Everything runs on this one box, across three hosts:
+> `195.201.13.95`. Everything runs on this one box, across three hosts:
+>
+> **2026-08-22:** the previous server, `178.104.32.176`, was lost — ports 22 and
+> 443 both time out and the deploy workflow died on it. `195.201.13.95` replaces
+> it and has not been deployed to yet. Deploys are currently manual and run on
+> the box: see [deploy-from-the-server.md](deploy-from-the-server.md).
 >
 > | Host                 | Serves                           | Variable      |
 > | -------------------- | -------------------------------- | ------------- |
@@ -212,7 +217,7 @@ ufw enable
 
 ## Part 3 — Connect with Termius
 
-1. In Termius: **New Host** → Address `178.104.32.176`, Username `root`, and pick
+1. In Termius: **New Host** → Address `195.201.13.95`, Username `root`, and pick
    your key under _SSH_.
 2. Connect. You're now at a `root@` prompt on the fresh server.
 
@@ -448,10 +453,10 @@ terminates TLS at its edge, Caddy can't use Let's Encrypt here; it serves a
 **1. DNS records** — Cloudflare dashboard → `libriant.com` zone → **DNS →
 Records** (nameservers already point at Cloudflare since it's your registrar):
 
-| Type | Name    | Value            | Proxy          |
-| ---- | ------- | ---------------- | -------------- |
-| A    | `@`     | `178.104.32.176` | **Proxied** 🟠 |
-| A    | `admin` | `178.104.32.176` | **Proxied** 🟠 |
+| Type | Name    | Value           | Proxy          |
+| ---- | ------- | --------------- | -------------- |
+| A    | `@`     | `195.201.13.95` | **Proxied** 🟠 |
+| A    | `admin` | `195.201.13.95` | **Proxied** 🟠 |
 
 > Proxied records resolve to Cloudflare's edge, **not** your box — so
 > `dig +short libriant.com` returns Cloudflare IPs. That's expected. Deploys
@@ -694,6 +699,12 @@ dc stop                     # graceful stop (drains cleanly — safe before rebo
 dc up -d                    # start / re-create after a change
 ```
 
+> **Deploys are manual and run on the box as of 2026-08-22.** The push trigger
+> is removed from `deploy.yml`; it is `workflow_dispatch` only. The current
+> procedure is [deploy-from-the-server.md](deploy-from-the-server.md). What
+> follows describes the CI path, which is accurate for when it is switched back
+> on — see that page for the two things to fix first.
+
 **Deploys run through CI.** Push to `main` (or trigger the _deploy_ workflow from
 the Actions tab). CI builds the images, pushes them to GHCR, SSHes to
 CyberSystema-1, checks out the exact commit at `/srv/libriant/app`, and runs the
@@ -705,8 +716,10 @@ volume, with a `/healthz` gate.
 1. **`IMAGE_OWNER`** is set in `.env.prod` (Part 6) to your GitHub owner/org,
    lowercase. CI pushes — and the host pulls — `ghcr.io/$IMAGE_OWNER/libriant-{api,web}`.
 2. **DNS is live** (Part 7): `libriant.com` resolves to the box with a valid
-   cert. CI health-checks `https://libriant.com/healthz`, and `fleet.yml`'s
-   `ssh:` is already `libriant.com`.
+   cert. `fleet.yml`'s `ssh:` is the **raw IP**, not the hostname — the apex is
+   Cloudflare-proxied and Cloudflare's edge does not carry port 22. CI does not
+   health-check a public URL either; it SSHes in and curls `localhost`, so
+   `health_host` in `fleet.yml` is informational only.
 3. **Deploy key (runner → server)** — a dedicated keypair, authorized for
    `deploy`, private half stored as the `DEPLOY_SSH_KEY` repo secret:
    ```sh
@@ -724,6 +737,7 @@ volume, with a `/healthz` gate.
    the built-in `GITHUB_TOKEN` — you never create a token for that.)_
 6. **Push to `main`** → watch Actions: _build → deploy → healthy_. The first
    push deploys the stack; then run the one-time DB bootstrap (Part 9).
+   _(Not while deploys are manual — run `scripts/deploy-on-host.sh` instead.)_
 
 > **Heads-up:** CI does `git reset --hard`, so host-local edits to **tracked**
 > files (e.g. tuning the `postgres` command in the compose file) are overwritten
@@ -775,7 +789,7 @@ Prometheus + Grafana + node-exporter + cAdvisor stack:
 cd /srv/libriant/app/infra/monitoring
 GRAFANA_ADMIN_PASSWORD=pick-one docker compose -f docker-compose.monitoring.yml up -d
 # Grafana is bound to localhost only — reach it through an SSH tunnel:
-#   (in Termius / locally)  ssh -L 3300:127.0.0.1:3300 deploy@178.104.32.176
+#   (in Termius / locally)  ssh -L 3300:127.0.0.1:3300 deploy@195.201.13.95
 # then open http://localhost:3300  (import dashboards 1860 + 14282)
 ```
 

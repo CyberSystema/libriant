@@ -1,26 +1,28 @@
 name: deploy
 
-# Build images on push to main, then deploy them to every host in
-# `infra/deploy/fleet.yml`. The deploy job is intentionally per-host with
-# `fail-fast: false` so one cell failing doesn't roll back others — the
-# topology assumes hosts are independent (different DB host per cell,
-# eventually). Workflow can also be triggered manually from the Actions
-# tab for hotfixes.
+# Build images and deploy them to every host in `infra/deploy/fleet.yml`.
+# The deploy job is intentionally per-host with `fail-fast: false` so one cell
+# failing doesn't roll back others — the topology assumes hosts are independent
+# (different DB host per cell, eventually).
+#
+# MANUAL ONLY as of 2026-08-22. The push trigger is deliberately removed while
+# the new box (195.201.13.95) is deployed by hand from the server itself —
+# see docs/deploy-from-the-server.md. Leaving it on push would either paint
+# every push red (the old host is gone) or, once fleet.yml points at the new
+# box, ship a release nobody asked for.
+#
+# Nothing about verification changed: ci.yml still runs the full verify suite
+# on every push. What is switched off here is shipping, not checking.
+#
+# To restore continuous deployment, put back:
+#   push:
+#     branches: [main]
+#     paths: ['apps/**', 'packages/**', 'infra/**', 'locales/**', 'assets/**',
+#             '.github/workflows/deploy.yml', '.github/workflows/verify.yml']
+# ('locales/**' and 'assets/**' are in that list because apps/site/build.ts
+# renders the marketing site from them, so a copy change is a deploy.)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'apps/**'
-      - 'packages/**'
-      - 'infra/**'
-      # The marketing site is generated from these at build time
-      # (apps/site/build.ts reads locales/<lang>/landing.json and assets/icons),
-      # so a copy or icon change must trigger a deploy like any code change.
-      - 'locales/**'
-      - 'assets/**'
-      - '.github/workflows/deploy.yml'
-      - '.github/workflows/verify.yml'
   workflow_dispatch:
     inputs:
       image_tag:

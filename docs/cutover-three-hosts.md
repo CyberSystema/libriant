@@ -52,19 +52,30 @@ the server URL, or `LIBRIANT_APP_URL` on managed machines.
 
 ---
 
-## Step 1 — Find out whether the apex is actually live
+## Step 1 — The apex is already dark. Settled 2026-08-22.
 
-The repo contradicts itself here and cannot settle it: the deployment runbook
-records `A @ → 178.104.32.176`, while the campaign checklist says the apex
-points at a server that was deleted and times out.
+This used to be an open question — the runbook recorded `A @ → 178.104.32.176`,
+the campaign checklist said that server was gone. The checklist was right, and
+the answer is now measured rather than argued:
+
+```
+dig +short libriant.com      → 104.21.83.86, 172.67.218.62   (Cloudflare)
+curl https://libriant.com/   → 000                            (no origin behind it)
+dig +short app.libriant.com  → (nothing)                      (no A record)
+178.104.32.176:22 and :443   → both time out                  (box is gone)
+```
+
+**So the cutover costs no outage and can happen whenever you like** — there is
+nothing live to take away. The new server is `195.201.13.95`; deploy to it with
+[deploy-from-the-server.md](deploy-from-the-server.md) and confirm it is healthy
+locally before you point any DNS at it.
+
+Re-run the checks above before you start, in case the situation has moved:
 
 ```bash
 dig +short libriant.com
 curl -sS -o /dev/null -w '%{http_code}\n' --max-time 5 https://libriant.com/
 ```
-
-This decides whether you are scheduling an outage window or not. If the apex is
-already dark, the cutover costs nothing and can happen at any time.
 
 ## Step 2 — Add the `app` record, and prove TLS before anything depends on it
 
@@ -117,7 +128,9 @@ cutover.
 
 ## Step 5 — Deploy
 
-Push to `main`. The deploy now:
+Run `bash scripts/deploy-on-host.sh` on the box —
+[deploy-from-the-server.md](deploy-from-the-server.md). (Pushing to `main` no
+longer deploys; the trigger was removed on 2026-08-22.) The deploy:
 
 1. builds three images — api, web, and the edge (Caddy with the marketing site
    baked in),

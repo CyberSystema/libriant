@@ -13,13 +13,30 @@ hosts:
     # proxied through Cloudflare (orange-cloud) — `libriant.com` resolves to
     # Cloudflare's edge, which doesn't carry SSH (port 22). The IP reaches the
     # box directly. (Lock host port 22 to your own IP in the firewall.)
-    ssh: 178.104.32.176
+    #
+    # 2026-08-22: was 178.104.32.176. That box is GONE — ports 22 and 443 both
+    # time out, and the deploy workflow died on it at its first ssh. This is the
+    # replacement, and it has NOT been deployed to yet.
+    ssh: 195.201.13.95
+    #
+    # Before any workflow_dispatch run against this box: the DEPLOY_KNOWN_HOSTS
+    # secret still pins the DEAD host's SSH keys, so `StrictHostKeyChecking=yes`
+    # will refuse the new one. Re-key it first (ssh-keyscan the new box, compare
+    # the fingerprint out-of-band against the provider console, then update the
+    # secret). On-host deploys don't touch this.
     # Public host the deploy workflow health-checks (`https://<health_host>/healthz`).
     # This one goes THROUGH Cloudflare → origin, so it must be the proxied
     # domain with a valid cert (Cloudflare's edge cert + the origin cert).
+    #
+    # Informational only, like `cell_id` below — grep the workflow: it reads
+    # `.name`, `.user` and `.ssh` and nothing else. The health gate SSHes in and
+    # curls localhost, so this value is not what it would check.
+    #
+    # It is also not resolvable yet: app.libriant.com has no A record as of
+    # 2026-08-22 and the apex answers 000.
     health_host: app.libriant.com
-    # Compose project name on the remote host. The workflow exports this
-    # as `COMPOSE_PROJECT_NAME` before running compose commands.
+    # Compose project name. Informational too: the workflow hardcodes
+    # `export COMPOSE_PROJECT_NAME=libriant` rather than reading this.
     project: libriant
     # Informational label only — the deploy workflow does NOT read `cell_id`.
     # The real cell lives in the control DB: the seeder (seed-data.ts) creates

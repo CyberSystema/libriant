@@ -93,8 +93,12 @@ and to keep offsite backups current (§8).
 ### Normal access
 
 ```sh
-ssh deploy@libriant.com          # or the bare IP
+ssh deploy@195.201.13.95         # the raw IP, always
 ```
+
+**Always the IP, never `libriant.com`.** The apex is Cloudflare-proxied and
+Cloudflare's edge does not carry port 22, so the hostname cannot reach SSH — it
+never could. (This box replaced `178.104.32.176`, lost on 2026-08-22.)
 
 Key-based only. Password authentication and direct root login are both disabled
 (runbook Part 5). You escalate with `sudo` once inside.
@@ -239,6 +243,12 @@ dc up -d               # start / recreate
 
 ### Deploys
 
+> **Deploys are manual and run on the box as of 2026-08-22.** The push trigger
+> is removed from `deploy.yml`; it is `workflow_dispatch` only. The current
+> procedure is [deploy-from-the-server.md](deploy-from-the-server.md). What
+> follows describes the CI path, which is accurate for when it is switched back
+> on — see that page for the two things to fix first.
+
 **Push to `main` → GitHub Actions builds, pushes to GHCR, SSHes in, and deploys.**
 Migrations run automatically as the one-shot `migrate` service before `api` and
 `worker` start. You do not run migrations by hand.
@@ -364,7 +374,7 @@ docker compose -f infra/monitoring/docker-compose.monitoring.yml up -d
 Grafana must **not** be exposed publicly. Reach it over an SSH tunnel:
 
 ```sh
-ssh -L 3000:localhost:3000 deploy@libriant.com
+ssh -L 3000:localhost:3000 deploy@195.201.13.95
 # then open http://localhost:3000 on your laptop
 ```
 
