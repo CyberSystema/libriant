@@ -77,7 +77,7 @@ jobs:
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: meta
         run: |
@@ -88,16 +88,16 @@ jobs:
           # GHCR image paths must be lowercase; the owner login may not be.
           echo "owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & push API image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: apps/api/Dockerfile
@@ -109,7 +109,7 @@ jobs:
           cache-to: type=gha,scope=api,mode=max
 
       - name: Build & push web image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: apps/web/Dockerfile
@@ -124,7 +124,7 @@ jobs:
       # artefact like the others. This also puts the site's content version
       # under IMAGE_TAG, so a rollback rolls the copy back with the code.
       - name: Build & push edge image (Caddy + marketing site)
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: infra/caddy/Dockerfile
@@ -152,7 +152,7 @@ jobs:
     outputs:
       hosts: ${{ steps.read.outputs.hosts }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: read
         run: |
           # Parse the YAML host list into a JSON matrix the deploy job
@@ -189,10 +189,10 @@ jobs:
         host: ${{ fromJson(needs.plan.outputs.hosts) }}
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.9.0
+        uses: webfactory/ssh-agent@v0.10.0
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 

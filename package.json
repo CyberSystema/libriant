@@ -2,8 +2,8 @@
   "name": "libriant",
   "version": "0.1.0",
   "private": true,
-  "description": "Libriant — multi-tenant SaaS for library management",
-  "packageManager": "pnpm@9.15.4",
+  "description": "Libriant \u2014 multi-tenant SaaS for library management",
+  "packageManager": "pnpm@11.22.0",
   "engines": {
     "node": ">=26"
   },
@@ -50,20 +50,5 @@
     "turbo": "^2.10.11",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.67.0"
-  },
-  "pnpm": {
-    "overrides": {
-      "ioredis": "^5.11.0",
-      "react": "^19.2.6",
-      "react-dom": "^19.2.6",
-      "multer": "^2.2.0",
-      "uuid": "^11.1.1",
-      "qs": "^6.15.2",
-      "form-data": "^4.0.6",
-      "postcss": "^8.5.10",
-      "esbuild": "^0.28.1",
-      "hono": "^4.12.25",
-      "@hono/node-server": "^1.19.13"
-    }
   }
 }

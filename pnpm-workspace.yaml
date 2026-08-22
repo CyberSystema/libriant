@@ -1,3 +1,40 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+
+# pnpm 11 no longer reads the "pnpm" field in package.json — settings live
+# here now. It says so on install, but it says it as a WARNING and carries on,
+# so an unnoticed migration silently drops every override below.
+
+# Security/compat floors for transitive dependencies.
+overrides:
+  'ioredis': '^6.0.0'
+  'react': '^19.2.6'
+  'react-dom': '^19.2.6'
+  'multer': '^2.2.0'
+  'uuid': '^11.1.1'
+  'qs': '^6.15.2'
+  'form-data': '^4.0.6'
+  'postcss': '^8.5.10'
+  'esbuild': '^0.28.1'
+  'hono': '^4.12.25'
+  '@hono/node-server': '^1.19.13'
+
+# pnpm 10 stopped running dependency lifecycle scripts unless allowlisted, and
+# pnpm 11 renamed the setting to `allowBuilds`. Decide each one rather than
+# blanket-approving: a postinstall is arbitrary code execution at install time,
+# which is exactly the thing the rest of this file's policy is guarding.
+allowBuilds:
+  # Places the Prisma query engine binary. Without it every DB call fails.
+  '@prisma/engines': true
+  # preinstall only gates the Node version; harmless and worth keeping honest.
+  prisma: true
+  # Installs the platform-specific binary. tsx and vitest cannot run without it,
+  # so this one takes the whole test suite and the API's runtime with it.
+  esbuild: true
+  # Needed to package the Windows desktop installer in desktop-release.yml.
+  electron-winstaller: true
+  # Optional native accelerator for msgpackr (a BullMQ dependency). msgpackr
+  # falls back to its JavaScript path, so this buys throughput we do not need
+  # at current volumes and is not worth a native build step.
+  msgpackr-extract: false
