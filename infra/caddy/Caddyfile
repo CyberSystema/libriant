@@ -51,6 +51,26 @@
 	}
 }
 
+(site_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		# The marketing site ships zero JavaScript and fetches nothing from
+		# anywhere, so it can afford a CSP the app cannot. `security_headers`
+		# carries no CSP at all, which is why this is a separate snippet rather
+		# than an import of it — reusing that one would silently drop
+		# form-action, frame-ancestors and base-uri on the page that carries the
+		# application form.
+		# 'unsafe-inline' in style-src is required: pages.ts emits two style
+		# attributes. script-src stays 'none'.
+		Content-Security-Policy "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+		-Server
+	}
+}
+
 (maintenance_check) {
 	# When the orchestrator flips $MAINTENANCE_HARD=true on the host, every
 	# request below returns the static page directly. We use a `try_files`
@@ -126,7 +146,7 @@ http:// {
 # Public apex — libriant.com
 # ---------------------------------------------------------------------------
 
-{$PUBLIC_HOST:libriant.com} {
+{$PUBLIC_HOST:app.libriant.com} {
 	import security_headers
 	import maintenance_check
 	import maintenance_takeover
@@ -217,6 +237,101 @@ http:// {
 }
 
 # ---------------------------------------------------------------------------
+# Marketing site — libriant.com
+#
+# Static files, baked into this image at build time (infra/caddy/Dockerfile).
+# It is served here rather than by the app so that it stays up when the app does
+# not: an outage should still leave a readable page and a working form.
+#
+# The ONLY thing proxied to the API is the application form. Do not add a
+# handle_path /lbr-api/* block here — the @internal guard that 404s /metrics and
+# /healthz is written once per vhost above, and a third vhost proxying to
+# api:3001 without it would re-expose fleet-wide tenant counts at
+# libriant.com/lbr-api/metrics.
+# ---------------------------------------------------------------------------
+
+{$SITE_HOST:libriant.com} {
+	# REQUIRED. Without the origin certificate Caddy attempts an ACME challenge
+	# that can never complete behind Cloudflare's proxy, and the visitor gets a
+	# 526.
+	import cloudflare_origin
+	import site_headers
+	# Keeps https://libriant.com/healthz answering for existing uptime monitors.
+	import maintenance_check
+	# Deliberately NOT maintenance_takeover: the marketing site is precisely the
+	# page that has to stay readable while the app is in maintenance.
+
+	encode zstd gzip
+	root * /srv/libriant/site
+
+	# ---- the application form ------------------------------------------------
+	# Same-origin on purpose: no CORS, no SameSite question, the 303 lands on the
+	# site's own /thank-you, and the API's origin check passes because
+	# PUBLIC_APEX_DOMAIN is still libriant.com.
+	@apply path /apply /en/apply
+	handle @apply {
+		reverse_proxy api:3001 {
+			# The real client IP, for the form's throttle. Behind Cloudflare the
+			# TCP peer is an edge node.
+			header_up X-Real-IP {http.request.header.CF-Connecting-IP}
+			fail_duration 10s
+			max_fails 3
+		}
+	}
+
+	# ---- links to app paths that used to live on this host -------------------
+	# Password-reset and verification emails already sitting in inboxes were
+	# built against this origin. Preserve path AND query so live tokens work.
+	@moved path /login /login/* /signup /signup/* /verify-email /verify-email/* /t/* /el/legal/* /en/legal/* /offline.html
+	redir @moved https://{$PUBLIC_HOST:app.libriant.com}{uri} 302
+	redir /admin https://{$ADMIN_HOST:admin.libriant.com}/admin/login 302
+	redir /admin/* https://{$ADMIN_HOST:admin.libriant.com}{uri} 302
+
+	# ---- static assets -------------------------------------------------------
+	# Filenames are not fingerprinted, so a short TTL plus the ETag rather than a
+	# long immutable one — otherwise a copy fix takes a year to reach a visitor.
+	@site_assets path /styles.css /favicon.svg /icons/* /sw.js
+	handle @site_assets {
+		header Cache-Control "public, max-age=300"
+		file_server
+	}
+
+	handle {
+		header Cache-Control "public, max-age=0, must-revalidate"
+		# Pretty URLs: pages link to /pricing and /en/pricing, backed by the flat
+		# files pricing.html and en/pricing.html. `/` and `/en/` are directories.
+		try_files {path} {path}.html
+		file_server
+	}
+
+	handle_errors {
+		root * /srv/libriant/site
+		@nf_en expression `{err.status_code} == 404 && {http.request.orig_uri.path}.startsWith("/en/")`
+		handle @nf_en {
+			rewrite * /en/404.html
+			file_server {
+				status 404
+			}
+		}
+		@nf expression `{err.status_code} == 404`
+		handle @nf {
+			rewrite * /404.html
+			file_server {
+				status 404
+			}
+		}
+		handle {
+			respond "{err.status_code} {err.status_text}"
+		}
+	}
+}
+
+www.{$SITE_HOST:libriant.com} {
+	import cloudflare_origin
+	redir https://{$SITE_HOST:libriant.com}{uri} permanent
+}
+
+# ---------------------------------------------------------------------------
 # Wildcard — *.libriant.com (custom subdomains, Pro/Enterprise feature)
 #
 # When this ships we need a DNS-01 challenge so ACME can prove control of
@@ -225,7 +340,7 @@ http:// {
 # TenantMiddleware already supports subdomain resolution.
 # ---------------------------------------------------------------------------
 
-# *.{$PUBLIC_HOST:libriant.com} {
+# *.{$PUBLIC_APEX_DOMAIN:libriant.com} {
 # 	import security_headers
 # 	import maintenance_check
 # 	import maintenance_takeover

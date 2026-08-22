@@ -111,22 +111,34 @@ x-logging: &logging
 services:
   # ----- edge -----------------------------------------------------------
   caddy:
-    image: caddy:2-alpine
+    # Was `caddy:2-alpine`. Now stock Caddy with the rendered marketing site
+    # baked in at /srv/libriant/site — apps/site/dist is gitignored, so there is
+    # nothing on the host to bind-mount, and the host has no Node to render it.
+    image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-caddy:${IMAGE_TAG:-latest}
+    build:
+      context: ../..
+      dockerfile: infra/caddy/Dockerfile
     <<: [*restart, *logging]
     mem_limit: ${CADDY_MEM_LIMIT:-256m}
     cpus: ${CADDY_CPUS:-1}
     pids_limit: 256
     depends_on:
+      # Loosened from service_healthy deliberately: now that the marketing site
+      # lives inside Caddy, an app outage must not take the marketing site down
+      # with it — separating them is the entire point. Caddy answers 502 for an
+      # upstream that is not up, and the deploy's health gate asserts api/web
+      # container health independently.
       web:
-        condition: service_healthy
+        condition: service_started
       api:
-        condition: service_healthy
+        condition: service_started
     ports:
       - '80:80'
       - '443:443'
       - '443:443/udp' # HTTP/3
     environment:
-      PUBLIC_HOST: ${PUBLIC_HOST:-libriant.com}
+      SITE_HOST: ${SITE_HOST:-libriant.com}
+      PUBLIC_HOST: ${PUBLIC_HOST:-app.libriant.com}
       ADMIN_HOST: ${ADMIN_HOST:-admin.libriant.com}
       ACME_EMAIL: ${ACME_EMAIL:-ops@libriant.com}
       MAINTENANCE_HARD: ${MAINTENANCE_HARD:-false}

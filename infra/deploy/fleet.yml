@@ -17,7 +17,7 @@ hosts:
     # Public host the deploy workflow health-checks (`https://<health_host>/healthz`).
     # This one goes THROUGH Cloudflare → origin, so it must be the proxied
     # domain with a valid cert (Cloudflare's edge cert + the origin cert).
-    health_host: libriant.com
+    health_host: app.libriant.com
     # Compose project name on the remote host. The workflow exports this
     # as `COMPOSE_PROJECT_NAME` before running compose commands.
     project: libriant

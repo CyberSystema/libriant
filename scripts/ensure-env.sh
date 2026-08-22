@@ -99,7 +99,12 @@ echo "Ensuring config defaults ..."
 ensure_default BILLING_ENABLED false # free launch: all tenants get every feature; set 'true' to enforce plans
 ensure_default STRIPE_DRIVER fake    # trial-safe; set 'real' + keys to charge
 ensure_default EMAIL_DRIVER console  # trial-safe: NOT delivered; body withheld from prod logs (A12-02). Set 'resend'+RESEND_API_KEY or 'smtp'+SMTP_URL to send.
-ensure_default PUBLIC_HOST libriant.com
+# PUBLIC_HOST is the APP host; the marketing site owns the apex. Changing this
+# default only affects a NEWLY provisioned host — an existing .env.prod keeps
+# whatever it already has, which is why the migration needs a manual edit there.
+ensure_default PUBLIC_HOST app.libriant.com
+ensure_default SITE_HOST libriant.com
+ensure_default PUBLIC_APEX_DOMAIN libriant.com
 ensure_default ADMIN_HOST admin.libriant.com
 ensure_default ACME_EMAIL ops@libriant.com
 ensure_default IMAGE_TAG latest

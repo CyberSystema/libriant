@@ -118,6 +118,21 @@ jobs:
           cache-from: type=gha,scope=web
           cache-to: type=gha,scope=web,mode=max
 
+      # Caddy now carries the rendered marketing site, so the edge is a build
+      # artefact like the others. This also puts the site's content version
+      # under IMAGE_TAG, so a rollback rolls the copy back with the code.
+      - name: Build & push edge image (Caddy + marketing site)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/caddy/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/libriant-caddy:${{ steps.meta.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/libriant-caddy:latest
+          cache-from: type=gha,scope=caddy
+          cache-to: type=gha,scope=caddy,mode=max
+
   # ---------------------------------------------------------------------
   # plan — read fleet.yml and emit a matrix of hosts.
   # ---------------------------------------------------------------------
@@ -351,12 +366,17 @@ jobs:
               # answers 200; if Caddy were still on an old config it would 301 to
               # HTTPS, which must NOT count as healthy.
               edge="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://localhost/healthz 2>/dev/null || true)"
+              # The marketing site is a separate vhost served from inside the
+              # edge image, so a healthy origin does not imply it rendered. The
+              # explicit Host header bypasses Cloudflare and satisfies the origin
+              # certificate's SNI.
+              site="$(curl -sSk -o /dev/null -w '%{http_code}' --max-time 5 -H 'Host: libriant.com' https://localhost/ 2>/dev/null || true)"
               api="$(svc_health api)"; web="$(svc_health web)"; worker="$(svc_health worker)"
-              if [ "$edge" = "200" ] && [ "$api" = "healthy" ] && [ "$web" = "healthy" ] && [ "$worker" = "healthy" ]; then
-                echo "origin + app containers healthy"
+              if [ "$edge" = "200" ] && [ "$site" = "200" ] && [ "$api" = "healthy" ] && [ "$web" = "healthy" ] && [ "$worker" = "healthy" ]; then
+                echo "origin + marketing site + app containers healthy"
                 exit 0
               fi
-              echo "waiting for health… edge=$edge api=$api web=$web worker=$worker"
+              echo "waiting for health… edge=$edge site=$site api=$api web=$web worker=$worker"
               sleep 5
             done
             echo "stack did not become healthy within 150s (edge=$edge api=$api web=$web worker=$worker)" >&2
