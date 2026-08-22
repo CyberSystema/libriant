@@ -310,8 +310,6 @@ function main(): void {
     console.warn(`\n⚠  DRAFT BUILD — ${placeholders.length} unfilled placeholder(s):\n${list}\n`);
   }
 
-  const landing = readJson<LandingCopy>(join(REPO, 'locales/el/landing.json'));
-
   // NOT the build clock: auto-dating a legal page on every rebuild claims a
   // revision that never happened, and drifts from the version stored with each
   // recorded consent. Bump `legal.lastUpdated` in site.config.json instead.

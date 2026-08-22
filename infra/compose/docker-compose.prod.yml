@@ -36,7 +36,10 @@ x-app-env: &app-env
   CONTROL_DATABASE_URL: postgresql://libriant:${POSTGRES_PASSWORD}@pgbouncer:5432/libriant_control
   REDIS_URL: redis://redis:6379
   PUBLIC_APP_URL: https://${PUBLIC_HOST:-libriant.com}
-  PUBLIC_APEX_DOMAIN: ${PUBLIC_HOST:-libriant.com}
+  PUBLIC_APEX_DOMAIN: ${PUBLIC_APEX_DOMAIN:-libriant.com}
+  SITE_HOST: ${SITE_HOST:-libriant.com}
+  HASH_PEPPER: ${HASH_PEPPER:?HASH_PEPPER is required in production}
+  APPLY_NOTIFY_TO: ${APPLY_NOTIFY_TO:-info@libriant.com}
   # Excluded from tenant subdomain resolution so admin.<apex> isn't treated
   # as a library slug (otherwise admin login 404s "Unknown library admin").
   ADMIN_HOST: ${ADMIN_HOST:-admin.libriant.com}

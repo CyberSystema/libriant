@@ -12,7 +12,6 @@ import {
   esc,
   renderShell,
   localePath,
-  UI,
   NAV as NAV_FOR_404,
   type Lang,
   type SiteConfig,
@@ -193,8 +192,6 @@ function closedNotice(c: SiteConfig, lang: Lang): string {
 export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions = {}): string {
   const lang: Lang = o.lang ?? 'el';
   const h = HOME[lang];
-  const t = UI[lang];
-  const f = FORM[lang];
   const open = c.offer.spotsRemaining > 0;
   const entry = priceLabel(c.offer.entryMonthlyPriceEur, lang);
   const planned = priceLabel(c.offer.plannedMonthlyPriceEur, lang);

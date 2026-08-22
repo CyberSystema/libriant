@@ -17,6 +17,7 @@
     "@libriant/db-control": "workspace:*",
     "@libriant/db-tenant": "workspace:*",
     "@libriant/shared": "workspace:*",
+    "@libriant/site": "workspace:*",
     "@nestjs/common": "^11.1.24",
     "@nestjs/core": "^11.1.24",
     "@nestjs/platform-express": "^11.1.24",

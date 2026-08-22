@@ -45,6 +45,9 @@ COPY packages/db-tenant/package.json packages/db-tenant/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/i18n/package.json packages/i18n/package.json
 COPY packages/ui/package.json packages/ui/package.json
+# The API renders the marketing site's home page when the application form
+# fails validation, so @libriant/site is a real runtime dependency.
+COPY apps/site/package.json apps/site/package.json
 
 # Prisma schema is referenced by `prisma generate` which runs in `build`;
 # the schema file itself doesn't affect dep install.
@@ -57,6 +60,11 @@ FROM deps AS build
 # excluded; the web image is a separate target.
 COPY tsconfig.base.json ./
 COPY apps/api apps/api
+# apps/site supplies the renderer; locales/ supplies the landing copy it reads.
+# apps/site/src/plans.ts reaches across the workspace with a relative import to
+# packages/db-control/prisma/seed-data.js — already copied below, do not prune.
+COPY apps/site apps/site
+COPY locales locales
 COPY packages/db-control packages/db-control
 COPY packages/db-tenant packages/db-tenant
 COPY packages/shared packages/shared

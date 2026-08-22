@@ -35,6 +35,7 @@ import { SystemModeModule } from './system-mode/system-mode.module.js';
 import { TenantModule } from './tenancy/tenant.module.js';
 import { TenantMiddleware } from './tenancy/tenant.middleware.js';
 import { LibraryModule } from './library/library.module.js';
+import { ApplicationsModule } from './applications/applications.module.js';
 
 @Module({
   imports: [
@@ -74,6 +75,7 @@ import { LibraryModule } from './library/library.module.js';
     ExportModule,
     DesktopModule,
     LibraryModule,
+    ApplicationsModule,
   ],
   providers: [
     {

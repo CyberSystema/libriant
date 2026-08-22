@@ -151,6 +151,9 @@ enum EmailMessageKind {
   // Library-profile edit-request workflow
   library_edit_request_submitted
   library_edit_request_decided
+
+  // A stranger applied through the marketing site's form
+  application_submitted
 }
 
 enum SystemModeKind {
@@ -990,6 +993,62 @@ model LibraryEditRequest {
 // ---------------------------------------------------------------------------
 // Announcements — admin → libraries, in-app + email, audience-targeted.
 // ---------------------------------------------------------------------------
+
+enum ApplicationStatus {
+  new
+  contacted
+  accepted
+  rejected
+}
+
+/// An application from the public marketing site's form at libriant.com.
+///
+/// Deliberately NOT shaped like LibraryEditRequest: that models a request from
+/// an authenticated tenant member against a row that already exists. An
+/// application precedes the tenant existing at all, so there is no tenantId, no
+/// requesting user and no before/after patch — only the answers, and the review
+/// scaffolding copied from that model.
+///
+/// What is NOT stored is as deliberate as what is. No IP, no IP hash, no
+/// country, no user agent: none of them is needed to answer an application, and
+/// Art. 5(1)(c) does not allow collecting data no purpose requires. Abuse
+/// throttling keys on a peppered hash held in Redis for an hour and never
+/// reaches this table.
+model Application {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  libraryName  String
+  libraryType  LibraryType
+  city         String
+  contactName  String
+  contactEmail String      @db.Citext
+  phone        String?
+
+  collectionSize String?
+  currentSystem  String?
+  message        String?
+
+  /// The acknowledgement as submitted, not a literal — this row is the evidence
+  /// of what the applicant actually did.
+  consent        Boolean
+  /// Which version of the privacy notice was on screen at submission time.
+  privacyVersion String
+
+  /// Set by the outbox worker on real delivery, not on enqueue.
+  notified    Boolean @default(false)
+  notifyError String?
+
+  status            ApplicationStatus @default(new)
+  reviewedByAdminId String?
+  decisionNote      String?
+  reviewedAt        DateTime?
+
+  @@index([status, createdAt])
+  @@index([createdAt])
+  @@map("applications")
+}
 
 model Announcement {
   id               String               @id @default(cuid())

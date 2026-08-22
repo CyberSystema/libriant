@@ -42,6 +42,11 @@ const ALWAYS_PASS = [
   // and writes only control-plane rows (no tenant DB), so letting it through
   // at minimum persists the durable row that the sweep can later rescue.
   /^\/webhooks\/stripe(\/|$)/,
+  // Same argument as the Stripe webhook: the marketing site's application form
+  // is a durable control-plane-only write that touches no tenant DB, and a lost
+  // application is unrecoverable — the applicant sees a 503 and does not come
+  // back. Letting it through during maintenance costs nothing and saves a lead.
+  /^\/(en\/)?apply(\/|$)/,
 ];
 
 /**

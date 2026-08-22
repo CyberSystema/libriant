@@ -33,6 +33,9 @@ export {
   ExportScope,
   ExportStatus,
   ExportRequesterKind,
+  LibraryType,
+  LibraryEditRequestStatus,
+  ApplicationStatus,
 } from '@prisma/client';
 
 export type {
@@ -62,4 +65,6 @@ export type {
   PlatformSetting,
   MaintenanceRun,
   ExportJob,
+  LibraryEditRequest,
+  Application,
 } from '@prisma/client';

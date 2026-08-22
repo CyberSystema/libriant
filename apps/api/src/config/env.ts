@@ -12,6 +12,12 @@ export type AppEnv = {
   assetsRoot: string;
   /** Apex domain used to detect a tenant from the Host header subdomain. */
   publicApexDomain: string;
+  /** Host serving the public marketing site. Distinct from the app host. */
+  siteHost: string;
+  /** Secret pepper for the application form's IP throttle hash. */
+  applyHashPepper: string;
+  /** Where a new application notification is sent. */
+  applyNotifyTo: string;
   /** Platform admin host (e.g. `admin.libriant.com`). Excluded from tenant
    *  subdomain resolution so it isn't mistaken for a library slug. */
   adminHost: string;
@@ -264,6 +270,15 @@ export function loadEnv(): AppEnv {
     storageRoot: optional('STORAGE_ROOT', '/srv/libriant/storage'),
     assetsRoot: optional('ASSETS_ROOT', new URL('../../../../assets', import.meta.url).pathname),
     publicApexDomain: optional('PUBLIC_APEX_DOMAIN', 'localhost'),
+    siteHost: optional('SITE_HOST', optional('PUBLIC_APEX_DOMAIN', 'localhost')).toLowerCase(),
+    // No insecure production fallback: a publicly-known pepper over the 2^32
+    // IPv4 space is a rainbow table away from being the address itself, and the
+    // privacy notice promises a secret key.
+    applyHashPepper: requiredSecret('HASH_PEPPER', 'libriant-dev-only', nodeEnv, 32),
+    applyNotifyTo: optional(
+      'APPLY_NOTIFY_TO',
+      `info@${optional('PUBLIC_APEX_DOMAIN', 'localhost')}`,
+    ),
     adminHost: optional(
       'ADMIN_HOST',
       `admin.${optional('PUBLIC_APEX_DOMAIN', 'localhost')}`,

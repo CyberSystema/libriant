@@ -23,11 +23,14 @@ import { loadEnv } from '../config/env.js';
 export class OriginCheckMiddleware implements NestMiddleware {
   private readonly apex: string;
   private readonly adminHost: string;
+  /** The marketing site's host — where the public application form posts from. */
+  private readonly siteHost: string;
 
   constructor() {
     const env = loadEnv();
     this.apex = env.publicApexDomain.toLowerCase();
     this.adminHost = env.adminHost.toLowerCase();
+    this.siteHost = env.siteHost.toLowerCase();
   }
 
   use(req: Request, _res: Response, next: NextFunction): void {
@@ -45,7 +48,11 @@ export class OriginCheckMiddleware implements NestMiddleware {
       throw new ForbiddenException('Invalid request origin.');
     }
 
-    const ok = host === this.apex || host.endsWith(`.${this.apex}`) || host === this.adminHost;
+    const ok =
+      host === this.apex ||
+      host.endsWith(`.${this.apex}`) ||
+      host === this.adminHost ||
+      host === this.siteHost;
     if (!ok) {
       throw new ForbiddenException('Cross-origin request rejected.');
     }

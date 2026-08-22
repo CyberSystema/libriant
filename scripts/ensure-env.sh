@@ -86,6 +86,9 @@ fi
 
 echo "Ensuring secrets in ${ENV_FILE} ..."
 ensure_rand SESSION_SECRET 32
+# Peppers the IP hash behind the marketing form's throttle. The privacy notice
+# promises a secret key, so there is no safe shared default.
+ensure_rand HASH_PEPPER 32
 ensure_rand ADMIN_SESSION_SECRET 32
 ensure_rand IMPERSONATION_SECRET 32
 ensure_rand STORAGE_SIGNING_SECRET 32
