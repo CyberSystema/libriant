@@ -1,0 +1,93 @@
+{
+  "audit": "pre-release-2026-08-23",
+  "purpose": "Public-release readiness. Owner wants confidence there is nothing urgent to fix mid-production.",
+  "commit_at_start": "7c2e2b09b9b4",
+  "method": "per-dimension audit \u2192 adversarial verification of every finding \u2192 synthesis",
+  "severity_rubric": {
+    "blocker": "Must be fixed before public release. Data loss, cross-tenant leakage, auth bypass, legal exposure, or certain outage.",
+    "high": "Fix before release or accept with an explicit written decision and a mitigation.",
+    "medium": "Fix soon after release; will bite but not immediately.",
+    "low": "Worth doing; no launch impact.",
+    "info": "Context, not a defect."
+  },
+  "dimensions": {
+    "tenant-isolation": {
+      "description": "Cross-tenant data leakage \u2014 the existential risk for a multi-tenant library SaaS",
+      "status": "pending",
+      "findings_file": "findings/tenant-isolation.json",
+      "verified_file": "findings/tenant-isolation.verified.json"
+    },
+    "authn-authz": {
+      "description": "Sessions, cookies, roles, admin panel, impersonation, MFA, password reset",
+      "status": "pending",
+      "findings_file": "findings/authn-authz.json",
+      "verified_file": "findings/authn-authz.verified.json"
+    },
+    "boot-and-config": {
+      "description": "What breaks on a genuinely fresh production boot: env, secrets, migrations, first-run",
+      "status": "pending",
+      "findings_file": "findings/boot-and-config.json",
+      "verified_file": "findings/boot-and-config.verified.json"
+    },
+    "data-integrity": {
+      "description": "Transactions, quota enforcement, race conditions, uniqueness, referential integrity",
+      "status": "pending",
+      "findings_file": "findings/data-integrity.json",
+      "verified_file": "findings/data-integrity.verified.json"
+    },
+    "billing": {
+      "description": "Stripe correctness before BILLING_ENABLED flips: plans, webhooks, cadence, downgrade",
+      "status": "pending",
+      "findings_file": "findings/billing.json",
+      "verified_file": "findings/billing.verified.json"
+    },
+    "privacy-legal": {
+      "description": "GDPR/Greek law: consent, DPA, retention, export, erasure, minors' data, cookies",
+      "status": "pending",
+      "findings_file": "findings/privacy-legal.json",
+      "verified_file": "findings/privacy-legal.verified.json"
+    },
+    "input-and-files": {
+      "description": "Validation, injection, upload handling, SSRF, XSS, deserialisation, rate limits",
+      "status": "pending",
+      "findings_file": "findings/input-and-files.json",
+      "verified_file": "findings/input-and-files.verified.json"
+    },
+    "reliability": {
+      "description": "Error handling, health/readiness, degradation, background jobs, backups, restore",
+      "status": "pending",
+      "findings_file": "findings/reliability.json",
+      "verified_file": "findings/reliability.verified.json"
+    },
+    "performance": {
+      "description": "N+1 queries, missing indexes, pooling, unbounded results, memory, quotas at scale",
+      "status": "pending",
+      "findings_file": "findings/performance.json",
+      "verified_file": "findings/performance.verified.json"
+    },
+    "frontend": {
+      "description": "i18n completeness, accessibility, error states, mobile, PWA/offline, desktop shell",
+      "status": "pending",
+      "findings_file": "findings/frontend.json",
+      "verified_file": "findings/frontend.verified.json"
+    },
+    "supply-chain": {
+      "description": "Dependencies, licences, install-time code execution, pinning, CI trust boundaries",
+      "status": "pending",
+      "findings_file": "findings/supply-chain.json",
+      "verified_file": "findings/supply-chain.verified.json"
+    },
+    "launch-readiness": {
+      "description": "The gap between this repo and a live public service \u2014 what must be true to go live",
+      "status": "pending",
+      "findings_file": "findings/launch-readiness.json",
+      "verified_file": "findings/launch-readiness.verified.json"
+    }
+  },
+  "phases": {
+    "audit": "pending",
+    "verify": "pending",
+    "synthesis": "pending"
+  },
+  "final_report": "FINAL-REPORT.md"
+}
