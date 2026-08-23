@@ -95,7 +95,25 @@
   "phases": {
     "audit": "complete",
     "verify": "complete",
-    "synthesis": "pending"
+    "synthesis": "complete"
   },
-  "final_report": "FINAL-REPORT.md"
+  "final_report": "FINAL-REPORT.md",
+  "result": {
+    "verdict": "NOT YET \u2014 releasable after ~2 weeks of engineering plus company registration and counsel review",
+    "raw_findings": 209,
+    "verified": 196,
+    "rejected": 13,
+    "downgraded": 83,
+    "upgraded": 1,
+    "blocker_rated_findings": 14,
+    "distinct_blockers": 12,
+    "artifacts": {
+      "report": "FINAL-REPORT.md",
+      "blockers": "BLOCKERS.json",
+      "rejections": "REJECTED.md",
+      "per_dimension": "findings/"
+    },
+    "fact_checked": true,
+    "fact_check_errors_corrected": 14
+  }
 }
