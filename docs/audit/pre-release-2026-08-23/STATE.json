@@ -7,8 +7,8 @@
     "task_id": "whdkogemc",
     "script": ".claude/projects/-Users-leontgmusic-Projects-libriant/17d734a8-b1ae-4f54-aee8-56a4167eb571/workflows/scripts/pre-release-audit-wf_19089107-257.js",
     "transcripts": ".claude/projects/-Users-leontgmusic-Projects-libriant/17d734a8-b1ae-4f54-aee8-56a4167eb571/subagents/workflows/wf_19089107-257/",
-    "resume": "Workflow({scriptPath, resumeFromRunId: 'wf_19089107-257'}) — completed agents replay from cache. If the run is gone entirely, any dimension whose findings/<dim>.json exists is done; rerun only the missing ones.",
-    "journal": "subagents/workflows/wf_19089107-257/journal.jsonl — one result line per completed agent, readable without the orchestrator"
+    "resume": "Workflow({scriptPath, resumeFromRunId: 'wf_19089107-257'}) \u2014 completed agents replay from cache. If the run is gone entirely, any dimension whose findings/<dim>.json exists is done; rerun only the missing ones.",
+    "journal": "subagents/workflows/wf_19089107-257/journal.jsonl \u2014 one result line per completed agent, readable without the orchestrator"
   },
   "method": "per-dimension audit \u2192 adversarial verification of every finding \u2192 synthesis",
   "severity_rubric": {
@@ -21,80 +21,80 @@
   "dimensions": {
     "tenant-isolation": {
       "description": "Cross-tenant data leakage \u2014 the existential risk for a multi-tenant library SaaS",
-      "status": "pending",
+      "status": "verified",
       "findings_file": "findings/tenant-isolation.json",
       "verified_file": "findings/tenant-isolation.verified.json"
     },
     "authn-authz": {
       "description": "Sessions, cookies, roles, admin panel, impersonation, MFA, password reset",
-      "status": "pending",
+      "status": "verified",
       "findings_file": "findings/authn-authz.json",
       "verified_file": "findings/authn-authz.verified.json"
     },
     "boot-and-config": {
       "description": "What breaks on a genuinely fresh production boot: env, secrets, migrations, first-run",
-      "status": "pending",
+      "status": "verified",
       "findings_file": "findings/boot-and-config.json",
       "verified_file": "findings/boot-and-config.verified.json"
     },
     "data-integrity": {
       "description": "Transactions, quota enforcement, race conditions, uniqueness, referential integrity",
-      "status": "pending",
+      "status": "verified",
       "findings_file": "findings/data-integrity.json",
       "verified_file": "findings/data-integrity.verified.json"
     },
     "billing": {
       "description": "Stripe correctness before BILLING_ENABLED flips: plans, webhooks, cadence, downgrade",
-      "status": "pending",
+      "status": "verified",
       "findings_file": "findings/billing.json",
       "verified_file": "findings/billing.verified.json"
     },
     "privacy-legal": {
       "description": "GDPR/Greek law: consent, DPA, retention, export, erasure, minors' data, cookies",
-      "status": "pending",
+      "status": "verified",
       "findings_file": "findings/privacy-legal.json",
       "verified_file": "findings/privacy-legal.verified.json"
     },
     "input-and-files": {
       "description": "Validation, injection, upload handling, SSRF, XSS, deserialisation, rate limits",
-      "status": "pending",
+      "status": "verified",
       "findings_file": "findings/input-and-files.json",
       "verified_file": "findings/input-and-files.verified.json"
     },
     "reliability": {
       "description": "Error handling, health/readiness, degradation, background jobs, backups, restore",
-      "status": "pending",
+      "status": "verified",
       "findings_file": "findings/reliability.json",
       "verified_file": "findings/reliability.verified.json"
     },
     "performance": {
       "description": "N+1 queries, missing indexes, pooling, unbounded results, memory, quotas at scale",
-      "status": "pending",
+      "status": "verified",
       "findings_file": "findings/performance.json",
       "verified_file": "findings/performance.verified.json"
     },
     "frontend": {
       "description": "i18n completeness, accessibility, error states, mobile, PWA/offline, desktop shell",
-      "status": "pending",
+      "status": "verified",
       "findings_file": "findings/frontend.json",
       "verified_file": "findings/frontend.verified.json"
     },
     "supply-chain": {
       "description": "Dependencies, licences, install-time code execution, pinning, CI trust boundaries",
-      "status": "pending",
+      "status": "verified",
       "findings_file": "findings/supply-chain.json",
       "verified_file": "findings/supply-chain.verified.json"
     },
     "launch-readiness": {
       "description": "The gap between this repo and a live public service \u2014 what must be true to go live",
-      "status": "pending",
+      "status": "verified",
       "findings_file": "findings/launch-readiness.json",
       "verified_file": "findings/launch-readiness.verified.json"
     }
   },
   "phases": {
-    "audit": "pending",
-    "verify": "pending",
+    "audit": "complete",
+    "verify": "complete",
     "synthesis": "pending"
   },
   "final_report": "FINAL-REPORT.md"
