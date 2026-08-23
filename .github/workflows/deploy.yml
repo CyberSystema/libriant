@@ -77,7 +77,7 @@ jobs:
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - id: meta
         run: |
@@ -88,16 +88,16 @@ jobs:
           # GHCR image paths must be lowercase; the owner login may not be.
           echo "owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build & push API image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: apps/api/Dockerfile
@@ -109,7 +109,7 @@ jobs:
           cache-to: type=gha,scope=api,mode=max
 
       - name: Build & push web image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: apps/web/Dockerfile
@@ -124,7 +124,7 @@ jobs:
       # artefact like the others. This also puts the site's content version
       # under IMAGE_TAG, so a rollback rolls the copy back with the code.
       - name: Build & push edge image (Caddy + marketing site)
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: infra/caddy/Dockerfile
@@ -152,18 +152,20 @@ jobs:
     outputs:
       hosts: ${{ steps.read.outputs.hosts }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: read
         run: |
-          # Parse the YAML host list into a JSON matrix the deploy job
-          # can fan out across. (PyYAML ships on the runner, but install
-          # defensively so a missing module never blocks all deploys.)
-          python3 -m pip install --quiet pyyaml || true
-          python3 -c "
-          import json, sys, yaml
-          fleet = yaml.safe_load(open('infra/deploy/fleet.yml'))
-          print('hosts=' + json.dumps([h for h in fleet.get('hosts', [])]))
-          " >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          # Parse the YAML host list into a JSON matrix the deploy job fans out
+          # across. This is a TRUST BOUNDARY, not a convenience: `user` and `ssh`
+          # are interpolated straight into the `ssh` command lines below, so
+          # whatever produces them can choose where the deploy key is used.
+          # It used to be `pip install --quiet pyyaml || true` — an unpinned,
+          # unhashed fetch from PyPI, on the runner holding DEPLOY_SSH_KEY, whose
+          # failure was swallowed. yq is preinstalled on GitHub runners.
+          # Emit only the three fields the deploy job actually reads, so a stray
+          # key in fleet.yml cannot reach the matrix.
+          echo "hosts=$(yq -o=json -I=0 '[.hosts[] | {"name": .name, "user": .user, "ssh": .ssh}]' infra/deploy/fleet.yml)" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------
   # deploy — fan out: one job per host. Failures don't cancel others.
@@ -189,10 +191,10 @@ jobs:
         host: ${{ fromJson(needs.plan.outputs.hosts) }}
     environment: production
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.10.0
+        uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 

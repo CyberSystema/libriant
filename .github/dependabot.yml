@@ -1,0 +1,63 @@
+# Dependency updates.
+#
+# Every install site in this repository uses `--frozen-lockfile`, and every
+# action is pinned to a commit SHA. Both are correct, and together they mean
+# nothing in the tree can ever move on its own — including away from a
+# vulnerability. Dependabot is the mechanism that makes those pins reviewable
+# rather than permanent.
+#
+# Grouped deliberately: a weekly wall of single-package PRs gets ignored, which
+# is the same outcome as having no updates at all.
+version: 2
+
+updates:
+  # The action SHAs. These matter most — a stale pin here is a pin to a version
+  # with a known hole, and `webfactory/ssh-agent` is handed the production
+  # deploy key.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(actions)'
+    groups:
+      actions:
+        patterns: ['*']
+
+  # The workspace. pnpm-workspace.yaml sets a minimumReleaseAge, so these land
+  # only after the ecosystem has had time to notice a compromised publish.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      production:
+        dependency-type: production
+        update-types: [minor, patch]
+      development:
+        dependency-type: development
+        update-types: [minor, patch]
+    ignore:
+      # Held deliberately — see the toolchain notes. A major bump here breaks
+      # the decorator/emit contract the NestJS build depends on, so it moves
+      # only as a considered change, never as an automated PR.
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+
+  # Base images for the three Dockerfiles.
+  - package-ecosystem: docker
+    directories:
+      - /apps/api
+      - /apps/web
+      - /infra/caddy
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: 'chore(docker)'

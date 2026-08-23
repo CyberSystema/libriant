@@ -18,11 +18,11 @@ jobs:
     name: Static checks (typecheck + translations + assets)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26'
           cache: 'pnpm'
@@ -76,11 +76,11 @@ jobs:
     name: Unit tests (vitest, mocked)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26'
           cache: 'pnpm'
@@ -96,6 +96,54 @@ jobs:
 
       - name: Unit tests
         run: pnpm --filter @libriant/api exec vitest run --project unit
+
+  # The verify gate ran typecheck, lint, prettier, translations, assets, unit,
+  # integration, migrations and the DR drill — and zero supply-chain checks.
+  # Combined with --frozen-lockfile everywhere, that meant the resolved tree was
+  # frozen forever with no mechanism to notice a disclosure against it.
+  supply-chain:
+    name: Supply chain (advisories + action pinning)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26'
+          cache: 'pnpm'
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Blocking at `critical`, not `high`: one high is open today against
+      # deepmerge-ts, reached only through the Prisma CLI, and gating on it
+      # would wedge every merge behind an upstream release. The full report
+      # below still surfaces it on every run, so it cannot be forgotten —
+      # raise this to `high` the moment that advisory clears.
+      - name: Advisories (blocking — critical in the production tree)
+        run: pnpm audit --prod --audit-level=critical
+
+      - name: Advisories (full report, non-blocking)
+        if: always()
+        run: pnpm audit || true
+
+      # Belt and braces around the pins themselves: Dependabot proposes SHA
+      # bumps as PRs, and a PR is exactly where a floating tag could be
+      # reintroduced by hand.
+      - name: Every third-party action is pinned to a commit SHA
+        run: |
+          set -euo pipefail
+          floating=$(grep -rn 'uses: ' .github/workflows/ \
+            | grep -v '@[0-9a-f]\{40\}' \
+            | grep -v 'uses: \./\.github/' || true)
+          if [ -n "$floating" ]; then
+            echo "::error::Unpinned action reference(s) — a mutable tag can be repointed by its owner:"
+            echo "$floating"
+            exit 1
+          fi
+          echo "All external action references are SHA-pinned."
 
   integration-tests:
     name: Integration tests (real postgres + redis)
@@ -138,11 +186,11 @@ jobs:
       # tsx + decorators (NestJS DI) needs the API's tsconfig pinned.
       TSX_TSCONFIG_PATH: ${{ github.workspace }}/apps/api/tsconfig.json
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26'
           cache: 'pnpm'
@@ -230,11 +278,11 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26'
           cache: 'pnpm'

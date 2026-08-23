@@ -1,0 +1,40 @@
+# Review ownership.
+#
+# CODEOWNERS only *requests* review unless "Require review from Code Owners" is
+# switched on for the branch. This repository has no branch protection today, so
+# treat the entries below as the list of paths where a self-merge is a decision,
+# not an accident — and turn the setting on before anyone else has write access.
+#
+# The paths listed here are the ones where a bad change is not recoverable by
+# rolling forward: they hand out credentials, publish to machines that
+# auto-update, or state what the company has promised its customers in writing.
+
+# Everything, by default.
+*                               @LeontGreek
+
+# CI and release automation. These files hold the production deploy key, the
+# GHCR credential, and the desktop code-signing identity.
+/.github/                       @LeontGreek
+
+# The deploy path and the host fleet. `fleet.yml` decides which machines the
+# deploy key is used against.
+/infra/deploy/                  @LeontGreek
+/infra/compose/                 @LeontGreek
+/infra/caddy/                   @LeontGreek
+/scripts/                       @LeontGreek
+
+# Backup and restore. The June 2026 certification was invalidated by a restore
+# path nobody had executed end to end; changes here need a second pair of eyes
+# and a drill run, not a green test.
+/scripts/backup.sh              @LeontGreek
+/scripts/restore.sh             @LeontGreek
+/scripts/dr-drill.sh            @LeontGreek
+
+# Contractual text. These are statements to customers and to a regulator, and
+# they must not drift from what the software actually does.
+/locales/*/legal/               @LeontGreek
+/marketing/                     @LeontGreek
+
+# Schema changes are one-way in production.
+/packages/db-control/prisma/    @LeontGreek
+/packages/db-tenant/prisma/     @LeontGreek

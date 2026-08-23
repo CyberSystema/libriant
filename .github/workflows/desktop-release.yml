@@ -70,7 +70,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: v
         run: |
           BASE=$(node -p "require('./apps/desktop/package.json').version")
@@ -105,11 +105,11 @@ jobs:
     env:
       DESKTOP_VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26'
           cache: 'pnpm'
@@ -215,6 +215,16 @@ jobs:
     name: Publish release
     needs: [version, release]
     runs-on: ubuntu-latest
+    # This step IS the auto-update feed: electron-updater installs whatever the
+    # newest non-draft release contains, on every machine already running the
+    # app. Until this gate existed, any push touching apps/desktop/** shipped
+    # straight to those machines with no reviewer — and this repository has no
+    # branch protection (see deploy.yml's own note).
+    #
+    # OWNER ACTION REQUIRED: GitHub creates this environment on first use with
+    # NO protection rules, which gates nothing. Add a required reviewer under
+    # Settings -> Environments -> desktop-release, or this is decoration.
+    environment: desktop-release
     steps:
       - name: Make the release live
         env:
