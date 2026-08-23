@@ -13,7 +13,7 @@
 
 FROM node:26-alpine AS site
 ENV COREPACK_HOME=/opt/corepack
-RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+RUN corepack enable && corepack prepare pnpm@11.22.0 --activate
 WORKDIR /app
 
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./

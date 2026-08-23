@@ -6,7 +6,15 @@
 
 FROM node:26-alpine AS base
 RUN apk add --no-cache tini
-RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+# COREPACK_HOME is pinned to a shared, world-readable path for the same reason
+# as apps/api/Dockerfile: this image's CMD is `pnpm … start` running as the
+# non-root `node` user, so a cache under root's HOME means corepack tries to
+# re-download pnpm from the network on EVERY container start — on the boot path,
+# in production, with no fallback if npmjs.org is unreachable.
+ENV COREPACK_HOME=/opt/corepack
+RUN corepack enable \
+ && corepack prepare pnpm@11.22.0 --activate \
+ && chmod -R a+rX "$COREPACK_HOME"
 WORKDIR /app
 
 # ----- deps ----------------------------------------------------------------

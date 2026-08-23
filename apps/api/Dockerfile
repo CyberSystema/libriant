@@ -27,7 +27,7 @@ RUN apk add --no-cache openssl tini postgresql-client
 # pnpm under COREPACK_HOME where every user can read it.
 ENV COREPACK_HOME=/opt/corepack
 RUN corepack enable \
- && corepack prepare pnpm@9.15.4 --activate \
+ && corepack prepare pnpm@11.22.0 --activate \
  && chmod -R a+rX "$COREPACK_HOME"
 WORKDIR /app
 

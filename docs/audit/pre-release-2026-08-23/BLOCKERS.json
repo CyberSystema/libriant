@@ -6,7 +6,10 @@
     "dimension": "supply-chain",
     "fix": "Change the three `corepack prepare pnpm@9.15.4 --activate` lines to 11.22.0 (apps/api/Dockerfile:30, apps/web/Dockerfile:9, infra/caddy/Dockerfile:16); add ENV COREPACK_HOME=/opt/corepack + chmod -R a+rX to the web image so it stops fetching pnpm from npmjs.org at every boot; add the +sha224.<hash> integrity suffix to package.json:6; add a CI job that builds the api image and runs `docker run --rm --user node <img> pnpm --version`.",
     "effort": "hours",
-    "blocks": "public-launch"
+    "blocks": "public-launch",
+    "status": "FIXED IN REPO 2026-08-24, UNPROVEN ON THE BOX",
+    "fix_commit": "pending",
+    "proof_required": "A successful `bash scripts/deploy-on-host.sh` on 195.201.13.95. No CI job builds these images, so the pin check is the only automated guard and it cannot prove the images run."
   },
   {
     "id": "launch-readiness-01",
@@ -19,25 +22,31 @@
   },
   {
     "id": "data-integrity-01",
-    "merged_ids": ["input-and-files-01"],
+    "merged_ids": [
+      "input-and-files-01"
+    ],
     "title": "Every file upload returns HTTP 500 in the launch configuration: the unlimited-plan MAX_SAFE_INTEGER sentinel overflows Postgres bigint",
     "dimension": "data-integrity + input-and-files",
-    "fix": "In storage.service.ts:76 clamp the ceiling — `const limitBytes = limitMb >= Number.MAX_SAFE_INTEGER ? 9223372036854775807n : BigInt(limitMb) * 1024n * 1024n;` — or skip the conditional UPDATE entirely when the plan is unlimited. Remove `BILLING_ENABLED ||= 'true'` from apps/api/test/integration/setup.ts:8 and add an upload test with billing off.",
+    "fix": "In storage.service.ts:76 clamp the ceiling \u2014 `const limitBytes = limitMb >= Number.MAX_SAFE_INTEGER ? 9223372036854775807n : BigInt(limitMb) * 1024n * 1024n;` \u2014 or skip the conditional UPDATE entirely when the plan is unlimited. Remove `BILLING_ENABLED ||= 'true'` from apps/api/test/integration/setup.ts:8 and add an upload test with billing off.",
     "effort": "hours",
     "blocks": "public-launch"
   },
   {
     "id": "boot-and-config-01",
-    "merged_ids": ["reliability-02"],
+    "merged_ids": [
+      "reliability-02"
+    ],
     "title": "Redis unavailable makes every request 500, including /healthz, /readyz and the /admin/system-mode recovery lever",
     "dimension": "boot-and-config + reliability",
-    "fix": "Do not resolve the system mode inside the ALWAYS_PASS branch of system-mode.middleware.ts:100, or wrap it as `.catch(() => NORMAL_MODE)`. Make readCache/writeCache fail open (catch, fall through to the control-plane query) in both SystemModeService (system-mode.service.ts:231-233) and TenantResolverService (tenant-resolver.service.ts:94-108) — a fix confined to the former still leaves every /t/<slug>/* route 500ing.",
+    "fix": "Do not resolve the system mode inside the ALWAYS_PASS branch of system-mode.middleware.ts:100, or wrap it as `.catch(() => NORMAL_MODE)`. Make readCache/writeCache fail open (catch, fall through to the control-plane query) in both SystemModeService (system-mode.service.ts:231-233) and TenantResolverService (tenant-resolver.service.ts:94-108) \u2014 a fix confined to the former still leaves every /t/<slug>/* route 500ing.",
     "effort": "hours",
     "blocks": "public-launch"
   },
   {
     "id": "authn-authz-01",
-    "merged_ids": ["input-and-files-02"],
+    "merged_ids": [
+      "input-and-files-02"
+    ],
     "title": "Every rate limit and the brute-force lockout are keyed on a client-supplied header; the Cloudflare-only firewall the code relies on does not exist in any deploy script",
     "dimension": "authn-authz + input-and-files",
     "fix": "In client-ip.ts, honour X-Real-IP only when req.socket.remoteAddress is in a TRUSTED_PROXY_CIDRS allowlist; replace `app.set('trust proxy', true)` (main.ts:36) with an explicit proxy list. In infra/caddy/Caddyfile, add a `@cf remote_ip <cloudflare ranges>` matcher and set `header_up X-Real-IP {remote_host}` for non-matching traffic. Move the Cloudflare-range ufw rules into scripts/prod-bootstrap.sh and fix docs/deployment-hetzner.md:196-197. Add a bare-account lockout component at a higher threshold. Gate the deploy on an automated check that a forged-header request to the origin IP does not reach the API.",
@@ -47,7 +56,7 @@
   {
     "id": "billing-02",
     "merged_ids": [],
-    "title": "With STRIPE_DRIVER=fake — the production default — the webhook verifies signatures against a secret hardcoded in this repo, so any internet host can rewrite any tenant's subscription",
+    "title": "With STRIPE_DRIVER=fake \u2014 the production default \u2014 the webhook verifies signatures against a secret hardcoded in this repo, so any internet host can rewrite any tenant's subscription",
     "dimension": "billing",
     "fix": "Make FakeStripeDriver throw from its constructor when loadEnv().nodeEnv !== 'development' (stripe-fake.driver.ts:32). Extend the existing main.ts production boot guard to reject `nodeEnv === 'production' && stripeDriver !== 'real'`, and make PlatformSettingsService.setBillingEnabled throw rather than log a warning (platform-settings.service.ts:60-66) in that state.",
     "effort": "hours",
@@ -58,14 +67,14 @@
     "merged_ids": [],
     "title": "member-notifications fails for every tenant on every run (cold Redis client) and reports success; due-soon, overdue and hold-ready emails have never been sent",
     "dimension": "reliability",
-    "fix": "Add `ready()` to RedisService awaiting the ioredis 'ready' event and await it after member-notifications.job.ts:138 (same for stripe-retry.job.ts:67) — better, pass the worker's long-lived shared client through JobContext so no job mints its own. Pair with reliability-07: scheduled-jobs.runner.ts must set ok:false when counts.tenantsFailed > 0 instead of discarding it.",
+    "fix": "Add `ready()` to RedisService awaiting the ioredis 'ready' event and await it after member-notifications.job.ts:138 (same for stripe-retry.job.ts:67) \u2014 better, pass the worker's long-lived shared client through JobContext so no job mints its own. Pair with reliability-07: scheduled-jobs.runner.ts must set ok:false when counts.tenantsFailed > 0 instead of discarding it.",
     "effort": "hours",
     "blocks": "public-launch"
   },
   {
     "id": "privacy-legal-01",
     "merged_ids": [],
-    "title": "Every legal document is offered by an unnamed legal person — no Art. 28 processor identity, no Art. 13 controller identity, no P.D. 131/2003 provider identification, and a draft banner on every page",
+    "title": "Every legal document is offered by an unnamed legal person \u2014 no Art. 28 processor identity, no Art. 13 controller identity, no P.D. 131/2003 provider identification, and a draft banner on every page",
     "dimension": "privacy-legal",
     "fix": "Register the operating entity, then fill every [PLACEHOLDER] across the 14 markdown files (7 slugs x 2 locales), set apps/site/site.config.json identity.controllerName to the same entity, have Greek/EU data-protection counsel review, then delete the legal.draftNotice string and both <Banner> blocks and bump LEGAL_VERSION. Also strip a leading `> **Draft` blockquote in loadLegalDoc so internal drafting notes can never render (launch-readiness-07).",
     "effort": "weeks",
@@ -74,9 +83,9 @@
   {
     "id": "privacy-legal-02",
     "merged_ids": [],
-    "title": "Backups are unencrypted and the off-site copy is never pruned — the DPA's 'encrypted backups' commitment is untrue and erasure never propagates out of backups",
+    "title": "Backups are unencrypted and the off-site copy is never pruned \u2014 the DPA's 'encrypted backups' commitment is untrue and erasure never propagates out of backups",
     "dimension": "privacy-legal",
-    "fix": "Encrypt each artefact before it leaves the host (`age -r <recipient>` with the key held off-host, or an rclone crypt remote) and record key management in DPA Annex II. Add remote retention — `rclone delete --min-age ${BACKUP_KEEP_DAYS}d` or a storage-box lifecycle policy — alongside scripts/backup.sh:188. Prove both in scripts/dr-drill.sh, and fix restore.sh's storage path resolution (reliability-05) so a restore does not silently recover zero files.",
+    "fix": "Encrypt each artefact before it leaves the host (`age -r <recipient>` with the key held off-host, or an rclone crypt remote) and record key management in DPA Annex II. Add remote retention \u2014 `rclone delete --min-age ${BACKUP_KEEP_DAYS}d` or a storage-box lifecycle policy \u2014 alongside scripts/backup.sh:188. Prove both in scripts/dr-drill.sh, and fix restore.sh's storage path resolution (reliability-05) so a restore does not silently recover zero files.",
     "effort": "days",
     "blocks": "public-launch"
   },
@@ -85,14 +94,14 @@
     "merged_ids": [],
     "title": "Export worker buffers every row of every table in memory and is OOM-killed, taking the email outbox, imports and all nine cron sweeps down with it",
     "dimension": "performance",
-    "fix": "Stream instead of buffer in export-processors.ts:384 — pg-cursor in 10k-row chunks into ExcelJS.stream.xlsx.WorkbookWriter, or `COPY (SELECT * FROM t) TO STDOUT WITH CSV` via pg-copy-streams piped into the archive. Move the MAX_EXPORT_ROWS check to a cheap `SELECT reltuples` pre-flight so an oversized export is refused before any allocation, keeping the hard cap only as a backstop.",
+    "fix": "Stream instead of buffer in export-processors.ts:384 \u2014 pg-cursor in 10k-row chunks into ExcelJS.stream.xlsx.WorkbookWriter, or `COPY (SELECT * FROM t) TO STDOUT WITH CSV` via pg-copy-streams piped into the archive. Move the MAX_EXPORT_ROWS check to a cheap `SELECT reltuples` pre-flight so an oversized export is refused before any allocation, keeping the hard cap only as a backstop.",
     "effort": "days",
     "blocks": "scale"
   },
   {
     "id": "billing-03",
     "merged_ids": [],
-    "title": "Every plan change opens a new Stripe subscription and abandons the old one — an upgrade double-charges the library indefinitely, with no in-product way to see or stop the orphan",
+    "title": "Every plan change opens a new Stripe subscription and abandons the old one \u2014 an upgrade double-charges the library indefinitely, with no in-product way to see or stop the orphan",
     "dimension": "billing",
     "fix": "Immediately: return 400 from startCheckout whenever sub.stripeSubscriptionId != null (billing.service.ts:285). Properly: add a driver method calling stripe.subscriptions.update(id, { items: [{ id, price }], proration_behavior: 'create_prorations' }) and let the resulting customer.subscription.updated webhook sync; reserve Checkout for the first subscription only.",
     "effort": "days",
@@ -101,9 +110,9 @@
   {
     "id": "billing-04",
     "merged_ids": [],
-    "title": "No VAT anywhere in the billing path — Greek public libraries cannot book the receipt, and ~24% of every euro collected is owed regardless",
+    "title": "No VAT anywhere in the billing path \u2014 Greek public libraries cannot book the receipt, and ~24% of every euro collected is owed regardless",
     "dimension": "billing",
-    "fix": "Enable Stripe Tax on the account, then set automatic_tax:{enabled:true}, tax_id_collection:{enabled:true} and billing_address_collection:'required' on the Checkout session (stripe-real.driver.ts:65-81), and mirror customer.tax_ids and the address back into the already-existing but unwritten billing_accounts columns (schema.prisma:574-580) on the customer.updated webhook. State on the pricing page and plan cards whether the figure is πλέον ΦΠΑ or συμπ. ΦΠΑ, and add the step to docs/billing-go-live.md. Gated on the company holding an ΑΦΜ.",
+    "fix": "Enable Stripe Tax on the account, then set automatic_tax:{enabled:true}, tax_id_collection:{enabled:true} and billing_address_collection:'required' on the Checkout session (stripe-real.driver.ts:65-81), and mirror customer.tax_ids and the address back into the already-existing but unwritten billing_accounts columns (schema.prisma:574-580) on the customer.updated webhook. State on the pricing page and plan cards whether the figure is \u03c0\u03bb\u03ad\u03bf\u03bd \u03a6\u03a0\u0391 or \u03c3\u03c5\u03bc\u03c0. \u03a6\u03a0\u0391, and add the step to docs/billing-go-live.md. Gated on the company holding an \u0391\u03a6\u039c.",
     "effort": "weeks",
     "blocks": "first-paying-customer"
   }

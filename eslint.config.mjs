@@ -72,6 +72,19 @@ export default tseslint.config(
     rules: { 'no-undef': 'off' },
   },
   {
+    // Plain-ESM operational scripts run by node directly rather than through
+    // tsx, so they stay dependency-free and can run before the workspace is
+    // installed. They are Node programs: process and console are the point.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      sourceType: 'module',
+      globals: { ...globals.node },
+    },
+    rules: {
+      'no-console': 'off',
+    },
+  },
+  {
     // Node-side build hooks (e.g. the electron-builder afterPack hook) are
     // CommonJS scripts the packager runs on the build host — not bundled app
     // code. They legitimately use require/exports/process and log progress.

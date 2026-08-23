@@ -40,6 +40,12 @@ jobs:
       - name: Translation parity (en + el catalogs in lock-step)
         run: pnpm check:translations
 
+      # The images are never built in CI, so a Dockerfile/package.json pnpm
+      # mismatch is otherwise invisible until the migrate one-shot fails on a
+      # network it has no egress from — which is exactly what happened.
+      - name: pnpm pins match across package.json and the Dockerfiles
+        run: pnpm check:pnpm-pins
+
       - name: Asset manifest integrity (every slot exists; every code ref listed)
         run: pnpm check:assets
 
