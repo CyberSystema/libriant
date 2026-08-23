@@ -2,6 +2,14 @@
   "audit": "pre-release-2026-08-23",
   "purpose": "Public-release readiness. Owner wants confidence there is nothing urgent to fix mid-production.",
   "commit_at_start": "7c2e2b09b9b4",
+  "workflow": {
+    "run_id": "wf_19089107-257",
+    "task_id": "whdkogemc",
+    "script": ".claude/projects/-Users-leontgmusic-Projects-libriant/17d734a8-b1ae-4f54-aee8-56a4167eb571/workflows/scripts/pre-release-audit-wf_19089107-257.js",
+    "transcripts": ".claude/projects/-Users-leontgmusic-Projects-libriant/17d734a8-b1ae-4f54-aee8-56a4167eb571/subagents/workflows/wf_19089107-257/",
+    "resume": "Workflow({scriptPath, resumeFromRunId: 'wf_19089107-257'}) — completed agents replay from cache. If the run is gone entirely, any dimension whose findings/<dim>.json exists is done; rerun only the missing ones.",
+    "journal": "subagents/workflows/wf_19089107-257/journal.jsonl — one result line per completed agent, readable without the orchestrator"
+  },
   "method": "per-dimension audit \u2192 adversarial verification of every finding \u2192 synthesis",
   "severity_rubric": {
     "blocker": "Must be fixed before public release. Data loss, cross-tenant leakage, auth bypass, legal exposure, or certain outage.",
