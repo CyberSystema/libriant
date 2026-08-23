@@ -4,7 +4,9 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import { randomBytes } from 'node:crypto';
 import jwt from 'jsonwebtoken';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { Client as PgClient } from 'pg';
@@ -16,9 +18,28 @@ import { loadEnv } from '../../src/config/env.js';
 import { listenOnce } from './listen-once.js';
 
 /**
- * AUDIT PROBE (pre-release-2026-08-23, dimension: tenant-isolation).
- * Throwaway. Deleted after the run.
+ * AUDIT PROBE — tenant isolation. Produced for the pre-release-2026-08-23
+ * audit; findings recorded in docs/audit/pre-release-2026-08-23/findings/.
+ *
+ * This is an INSTRUMENT, NOT A TEST. It probes ten cross-tenant attack
+ * vectors and *records* what the server does (29 note() observations against
+ * 4 expect()s). It passes whether or not isolation holds, so it must never
+ * gate CI — hence `.probe.ts`, which the integration project's
+ * `*.spec.ts` glob does not collect. Read its output; do not trust its exit
+ * code.
+ *
+ * Run it deliberately, against the audit environment:
+ *
+ *   source docs/audit/pre-release-2026-08-23/env/setup-audit-env.sh
+ *   pnpm --filter @libriant/api exec vitest run --project probe
+ *
+ * Then read the transcript (path is printed in afterAll; override with
+ * PROBE_OUT). Real regression coverage for these vectors belongs in
+ * cross-tenant-isolation.spec.ts as actual assertions.
  */
+
+/** Where the observation transcript is written. */
+const OUT = process.env.PROBE_OUT ?? join(tmpdir(), 'libriant-tenant-isolation-probe.txt');
 
 let app: NestExpressApplication;
 let slugA: string;
@@ -33,8 +54,10 @@ const findings: string[] = [];
 
 function note(s: string) {
   findings.push(s);
-
-  appendFileSync('/tmp/lbraudit/probe-out.txt', 'PROBE ' + s + '\n');
+  // The audit ran with a pre-made scratch dir; anyone else re-running this
+  // will not have one, and a probe must not die on its own logging.
+  mkdirSync(dirname(OUT), { recursive: true });
+  appendFileSync(OUT, 'PROBE ' + s + '\n');
 }
 
 function uniqueSlug(p: string) {
@@ -126,7 +149,9 @@ afterAll(async () => {
   await app.close();
   // eslint-disable-next-line no-console
   console.log(
-    '\n===== PROBE SUMMARY =====\n' + findings.join('\n') + '\n=========================',
+    '\n===== PROBE SUMMARY =====\n' +
+      findings.join('\n') +
+      `\n----- transcript: ${OUT}\n=========================`,
   );
 }, 120_000);
 

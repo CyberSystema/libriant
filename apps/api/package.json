@@ -10,7 +10,7 @@
     "start:worker": "tsx src/worker.ts",
     "typecheck": "tsc --noEmit",
     "lint": "echo 'lint: ok'",
-    "test": "vitest run",
+    "test": "vitest run --project unit --project integration",
     "test:watch": "vitest"
   },
   "dependencies": {

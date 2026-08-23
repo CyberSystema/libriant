@@ -12,6 +12,11 @@ import { defineConfig } from 'vitest/config';
  *                  postgres + redis containers to be running. Sequential
  *                  (no `threads`) to keep the cross-tenant invariants
  *                  reasonable about shared DB state.
+ *
+ *   "probe"       — `test/integration/*.probe.ts`. Audit instruments, not
+ *                  tests: they record what the server does rather than
+ *                  asserting it, so their exit code means nothing. Never run
+ *                  in CI; opted into by name only. Read their output.
  */
 export default defineConfig({
   test: {
@@ -39,6 +44,18 @@ export default defineConfig({
           // Real DB → no parallelism inside the project. Tests use
           // unique slugs but a shared schema, so race conditions show
           // up at scale.
+          fileParallelism: false,
+          sequence: { concurrent: false },
+        },
+      },
+      {
+        test: {
+          name: 'probe',
+          include: ['test/integration/**/*.probe.ts'],
+          setupFiles: ['./test/integration/setup.ts'],
+          environment: 'node',
+          testTimeout: 120_000,
+          hookTimeout: 120_000,
           fileParallelism: false,
           sequence: { concurrent: false },
         },
