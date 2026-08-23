@@ -142,7 +142,7 @@ export const HOME: Record<Lang, HomeCopy> = {
       },
       {
         title: 'Ελεγμένο πριν διατεθεί.',
-        body: 'Πλήρης έλεγχος ασφαλείας πριν από τη διάθεση, και αυτοματοποιημένες δοκιμές σε κάθε αλλαγή του κώδικα.',
+        body: 'Εσωτερικός έλεγχος ασφάλειας και αξιοπιστίας πριν από τη διάθεση — όχι πιστοποίηση από ανεξάρτητο φορέα — και αυτοματοποιημένες δοκιμές σε κάθε αλλαγή του κώδικα.',
       },
     ],
     applyTitle: 'Κάντε αίτηση',
@@ -217,8 +217,8 @@ export const HOME: Record<Lang, HomeCopy> = {
         body: 'No analytics and no tracking cookies — which is why you saw no consent banner.',
       },
       {
-        title: 'Audited before release.',
-        body: 'A full security audit before release, and automated tests on every change to the code.',
+        title: 'Reviewed before release.',
+        body: 'An internal security and reliability review before release — not certification by an independent body — and automated tests on every change to the code.',
       },
     ],
     applyTitle: 'Apply',

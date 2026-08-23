@@ -62,6 +62,30 @@ async function readMd(locale: string, slug: string): Promise<string | null> {
   }
 }
 
+/**
+ * Drop the leading blockquote, which is an AUTHOR-FACING note by convention and
+ * must never reach a visitor.
+ *
+ * These documents open with a drafting instruction addressed to whoever is
+ * writing them — "Replace every `[PLACEHOLDER]` and have it reviewed before you
+ * rely on it". `marked.parse()` renders the whole file, so that instruction was
+ * being published verbatim on /legal/dpa and every other legal page: a contract
+ * that opens by telling the reader it is unfinished and unreviewed.
+ *
+ * The *public* status notice is a separate, deliberate thing — `legal.draftNotice`
+ * in the i18n catalog, rendered by the page component — so stripping this loses
+ * nothing a visitor should see. `scripts/check-legal-docs.mjs` enforces the
+ * convention in CI.
+ */
+function stripAuthorNote(raw: string): string {
+  const lines = raw.split('\n');
+  if (lines[0]?.startsWith('>') !== true) return raw;
+  let i = 0;
+  while (i < lines.length && lines[i]!.startsWith('>')) i++;
+  while (i < lines.length && lines[i]!.trim() === '') i++;
+  return lines.slice(i).join('\n');
+}
+
 /** Load + render one legal document for a locale (English fallback). Null if it
  *  doesn't exist in any locale (→ the route 404s). */
 export async function loadLegalDoc(locale: Locale, slug: LegalDocSlug): Promise<LegalDoc | null> {
@@ -78,7 +102,7 @@ export async function loadLegalDoc(locale: Locale, slug: LegalDocSlug): Promise<
     cache.set(key, null);
     return null;
   }
-  const html = await marked.parse(raw, { async: true });
+  const html = await marked.parse(stripAuthorNote(raw), { async: true });
   const doc: LegalDoc = { slug, html, fallback };
   cache.set(key, doc);
   return doc;

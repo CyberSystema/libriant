@@ -61,8 +61,12 @@ Processing Agreement that puts this in writing.
 
 ## Security and availability
 
-- The system **passed a full security audit** before release and is covered by
-  automated tests that run on every change to the code.
+- The system went through a **systematic internal security and reliability
+  review** before it was offered to any library, and the findings were recorded
+  and dealt with one by one. It was an internal review, not certification by an
+  independent body, and we do not present it as one.
+- Every change to the code is covered by **automated tests** that must pass
+  before it can be released.
 - Your data is hosted in the **European Union**, with **daily backups** and an
   off-server copy.
 - The service's availability and support terms are agreed with you in writing

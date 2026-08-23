@@ -49,6 +49,12 @@ jobs:
       - name: Asset manifest integrity (every slot exists; every code ref listed)
         run: pnpm check:assets
 
+      # Fails only on an author-facing note escaping into a published legal
+      # page. The unfilled-provider-details list it prints is a readiness
+      # report, not a gate — nobody in this repository can invent a GEMI number.
+      - name: Legal documents publish nothing addressed to their author
+        run: pnpm check:legal
+
       - name: TypeScript typecheck (all packages)
         run: pnpm typecheck
 
