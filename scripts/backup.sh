@@ -30,7 +30,7 @@ BACKUP_ROOT="${BACKUP_ROOT:-/srv/libriant/backups}"
 BACKUP_KEEP_DAYS="${BACKUP_KEEP_DAYS:-14}"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-libriant}"
 # DR-003: the deployed layout is /srv/libriant/app/infra/compose/... (see
-# .github/workflows/deploy.yml + deployment-hetzner.md), NOT /srv/libriant/deploy/.
+# .github/workflows/deploy.yml + RUNBOOK.md), NOT /srv/libriant/deploy/.
 # The old default pointed at a path that does not exist on the host, so an
 # unattended cron without an explicit COMPOSE_FILE got "no configuration file
 # provided" and produced NO backup. Default to the real path under

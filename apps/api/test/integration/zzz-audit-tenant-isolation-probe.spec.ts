@@ -125,7 +125,9 @@ afterAll(async () => {
   }
   await app.close();
   // eslint-disable-next-line no-console
-  console.log('\n===== PROBE SUMMARY =====\n' + findings.join('\n') + '\n=========================');
+  console.log(
+    '\n===== PROBE SUMMARY =====\n' + findings.join('\n') + '\n=========================',
+  );
 }, 120_000);
 
 describe('tenant-isolation audit probe', () => {
@@ -135,19 +137,17 @@ describe('tenant-isolation audit probe', () => {
       .set('Cookie', cookieA)
       .send({ fullName: 'Secret Patron A', email: 'patron@a.test', phone: '+3069000001' })
       .expect(201);
-    const r = await request(app.getHttpServer())
-      .get(`/t/${slugA}/members`)
-      .set('Cookie', cookieB);
+    const r = await request(app.getHttpServer()).get(`/t/${slugA}/members`).set('Cookie', cookieB);
     note(`P1 GET /t/A/members with B cookie -> ${r.status}`);
     expect(r.status).toBe(403);
   });
 
   it('P2 case-variant path prefix (/T/ vs /t/) + Host-header fallback', async () => {
     // Express routing is case-insensitive; TenantMiddleware's prefix check is not.
-    const r1 = await request(app.getHttpServer())
-      .get(`/T/${slugA}/members`)
-      .set('Cookie', cookieB);
-    note(`P2a GET /T/A/members (B cookie, no Host) -> ${r1.status} ${JSON.stringify(r1.body).slice(0, 200)}`);
+    const r1 = await request(app.getHttpServer()).get(`/T/${slugA}/members`).set('Cookie', cookieB);
+    note(
+      `P2a GET /T/A/members (B cookie, no Host) -> ${r1.status} ${JSON.stringify(r1.body).slice(0, 200)}`,
+    );
 
     // Same, but with a Host header naming tenant B as a subdomain of the apex.
     const apex = env.publicApexDomain;
@@ -155,14 +155,18 @@ describe('tenant-isolation audit probe', () => {
       .get(`/T/${slugA}/members`)
       .set('Cookie', cookieB)
       .set('Host', `${slugB}.${apex}`);
-    note(`P2b GET /T/A/members Host=B.apex (B cookie) -> ${r2.status} ${JSON.stringify(r2.body).slice(0, 300)}`);
+    note(
+      `P2b GET /T/A/members Host=B.apex (B cookie) -> ${r2.status} ${JSON.stringify(r2.body).slice(0, 300)}`,
+    );
 
     // And the dangerous direction: A's URL, Host claiming A, B's cookie.
     const r3 = await request(app.getHttpServer())
       .get(`/T/${slugB}/members`)
       .set('Cookie', cookieB)
       .set('Host', `${slugA}.${apex}`);
-    note(`P2c GET /T/B/members Host=A.apex (B cookie) -> ${r3.status} ${JSON.stringify(r3.body).slice(0, 300)}`);
+    note(
+      `P2c GET /T/B/members Host=A.apex (B cookie) -> ${r3.status} ${JSON.stringify(r3.body).slice(0, 300)}`,
+    );
   });
 
   it('P3 percent-encoded slug in path', async () => {
@@ -208,13 +212,13 @@ describe('tenant-isolation audit probe', () => {
       algorithm: 'HS256',
       expiresIn: 600,
     });
-    const sres = await request(app.getHttpServer())
-      .get(`/_files/signed`)
-      .query({ token: forged });
+    const sres = await request(app.getHttpServer()).get(`/_files/signed`).query({ token: forged });
     note(
       `P4d anonymous /_files/signed with token forged from SESSION_SECRET -> ${sres.status} bytes=${JSON.stringify(String(sres.text).slice(0, 40))}`,
     );
-    note(`P4d storageSigningSecret===sessionSecret? ${env.storageSigningSecret === env.sessionSecret}`);
+    note(
+      `P4d storageSigningSecret===sessionSecret? ${env.storageSigningSecret === env.sessionSecret}`,
+    );
   });
 
   it('P5 export job cross-tenant download', async () => {
@@ -292,7 +296,9 @@ describe('tenant-isolation audit probe', () => {
       .get(`/t/${slugA}/members`)
       .set('Cookie', cookieA)
       .set('Host', `${sub}.${apex}`);
-    note(`P8b GET /t/A/members Host=<B subdomain> with A cookie -> ${r2.status} n=${r2.body?.items?.length}`);
+    note(
+      `P8b GET /t/A/members Host=<B subdomain> with A cookie -> ${r2.status} n=${r2.body?.items?.length}`,
+    );
     await controlDb.tenant.update({ where: { id: idB }, data: { customSubdomain: null } });
   });
 
@@ -314,7 +320,9 @@ describe('tenant-isolation audit probe', () => {
     const b = await controlDb.tenant.findUnique({ where: { id: idB }, select: { dbUrl: true } });
     const ua = new URL(a!.dbUrl);
     const ub = new URL(b!.dbUrl);
-    note(`P10 A role=${ua.username} B role=${ub.username} sameCreds=${ua.username === ub.username && ua.password === ub.password}`);
+    note(
+      `P10 A role=${ua.username} B role=${ub.username} sameCreds=${ua.username === ub.username && ua.password === ub.password}`,
+    );
     // Connect to B's database using the URL the API holds for A (creds only differ in dbname).
     const spoof = new URL(a!.dbUrl);
     spoof.pathname = ub.pathname;

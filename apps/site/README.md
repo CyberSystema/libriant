@@ -73,7 +73,7 @@ npx serve apps/site/dist          # or python3 -m http.server -d apps/site/dist
 **The form will not work this way** — `POST /apply` is an API route, and locally
 the site and the API are two different origins. To exercise the form end to end,
 put a Caddy in front that serves `dist/` and proxies `/apply` and `/en/apply` to
-the API on :3001; see `docs/deployment-hetzner.md`.
+the API on :3001; see `docs/RUNBOOK.md`.
 
 ## Changing the offer
 

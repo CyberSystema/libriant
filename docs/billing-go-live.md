@@ -1,130 +1,26 @@
-# Switching billing on
+# Superseded — see [RUNBOOK.md](RUNBOOK.md)
 
-_Libriant is a **[CyberSystema](https://cybersystema.com)** product._
+This was switching subscriptions on. It has been replaced, in full, by **[docs/RUNBOOK.md](RUNBOOK.md)** —
+specifically §4.3 (the configuration landmines) and the billing blockers in §0.
 
-Today `BILLING_ENABLED=false` and `STRIPE_DRIVER=fake`, so `unlimitedPlan()`
-grants every tenant everything and no limit in the catalogue is enforced. This
-is the sequence that ends that. **Read it all before starting** — one step is
-irreversible in Stripe, and one silently disables half the pricing.
+**Do not follow the old version.** It was written for a server that no longer
+exists and for CI-driven deploys that are switched off. A pre-release audit on
+2026-08-23 found **122 incorrect statements** across these five documents — not
+stale in tone, wrong in ways that mislead during an incident. Three that recurred:
 
----
+- `/healthz` on the public hosts was presented as an "is the app up" check. It is
+  a static `200` answered by Caddy before any proxying, and stays green through a
+  total outage.
+- Every capacity threshold described the previous machine, unverified.
+- The Grafana tunnel named the wrong port.
 
-## Every paid plan needs TWO Stripe Prices
+The replacement is built from the current machine's **measured** facts
+(`docs/runbook-rewrite-2026-08-23/HOST-FACTS.md`) and 323 cited findings
+(`RECON.json`), and it flags at each instruction where an audit blocker means the
+step cannot succeed yet.
 
-A Stripe Price is immutable and each billing interval is a separate object, so
-a plan that is sold both monthly and annually carries two of them:
-
-| Plan          | monthly | annual |
-| ------------- | ------- | ------ |
-| Community     | €39     | €390   |
-| Municipal     | €79     | €790   |
-| Central       | €119    | €1,190 |
-| Institutional | €189    | €1,890 |
-
-Starter is free and `on-prem-enterprise` is `billingMode = 'manual'`; neither
-gets a Price.
-
-**If you create only the monthly Price, annual billing disappears with no
-error.** The API reports `hasStripeAnnualPrice: false`, the web clients hide the
-cadence toggle, and every card falls back to the monthly figure — while
-libriant.com goes on advertising the annual price the library cannot buy. There
-is no warning anywhere. This is the step to get right.
-
-## 1 — Create the Prices in Stripe
-
-One Product per plan, two recurring Prices under it (`month` and `year`), in
-EUR. Copy the eight `price_...` ids.
-
-## 2 — Record them against the plans
-
-`admin.libriant.com` → Plans → a plan shows both cadences and both ids. Or by
-API, per plan:
+The original 131 lines remain in git history:
 
 ```bash
-curl -X PATCH https://admin.libriant.com/lbr-api/admin/plans/municipal \
-  -H 'content-type: application/json' \
-  -b "$ADMIN_COOKIE" \
-  -d '{"stripePriceId":"price_...","stripeAnnualPriceId":"price_...","monthlyPriceCents":7900,"annualPriceCents":79000}'
+git log --follow -p -- docs/billing-go-live.md
 ```
-
-The seed ships `price_seed_*` placeholders. They are not real Stripe objects and
-every one of them must be replaced.
-
-**Never repoint `stripePriceId` or `stripeAnnualPriceId` on a plan that already
-has live subscribers.** Their webhooks still carry the old id, the reverse
-lookup in `syncStripeSubscription` then matches nothing, and their subscription
-rows go permanently stale behind a warning nobody reads. A price change means a
-new Price and, for existing subscribers, a migration in Stripe.
-
-Setting `annualPriceCents` to `null` clears the annual option and leaves the
-plan monthly-only. The DB `CHECK` refuses any Stripe price id on a manual plan.
-
-## 3 — Point the webhook at the app host
-
-Stripe → Developers → Webhooks → `https://app.libriant.com/webhooks/stripe`.
-Send a test event and confirm a 200 in `dc logs api`. Stripe retries for about
-three days and then drops the event.
-
-## 4 — Flip the switches
-
-In `/srv/libriant/.env.prod`:
-
-```sh
-BILLING_ENABLED=true
-STRIPE_DRIVER=real
-STRIPE_API_KEY=sk_live_...
-STRIPE_WEBHOOK_SECRET=whsec_...
-```
-
-## Never change the switch with SQL
-
-The switch resolves in three steps: a Redis key (`platform_setting:billing.enabled`,
-30-second TTL, shared by every instance), then the `platform_settings` row,
-then `BILLING_ENABLED` from the environment. Only
-`PlatformSettingsService.setBillingEnabled()` — what the admin panel calls —
-writes the row _and_ drops the cache.
-
-Editing or deleting that row in psql therefore does not take effect for up to
-30 seconds, and if you delete it the cache keeps serving the value you just
-removed. This is not theoretical: it is exactly how the integration suite was
-failing intermittently — a spec toggled the switch off, deleted the row
-directly, and left the cache holding `false`, which silently opened every plan
-gate in six subsequent test processes for 25 seconds.
-
-**Flip it from the admin panel, or through the API** — never with SQL. If you
-already have, `DEL` the Redis key or wait out the TTL.
-
-The reason this matters more than a normal caching wrinkle: a `false` here does
-not fail closed. `EffectivePlanService` answers a disabled switch with
-`unlimitedPlan()`, which turns every boolean feature on and every cap off. A
-wrong `false` is not an outage you notice — it is every limit silently gone.
-
-## Before you flip it: limits start biting that second
-
-`unlimitedPlan()` is what has been answering every quota question so far. The
-moment `BILLING_ENABLED=true`, `QuotaService` and `PlanGuard` enforce the real
-caps against data that was loaded with none in force.
-
-- **Check no existing tenant is already over its cap**, or a librarian meets a
-  402 mid-task on Monday morning with no way to see why.
-- **A tenant cannot see their own usage in production**: `GET /t/:slug/plan/usage`
-  sits behind `NonProductionOnlyGuard`. Until that is opened up, the first
-  signal a library gets is the refusal itself.
-- **`storageUsedBytes` never self-heals.** `recomputeUsage()` exists but nothing
-  schedules it, so a stale counter can deny an upload that should succeed.
-- **Founding-offer libraries must be on `billingMode = 'manual'` with `paidUntil`
-  twelve months out** before this flips, or they get charged for what they were
-  promised free.
-
-## Verify
-
-```bash
-curl -sS https://app.libriant.com/lbr-api/t/<slug>/billing/plans -b "$COOKIE" \
-  | jq '.plans[] | {slug, monthlyPriceCents, annualPriceCents, hasStripePrice, hasStripeAnnualPrice}'
-```
-
-Every paid plan must show `hasStripeAnnualPrice: true`. Then open the billing
-page as a librarian: the yearly/monthly toggle is there, yearly is selected, and
-switching to monthly changes both the headline figure and what Checkout charges.
-Take one plan all the way through Stripe test mode and confirm the amount on the
-Checkout page matches the card that sent you there.

@@ -7,7 +7,7 @@ name: deploy
 #
 # MANUAL ONLY as of 2026-08-22. The push trigger is deliberately removed while
 # the new box (195.201.13.95) is deployed by hand from the server itself —
-# see docs/deploy-from-the-server.md. Leaving it on push would either paint
+# see docs/RUNBOOK.md. Leaving it on push would either paint
 # every push red (the old host is gone) or, once fleet.yml points at the new
 # box, ship a release nobody asked for.
 #

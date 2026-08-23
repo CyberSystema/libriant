@@ -16,7 +16,7 @@
 #   --dry-run         print what would happen and stop
 #
 # Prerequisites, all created by the first-run bootstrap (see
-# docs/deploy-from-the-server.md): docker, /srv/libriant/app (this checkout),
+# docs/RUNBOOK.md): docker, /srv/libriant/app (this checkout),
 # /srv/libriant/.env.prod, and /mnt/libriant for data.
 set -euo pipefail
 
@@ -64,7 +64,7 @@ done
 if [ ! -f "$DATA_ROOT/caddy/origin/origin.crt" ] || [ ! -f "$DATA_ROOT/caddy/origin/origin.key" ]; then
   die "Cloudflare origin cert missing at $DATA_ROOT/caddy/origin/{origin.crt,origin.key}.
      It is in the password manager — no backup contains it.
-     See docs/deploy-from-the-server.md."
+     See docs/RUNBOOK.md."
 fi
 
 # `ensure-env.sh --auto` below fills in generated secrets but never prompts, so
@@ -182,7 +182,7 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     dc ps
     echo
     echo "Deployed $IMAGE_TAG. This box is not in DNS yet, so nothing is public."
-    echo "Point DNS at it only when you want it live — docs/cutover-three-hosts.md."
+    echo "Point DNS at it only when you want it live — docs/RUNBOOK.md."
     exit 0
   fi
   echo "  waiting… edge=$edge site=$site api=$api web=$web worker=$worker"

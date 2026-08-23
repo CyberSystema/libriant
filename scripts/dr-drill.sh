@@ -24,7 +24,7 @@
 #
 # --cross-cluster additionally restores the SOURCE cluster's dump into a SECOND,
 # independently-initialised cluster whose superuser password differs. That is
-# the rebuilt-host case from docs/server-handbook.md, and it has a consequence
+# the rebuilt-host case from docs/RUNBOOK.md, and it has a consequence
 # nobody expects until it happens. Needs TARGET_PGPORT (and TARGET_PGPASSWORD,
 # TARGET_PGHOST, TARGET_SOCKET_DIR).
 #
@@ -381,7 +381,7 @@ if [ "$CROSS" = "1" ]; then
   printf '  \033[33m!\033[0m After a cross-host restore the superuser password is the one\n'
   printf '      from the BACKUP, not the one this host was initialised with.\n'
   printf "      POSTGRES_PASSWORD in the rebuilt host's .env.prod is now wrong; take it\n"
-  printf '      from the password manager entry for the SOURCE host. See server-handbook §8.\n'
+  printf '      from the password manager entry for the SOURCE host. See RUNBOOK.md §8.\n'
 fi
 
 say "Cleaning up"

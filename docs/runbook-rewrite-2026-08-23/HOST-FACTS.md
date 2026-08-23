@@ -5,16 +5,16 @@ traces to this file. Re-measure with the block in `RECON.json` if it drifts.
 
 ## Machine
 
-| | |
-| --- | --- |
-| CPU | Intel Xeon E3-1275 v6 @ 3.80 GHz — 4 cores / 8 threads |
-| RAM | 62 GiB usable (`free -h` total), 1.0 GiB in use at rest |
-| Swap | 8 GiB, on LVM (`vg0-swap`), currently 0 B used |
-| Disks | 2 × 476.9 GB NVMe, **software RAID1** — `md0` (1 GiB) → `/boot`, `md1` (475.8 GiB) → LVM PV |
-| RAID | Both arrays `[UU]` — healthy, no degradation |
-| OS | Ubuntu 26.04 LTS, kernel 7.0.0-30-generic |
-| Timezone | **Europe/Berlin** |
-| Uptime | 1 day 19 h at time of measurement — freshly provisioned |
+|          |                                                                                             |
+| -------- | ------------------------------------------------------------------------------------------- |
+| CPU      | Intel Xeon E3-1275 v6 @ 3.80 GHz — 4 cores / 8 threads                                      |
+| RAM      | 62 GiB usable (`free -h` total), 1.0 GiB in use at rest                                     |
+| Swap     | 8 GiB, on LVM (`vg0-swap`), currently 0 B used                                              |
+| Disks    | 2 × 476.9 GB NVMe, **software RAID1** — `md0` (1 GiB) → `/boot`, `md1` (475.8 GiB) → LVM PV |
+| RAID     | Both arrays `[UU]` — healthy, no degradation                                                |
+| OS       | Ubuntu 26.04 LTS, kernel 7.0.0-30-generic                                                   |
+| Timezone | **Europe/Berlin**                                                                           |
+| Uptime   | 1 day 19 h at time of measurement — freshly provisioned                                     |
 
 **This is the same hardware model as the lost box.** The capacity numbers in the
 old documents were therefore not wrong, only unverified. They are now verified.
@@ -35,11 +35,11 @@ compose overlay needs exist yet.
 
 ## Network
 
-| | |
-| --- | --- |
-| Interface | `enp0s31f6` |
-| IPv4 | `195.201.13.95/32` |
-| IPv6 | `2a01:4f8:13b:ac8::2/64` — **the box has public IPv6** |
+|           |                                                               |
+| --------- | ------------------------------------------------------------- |
+| Interface | `enp0s31f6`                                                   |
+| IPv4      | `195.201.13.95/32`                                            |
+| IPv6      | `2a01:4f8:13b:ac8::2/64` — **the box has public IPv6**        |
 | Listening | port 22 only (plus systemd-resolved on 127.0.0.53/127.0.0.54) |
 
 IPv6 matters and is easy to miss: DNS needs AAAA records or IPv6 clients silently
@@ -47,8 +47,8 @@ miss the host, and any firewall rule written only for IPv4 leaves v6 wide open.
 
 ## What is installed
 
-| Present | Absent |
-| --- | --- |
+| Present                                   | Absent                                             |
+| ----------------------------------------- | -------------------------------------------------- |
 | `git` 2.53.0, `curl` 8.18.0, `ufw` 0.36.2 | **docker**, **docker compose**, node, psql, rclone |
 
 ## State — this box is bare
