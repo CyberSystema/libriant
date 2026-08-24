@@ -2,7 +2,8 @@
 import * as React from 'react';
 import { Button } from './Button';
 import { Modal } from './Modal';
-import { splitAroundMarker, useUiStrings } from './ui-strings';
+import { splitAroundMarker } from './ui-strings';
+import { useUiStrings } from './ui-strings-context';
 
 type ConfirmDestructiveProps = {
   open: boolean;

@@ -1,10 +1,12 @@
 import { headers } from 'next/headers';
 import { notFound } from 'next/navigation';
-import { ToastProvider } from '@libriant/ui';
-import { isLocale } from '@libriant/i18n';
+import { uiStringsFromCatalog } from '@libriant/ui';
+import { UiChrome } from '@/components/UiChrome';
+import { createTranslator, isLocale } from '@libriant/i18n';
+import { loadCatalog } from '@/lib/locale-loader';
 
 /**
- * Shell for all `/[locale]/admin/*` pages. Just a ToastProvider — the
+ * Shell for all `/[locale]/admin/*` pages. Just the design-system chrome — the
  * sidebar and auth-redirect live in `(authed)/layout.tsx`, the login
  * page is at the top level so it renders without a sidebar gate.
  *
@@ -33,5 +35,11 @@ export default async function AdminLayout(props: {
     if (reqHost && reqHost !== adminHost) notFound();
   }
 
-  return <ToastProvider>{children}</ToastProvider>;
+  // Only `common`: uiStringsFromCatalog reads nothing else, and the admin shell
+  // has no copy of its own. Loading all eighteen namespaces here would be
+  // eighteen file reads per request for seven strings.
+  const catalog = await loadCatalog(params.locale, ['common']);
+  const t = createTranslator(catalog, params.locale);
+
+  return <UiChrome strings={uiStringsFromCatalog(t)}>{children}</UiChrome>;
 }

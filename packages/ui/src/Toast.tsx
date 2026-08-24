@@ -11,7 +11,7 @@ import {
   type ToastSeverity,
   type ToastTimer,
 } from './toast-policy';
-import { useUiStrings } from './ui-strings';
+import { useUiStrings } from './ui-strings-context';
 
 export type ToastItem = {
   id: string;

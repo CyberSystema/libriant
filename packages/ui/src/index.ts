@@ -4,7 +4,12 @@ export { Barcode, encodeCode128 } from './Barcode';
 export { Button } from './Button';
 export { Banner } from './Banner';
 export { Card, CardHeader, CardBody } from './Card';
-export { Combobox } from './Combobox';
+// NOTE: there is no Combobox here on purpose. One was added during the
+// frontend remediation as a corrected copy of apps/web/components/Combobox.tsx,
+// but nothing ever imported it — so finding frontend-25 stayed open while a
+// file that looked like the fix sat in the design system. The accessible
+// version is the one the app actually renders. If this ever moves into the
+// design system, MIGRATE the call sites in the same change; do not leave two.
 export { ConfirmDestructive } from './ConfirmDestructive';
 export { EmptyState } from './EmptyState';
 export { FormField } from './FormField';
@@ -22,23 +27,9 @@ export type { DesignTokens } from './tokens';
 
 // Contrast maths — a brand colour or a text token has to be *computed*
 // against a target ratio, not eyeballed (frontend-16, frontend-17).
-export {
-  AA_LARGE_TEXT,
-  AA_NON_TEXT,
-  AA_TEXT,
-  AAA_TEXT,
-  checkBrandColor,
-  contrastRatio,
-  flatten,
-  meets,
-  mix,
-  parseHex,
-  readableForeground,
-  relativeLuminance,
-  toAccessibleTextColor,
-  toHex,
-} from './contrast';
-export type { BrandColorVerdict, Rgb } from './contrast';
+// Contrast maths moved to @libriant/shared: the API enforces the brand-colour
+// check at PATCH /t/:slug/branding, and apps/api must not depend on a React
+// component library to do arithmetic.
 
 // Stacking order, owned in one place (frontend-05).
 export {
@@ -65,12 +56,11 @@ export type { ToastSeverity, ToastTimer } from './toast-policy';
 // The design system's own accessible names (frontend-13).
 export {
   UI_STRING_KEYS,
-  UiStringsProvider,
   VALUE_MARKER,
   defaultUiStrings,
   fillMarker,
   splitAroundMarker,
   uiStringsFromCatalog,
-  useUiStrings,
 } from './ui-strings';
 export type { UiStrings } from './ui-strings';
+export { UiStringsProvider, useUiStrings } from './ui-strings-context';

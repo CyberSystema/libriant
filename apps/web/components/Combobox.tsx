@@ -66,6 +66,12 @@ export function Combobox<T extends { id: string }>({
   const [error, setError] = React.useState<string | null>(null);
   const [activeIndex, setActiveIndex] = React.useState(0);
   const listboxId = `${id}-listbox`;
+  // `aria-expanded` and `aria-controls` must describe the listbox that is
+  // ACTUALLY RENDERED. They used to be `open` and an unconditional id, so an
+  // idle combobox advertised an expanded popup that did not exist and pointed
+  // aria-controls at a missing element (finding frontend-25).
+  const querying = open && query.trim().length >= minQueryChars;
+  const listboxVisible = querying && !loading && !error && items.length > 0;
   // Every caller of this picker sits under /[locale]/t/[slug], so the locale is
   // in the route. Reading it here rather than adding an `errorText` prop keeps
   // the failure message Greek at all ~15 call sites without threading one more
@@ -166,47 +172,50 @@ export function Combobox<T extends { id: string }>({
         disabled={disabled}
         role="combobox"
         aria-autocomplete="list"
-        aria-expanded={open}
-        aria-controls={listboxId}
-        aria-activedescendant={items[activeIndex] ? `${listboxId}-${activeIndex}` : undefined}
+        aria-expanded={listboxVisible}
+        aria-controls={listboxVisible ? listboxId : undefined}
+        aria-activedescendant={
+          listboxVisible && items[activeIndex] ? `${listboxId}-${activeIndex}` : undefined
+        }
       />
-      {open && query.trim().length >= minQueryChars ? (
+      {listboxVisible ? (
         <ul id={listboxId} role="listbox" className="lbr-combobox__listbox">
-          {loading ? (
-            <li className="lbr-combobox__option lbr-combobox__option--inert">
-              <Skeleton style={{ height: 12, width: '60%' }} radius="sm" />
+          {items.map((item, ix) => (
+            <li
+              key={item.id}
+              id={`${listboxId}-${ix}`}
+              role="option"
+              aria-selected={ix === activeIndex}
+              className={
+                ix === activeIndex
+                  ? 'lbr-combobox__option lbr-combobox__option--active'
+                  : 'lbr-combobox__option'
+              }
+              onMouseEnter={() => setActiveIndex(ix)}
+              onMouseDown={(e) => {
+                // mousedown fires before blur, so we keep the input focused
+                // long enough to commit the pick.
+                e.preventDefault();
+                pick(item);
+              }}
+            >
+              {renderOption(item)}
             </li>
-          ) : error ? (
-            <li className="lbr-combobox__option lbr-combobox__option--inert" role="alert">
-              {error}
-            </li>
-          ) : items.length === 0 ? (
-            <li className="lbr-combobox__option lbr-combobox__option--inert">{noMatchesText}</li>
-          ) : (
-            items.map((item, ix) => (
-              <li
-                key={item.id}
-                id={`${listboxId}-${ix}`}
-                role="option"
-                aria-selected={ix === activeIndex}
-                className={
-                  ix === activeIndex
-                    ? 'lbr-combobox__option lbr-combobox__option--active'
-                    : 'lbr-combobox__option'
-                }
-                onMouseEnter={() => setActiveIndex(ix)}
-                onMouseDown={(e) => {
-                  // mousedown fires before blur, so we keep the input focused
-                  // long enough to commit the pick.
-                  e.preventDefault();
-                  pick(item);
-                }}
-              >
-                {renderOption(item)}
-              </li>
-            ))
-          )}
+          ))}
         </ul>
+      ) : null}
+      {/* Loading, error and "no matches" are NOT options, and a `role="listbox"`
+          may only contain `role="option"`. They used to be rendered as <li>s
+          inside it, so a screen reader announced a one-item list whose item was
+          a loading skeleton. They live outside the listbox now. */}
+      {querying && (loading || error || items.length === 0) ? (
+        <div className="lbr-combobox__status" role={error ? 'alert' : undefined}>
+          {loading ? (
+            <Skeleton style={{ height: 12, width: '60%' }} radius="sm" />
+          ) : (
+            (error ?? noMatchesText)
+          )}
+        </div>
       ) : null}
     </div>
   );

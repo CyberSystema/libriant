@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { controlDb } from '@libriant/db-control';
+import { checkBrandColor } from '@libriant/shared';
 import { loadEnv } from '../config/env.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
@@ -40,14 +41,42 @@ export class BrandingController {
   async setColor(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const body = (raw ?? {}) as { brandColor?: unknown };
     let color: string | null = null;
+    let verdict: ReturnType<typeof checkBrandColor> = null;
     if (body.brandColor != null && body.brandColor !== '') {
       if (typeof body.brandColor !== 'string' || !HEX.test(body.brandColor)) {
         throw new BadRequestException('Brand colour must be a 6-digit hex value like #1f6feb.');
       }
       color = body.brandColor.toLowerCase();
+
+      // frontend-16: any hex was accepted, and `--color-primary` is the
+      // background of every primary button AND the colour of links and the
+      // active nav item. A library could pick #f5f5f5 and make its own staff
+      // unable to read the buttons they press all day — with no way to tell
+      // that WE let them do it.
+      //
+      // Only the genuinely unusable case is REFUSED: neither foreground token
+      // reaches AA on this colour, so no button label on it is legible. That is
+      // a narrow bar on purpose — a bright brand colour (a yellow, say) is a
+      // perfectly good button background, and refusing it would be us
+      // overruling a library's identity rather than protecting its staff.
+      //
+      // Failing only as text is REPORTED, not refused, because the caller can
+      // act on it: the response carries the readable foreground and both
+      // ratios, so the settings screen can show "your links will be hard to
+      // read" without us deciding the answer for them.
+      verdict = checkBrandColor(color);
+      if (verdict && !verdict.passesAsButton) {
+        throw new BadRequestException(
+          `That colour cannot carry readable button text (best contrast ${verdict.ratio.toFixed(2)}:1, ` +
+            'WCAG AA needs 4.5:1). Pick a darker or lighter shade of it.',
+        );
+      }
     }
     await controlDb.tenant.update({ where: { id: tenant.id }, data: { brandColor: color } });
-    return { brandColor: color };
+    // `contrast` is advisory. `foreground` is what the shell should set as
+    // --color-primary-fg so the label on a primary button is the readable one
+    // rather than always white.
+    return { brandColor: color, contrast: verdict };
   }
 
   @Post('logo')

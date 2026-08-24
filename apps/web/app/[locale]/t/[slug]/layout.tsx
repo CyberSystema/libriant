@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react';
 import { notFound, redirect } from 'next/navigation';
-import { Banner, ToastProvider } from '@libriant/ui';
+import { Banner, uiStringsFromCatalog } from '@libriant/ui';
+import { UiChrome } from '@/components/UiChrome';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { ApiError, ApiUnavailableError, api } from '@/lib/api';
@@ -44,6 +45,8 @@ export default async function TenantLayout(props: {
   // Catalog loads first so even the pre-auth takeover screen is localized.
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);
+  // Accessible names for the design system's own controls (frontend-13).
+  const uiStrings = uiStringsFromCatalog(t);
 
   // System mode resolves FIRST, and on its own. A maintenance / out_of_order
   // takeover renders before any auth fetch (the API blocks those anyway, but we
@@ -93,13 +96,13 @@ export default async function TenantLayout(props: {
   // "set your name + password (or keep them)" screen before anything else.
   if (session && !impersonation && session.user.mustChangeCredentials) {
     return (
-      <ToastProvider>
+      <UiChrome strings={uiStrings}>
         <FirstLoginSetup
           locale={params.locale}
           catalog={catalog}
           currentName={session.user.fullName}
         />
-      </ToastProvider>
+      </UiChrome>
     );
   }
 
@@ -130,7 +133,7 @@ export default async function TenantLayout(props: {
           // cookies — on a shared circulation-desk machine that also strands
           // the admin who needs to sign in and pick the plan.
           return (
-            <ToastProvider>
+            <UiChrome strings={uiStrings}>
               <main className="lbr-choose-shell">
                 <div className="lbr-choose" style={{ maxWidth: 560 }}>
                   <h1 className="lbr-choose__title">{libraryName}</h1>
@@ -150,14 +153,14 @@ export default async function TenantLayout(props: {
                   </div>
                 </div>
               </main>
-            </ToastProvider>
+            </UiChrome>
           );
         }
         const { plans } = await api<{ plans: AvailablePlan[] }>(`/t/${params.slug}/billing/plans`, {
           cookie,
         });
         return (
-          <ToastProvider>
+          <UiChrome strings={uiStrings}>
             <ChoosePlanScreen
               slug={params.slug}
               locale={params.locale}
@@ -165,7 +168,7 @@ export default async function TenantLayout(props: {
               plans={plans}
               libraryName={libraryName}
             />
-          </ToastProvider>
+          </UiChrome>
         );
       }
     } catch (err) {
@@ -213,7 +216,7 @@ export default async function TenantLayout(props: {
     : undefined;
 
   return (
-    <ToastProvider>
+    <UiChrome strings={uiStrings}>
       <OfflineQueueProvider slug={params.slug} catalog={catalog} locale={params.locale}>
         <div className="lbr-shell" style={shellStyle}>
           {/* WCAG 2.4.1: the brand link, 8-11 nav links and sign-out all sit
@@ -276,6 +279,6 @@ export default async function TenantLayout(props: {
           </main>
         </div>
       </OfflineQueueProvider>
-    </ToastProvider>
+    </UiChrome>
   );
 }

@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { Banner } from './Banner';
 import { registerOpenModal } from './layers';
-import { useUiStrings } from './ui-strings';
+import { useUiStrings } from './ui-strings-context';
 
 type ModalProps = {
   /** Whether the modal is currently shown. */

@@ -1,7 +1,7 @@
 'use client';
 import * as React from 'react';
 import { registerOpenModal } from './layers';
-import { useUiStrings } from './ui-strings';
+import { useUiStrings } from './ui-strings-context';
 
 type HelpDrawerProps = {
   open: boolean;

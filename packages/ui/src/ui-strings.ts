@@ -1,6 +1,17 @@
-'use client';
-import * as React from 'react';
-
+/**
+ * The design system's own accessible names, as DATA.
+ *
+ * Deliberately NOT a client module. `uiStringsFromCatalog()` is called from
+ * Next server layouts, which hand the resulting plain object down to
+ * `UiStringsProvider`; a `'use client'` directive here makes the whole module
+ * client-only and the build fails with "Attempted to call
+ * uiStringsFromCatalog() from the server". The React context that consumes this
+ * lives in ui-strings-context.tsx, which is where the directive belongs.
+ *
+ * Everything exported here is a pure function or plain data for exactly that
+ * reason — a translator function cannot cross the server/client boundary, so
+ * the server resolves the strings and passes values, not callbacks.
+ */
 /**
  * The handful of strings the design system speaks on its own behalf.
  *
@@ -155,41 +166,4 @@ export function uiStringsFromCatalog(
     comboboxResultsOne: t(UI_STRING_KEYS.comboboxResultsOne),
     comboboxResultsOther: t(UI_STRING_KEYS.comboboxResultsOther, { count: VALUE_MARKER }),
   };
-}
-
-const Ctx = React.createContext<Partial<UiStrings> | null>(null);
-
-/**
- * Mount once per rendering root, alongside `ToastProvider`. A partial object
- * is accepted so a caller can localize what it has and inherit the rest.
- */
-export function UiStringsProvider({
-  strings,
-  children,
-}: {
-  strings: Partial<UiStrings>;
-  children: React.ReactNode;
-}) {
-  const value = React.useMemo(() => strings, [strings]);
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
-}
-
-let warnedAboutMissingProvider = false;
-
-export function useUiStrings(): UiStrings {
-  const provided = React.useContext(Ctx);
-  if (!provided && !warnedAboutMissingProvider) {
-    warnedAboutMissingProvider = true;
-    const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
-    if (proc && proc.env?.NODE_ENV !== 'production') {
-      console.warn(
-        '[@libriant/ui] No <UiStringsProvider>: dialog and toast controls will announce their ' +
-          'English fallback labels. Wrap the tree in <UiStringsProvider strings={uiStringsFromCatalog(t)}>.',
-      );
-    }
-  }
-  return React.useMemo(
-    () => (provided ? { ...defaultUiStrings, ...provided } : defaultUiStrings),
-    [provided],
-  );
 }

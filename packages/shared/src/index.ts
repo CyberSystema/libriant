@@ -13,3 +13,20 @@ export {
   isFreeProfileField,
 } from './library.js';
 export type { LibraryType, CoreProfileField, FreeProfileField } from './library.js';
+export {
+  AA_TEXT,
+  AA_LARGE_TEXT,
+  AA_NON_TEXT,
+  AAA_TEXT,
+  checkBrandColor,
+  contrastRatio,
+  flatten,
+  meets,
+  mix,
+  parseHex,
+  readableForeground,
+  relativeLuminance,
+  toAccessibleTextColor,
+  toHex,
+} from './contrast.js';
+export type { BrandColorVerdict, Rgb } from './contrast.js';
