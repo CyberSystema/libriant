@@ -474,19 +474,46 @@ Good looks like, today: only 22 open. After the first deploy: 22, 80, 443 open,
 and **nothing else** — in particular 5432 and 6379 must never appear (the `data`
 network is `internal: true`, so they cannot be published even by accident).
 
-> **`BLOCKER authn-authz-01` applies here.** Every rate limit, the `/apply`
-> throttle and the brute-force login lockout are keyed on `X-Real-IP`, which
-> Caddy sets unconditionally from the client-supplied `CF-Connecting-IP` header —
-> there is no `remote_ip` matcher anywhere in the Caddyfile, and no
-> Cloudflare-range restriction exists in ufw, in any script, or at the edge.
-> Anyone who can reach the origin IP directly can forge that header and reshape
-> the rate limiter. The old docs describe a Cloudflare-only firewall as if it
-> existed; **it does not, and a plain `ufw allow from <cf range>` would not
-> create it** because Docker bypasses ufw. A real origin lockdown has to go in
-> `DOCKER-USER` (both `iptables` and `ip6tables`) or be replaced with a
-> Cloudflare Tunnel / Authenticated Origin Pulls. **UNVERIFIED**: no such rule
-> has ever been written or tested on any box. Until it exists, do not describe
-> origin traffic as filtered, and do not go public.
+> **`authn-authz-01` — the origin lockdown, and the three layers it needs.**
+> Every rate limit, the `/apply` throttle and the brute-force login lockout are
+> keyed on `X-Real-IP`, which Caddy sets from `CF-Connecting-IP`. Anyone who can
+> reach the origin IP directly and forge that header reshapes all of them. As of
+> 2026-08-24 there are three layers against that, and **all three have to hold**:
+>
+> 1. **The firewall.** `prod-bootstrap.sh --firewall-only` builds a
+>    `LIBRIANT-ORIGIN` chain in `DOCKER-USER` — not in ufw, which Docker bypasses
+>    — through **both `iptables` and `ip6tables`. A missing `ip6tables` is fatal,
+>    not a warning**, because this box has a public IPv6 address. Add
+>    `--allow-ipv6` only once AAAA records exist.
+> 2. **The published ports.** `docker-compose.prod.yml` publishes on
+>    `${EDGE_BIND_IPV4:-0.0.0.0}`, not the bare `443:443`. This is the layer that
+>    is easiest to lose and the least obvious: the wildcard form also opens a
+>    `[::]` listener, and because no compose network sets `enable_ipv6`, Docker
+>    carries those v6 connections through the **userland proxy**, which
+>    re-originates every one of them from the bridge gateway. The edge then sees
+>    a private address, trusts it, and the header forgery works again over IPv6
+>    while looking perfectly locked down over IPv4. This is not hypothetical — it
+>    is how the first fix for this finding was defeated.
+> 3. **The edge.** Every backend route in the Caddyfile imports `origin_guard`,
+>    which matches on `remote_ip` (the connection) rather than on a header. One
+>    route — `/webhooks/*` — shipped without it. `pnpm check:caddy` now fails the
+>    build if any `reverse_proxy` to `api:` or `web:` lacks a guard.
+>
+> **Verify, do not assume** (§3.2c's scan is the outside view; this is the inside
+> one):
+>
+> ```bash
+> sudo bash scripts/prod-bootstrap.sh --firewall-status
+> # must print a LIBRIANT-ORIGIN chain with jumps from BOTH INPUT and DOCKER-USER,
+> # for both address families, and: "ok: no [::] listener"
+> ```
+>
+> If that last line instead warns about a `[::]` listener, layer 2 has reverted
+> and layers 1 and 3 do not cover the gap on their own. Fix the compose publish
+> form before anything else.
+>
+> Still true, and still the only check that cannot be fooled: an external scan
+> over **both** address families from a machine that is not this one.
 
 **d. Baseline packages.**
 
