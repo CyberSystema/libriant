@@ -84,6 +84,10 @@ export class DisabledStripeDriver implements StripeDriver {
     this.refuse('getSubscription');
   }
 
+  async listSubscriptions(_customerId: string): Promise<StripeSubscriptionState[]> {
+    this.refuse('listSubscriptions');
+  }
+
   verifyWebhookSignature(_rawBody: Buffer, _signatureHeader: string): StripeWebhookEvent {
     // Never returns an event. The whole point of this posture is that nothing
     // reachable from the shipped templates can verify a webhook — least of all

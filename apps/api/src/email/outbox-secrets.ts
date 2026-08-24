@@ -50,9 +50,9 @@ import { randomBytes } from 'node:crypto';
  * taken from, and would decrypt every historical row forever. Expiry beats
  * encryption here because the plaintext's usefulness is already time-bounded.
  *
- * SCOPE OF THE SEAL: query parameters, because that is the only shape a
- * credential takes in a Libriant email today (`?token=`), and the parameter
- * list below is generous on purpose — it seals a `code=` / `key=` / `invite=`
+ * SCOPE OF THE SEAL: query and fragment parameters, because that is the only
+ * shape a credential takes in a Libriant email today (`?token=`, `#token=`),
+ * and the parameter list below is generous on purpose — it seals a `code=` / `key=` / `invite=`
  * link that does not exist yet, so a future producer inherits the protection
  * without knowing this file exists. It does NOT seal a bare credential printed
  * outside a URL. Nothing does that today (the support-key mail carries only
@@ -77,13 +77,21 @@ const SECRET_QUERY_PARAMS = [
 ] as const;
 
 /**
- * `?token=<value>` / `&token=<value>`. The value runs to the first character
- * that cannot be inside a query value in a plain-text email body: whitespace,
- * `&` (next parameter), or a quote/bracket that is almost certainly markup or
- * punctuation wrapping the URL.
+ * `?token=<value>` / `&token=<value>` / `#token=<value>`. The value runs to the
+ * first character that cannot be inside a query value in a plain-text email
+ * body: whitespace, `&` (next parameter), or a quote/bracket that is almost
+ * certainly markup or punctuation wrapping the URL.
+ *
+ * `#` is in the leading class because the credential is migrating OUT of the
+ * query string (privacy-legal-06 — Caddy logs `request.uri`, backups keep the
+ * log). `AdminOutboxService.issuePasswordResetLink` already mints
+ * `…/login/reset#token=…`, and when the e-mail producers follow, a body that
+ * fell out of this pattern would be persisted with a live token in it — the
+ * exact defect this file exists to prevent, reintroduced by a change that
+ * looks like a hardening.
  */
 const SECRET_PARAM_RE = new RegExp(
-  `([?&](?:${SECRET_QUERY_PARAMS.join('|')})=)([^\\s&"'<>\\)\\]}]+)`,
+  `([?&#](?:${SECRET_QUERY_PARAMS.join('|')})=)([^\\s&"'<>\\)\\]}]+)`,
   'gi',
 );
 

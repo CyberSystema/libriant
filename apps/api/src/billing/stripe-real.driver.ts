@@ -178,6 +178,35 @@ export class RealStripeDriver implements StripeDriver {
     }
   }
 
+  /**
+   * billing-03, round 2: the authoritative answer to "does this customer
+   * already pay us?", asked when our own row cannot answer it.
+   *
+   * Stripe returns list results newest-first, which is the order the caller
+   * wants: if a customer somehow has more than one live subscription, the one
+   * that was just bought is the one to re-price.
+   *
+   * `limit: 20` is generous — every customer this app creates should have
+   * exactly one — and bounded on purpose: this runs on a request path, and a
+   * customer with more subscriptions than that has a problem no amount of
+   * paging fixes.
+   */
+  async listSubscriptions(customerId: string): Promise<StripeSubscriptionState[]> {
+    const page = await this.stripe.subscriptions.list({
+      customer: customerId,
+      // The caller decides what counts as live (STRIPE_LIVE_STATUSES);
+      // narrowing to 'active' here would hide trialing/past_due/paused, each
+      // of which must be re-priced rather than re-bought.
+      status: 'all',
+      limit: 20,
+    });
+    return page.data.map((sub) => ({
+      id: sub.id,
+      status: sub.status,
+      priceId: sub.items.data.length === 1 ? (sub.items.data[0]?.price.id ?? null) : null,
+    }));
+  }
+
   verifyWebhookSignature(rawBody: Buffer, signatureHeader: string): StripeWebhookEvent {
     const event = this.stripe.webhooks.constructEvent(rawBody, signatureHeader, this.webhookSecret);
     return event as unknown as StripeWebhookEvent;

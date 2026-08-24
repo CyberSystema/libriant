@@ -22,12 +22,52 @@
 
 	# Structured access log. Compose mounts this to a host volume so the
 	# nightly job can rotate it.
+	#
+	# THE QUERY STRING IS REDACTED, and that is not tidiness.
+	#
+	# Two endpoints carry a single-use credential as a query parameter —
+	# `/…/login/reset?token=…` and `/…/verify-email?token=…` — and the signed
+	# download route takes its bearer JWT the same way. Caddy logged `uri`
+	# verbatim, so every one of those landed in access.log; the log is rolled 14
+	# times at 100mb and scripts/backup.sh tars the whole directory into the
+	# nightly archive. Anyone holding a log file or a backup could grep `token=`
+	# and take over an account inside the token's TTL. A verifier did exactly
+	# that, then redeemed the link in a browser.
+	#
+	# The parameter list is the SAME ONE the API seals in the outbox
+	# (`SECRET_QUERY_PARAMS` in apps/api/src/email/outbox-secrets.ts). Keeping
+	# the two in step matters: redacting a link in the database and then writing
+	# it to the access log protects nothing, and the log is the copy that leaves
+	# the building. Only VALUES are dropped — the parameter names survive, so an
+	# operator debugging a request still sees that a token was present. Path,
+	# method, status and duration are untouched.
+	# A new secret parameter needs adding in BOTH places.
 	log {
 		output file /var/log/caddy/access.log {
 			roll_size 100mb
 			roll_keep 14
 		}
-		format json
+		# `filter` WRAPS the json encoder — the two are not separate formats, and
+		# every field filter must sit inside `fields`. A bare `query {}` with no
+		# sub-directive is a no-op, which would have looked like a fix and
+		# redacted nothing.
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete token
+					delete code
+					delete key
+					delete secret
+					delete invite
+					delete otp
+					delete sig
+					delete signature
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
 	}
 
 	# Disable the admin endpoint in prod — we don't shell into Caddy.

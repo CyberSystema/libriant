@@ -19,6 +19,7 @@ const {
   createCheckoutSession,
   changeSubscriptionPrice,
   getSubscription,
+  listSubscriptions,
 } = vi.hoisted(() => ({
   subFindUnique: vi.fn(),
   planFindUnique: vi.fn(),
@@ -28,6 +29,7 @@ const {
   createCheckoutSession: vi.fn(),
   changeSubscriptionPrice: vi.fn().mockResolvedValue(undefined),
   getSubscription: vi.fn(),
+  listSubscriptions: vi.fn(),
 }));
 
 vi.mock('@libriant/db-control', () => ({
@@ -87,7 +89,12 @@ function makeRedis(overrides: Partial<Record<'set' | 'get' | 'del', unknown>> = 
 }
 
 function makeService(redis: unknown = makeRedis()) {
-  const stripe = { createCheckoutSession, changeSubscriptionPrice, getSubscription };
+  const stripe = {
+    createCheckoutSession,
+    changeSubscriptionPrice,
+    getSubscription,
+    listSubscriptions,
+  };
   const settings = { billingEnabled: vi.fn().mockResolvedValue(true) };
   return new BillingService(
     { invalidate: vi.fn() } as never,
@@ -105,6 +112,8 @@ describe('BillingService.startCheckout — an existing subscription is CHANGED, 
     createCheckoutSession.mockResolvedValue({ url: 'https://stripe.test/s', sessionId: 's1' });
     changeSubscriptionPrice.mockResolvedValue(undefined);
     planFindUnique.mockResolvedValue(MUNICIPAL);
+    // Nothing at Stripe under this customer unless a test says otherwise.
+    listSubscriptions.mockResolvedValue([]);
     // The local row is a CACHE of Stripe, not the truth. Every test states what
     // Stripe itself reports, because trusting the row is what produced both the
     // permanent purchase lockout and the silent no-charge "success" below.

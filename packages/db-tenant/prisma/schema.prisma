@@ -430,11 +430,15 @@ model Loan {
   // and the overdue variant). `status` leads so the planner can seek straight
   // to the active loans and then walk them already in `loanedAt` order.
   @@index([status, loanedAt(sort: Desc), id(sort: Desc)], map: "loans_status_loanedAt_id_idx")
-  // `loans_active_dueAt_idx` — a PARTIAL index on ("dueAt") WHERE status='active'
-  // — is added in the migration SQL, which Prisma cannot express. It serves the
-  // whole-set overdue readers (fine accrual, due-soon notices), where the
-  // existing `loans_dueAt_idx` is useless because every historical loan also
-  // has a `dueAt` in the past.
+  // Every overdue / due-soon reader in the product — the dashboard's overdue
+  // tile, fine accrual, the notice sweeps — asks for `status='active' AND dueAt
+  // <op> <ts>`. This is the index that answers them, and it is deliberately NOT
+  // partial: Prisma emits `status = CAST($1::text AS "LoanStatus")`, and because
+  // `enum_in` is STABLE the planner cannot fold that to a constant, so it can
+  // never prove a `WHERE status = 'active'` index predicate. A leading `status`
+  // key needs no proving. The partial `loans_active_dueAt_idx` that 20260824120000
+  // added for this is dropped in 20260824170000 for exactly that reason.
+  @@index([status, dueAt, id], map: "loans_status_dueAt_id_idx")
   @@map("loans")
 }
 
@@ -612,8 +616,19 @@ model CollectionRecord {
 
 // ---------------------------------------------------------------------------
 // Audit log — tenant-side, library-visible. Records every meaningful change
-// in this library's data. Retention is governed by the tenant's plan
-// (`audit_log_retention_days` feature) and enforced by a background job.
+// in this library's data.
+//
+// Retention is governed by the tenant's plan (`audit_log_retention_days`) and
+// enforced by the `retention-sweep` job in apps/api/src/jobs/retention.job.ts,
+// which deletes rows older than the plan's window. When subscriptions are OFF
+// — the shipped configuration — that feature resolves to the "unlimited"
+// sentinel and the sweep deliberately deletes NOTHING here: retention is
+// lifted, not zero. (This comment claimed a background job for months while no
+// such job existed anywhere in the tree — privacy-legal-05.)
+//
+// `beforeJson` / `afterJson` on member-targeted rows hold identifiers
+// (memberNumber, fullName, e-mail). MembersService.erase() redacts them in the
+// same transaction that tombstones the member; see privacy-legal-03.
 // ---------------------------------------------------------------------------
 
 model AuditEvent {

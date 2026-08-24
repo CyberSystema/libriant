@@ -34,6 +34,7 @@ import {
 } from './maintenance/maintenance-worker.js';
 import { startExportWorker, type ExportWorkerHandle } from './export/export-worker.js';
 import { RedisService } from './platform/redis.service.js';
+import { describeTenantPoolPlan, resolveTenantPoolPlan } from './platform/tenant-pool-budget.js';
 import { SCHEDULED_JOBS } from './jobs/registry.js';
 import { startScheduledJobs, type ScheduledJobsHandle } from './jobs/scheduled-jobs.runner.js';
 
@@ -128,6 +129,12 @@ const server = createServer((req, res) => {
         `libriant_worker_jobs_running{queue="import"} ${importInFlight}`,
         `libriant_worker_jobs_running{queue="maintenance"} ${maintenanceInFlight}`,
         `libriant_worker_jobs_running{queue="export"} ${exportInFlight}`,
+        '# HELP libriant_worker_tenant_conn_peak Worst-case tenant DB connections this worker may hold.',
+        '# TYPE libriant_worker_tenant_conn_peak gauge',
+        `libriant_worker_tenant_conn_peak ${tenantPoolPlan.peakConnections}`,
+        '# HELP libriant_worker_tenant_conn_budget Tenant DB connection budget for this worker.',
+        '# TYPE libriant_worker_tenant_conn_budget gauge',
+        `libriant_worker_tenant_conn_budget ${tenantPoolPlan.budget}`,
         '',
       ].join('\n'),
     );
@@ -137,9 +144,26 @@ const server = createServer((req, res) => {
   res.end(JSON.stringify({ statusCode: 404, error: 'NotFound' }));
 });
 
+/**
+ * The tenant-connection budget this process runs under.
+ *
+ * performance-06: the four per-tenant sweeps each build their own
+ * TenantPrismaService and hold it for the whole run, and they believed a
+ * `connection_limit=1` URL parameter kept them to one connection apiece. It did
+ * not — that parameter belongs to Prisma's old Rust engine, and the driver
+ * adapter ignored it, so the real ceiling was cacheSize x poolMax = 250 against
+ * a server with max_connections=200. The plan is computed once here and printed
+ * at boot so the number an operator can act on is in the log rather than in a
+ * comment; the sweeps get the same plan by constructing their service with the
+ * 'worker' role.
+ */
+const tenantPoolPlan = resolveTenantPoolPlan('worker', env.tenantClientCacheSize);
+
 server.listen(port, () => {
   // eslint-disable-next-line no-console
   console.log(`[worker] listening on :${port} (env=${env.nodeEnv})`);
+  // eslint-disable-next-line no-console
+  console.log(`[worker] ${describeTenantPoolPlan(tenantPoolPlan)}`);
 });
 
 // Boot the queue consumers alongside the HTTP server. If BullMQ fails to

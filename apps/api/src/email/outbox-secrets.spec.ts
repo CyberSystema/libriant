@@ -77,6 +77,24 @@ describe('sealBodySecrets', () => {
     expect(Object.values(sealed.secrets)).toEqual([token]);
   });
 
+  it('seals a token carried in the URL FRAGMENT, not just the query string', () => {
+    // privacy-legal-06 moves the credential out of `?token=` (Caddy writes
+    // `request.uri` to a log that goes into the nightly backup) and into
+    // `#token=`, which a browser never transmits. A seal that only knew the
+    // query shape would have persisted that token in cleartext — a hardening
+    // change quietly undoing the protection it was made alongside.
+    const token = freshToken();
+    const sealed = sealBodySecrets(
+      `Set a new password: https://app.libriant.com/el/login/reset#token=${token}&slug=demo-library`,
+    );
+    expect(sealed.storedBody).not.toContain(token);
+    expect(Object.values(sealed.secrets)).toEqual([token]);
+    expect(sealed.storedBody).toContain('/el/login/reset#token=');
+    expect(sealed.storedBody).toContain('&slug=demo-library');
+    // And it still round-trips for the operator reading it in the panel.
+    expect(unsealBody(sealed.storedBody, sealed.secrets).body).toContain(`#token=${token}`);
+  });
+
   it('leaves a body that carries no credential completely untouched', () => {
     const body = [
       `Your hold is ready at Δημοτική Βιβλιοθήκη.`,

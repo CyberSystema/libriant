@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   stripeFindMany,
@@ -19,6 +19,7 @@ const {
     handleStripeSubscriptionDeleted: vi.fn().mockResolvedValue(undefined),
     handleStripeInvoicePaid: vi.fn().mockResolvedValue(undefined),
     handleStripeInvoiceFailed: vi.fn().mockResolvedValue(undefined),
+    handleCheckoutSessionCompleted: vi.fn().mockResolvedValue(undefined),
   },
   redisDestroy: vi.fn().mockResolvedValue(undefined),
   redisReady: vi.fn().mockResolvedValue(undefined),
@@ -82,7 +83,20 @@ vi.mock('../platform/redis.service.js', async (importOriginal) => ({
 
 import { sweepFailedStripeWebhooks } from './stripe-retry.job.js';
 import { RedisService } from '../platform/redis.service.js';
+import { FakeStripeDriver } from '../billing/stripe-fake.driver.js';
+import { RealStripeDriver } from '../billing/stripe-real.driver.js';
+import { toScheduledJobResult } from './scheduled-jobs.runner.js';
 import type { JobContext } from './jobs.types.js';
+
+/**
+ * The sweep now resolves its Stripe POSTURE from the raw environment, via the
+ * same factory the app boots with (reliability-16). So every test has to say
+ * which posture it is in — reading whatever the developer happens to export is
+ * how this job ended up throwing on the shipped configuration in the first
+ * place.
+ */
+const ENV_KEYS = ['STRIPE_DRIVER', 'STRIPE_API_KEY', 'STRIPE_WEBHOOK_SECRET', 'NODE_ENV'] as const;
+const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 
 const SUB_UPDATED = {
   id: 'evt_1',
@@ -92,14 +106,26 @@ const SUB_UPDATED = {
 
 describe('sweepFailedStripeWebhooks', () => {
   beforeEach(() => {
+    for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
+    // `fake` + NODE_ENV=test is the posture the unit suite runs the sweep in.
+    process.env.STRIPE_DRIVER = 'fake';
     stripeFindMany.mockReset();
     stripeCount.mockReset().mockResolvedValue(0);
     stripeUpdate.mockClear();
     vi.mocked(RedisService).mockClear();
+    vi.mocked(RealStripeDriver).mockClear();
+    vi.mocked(FakeStripeDriver).mockClear();
     redisReady.mockReset().mockResolvedValue(undefined);
     redisSet.mockReset().mockResolvedValue('OK');
     redisDel.mockReset().mockResolvedValue(1);
     for (const fn of Object.values(billingMethods)) fn.mockClear();
+  });
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (savedEnv[k] === undefined) delete process.env[k];
+      else process.env[k] = savedEnv[k];
+    }
   });
 
   it('does not claim the sweep lock before the socket is ready', async () => {
@@ -249,5 +275,102 @@ describe('sweepFailedStripeWebhooks', () => {
     expect(stripeCount).toHaveBeenCalledWith({
       where: { processedAt: null, receivedAt: { lt: expect.any(Date) } },
     });
+  });
+
+  /**
+   * reliability-16, third cause. The Redis defect was fixed and the job STILL
+   * failed on its first event every five minutes in the configuration that
+   * ships — because it picked its driver by hand
+   * (`env.stripeDriver === 'real' ? Real : Fake`), and `config/env.ts` reports
+   * the shipped `STRIPE_DRIVER=none` as `'real'` outside development. Every
+   * tick built a RealStripeDriver with no API key and threw before touching a
+   * single row.
+   */
+  describe('the shipped posture: STRIPE_DRIVER=none', () => {
+    it('says so, quietly and explicitly, instead of failing 288 times a day', async () => {
+      process.env.STRIPE_DRIVER = 'none';
+      process.env.NODE_ENV = 'production';
+      stripeCount.mockResolvedValue(4);
+
+      const result = await sweepFailedStripeWebhooks();
+
+      expect(result.message).toContain('billing is switched off (STRIPE_DRIVER=none)');
+      expect(result.counts).toEqual({ retried: 0, held: 4 });
+      // No driver is built at all — that construction was the failure.
+      expect(vi.mocked(RealStripeDriver)).not.toHaveBeenCalled();
+      expect(vi.mocked(FakeStripeDriver)).not.toHaveBeenCalled();
+      // And no work is claimed: the webhook route answers 503 before reading a
+      // body in this posture, so nothing can enter the retry set.
+      expect(stripeFindMany).not.toHaveBeenCalled();
+    });
+
+    it('reports the held pile without calling the run broken', async () => {
+      process.env.STRIPE_DRIVER = 'none';
+      stripeCount.mockResolvedValue(4);
+
+      // The health surface is the point: this is what /healthz and the alert
+      // rules read, and a red row every 5 minutes is a row nobody reads.
+      const health = toScheduledJobResult(await sweepFailedStripeWebhooks());
+
+      expect(health.ok).toBe(true);
+      expect(health.message).not.toContain('FAILED');
+      expect(health.message).toContain('4 event(s)');
+    });
+
+    it('treats a legacy STRIPE_DRIVER=fake on a deployed host the same way', async () => {
+      // Every host provisioned before billing-02 still carries `fake`, which
+      // the posture resolver downgrades to `disabled`. The old ternary would
+      // have constructed the fake driver, which refuses to exist off a dev box.
+      process.env.STRIPE_DRIVER = 'fake';
+      process.env.NODE_ENV = 'production';
+      stripeCount.mockResolvedValue(0);
+
+      const result = await sweepFailedStripeWebhooks();
+
+      expect(result.message).toContain('billing is switched off (STRIPE_DRIVER=fake)');
+      expect(vi.mocked(FakeStripeDriver)).not.toHaveBeenCalled();
+      expect(vi.mocked(RealStripeDriver)).not.toHaveBeenCalled();
+    });
+  });
+
+  it('builds its driver through the posture factory when Stripe IS configured', async () => {
+    process.env.STRIPE_DRIVER = 'real';
+    process.env.STRIPE_API_KEY = 'sk_test_unit';
+    process.env.STRIPE_WEBHOOK_SECRET = 'whsec_unit';
+    stripeFindMany.mockResolvedValue([SUB_UPDATED]);
+
+    const result = await sweepFailedStripeWebhooks();
+
+    expect(vi.mocked(RealStripeDriver)).toHaveBeenCalledTimes(1);
+    expect(result.counts?.succeeded).toBe(1);
+  });
+
+  it('replays checkout.session.completed — the row the purchase guard depends on', async () => {
+    // It used to fall through to `default`, which marks the row processed
+    // without doing anything. That handler is the one that writes
+    // `stripeSubscriptionId` the moment a purchase lands (billing-03 round 2),
+    // so silently dropping it left the duplicate-purchase window open.
+    const session = {
+      id: 'cs_1',
+      customer: 'cus_1',
+      subscription: 'sub_A',
+      client_reference_id: 't1',
+    };
+    stripeFindMany.mockResolvedValue([
+      {
+        id: 'evt_cs',
+        type: 'checkout.session.completed',
+        payloadJson: {
+          id: 'evt_cs',
+          type: 'checkout.session.completed',
+          data: { object: session },
+        },
+      },
+    ]);
+
+    const result = await sweepFailedStripeWebhooks();
+
+    expect(billingMethods.handleCheckoutSessionCompleted).toHaveBeenCalledWith(session);
+    expect(result.counts?.succeeded).toBe(1);
   });
 });

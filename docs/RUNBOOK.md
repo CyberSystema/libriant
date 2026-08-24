@@ -968,12 +968,46 @@ file that compose then refuses to start, because its registry is missing
 
 ### 4.3 The production landmines
 
-| Variable           | Value now | What it actually does                                                                                                                                                                                                                                                                                                                                                                                                                                     | Blocker                    |
-| ------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| `STRIPE_DRIVER`    | `fake`    | **Not** a harmless no-charge stand-in. `FakeStripeDriver` hardcodes the webhook secret `fake-webhook-secret-for-dev`, which is published in this repo, and `POST /webhooks/stripe` is unauthenticated by design and exempt from maintenance mode. **Any internet host can rewrite any tenant's subscription.** The auditor executed this end to end. The safe posture is `real` **with keys** (its constructor throws loudly without them), never `fake`. | `billing-02`               |
-| `EMAIL_DRIVER`     | `console` | Nothing is delivered, **and the body is withheld from logs** (`isDev` is false under `NODE_ENV=production`). The outbox row is marked delivered with a fabricated `console-<hex>` provider id. Password reset, email verification and staff invites are dead ends with **no operator recovery path**. `docs/deploy-from-the-server.md:113` claims the link is in `docker logs api`. It is not.                                                            | `launch-readiness-01`      |
-| `BILLING_ENABLED`  | `false`   | Not authoritative. `PlatformSettingsService` reads a `platform_settings` DB row and only falls back to the env value when the row is absent; the owner-only admin **Subscriptions** toggle writes that row. Nothing cross-validates enforcement-on against `STRIPE_DRIVER=fake`. See the box below before you touch it.                                                                                                                                   | `billing-03`, `billing-04` |
-| `MAINTENANCE_HARD` | `false`   | Caddy-only edge takeover. **UNVERIFIED whether it works at all** — see §9.10.                                                                                                                                                                                                                                                                                                                                                                             | —                          |
+| Variable           | Value now | What it actually does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Blocker                    |
+| ------------------ | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| `STRIPE_DRIVER`    | `none`    | Fixed 2026-08-24. Three postures now: `real`, `disabled` (the shipped default — no driver is constructed, billing operations refuse, and `POST /webhooks/stripe` answers 503 before reading a byte) and `fake`, which only exists for a declared `development`/`test` NODE_ENV. A legacy `.env.prod` still saying `fake` DOWNGRADES to `disabled` with a loud error rather than refusing to boot. The one configuration refused outright is `BILLING_ENABLED=true` with no driver that can transact. | `billing-02` — closed      |
+| `EMAIL_DRIVER`     | `console` | Nothing is delivered — there is no Resend key, and that is expected for this launch. It is **no longer a dead end**: an owner admin can recover any account from the panel. See §4.3a. Do NOT go looking in `docker logs api`; the body is withheld under `NODE_ENV=production`.                                                                                                                                                                                                                     | `launch-readiness-01`      |
+| `BILLING_ENABLED`  | `false`   | Not authoritative. `PlatformSettingsService` reads a `platform_settings` DB row and only falls back to the env value when the row is absent; the owner-only admin **Subscriptions** toggle writes that row. Nothing cross-validates enforcement-on against `STRIPE_DRIVER=fake`. See the box below before you touch it.                                                                                                                                                                              | `billing-03`, `billing-04` |
+| `MAINTENANCE_HARD` | `false`   | Caddy-only edge takeover. **UNVERIFIED whether it works at all** — see §9.10.                                                                                                                                                                                                                                                                                                                                                                                                                        | —                          |
+
+### 4.3a Recovering an account while no mail is delivered
+
+`EMAIL_DRIVER=console` means the system composes every message and delivers
+none. A librarian who forgets their password, or who never verified their
+address, cannot get themselves back in. Until a mail provider is configured,
+**this is the supported path** — a normal operation, not a workaround.
+
+You need an **owner**-role admin session on `admin.libriant.com`.
+
+1. Open **Account recovery** in the admin panel (`/admin/account-recovery`).
+2. Find the person by e-mail or library.
+3. Either:
+   - **Mark the address verified** — for someone stuck behind an unverified
+     e-mail who still knows their password; or
+   - **Issue a reset link** — mints a fresh single-use link, valid for one hour.
+4. Read the link to them over a channel you already trust — the phone number on
+   their library's own website, not one supplied in the request. You are the
+   delivery mechanism, so you are also the identity check.
+
+Two properties worth knowing before you use it:
+
+- **The stored message never contains a live link.** `email_outbox` holds a
+  sealed reference, not the credential, so a backup or a database export cannot
+  be turned into account takeover (`privacy-legal-06`). The panel mints the link
+  when you ask for it, and Caddy's access log drops the `?token=` value, so
+  following the link does not write it into the nightly backup either.
+- **Every issue is recorded.** The action writes an audit row naming the admin,
+  the account and the time. That record is the reason this is safe to have — an
+  operator who can silently mint credentials for any account is not an
+  administrator, they are a backdoor.
+
+When a provider is finally configured this stays; it is also the answer to "the
+mail went to spam".
 
 > **Do not turn billing on — via `.env.prod` or the admin Subscriptions toggle —
 > until three blockers are closed.** The toggle is one click and it is the

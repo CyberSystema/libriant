@@ -36,6 +36,22 @@ import type { AdminSessionPayload } from './admin-session.service.js';
  * members' mail?" is a question a library is entitled to ask, and an
  * envelope-only listing of `toEmail` + `subject` already answers who borrowed
  * what from whom.
+ *
+ * WHAT THE AUDIT ROWS MAY NOT CONTAIN — privacy-legal-04. THE RULE: personal
+ * data may appear in an `audit_log` row only when that row carries the real
+ * `tenantId`, so the library's own erasure reaches it. A cross-tenant route —
+ * the outbox list, the user directory search — must therefore record no
+ * address, name or free-text term at all, only counts and filters.
+ *
+ * The first version of this file broke that: `detail()` recorded
+ * `after.toEmail`, which for the `member_*` kinds is a library PATRON's
+ * address, on a row with `tenantId: null`. `audit_log.tenantId` is
+ * `onDelete: SetNull` and the BEFORE DELETE redaction trigger fires
+ * `WHERE "tenantId" = OLD."id"`, so such a row is reached by neither: it
+ * survives the library's own erasure request as orphaned personal data that no
+ * future retention sweep can even find. A body read now identifies its subject
+ * by `targetId` — the outbox row, which cascades away with the tenant —
+ * instead of by prose that does not.
  */
 @Controller('admin/outbox')
 @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -63,7 +79,18 @@ export class AdminOutboxController {
     await recordAdminAudit(adminAuditActor(req, admin), {
       action: 'email_outbox.listed',
       targetType: 'email_outbox',
-      after: { status, kind, tenantSlug, q, returned: result.messages.length },
+      // `q` itself is NOT recorded. It matches against `toEmail`, so an
+      // operator searching for a patron would write that patron's address into
+      // this row — and this row is cross-tenant, so it has no tenantId to hang
+      // off and would outlive every library it mentions (privacy-legal-04).
+      // The filter facets are not personal data; the free-text term is.
+      after: {
+        status,
+        kind,
+        tenantSlug,
+        searchTermChars: q?.trim().length ?? 0,
+        returned: result.messages.length,
+      },
     });
     return result;
   }
@@ -78,14 +105,21 @@ export class AdminOutboxController {
     // Audit AFTER the lookup so a 404 doesn't record a read that didn't happen,
     // and record `linkState` — the difference between "read an expired notice"
     // and "read a live credential" is the whole question an auditor is asking.
+    //
+    // `tenantId` is the message's own tenant, NOT null (privacy-legal-04): it
+    // is what puts this row inside the tenant's delete CASCADE and inside the
+    // redaction trigger's `WHERE "tenantId" = OLD."id"`. And the recipient is
+    // identified by `targetId` — the outbox row, which cascades away with the
+    // tenant — instead of by `toEmail`, which for the `member_*` kinds is a
+    // patron's address and would still be sitting here, readable, after the
+    // library had been erased.
     await recordAdminAudit(adminAuditActor(req, admin), {
-      tenantId: null,
+      tenantId: message.tenantId,
       action: 'email_outbox.body.read',
       targetType: 'email_outbox',
       targetId: message.id,
       after: {
         kind: message.kind,
-        toEmail: message.toEmail,
         tenantSlug: message.tenantSlug,
         linkState: message.linkState,
       },
@@ -116,9 +150,37 @@ export class AdminOutboxController {
 export class AdminAccountRecoveryController {
   constructor(@Inject(AdminOutboxService) private readonly outbox: AdminOutboxService) {}
 
+  /**
+   * A cross-tenant directory search — two characters return up to 25 people
+   * from any library, with name, address, role and lock state. It went
+   * unaudited while the docblock above claimed every route writes a row, which
+   * is how "who has been reading our members' details?" became a question with
+   * no answer. It writes one now.
+   *
+   * The search term is deliberately absent from that row: it is usually the
+   * e-mail address of the person on the phone, and this listing spans tenants
+   * so the row has no tenantId to be erased with (privacy-legal-04). Who
+   * searched, when, from where, under which library filter, and how many
+   * people came back is the oversight; the term itself is the leak.
+   */
   @Get('users')
-  async findUsers(@Query('q') q?: string, @Query('tenant') tenantSlug?: string) {
-    return this.outbox.findUsers(q ?? '', tenantSlug);
+  async findUsers(
+    @AdminSess() admin: AdminSessionPayload,
+    @Req() req: Request,
+    @Query('q') q?: string,
+    @Query('tenant') tenantSlug?: string,
+  ) {
+    const result = await this.outbox.findUsers(q ?? '', tenantSlug);
+    await recordAdminAudit(adminAuditActor(req, admin), {
+      action: 'user.directory.searched',
+      targetType: 'user',
+      after: {
+        tenantSlug: tenantSlug ?? null,
+        searchTermChars: q?.trim().length ?? 0,
+        returned: result.users.length,
+      },
+    });
+    return result;
   }
 
   @Post('users/:id/verify-email')

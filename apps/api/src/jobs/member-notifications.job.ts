@@ -6,7 +6,6 @@ import { RedisService } from '../platform/redis.service.js';
 import { EmailService } from '../email/email.service.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
-import { pinWorkerConnLimit } from './fine-accrual.job.js';
 import { describeError } from './job-error.js';
 import type { JobContext, JobResult } from './jobs.types.js';
 
@@ -135,7 +134,7 @@ export async function sendMemberNotifications(ctx?: JobContext): Promise<JobResu
     },
   });
 
-  const tenantPrisma = new TenantPrismaService();
+  const tenantPrisma = new TenantPrismaService('worker');
   // reliability-01: this sweep used to construct its own RedisService here and
   // issue its first Redis GET microseconds later, on the first line of
   // notifyOneTenant. The client is built with `enableOfflineQueue: false`, so
@@ -160,12 +159,12 @@ export async function sendMemberNotifications(ctx?: JobContext): Promise<JobResu
     // cannot have an open tap.
     const plans = new EffectivePlanService(redis, new PlatformSettingsService(redis));
     for (const t of tenants) {
-      // PER-JOB-TENANTPRISMA-CONN-MULTIPLY: pin a 1-connection pool for the
-      // worker's per-tenant client so overlapping hourly sweeps don't march
-      // toward Postgres max_connections.
+      // PER-JOB-TENANTPRISMA-CONN-MULTIPLY: the one-connection-per-tenant pin
+      // lives in the service's 'worker' role now, not in this URL
+      // (performance-06: the old `connection_limit=1`
+      // query parameter was silently ignored by Prisma 7's driver adapter).
       const tenantCtx: TenantContext = {
         ...t,
-        dbUrl: pinWorkerConnLimit(t.dbUrl),
         resolvedFrom: 'path',
       };
       try {

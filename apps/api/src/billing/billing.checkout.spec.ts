@@ -16,6 +16,7 @@ const {
   accountFindUnique,
   createCheckoutSession,
   getSubscription,
+  listSubscriptions,
 } = vi.hoisted(() => ({
   subFindUnique: vi.fn(),
   planFindUnique: vi.fn(),
@@ -24,6 +25,10 @@ const {
   accountFindUnique: vi.fn(),
   createCheckoutSession: vi.fn(),
   getSubscription: vi.fn(),
+  // billing-03 round 2: with no id on the row, the purchase path asks Stripe
+  // about the CUSTOMER before selling. A stub that omits this makes every
+  // checkout fail closed with a 503 — which is the guard working, not a bug.
+  listSubscriptions: vi.fn(),
 }));
 
 vi.mock('@libriant/db-control', () => ({
@@ -70,7 +75,7 @@ function makeRedis() {
 }
 
 function makeService() {
-  const stripe = { createCheckoutSession, getSubscription };
+  const stripe = { createCheckoutSession, getSubscription, listSubscriptions };
   // Self-serve checkout is gated on the master subscriptions switch.
   const settings = { billingEnabled: vi.fn().mockResolvedValue(true) };
   return new BillingService(
@@ -87,6 +92,7 @@ describe('BillingService.startCheckout — billing cadence', () => {
     accountFindUnique.mockResolvedValue({ stripeCustomerId: 'cus_1' });
     createCheckoutSession.mockResolvedValue({ url: 'https://stripe.test/s', sessionId: 's1' });
     getSubscription.mockResolvedValue(null);
+    listSubscriptions.mockResolvedValue([]);
     subFindUnique.mockResolvedValue({
       planId: 'p-starter',
       status: 'active',

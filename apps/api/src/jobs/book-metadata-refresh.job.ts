@@ -3,7 +3,6 @@ import { Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { fetchOpenLibraryBook } from '../catalog/openlibrary.js';
-import { pinWorkerConnLimit } from './fine-accrual.job.js';
 import { describeError } from './job-error.js';
 import type { JobResult } from './jobs.types.js';
 
@@ -56,7 +55,7 @@ export async function refreshBookMetadata(): Promise<JobResult> {
     },
   });
 
-  const tenantPrisma = new TenantPrismaService();
+  const tenantPrisma = new TenantPrismaService('worker');
   let enriched = 0;
   let attempted = 0;
   let failed = 0;
@@ -66,11 +65,11 @@ export async function refreshBookMetadata(): Promise<JobResult> {
   let fetchErrors = 0;
   try {
     for (const t of tenants) {
-      // One connection per tenant — overlapping crons mustn't multiply pools
-      // (PER-JOB-TENANTPRISMA-CONN-MULTIPLY).
+      // The one-connection-per-tenant pin lives in the service's 'worker' role
+      // now, not in this URL (performance-06: the old `connection_limit=1`
+      // query parameter was silently ignored by Prisma 7's driver adapter).
       const ctx: TenantContext = {
         ...t,
-        dbUrl: pinWorkerConnLimit(t.dbUrl),
         resolvedFrom: 'path',
       };
       try {

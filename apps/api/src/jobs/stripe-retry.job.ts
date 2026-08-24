@@ -3,11 +3,11 @@ import { Logger } from '@nestjs/common';
 import { BillingService } from '../billing/billing.service.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
-import { FakeStripeDriver } from '../billing/stripe-fake.driver.js';
-import { RealStripeDriver } from '../billing/stripe-real.driver.js';
-import { loadEnv } from '../config/env.js';
+import { createStripeDriver } from '../billing/stripe-driver.factory.js';
+import { resolveStripeDriverKind } from '../billing/stripe-driver-kind.js';
 import { RedisService } from '../platform/redis.service.js';
 import type {
+  StripeCheckoutSessionShape,
   StripeDriver,
   StripeInvoiceShape,
   StripeSubscriptionShape,
@@ -67,7 +67,46 @@ const SWEEP_LOCK_TTL_SECONDS = 300; // bounds a wedged sweep; ~the stale window.
 const GIVE_UP_AFTER_MS = 24 * 60 * 60_000;
 
 export async function sweepFailedStripeWebhooks(ctx?: JobContext): Promise<JobResult> {
-  const env = loadEnv();
+  // reliability-16, third cause. The sweep used to pick its driver by hand —
+  // `env.stripeDriver === 'real' ? new RealStripeDriver() : new FakeStripeDriver()`
+  // — which bypasses the posture factory entirely. In the SHIPPED
+  // configuration (`STRIPE_DRIVER=none`) `config/env.ts` reports `stripeDriver`
+  // as `'real'` outside development, because its type has only two values and
+  // cannot express "disabled". So every five minutes, on a server that is not
+  // taking payments at all, this job constructed RealStripeDriver, threw
+  // "STRIPE_API_KEY is required when STRIPE_DRIVER=real", and retried nothing.
+  // The other branch was no better: FakeStripeDriver refuses to exist off a
+  // dev/test host (billing-02).
+  //
+  // WHY THE DISABLED POSTURE RETURNS INSTEAD OF SWEEPING, and why that is the
+  // honest answer rather than a dodge: with no driver, `POST /webhooks/stripe`
+  // answers 503 BEFORE it reads the body (stripe-webhook.controller.ts), so
+  // Stripe deliveries are refused, never stored — nothing can enter the retry
+  // set while this posture holds. Anything already in it was captured while
+  // billing was on, and re-applying it now would make this sweep the only path
+  // in the product that writes a subscription row from a webhook payload on a
+  // host that has deliberately switched that path off. It is reported, not
+  // hidden: the count is in the message and in `counts.held`, and turning
+  // billing back on drains it on the next tick.
+  //
+  // The alternative — an exception every 5 minutes, 288 times a day, on a
+  // configuration that is working exactly as intended — is the failure this
+  // finding is really about. A job that cries wolf that often is a job nobody
+  // reads, and the real failures it exists to surface disappear into the noise.
+  const posture = resolveStripeDriverKind();
+  if (posture.kind === 'disabled') {
+    const held = await controlDb.stripeWebhookEvent.count({ where: { processedAt: null } });
+    return {
+      message:
+        `billing is switched off (STRIPE_DRIVER=${process.env.STRIPE_DRIVER || '(unset)'}) — ` +
+        'the webhook endpoint refuses every delivery, so there is nothing to retry' +
+        (held > 0
+          ? `; ${held} event(s) captured before billing was switched off are held until it is switched back on`
+          : ''),
+      counts: { retried: 0, held },
+    };
+  }
+
   // Don't pick up a row that's still within its normal in-flight window — only
   // ones old enough that any live attempt has certainly finished/crashed.
   const staleBefore = new Date(Date.now() - 5 * 60_000);
@@ -129,10 +168,16 @@ export async function sweepFailedStripeWebhooks(ctx?: JobContext): Promise<JobRe
     // (no Nest DI) — these classes don't depend on framework features.
     const settings = new PlatformSettingsService(redis);
     const effective = new EffectivePlanService(redis, settings);
-    const driver: StripeDriver =
-      env.stripeDriver === 'real' ? new RealStripeDriver() : new FakeStripeDriver();
-    // BillingService constructor: (effectivePlan, stripe, settings) — see billing.service.ts.
-    const billing = new BillingService(effective, driver, settings);
+    // The factory, never a hand-rolled ternary — see the posture note at the
+    // top of this function. `disabled` has already returned above, so this is
+    // `real` or (dev/test only) `fake`.
+    const driver: StripeDriver = createStripeDriver();
+    // BillingService constructor: (effectivePlan, stripe, settings, redis) —
+    // see billing.service.ts. The Redis argument is not optional in practice
+    // any more: `handleCheckoutSessionCompleted` clears the in-flight-checkout
+    // marker (billing-03), and a replay that skipped it would leave a spent
+    // Checkout session on record as still open.
+    const billing = new BillingService(effective, driver, settings, redis);
 
     for (const row of failed) {
       const event = row.payloadJson as unknown as StripeWebhookEvent;
@@ -196,6 +241,14 @@ async function dispatch(billing: BillingService, event: StripeWebhookEvent): Pro
       return;
     case 'invoice.payment_failed':
       await billing.handleStripeInvoiceFailed(obj as unknown as StripeInvoiceShape);
+      return;
+    case 'checkout.session.completed':
+      // Was missing, and silently: the `default` below treats an unknown type
+      // as "nothing to do" and marks the row processed. This handler is the one
+      // that writes `stripeSubscriptionId` the moment a purchase lands
+      // (billing-03, round 2), so dropping it on the floor left the exact
+      // duplicate-purchase window open that the retry set exists to close.
+      await billing.handleCheckoutSessionCompleted(obj as unknown as StripeCheckoutSessionShape);
       return;
     default:
       // Unknown type — clear the error so it doesn't loop forever.

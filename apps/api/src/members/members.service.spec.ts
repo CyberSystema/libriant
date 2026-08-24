@@ -26,13 +26,20 @@ const ROW = {
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
   updatedAt: new Date('2026-01-01T00:00:00.000Z'),
   archivedAt: null,
+  erasedAt: null,
 };
 
 function makeSvc(memberRow: unknown) {
   const findFirst = vi.fn(async () => memberRow);
   const tenantPrisma = { getClient: () => ({ member: { findFirst } }) };
-  // fieldDefs / quota / audit aren't touched by getByMemberNumber.
-  const svc = new MembersService(tenantPrisma as never, {} as never, {} as never, {} as never);
+  // fieldDefs / quota / audit / storage aren't touched by getByMemberNumber.
+  const svc = new MembersService(
+    tenantPrisma as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+  );
   return { svc, findFirst };
 }
 

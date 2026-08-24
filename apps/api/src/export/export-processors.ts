@@ -58,10 +58,12 @@ const FETCH_BUDGET_BYTES = 8 * 1024 * 1024;
  * pathological row is 1 GB worst case (Postgres's own field ceiling); a
  * thousand of them was 1 TB, and that is the difference this makes.
  *
- * Start: the FIRST FETCH of each table is the one with no measurement to go
- * on, so it is the one that must be cautious. 256 rows × even a 1 MB field is
- * 256 MB — survivable — and the loop reaches the upper clamp within a few
- * batches on any normal table.
+ * Start: 256, and no longer load-bearing. It used to be "the FIRST FETCH has no
+ * measurement to go on, so it must be cautious", and 256 rows × a 1 MB field is
+ * still 256 MB — which is only survivable by luck. The first FETCH now DOES have
+ * a measurement: `tableRowCeiling` measures the widest row in the table before
+ * the cursor is declared, and clamps `maxRows` (and therefore this) to fit the
+ * byte budget. 256 is just where the ramp starts on an ordinary table.
  */
 const FETCH_MAX_ROWS = 5_000;
 const FETCH_MIN_ROWS = 1;
@@ -220,6 +222,32 @@ const SENSITIVE_COLUMNS: Record<string, ReadonlySet<string>> = {
   // billing address, card last4). It's kept in the DB for the retry sweep, but
   // must NOT ship in a control/all export — redact the value (shape preserved).
   stripe_webhook_events: new Set(['payloadjson']),
+  // privacy-legal-06: `email_outbox` is 90 days of every transactional message
+  // Libriant has composed — patron names, patron addresses, borrowed book
+  // titles, applicant contact details — in the CONTROL plane, reachable by any
+  // owner-admin export. An export of scope `control` shipped all of it with
+  // zero redactions; measured on a real run, `grep -c '[redacted]'
+  // email_outbox.csv` returned 0 while users.csv returned 5. The bearer tokens
+  // themselves are already sealed out of the body at enqueue time
+  // (src/email/outbox-secrets.ts), so what is left here is the personal data,
+  // and it has no business in a 24-hour unencrypted download.
+  //
+  // `idempotencyKey` is in the list because it is producer-composed free text
+  // and producers put addresses in it: the library-profile mail keys on
+  // `lib-req-submit:<requestId>:<adminEmail>`. Measured on a real control
+  // export — after the other three columns were redacted, 39 rows still
+  // carried an e-mail address, all of them here.
+  //
+  // Guarded by src/email/outbox-export-redaction.spec.ts, which drives the
+  // real `createRowStreamer` — delete this entry and that spec fails.
+  // `replyToEmail` was missed on the first pass and is the same kind of leak:
+  // applications.service.ts:178 sets it to the APPLICANT'S contact address, so
+  // a control-plane export shipped `…,[redacted],application_submitted,[redacted],
+  // no-reply@libriant.com,eleni.applicant@school.gr,[redacted],…` — three columns
+  // redacted and the one that mattered in the clear. Applicant contact details
+  // are one of the four data categories privacy-legal-06 enumerates for this
+  // table.
+  email_outbox: new Set(['bodymarkdown', 'toemail', 'replytoemail', 'subject', 'idempotencykey']),
 };
 const REDACTED = '[redacted]';
 
@@ -610,24 +638,217 @@ function resolveBounds(b: BatchBounds | number): Required<BatchBounds> {
 }
 
 /**
- * Rough in-memory footprint of one row's values.
+ * In-memory footprint of one row's values.
  *
- * Deliberately an estimate, not a measurement: `JSON.stringify` on every row
- * would double the serialization cost of the whole export, and the number only
- * has to be right to within a factor of two to keep the batch inside its
- * budget. Strings dominate (this is what a tenant can grow without limit), so
- * they are counted at 2 bytes/char — V8's worst case for a non-Latin1 string,
- * and Greek catalogue data is exactly that. Everything else gets a flat 16.
+ * WHY THIS IS NOT A FLAT CONSTANT ANY MORE. The first version of this function
+ * counted a string at 2 bytes/char, a Buffer at its length, and EVERYTHING ELSE
+ * at a flat 16 bytes. Every tenant table carries a `customFields` jsonb,
+ * `audit_log` carries a jsonb payload, and `collection_records.data` is
+ * entirely tenant-shaped — node-pg hands all of those back as parsed JS objects,
+ * which fell into the "everything else" branch. Measured on a 53 MB probe table
+ * of 13,000 rows × ~256 KB of jsonb: the estimator reported 0.20 MiB for a batch
+ * whose real payload was 1,250 MiB, so the adaptive loop never saw the budget
+ * being exceeded, ramped to the row ceiling, and peaked at 2,632 MB RSS in a
+ * container limited to 1 GB.
+ *
+ * So structured values are WALKED. That is still much cheaper than
+ * `JSON.stringify` (no output string is built), and it is bounded: a value that
+ * is too large or too deeply nested to walk cheaply stops the walk and is
+ * charged {@link OVERSIZE_VALUE_BYTES}, which collapses the batch to the
+ * minimum rather than silently under-counting it. Under-counting is the failure
+ * mode that OOMs the worker; over-counting only makes a batch smaller.
+ *
+ * Note this is the SECOND line of defence. The first is the per-table hard row
+ * ceiling derived from the widest row in the table (see {@link widestRowBytes}),
+ * which is what bounds the FIRST batch of a table — this function can only
+ * react to a batch that has already been read.
  */
+
+/** Nodes the walker may visit inside one value before it gives up. */
+const VALUE_WALK_NODE_BUDGET = 20_000;
+/** What an un-walkable (too big / too deep / cyclic) value is charged. */
+const OVERSIZE_VALUE_BYTES = FETCH_BUDGET_BYTES;
+
+function valueBytes(v: unknown, budget: { left: number }): number {
+  if (budget.left-- <= 0) return OVERSIZE_VALUE_BYTES;
+  if (v === null || v === undefined) return 8;
+  switch (typeof v) {
+    case 'string':
+      // V8's worst case for a non-Latin1 string, and Greek catalogue data is
+      // exactly that. +16 for the string header.
+      return v.length * 2 + 16;
+    case 'number':
+    case 'boolean':
+      return 8;
+    case 'bigint':
+      return 16;
+    case 'object':
+      break;
+    default:
+      return 16;
+  }
+  if (Buffer.isBuffer(v)) return v.length + 16;
+  if (v instanceof Date) return 32;
+  if (ArrayBuffer.isView(v)) return (v as ArrayBufferView).byteLength + 16;
+  if (Array.isArray(v)) {
+    let n = 32;
+    for (const item of v) {
+      n += valueBytes(item, budget);
+      if (n >= OVERSIZE_VALUE_BYTES) return OVERSIZE_VALUE_BYTES;
+    }
+    return n;
+  }
+  // Parsed jsonb / json / composite / range — a plain object graph.
+  let n = 32;
+  for (const key in v as Record<string, unknown>) {
+    n += key.length * 2 + 24;
+    n += valueBytes((v as Record<string, unknown>)[key], budget);
+    if (n >= OVERSIZE_VALUE_BYTES) return OVERSIZE_VALUE_BYTES;
+  }
+  return n;
+}
+
 export function approxRowBytes(row: Record<string, unknown>): number {
+  const budget = { left: VALUE_WALK_NODE_BUDGET };
   let bytes = 0;
   for (const key in row) {
-    const v = row[key];
-    if (typeof v === 'string') bytes += v.length * 2 + 16;
-    else if (Buffer.isBuffer(v)) bytes += v.length;
-    else bytes += 16;
+    bytes += key.length * 2 + 24;
+    bytes += valueBytes(row[key], budget);
   }
   return bytes;
+}
+
+/**
+ * Bytes in the WIDEST row of `table`, measured server-side before a single row
+ * is fetched. This is the hard bound on a batch: `rows-per-FETCH × this` is what
+ * the process will hold, so the caller divides the byte budget by it.
+ *
+ * WHY A WHOLE-TABLE MAX AND NOT A SAMPLE. The batch size for FETCH n+1 used to
+ * be derived from what FETCH n measured, which is one batch too late: a table
+ * whose first ~7,936 rows are narrow drives the ramp 256→512→1024→2048→4096→5000
+ * and the NEXT fetch then pulls 5,000 rows of whatever follows. Executed against
+ * a probe table shaped exactly like that (7,936 tiny rows, then 6,000 rows of
+ * 1 MiB text — only 80 MB on disk, because the text compresses in TOAST):
+ * batch 5 was 4,096 rows at 103 MB RSS and batch 6 was 5,000 rows at 5,197 MB.
+ * Any bound computed from rows already seen has that hole in it; only a bound
+ * over the whole table does not.
+ *
+ * WHY THIS IS CHEAP. Not `octet_length(t::text)` — that builds the full row
+ * literal and took 22 s on the 80 MB probe table. Instead the expression is
+ * assembled per column:
+ *   - fixed-width types (int, timestamp, uuid, bool, …) contribute `typlen`
+ *     with no I/O at all;
+ *   - text/varchar/bytea/citext use `octet_length(col)`, which reads the
+ *     UNCOMPRESSED size straight out of the TOAST pointer without fetching a
+ *     single chunk — 1.5 ms for the same 80 MB table;
+ *   - anything else (json, jsonb, arrays, ranges, hstore) has no raw-size
+ *     accessor, so it costs one `col::text` serialization — the same work the
+ *     writer will do anyway.
+ * It runs inside the export's REPEATABLE READ snapshot, so the row it measures
+ * is the row the cursor will read; a concurrent INSERT of a wider row is not
+ * visible to either.
+ *
+ * Returns 0 for an empty table (the caller then keeps its default ceiling).
+ */
+async function widestRowBytes(client: SqlClient, table: string): Promise<number> {
+  const cols = await client.query(
+    `SELECT a.attname AS name, t.typlen AS len, t.typname AS type
+       FROM pg_attribute a
+       JOIN pg_type t ON t.oid = a.atttypid
+      WHERE a.attrelid = '${table.replace(/'/g, "''")}'::regclass
+        AND a.attnum > 0 AND NOT a.attisdropped`,
+  );
+  // Types whose octet_length() reads the raw size from the TOAST header.
+  const RAW_SIZE_TYPES = new Set(['text', 'varchar', 'bpchar', 'bytea', 'citext', 'name', 'xml']);
+  const terms: string[] = ['0'];
+  for (const c of cols.rows) {
+    const col = quoteIdent(String(c.name));
+    const len = Number(c.len);
+    if (Number.isFinite(len) && len > 0) {
+      terms.push(String(len));
+    } else if (RAW_SIZE_TYPES.has(String(c.type))) {
+      terms.push(`COALESCE(octet_length(${col}), 0)`);
+    } else {
+      terms.push(`COALESCE(octet_length(${col}::text), 0)`);
+    }
+    // Per-column JS overhead: the key string plus the value's own header.
+    terms.push('32');
+  }
+  const res = await client.query(
+    `SELECT COALESCE(MAX(${terms.join(' + ')}), 0)::bigint AS max FROM ${quoteIdent(table)}`,
+  );
+  const max = Number(res.rows[0]?.max ?? 0);
+  return Number.isFinite(max) && max > 0 ? max : 0;
+}
+
+/**
+ * How many bytes of JS heap one byte of Postgres row payload turns into.
+ *
+ * node-pg holds the raw wire bytes for the whole FETCH result, then materialises
+ * JS values from them: a UTF-8 text column becomes a V8 string (up to 2 bytes
+ * per code unit for the Greek data this product is built for), a jsonb column
+ * becomes an object graph that is several times its serialized form. 2 is the
+ * working multiplier, deliberately on the pessimistic side — the whole point of
+ * this bound is that being wrong in the other direction is an OOM kill of a
+ * process that also owns the email outbox, every import and all nine sweeps.
+ */
+const JS_BYTES_PER_DB_BYTE = 2;
+
+/**
+ * Rows per FETCH to fall back to when the width probe could not run.
+ *
+ * The probe is one aggregate scan and is normally milliseconds (see
+ * widestRowBytes), but on a very large jsonb-heavy table it pays a full
+ * serialization and can exceed even its own extended timeout. When that
+ * happens we must NOT fall back to the unbounded ceiling — that is the exact
+ * hole this whole mechanism exists to close — so we fall back to a small fixed
+ * count and let the adaptive loop take it from there.
+ */
+const FETCH_UNMEASURED_MAX_ROWS = 64;
+
+/**
+ * Statement timeout for the width probe alone.
+ *
+ * The connection runs with a 60 s statement_timeout so a hung tenant DB cannot
+ * wedge the single-slot queue, and that is right for a FETCH. The probe is a
+ * different shape: one sequential aggregate whose cost is proportional to the
+ * table, bounded overall by ExportRunGuard's wall-clock budget. Give it room
+ * rather than making every large table take the degraded fallback.
+ */
+const WIDTH_PROBE_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * The most rows one FETCH of `table` may ask for, so that the batch fits
+ * `budgetBytes` even if every row in it is the widest row in the table.
+ *
+ * Exported for the tests: this is the number the whole memory bound rests on.
+ */
+export async function tableRowCeiling(
+  client: SqlClient,
+  table: string,
+  budgetBytes: number,
+  minRows: number,
+  maxRows: number,
+): Promise<number> {
+  let widest = 0;
+  try {
+    await client.query(`SET LOCAL statement_timeout = ${WIDTH_PROBE_TIMEOUT_MS}`);
+    widest = await widestRowBytes(client, table);
+  } catch (err) {
+    // Fail SMALL, never fail open: an unmeasured table is exactly the case this
+    // bound exists for, so it gets the degraded ceiling rather than the default.
+    console.warn(
+      `[export] width probe failed for ${table} (${oneLine(String(err))}); ` +
+        `capping FETCH at ${FETCH_UNMEASURED_MAX_ROWS} rows`,
+    );
+    return Math.max(minRows, Math.min(maxRows, FETCH_UNMEASURED_MAX_ROWS));
+  } finally {
+    await client.query(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`).catch(() => {});
+  }
+  // An empty table measures 0 — nothing to bound, keep the caller's ceiling.
+  if (widest <= 0) return maxRows;
+  const fits = Math.floor(budgetBytes / (widest * JS_BYTES_PER_DB_BYTE));
+  return Math.max(minRows, Math.min(maxRows, fits));
 }
 
 /**
@@ -637,10 +858,23 @@ export function approxRowBytes(row: Record<string, unknown>): number {
  * — server side the cursor is lazy, client side each FETCH result is released
  * once `onBatch` has written it out.
  *
- * The batch is bounded by BYTES, not rows: the row count for the next FETCH is
- * re-derived from what the last one actually measured, so a table of 200-byte
- * rows and a table of 2 MB rows both cost about `budgetBytes` in flight. See
- * FETCH_BUDGET_BYTES for why the row count alone was not a bound.
+ * The batch is bounded by BYTES, not rows, in TWO layers, because one was not
+ * enough:
+ *
+ *   1. a HARD per-table row ceiling — `budgetBytes ÷ the widest row in the
+ *      table`, measured server-side in the same snapshot before the cursor is
+ *      declared ({@link tableRowCeiling}). This bounds every batch including
+ *      the first, and is what a table whose wide rows come LAST cannot slip
+ *      past;
+ *   2. the adaptive ramp below, which re-derives the next FETCH's row count
+ *      from what the last one actually measured, so a table of mixed widths
+ *      settles near the budget rather than at the ceiling.
+ *
+ * Layer 2 alone was the shipped bound and it was defeated twice — see
+ * {@link approxRowBytes} (an estimator blind to jsonb) and
+ * {@link widestRowBytes} (a narrow prefix driving the ramp up before the wide
+ * rows arrive). See FETCH_BUDGET_BYTES for why a row count alone is not a bound
+ * at all.
  *
  * Exported for the unit tests: the batch boundaries (a short final chunk, an
  * exactly-full final chunk, an empty table) are where a hand-rolled paging loop
@@ -652,7 +886,18 @@ export async function readTableInBatches(
   onBatch: (rows: Record<string, unknown>[]) => Promise<void>,
   bounds: BatchBounds | number = {},
 ): Promise<number> {
-  const { budgetBytes, maxRows, minRows, startRows } = resolveBounds(bounds);
+  const resolved = resolveBounds(bounds);
+  const { budgetBytes, minRows } = resolved;
+  // HARD per-table ceiling: rows-per-FETCH × the widest row in the table must
+  // fit the byte budget. This is what bounds the FIRST batch — the adaptive
+  // ramp below can only react to a batch it has already read into memory, and
+  // a table whose wide rows come last defeats it (see widestRowBytes).
+  let maxRows = resolved.maxRows;
+  let startRows = resolved.startRows;
+  if (Number.isFinite(budgetBytes)) {
+    maxRows = await tableRowCeiling(client, table, budgetBytes, minRows, maxRows);
+    startRows = Math.min(startRows, maxRows);
+  }
   const cursor = 'lbr_export_cursor';
   await client.query(`DECLARE ${cursor} NO SCROLL CURSOR FOR SELECT * FROM ${quoteIdent(table)}`);
   let total = 0;

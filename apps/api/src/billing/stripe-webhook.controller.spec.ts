@@ -63,6 +63,7 @@ function makeBilling() {
     handleStripeSubscriptionDeleted: vi.fn().mockResolvedValue(undefined),
     handleStripeInvoicePaid: vi.fn().mockResolvedValue(undefined),
     handleStripeInvoiceFailed: vi.fn().mockResolvedValue(undefined),
+    handleCheckoutSessionCompleted: vi.fn().mockResolvedValue(undefined),
   } as unknown as BillingService;
 }
 
@@ -135,6 +136,47 @@ describe('StripeWebhookController.handle', () => {
     expect(stripeUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'evt_test_1' },
+        data: expect.objectContaining({ error: null, processedAt: expect.any(Date) }),
+      }),
+    );
+  });
+
+  /**
+   * billing-03, round 2. `checkout.session.completed` is the earliest proof
+   * that a subscription exists, and its handler is what writes
+   * `stripeSubscriptionId` durably before the marker is dropped. That is worth
+   * nothing if the ROUTE does not reach the handler, so drive the HTTP entry
+   * point and assert the payload arrives intact — this is the wiring, not the
+   * mechanism.
+   */
+  it('routes checkout.session.completed to the duplicate-purchase handler', async () => {
+    const redis = makeRedis();
+    redis.set.mockResolvedValue('OK');
+    const billing = makeBilling();
+    const session = {
+      id: 'cs_live_1',
+      customer: 'cus_1',
+      subscription: 'sub_A',
+      client_reference_id: 'tenant-1',
+    };
+    const c = new StripeWebhookController(
+      makeStripeDriver({
+        id: 'evt_cs_1',
+        type: 'checkout.session.completed',
+        data: { object: session as never },
+      } as StripeWebhookEvent),
+      billing,
+      redis.service,
+    );
+
+    const out = await c.handle({ rawBody: Buffer.from('{}') } as never, 'sig');
+
+    expect(out).toEqual({ received: true });
+    expect(billing.handleCheckoutSessionCompleted).toHaveBeenCalledWith(session);
+    // And the delivery is recorded as processed, so the retry sweep leaves it be.
+    expect(stripeUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'evt_cs_1' },
         data: expect.objectContaining({ error: null, processedAt: expect.any(Date) }),
       }),
     );

@@ -14,7 +14,10 @@ export async function generateMetadata(props: { params: Promise<{ locale: string
   return { title: `${t('common.actions.signIn')} · Libriant` };
 }
 
-export default async function LoginPage(props: { params: Promise<{ locale: string }> }) {
+export default async function LoginPage(props: {
+  params: Promise<{ locale: string }>;
+  searchParams: Promise<{ slug?: string }>;
+}) {
   const params = await props.params;
   if (!isLocale(params.locale)) notFound();
 
@@ -25,6 +28,10 @@ export default async function LoginPage(props: { params: Promise<{ locale: strin
 
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);
+  // `?slug=` is how /login/reset hands the reader back after they have set a
+  // new password: they have just proved who they are, and being asked for a
+  // library address they may never have typed is where that journey stalls.
+  const { slug } = await props.searchParams;
 
   return (
     <main className="lbr-auth-shell">
@@ -35,7 +42,17 @@ export default async function LoginPage(props: { params: Promise<{ locale: strin
         <h1 className="lbr-auth-card__heading">{t('auth.signIn.title')}</h1>
         <p className="lbr-auth-card__subtitle">{t('auth.signIn.subtitle')}</p>
 
-        <LoginForm catalog={catalog} locale={params.locale} />
+        <LoginForm catalog={catalog} locale={params.locale} initialSlug={slug ?? ''} />
+
+        {/* launch-readiness-01: there was no way out of a forgotten password
+            anywhere in the UI — no link, no page. This one goes to
+            /login/reset, which lands a break-glass link when the reader has
+            one and explains how to get one when they don't. It deliberately
+            does not offer to send an e-mail: with EMAIL_DRIVER=console
+            nothing is delivered. */}
+        <p className="lbr-auth-card__footer">
+          <Link href={`/${params.locale}/login/reset`}>{t('auth.signIn.forgot')}</Link>
+        </p>
 
         <p className="lbr-auth-card__footer">
           {t('auth.signIn.dontHaveAccount')}{' '}

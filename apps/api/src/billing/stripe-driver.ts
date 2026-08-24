@@ -195,6 +195,26 @@ export interface StripeDriver {
    */
   getSubscription(subscriptionId: string): Promise<StripeSubscriptionState | null>;
   /**
+   * Every subscription Stripe holds for this CUSTOMER, newest first.
+   *
+   * billing-03, round 2. Our `stripeSubscriptionId` column is a cache of
+   * Stripe, and there is a window in which it is provably stale: Stripe does
+   * not guarantee the order of `checkout.session.completed` and
+   * `customer.subscription.created`, and only the second one writes that
+   * column. Executed by the auditor — session A completes, the completed
+   * event lands first, the row still reads `null`, the library clicks another
+   * plan, and a SECOND live subscription is bought on the same card. The row
+   * cannot answer "does this customer already pay us?" in that window and
+   * neither can the id-keyed `getSubscription`, because we have no id to ask
+   * about. The customer does have one, so ask about the customer.
+   *
+   * `status: 'all'` on purpose: the caller decides what counts as live via
+   * STRIPE_LIVE_STATUSES, and filtering server-side to `active` would miss
+   * `trialing` / `past_due` / `paused` — all of which are subscriptions that
+   * must be re-priced rather than re-bought.
+   */
+  listSubscriptions(customerId: string): Promise<StripeSubscriptionState[]>;
+  /**
    * Verify the signature header against the *raw* request body. Stripe
    * signs the bytes, not the parsed JSON.
    *

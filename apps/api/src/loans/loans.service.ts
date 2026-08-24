@@ -802,7 +802,7 @@ export class LoansService {
 
     const rows = await client.loan.findMany({
       where,
-      orderBy: [{ loanedAt: 'desc' }, { id: 'desc' }],
+      orderBy: this.orderFor(opts),
       take: limit + 1,
       ...(opts.after ? { cursor: { id: opts.after }, skip: 1 } : {}),
       include: this.fullInclude,
@@ -818,6 +818,34 @@ export class LoansService {
   }
 
   // -------- internals -----------------------------------------------------
+
+  /**
+   * Sort key for {@link list}, chosen so an index can answer the query without
+   * a sort node — performance-02.
+   *
+   * The overdue tile is the reason this is not a constant. `loanedAt DESC`
+   * starts at the loans that were taken out most recently, i.e. precisely the
+   * ones that are NOT yet late, so serving the overdue filter in that order
+   * means walking the whole active backlog and discarding it: measured on the
+   * audit's 2M-row tenant (200,000 active, 10,000 overdue), `Index Scan using
+   * loans_status_loanedAt_id_idx … Rows Removed by Filter: 190000`, 118,319
+   * buffers for 101 rows — nearly four times the buffers of the seq scan it
+   * replaced, and it gets WORSE as a library gets better at chasing its
+   * overdues. Ordering the overdue tile by `dueAt ASC` instead walks straight
+   * along `loans_status_dueAt_id_idx` and stops after 101 index entries: 107
+   * buffers, 0.107 ms.
+   *
+   * `dueAt ASC` is also the order a librarian wants for that list — most
+   * overdue first — so this is not a performance-only concession.
+   *
+   * `id` is the tiebreaker in both, and both are total orders: Prisma's cursor
+   * pagination (`cursor` + `skip: 1`) needs a deterministic sort to page
+   * without dropping or repeating rows.
+   */
+  private orderFor(opts: ListLoansOptions): Prisma.LoanOrderByWithRelationInput[] {
+    if (opts.overdue) return [{ dueAt: 'asc' }, { id: 'asc' }];
+    return [{ loanedAt: 'desc' }, { id: 'desc' }];
+  }
 
   private readonly fullInclude = {
     member: {

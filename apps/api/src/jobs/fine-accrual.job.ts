@@ -22,22 +22,19 @@ import type { JobResult } from './jobs.types.js';
  * its own physical DB, so we need a client per tenant; the TenantPrismaService
  * LRU bounds connection counts).
  *
- * PER-JOB-TENANTPRISMA-CONN-MULTIPLY: each per-tenant sweep spins up its own
- * TenantPrismaService LRU, and several heavy sweeps fire on the same hour. To
- * keep the worker from marching toward Postgres `max_connections`, we pin the
- * worker's per-tenant pool to a SINGLE connection (`connection_limit=1`) — the
- * sweep is sequential per tenant, so one connection is plenty and a dozen
- * tenants × a few overlapping sweeps stays well under the ceiling.
+ * PER-JOB-TENANTPRISMA-CONN-MULTIPLY (performance-06): each per-tenant sweep
+ * spins up its own TenantPrismaService LRU and holds it for the whole run, and
+ * four heavy sweeps fire on the same hour. This used to be "mitigated" by a
+ * helper that appended `connection_limit=1` to the tenant URL — a parameter
+ * Prisma's OLD Rust engine understood and the Prisma 7 driver adapter does not.
+ * Measured: 5 connections with the parameter present, 5 without it, and 1 only
+ * when `maxPoolSize` is actually passed to the adapter. The URL pin is gone;
+ * the sweep now constructs its service with the `'worker'` role, which is what
+ * makes the pool one connection deep and the LRU small enough that four
+ * overlapping sweeps still fit the budget (platform/tenant-pool-budget.ts).
  */
 const MS_PER_DAY = 86_400_000;
 const logger = new Logger('FineAccrualSweeper');
-
-/** Force a 1-connection pool for worker sweeps (see PER-JOB-TENANTPRISMA-CONN-
- *  MULTIPLY). Appends `connection_limit=1` to the tenant URL if not already set. */
-export function pinWorkerConnLimit(dbUrl: string): string {
-  if (/[?&]connection_limit=/.test(dbUrl)) return dbUrl;
-  return dbUrl + (dbUrl.includes('?') ? '&' : '?') + 'connection_limit=1';
-}
 
 export async function sweepFineAccrual(): Promise<JobResult> {
   const tenants = await controlDb.tenant.findMany({
@@ -55,12 +52,12 @@ export async function sweepFineAccrual(): Promise<JobResult> {
     },
   });
 
-  const tenantPrisma = new TenantPrismaService();
+  const tenantPrisma = new TenantPrismaService('worker');
   let touched = 0;
   let failed = 0;
   try {
     for (const t of tenants) {
-      const ctx: TenantContext = { ...t, dbUrl: pinWorkerConnLimit(t.dbUrl), resolvedFrom: 'path' };
+      const ctx: TenantContext = { ...t, resolvedFrom: 'path' };
       try {
         touched += await accrueOneTenant(ctx, tenantPrisma);
       } catch (err) {

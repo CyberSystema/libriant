@@ -53,11 +53,14 @@ export class AdminOutboxService {
    * (its `request()` is the anti-enumeration public flow: rate-limited, silent,
    * and it enqueues an email that will not be delivered).
    *
-   * The duplication is CHECKED, not trusted: the integration spec
-   * `email-escape-hatch.spec.ts` mints a link through this service and then
-   * redeems it through the real `POST /auth/password-reset/complete`, so a
-   * change to either side fails the build instead of silently producing links
-   * that 400.
+   * The duplication is CHECKED, not trusted:
+   * `apps/api/test/integration/email-escape-hatch.spec.ts` mints a link through
+   * the real HTTP route, redeems it through the real
+   * `POST /auth/password-reset/complete` and then signs in with the new
+   * password, so a change to either side fails the build instead of silently
+   * producing links that 400. (That spec was claimed here once before it
+   * existed. It exists now — `ls apps/api/test/integration/` before you trust
+   * this paragraph again.)
    */
   private static readonly RESET_TOKEN_TTL_SEC = 60 * 60;
 
@@ -161,6 +164,7 @@ export class AdminOutboxService {
         failedAt: true,
         createdAt: true,
         metadataJson: true,
+        tenantId: true,
         tenant: { select: { slug: true, name: true } },
       },
     });
@@ -195,6 +199,12 @@ export class AdminOutboxService {
       failedAt: row.failedAt,
       createdAt: row.createdAt,
       metadata: row.metadataJson,
+      // Returned for the AUDIT WRITE, not for the panel (privacy-legal-04):
+      // the controller stamps this on the `email_outbox.body.read` row so it
+      // belongs to a tenant, and is therefore reached by both the delete
+      // CASCADE and the BEFORE DELETE redaction trigger — which key on
+      // `tenantId` and skip NULL rows entirely.
+      tenantId: row.tenantId,
       tenantSlug: row.tenant?.slug ?? null,
       tenantName: row.tenant?.name ?? null,
       driver: loadEnv().emailDriver,
@@ -363,7 +373,23 @@ export class AdminOutboxService {
       AdminOutboxService.RESET_TOKEN_TTL_SEC,
     );
     const env = loadEnv();
-    const url = `${env.publicAppUrl}/${user.tenant.defaultLocale}/login/reset?token=${token}&slug=${user.tenant.slug}`;
+    // THE PATH MUST BE A ROUTE THE WEB APP ACTUALLY SERVES. It was not, for two
+    // rounds of remediation: this composed `/<locale>/login/reset?...` while
+    // apps/web had no `login/reset` page, so the operator read out a URL that
+    // 404'd and the only way to spend a valid token was a hand-built curl.
+    // `apps/api/test/integration/email-escape-hatch.spec.ts` now asserts that
+    // the page file backing this path exists on disk.
+    //
+    // THE TOKEN GOES IN THE FRAGMENT, NOT THE QUERY (privacy-legal-06). Caddy's
+    // site-wide `log { format json }` records `request.uri` — query string
+    // included — and scripts/backup.sh tars /var/log/caddy into the nightly
+    // backup, so `?token=` would put a live credential in a log file and in
+    // every off-site copy of it. Everything after `#` is never sent to the
+    // server. The landing page reads the fragment first and the query second,
+    // so links minted before this change still work.
+    const url =
+      `${env.publicAppUrl}/${user.tenant.defaultLocale}/login/reset` +
+      `#token=${token}&slug=${user.tenant.slug}`;
 
     this.logger.warn(
       `password-reset link issued out-of-band for user ${user.id} (${user.tenant.slug}) — ` +

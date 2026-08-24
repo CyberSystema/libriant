@@ -44,8 +44,13 @@ const MS_PER_DAY = 86_400_000;
  * session B), complete both. Two live Stripe subscriptions, two charges, and
  * our row only ever remembered the newer id, so cancelling from the app
  * stopped one of them. A subscription does not exist in Stripe until a session
- * COMPLETES, so nothing on Stripe's side can be consulted to close this
- * window; the only place the two clicks meet is here.
+ * COMPLETES, so while BOTH sessions are still open there is nothing on Stripe's
+ * side to consult: the only place those two clicks meet is here.
+ *
+ * That is also the exact limit of what this marker can do, and round 2 of the
+ * finding lived just past it — once session A HAS completed there is something
+ * to consult, and the guard for that window is `adoptCustomerSubscription`,
+ * not this key.
  */
 const CHECKOUT_MARKER_KEY = (tenantId: string) => `billing:checkout:${tenantId}`;
 /**
@@ -151,11 +156,13 @@ export class BillingService {
     @Inject(STRIPE_DRIVER) private readonly stripe: StripeDriver,
     @Inject(PlatformSettingsService) private readonly settings: PlatformSettingsService,
     /**
-     * Holds the in-flight-Checkout marker (billing-03). OPTIONAL because the
-     * Stripe retry sweep (`jobs/stripe-retry.job.ts`) constructs this service
-     * by hand to replay webhook events, and that path never touches the
-     * purchase flow. `startCheckout` refuses outright rather than proceeding
-     * without it — see `claimCheckoutMarker`.
+     * Holds the in-flight-Checkout marker (billing-03).
+     *
+     * Still typed optional so a hand-built instance compiles, but EVERY caller
+     * now passes one — including the Stripe retry sweep, which replays
+     * `checkout.session.completed` and would otherwise leave a spent Checkout
+     * session recorded as still open. The purchase path refuses outright
+     * without it (see `redisCall`) rather than quietly running unguarded.
      */
     @Optional() @Inject(RedisService) private readonly redis?: RedisService,
   ) {}
@@ -422,32 +429,136 @@ export class BillingService {
 
     // A live subscription is CHANGED, never re-bought — but "live" is a
     // question only Stripe can answer. See `resolveLiveSubscription`.
-    const live = await this.resolveLiveSubscription(tenantId, sub.stripeSubscriptionId);
-    if (live) {
-      await this.stripe.changeSubscriptionPrice({
-        subscriptionId: live.id,
-        priceId,
+    let live = await this.resolveLiveSubscription(tenantId, sub.stripeSubscriptionId);
+
+    if (!live) {
+      // Our row says "no subscription". That is a CACHE, and there is a window
+      // in which it is provably wrong — see `adoptCustomerSubscription`. Ask
+      // Stripe about the customer before selling anything.
+      //
+      // Read the account rather than calling `ensureStripeCustomer` first: a
+      // tenant with no Stripe customer cannot have a Stripe subscription, so
+      // the common case (a library's very first purchase) still costs zero
+      // extra Stripe calls.
+      const account = await controlDb.billingAccount.findUnique({
+        where: { tenantId },
+        select: { stripeCustomerId: true },
       });
-      this.logger.log(
-        `Re-priced ${live.id} onto ${plan.slug} (${priceId}) for tenant ${tenantId}.`,
-      );
-      // A re-price cannot produce a second subscription, so any Checkout
-      // session still hanging around for this tenant is now stale — and
-      // completing it WOULD produce one. Drop it.
-      await this.discardCheckoutMarker(tenantId).catch(() => undefined);
-      // Our own row moves when `customer.subscription.updated` arrives — the
-      // same path a Dashboard-side change takes. The browser lands back on
-      // billing meanwhile, exactly as it would from Stripe's success redirect.
-      return { url: planChangedUrl, sessionId: null, outcome: 'plan_changed' };
+      live = account?.stripeCustomerId
+        ? await this.adoptCustomerSubscription(tenantId, account.stripeCustomerId)
+        : null;
+
+      if (!live) {
+        const customerId = await this.ensureStripeCustomer(tenantId);
+        const session = await this.openCheckoutSession(tenantId, priceId, {
+          customerId,
+          successUrl,
+          cancelUrl,
+        });
+        return { ...session, outcome: 'checkout' };
+      }
     }
 
-    const customerId = await this.ensureStripeCustomer(tenantId);
-    const session = await this.openCheckoutSession(tenantId, priceId, {
-      customerId,
-      successUrl,
-      cancelUrl,
+    await this.stripe.changeSubscriptionPrice({
+      subscriptionId: live.id,
+      priceId,
     });
-    return { ...session, outcome: 'checkout' };
+    this.logger.log(`Re-priced ${live.id} onto ${plan.slug} (${priceId}) for tenant ${tenantId}.`);
+    // A re-price cannot produce a second subscription, but any Checkout
+    // session still outstanding for this tenant CAN — so it is not enough to
+    // forget it, which is all this used to do. Revoke it at Stripe first.
+    await this.expireOutstandingCheckout(tenantId);
+    // Our own row moves when `customer.subscription.updated` arrives — the
+    // same path a Dashboard-side change takes. The browser lands back on
+    // billing meanwhile, exactly as it would from Stripe's success redirect.
+    return { url: planChangedUrl, sessionId: null, outcome: 'plan_changed' };
+  }
+
+  /**
+   * Ask Stripe whether this CUSTOMER already has a live subscription that our
+   * row has not heard about, and adopt it if so.
+   *
+   * billing-03, round 2 — the window the first fix left open, executed by the
+   * verifier:
+   *
+   *   1. A library on Starter clicks Community. Checkout session A opens and
+   *      the Redis marker records it.
+   *   2. Stripe charges the card and delivers `checkout.session.completed`
+   *      FIRST — its order relative to `customer.subscription.created` is not
+   *      guaranteed, and only the latter writes `stripeSubscriptionId`.
+   *   3. The library clicks a second plan. Our row still reads `null`, the
+   *      marker has been consumed, and Checkout session B opens on a customer
+   *      who is already paying. Both sessions complete: two live
+   *      subscriptions, two charges, and our single id column remembers only
+   *      the later one, so cancelling from the app stops one of them.
+   *
+   * The marker alone cannot close this: it lives in Redis, it is legitimately
+   * dropped when the purchase lands, and a flush loses it. `getSubscription`
+   * cannot either — we have no id to ask about, which is the whole problem.
+   * The customer id we DO have, and Stripe is authoritative about it.
+   *
+   * Not a lockout: if Stripe reports no live subscription we fall straight
+   * through to Checkout, and the pointer we write here is re-verified against
+   * Stripe (and cleared when dead) on the next purchase by
+   * `resolveLiveSubscription`.
+   */
+  private async adoptCustomerSubscription(
+    tenantId: string,
+    customerId: string,
+  ): Promise<StripeSubscriptionState | null> {
+    let all: StripeSubscriptionState[];
+    try {
+      all = await this.stripe.listSubscriptions(customerId);
+    } catch (err) {
+      // FAIL CLOSED, same reasoning as `resolveLiveSubscription`: "Stripe did
+      // not answer" is not "this customer has nothing". Guessing the latter is
+      // exactly how the second subscription gets sold.
+      this.logger.error(
+        `Could not list Stripe subscriptions for customer ${customerId} (tenant ${tenantId}): ` +
+          `${(err as Error).message}. Refusing to open a Checkout session.`,
+      );
+      throw new ServiceUnavailableException(
+        'We could not reach Stripe to check whether your library already has a subscription. ' +
+          'Nothing has been charged — please try again in a moment.',
+      );
+    }
+
+    const liveOnes = all.filter((s) => STRIPE_LIVE_STATUSES.has(s.status));
+    // Stripe lists newest first, so `[0]` is the one just bought — the one a
+    // second click means to change.
+    const adopted = liveOnes[0];
+    if (!adopted) return null;
+
+    if (liveOnes.length > 1) {
+      this.logger.error(
+        `Stripe customer ${customerId} (tenant ${tenantId}) has ${liveOnes.length} live ` +
+          `subscriptions: ${liveOnes.map((s) => `${s.id} (${s.status})`).join(', ')}. ` +
+          `Re-pricing ${adopted.id} and NOT opening another — cancel the extras in Stripe and refund the overlap.`,
+      );
+    } else {
+      this.logger.warn(
+        `Tenant ${tenantId} already has live Stripe subscription ${adopted.id} (${adopted.status}) ` +
+          'that our row did not know about — adopting it and re-pricing in place instead of ' +
+          'opening a second Checkout session.',
+      );
+    }
+
+    // Write the pointer so the NEXT click is answered from our own row, and so
+    // cancel/portal reach this subscription rather than nothing. `updateMany`
+    // with `stripeSubscriptionId: null` in the where clause: a concurrent
+    // `customer.subscription.created` may have landed while we were talking to
+    // Stripe, and overwriting the id it wrote would be the same erasure this
+    // finding is about.
+    await controlDb.subscription
+      .updateMany({
+        where: { tenantId, stripeSubscriptionId: null },
+        data: { stripeSubscriptionId: adopted.id },
+      })
+      .catch((err: Error) => {
+        // Non-fatal: the re-price below still targets the right subscription.
+        this.logger.warn(`Could not record adopted subscription ${adopted.id}: ${err.message}`);
+      });
+    return adopted;
   }
 
   /**
@@ -912,12 +1023,28 @@ export class BillingService {
   }
 
   /**
-   * `checkout.session.completed`. The `customer.subscription.created` event
-   * that follows carries the full state, so there is nothing to sync here —
-   * but this is the EARLIEST signal that the tenant's outstanding session has
-   * been used up, and dropping the marker now means a user who immediately
-   * clicks another plan gets the re-price path rather than a reused session
-   * (billing-03).
+   * `checkout.session.completed` — the EARLIEST proof that a subscription now
+   * exists for this tenant.
+   *
+   * This used to do one thing: delete the Redis marker. That is precisely the
+   * ordering the verifier exploited (billing-03, round 2). Stripe does not
+   * guarantee that `customer.subscription.created` arrives before this event,
+   * and `customer.subscription.created` is the ONLY thing that used to write
+   * `stripeSubscriptionId`. So between the two, our row said "no subscription"
+   * AND the marker was gone: a second click sailed through both guards and
+   * bought a second live subscription on the same card.
+   *
+   * So record the subscription id FIRST — durably, in Postgres, where a Redis
+   * flush cannot lose it — and only then drop the marker. The order matters:
+   * if the write fails we keep the marker, because with no durable pointer the
+   * marker is the only thing left standing between the tenant and a second
+   * subscription.
+   *
+   * The row's plan/status/period stay untouched; `syncStripeSubscription`
+   * still owns those when the subscription event lands. All this writes is the
+   * pointer, and `resolveLiveSubscription` re-checks it against Stripe on the
+   * next purchase — so an id written here for a payment that never completed
+   * (`incomplete`) is cleared rather than becoming a lockout.
    */
   async handleCheckoutSessionCompleted(payload: StripeCheckoutSessionShape): Promise<void> {
     const tenantId =
@@ -930,6 +1057,45 @@ export class BillingService {
       )?.tenantId ??
       null;
     if (!tenantId) return;
+
+    if (!payload.subscription) {
+      // `mode:'subscription'` sessions carry one; a session that completed
+      // without it is either a different mode or an async payment method whose
+      // subscription does not exist yet. Keep the marker — it is now the only
+      // guard — and let the subscription event do the rest.
+      this.logger.warn(
+        `Checkout session ${payload.id} for tenant ${tenantId} completed with no subscription id — ` +
+          'keeping the in-flight-checkout marker as the duplicate-purchase guard.',
+      );
+      return;
+    }
+
+    // Only claim the pointer when the row has none: a `customer.subscription.created`
+    // that arrived first already wrote it, and clobbering an id we track is the
+    // erasure this whole finding is about.
+    const claimed = await controlDb.subscription.updateMany({
+      where: { tenantId, stripeSubscriptionId: null },
+      data: { stripeSubscriptionId: payload.subscription },
+    });
+    if (claimed.count === 0) {
+      const existing = await controlDb.subscription.findUnique({
+        where: { tenantId },
+        select: { stripeSubscriptionId: true },
+      });
+      if (existing && existing.stripeSubscriptionId !== payload.subscription) {
+        this.logger.error(
+          `Tenant ${tenantId} completed Checkout session ${payload.id} into subscription ` +
+            `${payload.subscription} while already tracking ${existing.stripeSubscriptionId}. ` +
+            'Both are billing — cancel one in Stripe and refund the overlap.',
+        );
+      }
+    } else {
+      this.logger.log(
+        `Checkout session ${payload.id} completed — tenant ${tenantId} now points at ` +
+          `subscription ${payload.subscription} (plan follows on the subscription event).`,
+      );
+    }
+
     await this.discardCheckoutMarker(tenantId).catch((err: Error) => {
       this.logger.warn(`Could not clear the checkout marker for ${tenantId}: ${err.message}`);
     });
@@ -1145,6 +1311,50 @@ export class BillingService {
   async discardCheckoutMarker(tenantId: string): Promise<void> {
     if (!this.redis) return;
     await this.redis.client.del(CHECKOUT_MARKER_KEY(tenantId));
+  }
+
+  /**
+   * Revoke the tenant's outstanding Checkout session AT STRIPE, then forget it.
+   *
+   * The re-price path used to call `discardCheckoutMarker` here, under a
+   * comment that said completing the outstanding session "WOULD produce" a
+   * second subscription — and then only deleted our note of it. Forgetting a
+   * loaded gun does not unload it: the session stayed completable for its full
+   * 24h at Stripe, and now nothing in our system even knew its id.
+   *
+   * Best-effort by design. The marker is deliberately KEPT when the expire
+   * fails, for the two readings that failure has:
+   *   - the session already COMPLETED (Stripe refuses to expire those), in
+   *     which case it produced the very subscription we are re-pricing and
+   *     there is nothing to revoke; or
+   *   - Stripe was briefly unreachable, in which case the session is still
+   *     open and the next attempt must try again.
+   * Deleting it would make the second case permanent. It expires on its own
+   * with the marker's 24h TTL, which matches Stripe's own session lifetime.
+   */
+  private async expireOutstandingCheckout(tenantId: string): Promise<void> {
+    if (!this.redis) return;
+    const key = CHECKOUT_MARKER_KEY(tenantId);
+    const outstanding = parseCheckoutMarker(await this.redis.client.get(key).catch(() => null));
+    // Nothing recorded, or a placeholder another request is holding while it
+    // talks to Stripe — in both cases there is no session id to revoke, and
+    // clearing the placeholder would only undermine that request's claim.
+    if (!outstanding) return;
+    try {
+      await this.stripe.expireCheckoutSession(outstanding.sessionId);
+      this.logger.log(
+        `Expired outstanding Checkout session ${outstanding.sessionId} for tenant ${tenantId} — ` +
+          'the subscription was changed in place instead.',
+      );
+      await this.redis.client.del(key).catch(() => undefined);
+    } catch (err) {
+      this.logger.warn(
+        `Could not expire outstanding Checkout session ${outstanding.sessionId} for tenant ` +
+          `${tenantId}: ${(err as Error).message}. Either it already completed (and is the ` +
+          'subscription we just changed), or Stripe was unreachable — keeping the marker so the ' +
+          'next attempt retries the revocation.',
+      );
+    }
   }
 
   /**

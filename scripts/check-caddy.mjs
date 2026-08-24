@@ -80,5 +80,42 @@ if (unguarded.length) {
   process.exit(1);
 }
 
+// --- the access log must redact the same parameters the outbox seals --------
+//
+// The API seals credential-bearing query parameters out of email_outbox, and
+// Caddy drops the same ones out of access.log. Protecting one and not the other
+// protects nothing: the log is rolled 14x100mb and tarred into the nightly
+// backup, so a token surviving there is a token in every archive. A verifier
+// pulled a live reset link out of exactly that path and redeemed it.
+const SECRETS_SRC = 'apps/api/src/email/outbox-secrets.ts';
+let sealed = [];
+try {
+  const src = readFileSync(SECRETS_SRC, 'utf8');
+  const block = /const SECRET_QUERY_PARAMS = \[([\s\S]*?)\]/.exec(src)?.[1] ?? '';
+  sealed = [...block.matchAll(/'([a-z]+)'/g)].map((m) => m[1]);
+} catch {
+  console.error(
+    `✗ ${SECRETS_SRC} is unreadable — cannot confirm the access log redacts what the outbox seals.`,
+  );
+  process.exit(1);
+}
+
+const logged = new Set(
+  [...readFileSync(FILE, 'utf8').matchAll(/^\s*delete\s+([a-z]+)\s*$/gm)].map((m) => m[1]),
+);
+const unredacted = sealed.filter((p) => !logged.has(p));
+if (unredacted.length) {
+  console.error(`✗ ${FILE}: the access log does NOT redact ${unredacted.length} parameter(s) the`);
+  console.error(`  API treats as secret in ${SECRETS_SRC}:\n`);
+  for (const p of unredacted) console.error(`    ${p}`);
+  console.error('\nAdd `delete <name>` inside the `request>uri query { … }` filter. Redacting a');
+  console.error('link in the database and then writing it to a log that goes into the backups');
+  console.error('protects nothing.');
+  process.exit(1);
+}
+
 const guarded = lines.filter((l) => INTERNAL.test(l.replace(/#.*$/, ''))).length;
-console.log(`Caddyfile check passed: all ${guarded} backend route(s) sit behind the origin guard.`);
+console.log(
+  `Caddyfile check passed: all ${guarded} backend route(s) sit behind the origin guard, ` +
+    `and the access log redacts all ${sealed.length} secret query parameter(s).`,
+);

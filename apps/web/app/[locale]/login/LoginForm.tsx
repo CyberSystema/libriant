@@ -10,6 +10,13 @@ import { preferredLocale } from '@/lib/locale-preference';
 type Props = {
   catalog: Catalog;
   locale: Locale;
+  /**
+   * Pre-fills the library address. Set by `/login?slug=…`, which is where
+   * `/login/reset` sends someone who has just set a new password — they proved
+   * who they are a second ago, and the slug is the one field a librarian
+   * recovering an account is least likely to know by heart.
+   */
+  initialSlug?: string;
 };
 
 type Errors = {
@@ -21,10 +28,10 @@ type Errors = {
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/;
 
-export function LoginForm({ catalog, locale }: Props) {
+export function LoginForm({ catalog, locale, initialSlug = '' }: Props) {
   const t = createTranslator(catalog, locale);
   const router = useRouter();
-  const [slug, setSlug] = React.useState('');
+  const [slug, setSlug] = React.useState(initialSlug.toLowerCase().trim());
   const [identifier, setIdentifier] = React.useState('');
   const [password, setPassword] = React.useState('');
   // Default on so an individual user stays signed in; uncheck on a shared /

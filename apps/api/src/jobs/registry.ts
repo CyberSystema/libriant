@@ -7,6 +7,7 @@ import { publishDueAnnouncements } from './announcement-publish.job.js';
 import { refreshBookMetadata } from './book-metadata-refresh.job.js';
 import { sendMemberNotifications } from './member-notifications.job.js';
 import { sweepStaleStorageTemps } from './storage-temp-cleanup.job.js';
+import { sweepRetention } from './retention.job.js';
 import type { ScheduledJob } from './jobs.types.js';
 
 /**
@@ -82,5 +83,23 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     name: 'storage-temp-cleanup',
     intervalMs: 60 * 60_000,
     handler: () => sweepStaleStorageTemps(),
+  },
+  {
+    // 24h: this is the storage-limitation job (GDPR Art. 5(1)(e)) and the only
+    // thing in the product that deletes personal data on age — site
+    // applications at the 12 months libriant.com promises, and each library's
+    // audit log at the retention its plan sells. Daily because every period it
+    // enforces is measured in months or days, so a finer cadence would only
+    // re-scan the same rows; each tick is bounded and idempotent, so a restart
+    // storm re-running it costs nothing.
+    //
+    // REGISTERED HERE ON PURPOSE: the first attempt at this finding shipped a
+    // retention rule bolted onto the e-mail worker's recovery timer, where it
+    // existed in no registry any operator would ever look at. If it is not in
+    // this list, it does not exist.
+    name: 'retention-sweep',
+    intervalMs: 24 * 60 * 60_000,
+    // Takes the ctx for the runner's warm Redis client (plan resolution).
+    handler: (ctx) => sweepRetention(ctx),
   },
 ];

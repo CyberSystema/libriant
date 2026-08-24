@@ -156,6 +156,18 @@ export class FakeStripeDriver implements StripeDriver {
     return { id: subscriptionId, status: 'active', priceId: null };
   }
 
+  /**
+   * The fake keeps no subscription state, so it can only honestly answer "I
+   * know of none" — which routes dev to the Checkout branch, exactly as it did
+   * before the purchase path started asking. The branch this feeds (adopting a
+   * subscription our row has not heard about yet) is covered by unit tests
+   * with an explicit stub; a fake that invented a subscription id here would
+   * make every dev checkout a re-price of something that does not exist.
+   */
+  async listSubscriptions(_customerId: string): Promise<StripeSubscriptionState[]> {
+    return [];
+  }
+
   verifyWebhookSignature(rawBody: Buffer, signatureHeader: string): StripeWebhookEvent {
     // Mirrors Stripe's "t=<unix>,v1=<hmac>" scheme. Time tolerance is 5 min.
     const parts = Object.fromEntries(

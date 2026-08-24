@@ -118,6 +118,44 @@ export function AccountRecoveryClient() {
         with your name on it.
       </Banner>
 
+      {/*
+        The procedure lives on the page that performs it. The audit that
+        produced this feature found the escape hatch documented in no runbook —
+        docs/RUNBOOK.md still told the operator there was "no operator recovery
+        path" — and an operator mid-phone-call does not go looking through
+        docs/ for the steps. Keep this list in step with the buttons below.
+      */}
+      <Card>
+        <CardHeader
+          title="How a recovery call goes"
+          subtitle="No mail is delivered (EMAIL_DRIVER=console), so this page is the whole recovery path."
+        />
+        <CardBody>
+          <ol style={{ margin: 0, paddingInlineStart: 'var(--sp-4)', lineHeight: 1.7 }}>
+            <li>
+              Satisfy yourself that the caller is who they say they are. Everything below hands over
+              their library account.
+            </li>
+            <li>Find the account by the address or username they sign in with.</li>
+            <li>
+              <strong>They can&apos;t add a colleague</strong> (&ldquo;confirm your email
+              first&rdquo;) → <em>Confirm address</em>. They can invite staff immediately
+              afterwards.
+            </li>
+            <li>
+              <strong>They&apos;ve forgotten their password</strong> → <em>Issue reset link</em>,
+              and read out or paste the whole address. It opens a page where they choose a new
+              password; it works once and expires after 60 minutes.
+            </li>
+            <li>
+              <strong>Staff accounts (a username such as staff_3) don&apos;t need this page</strong>{' '}
+              — the library&apos;s own owner or admin resets them from Staff, and sees the temporary
+              password on screen.
+            </li>
+          </ol>
+        </CardBody>
+      </Card>
+
       <Card>
         <CardBody>
           <div className="lbr-form-grid">
@@ -163,6 +201,19 @@ export function AccountRecoveryClient() {
               else — not a ticket, not a chat log, not a screenshot. It is shown here once; re-issue
               it if you lose it.
             </Banner>
+            {/*
+              The credential is the part after the `#`, and it is there on
+              purpose: a fragment is never sent to our servers, so it stays out
+              of the Caddy access log and out of the nightly backup of that log
+              (privacy-legal-06). The cost is that a truncated copy/paste looks
+              like a working URL and isn't, so say so where it will be read.
+            */}
+            <p style={{ fontSize: 'var(--fs-sm)', color: muted }}>
+              Pass on the <strong>whole address, including everything after the “#”</strong>. That
+              tail is the link — without it the page opens and asks the reader for a link they
+              haven&apos;t got. It opens the &ldquo;choose a new password&rdquo; page in their
+              browser; they set the password themselves and you never see it.
+            </p>
             <pre
               style={{
                 whiteSpace: 'pre-wrap',

@@ -13,7 +13,7 @@ export async function generateMetadata(props: { params: Promise<{ locale: string
 }
 
 /**
- * Email-verification landing page (`/<locale>/verify-email?token=…`). Public —
+ * Email-verification landing page (`/<locale>/verify-email#token=…`). Public —
  * the token is the credential. The client child POSTs it to /auth/verify-email
  * and shows the result. Tenant-agnostic so signup, email-change, and resent
  * links all land here regardless of which library the user belongs to.
@@ -21,12 +21,15 @@ export async function generateMetadata(props: { params: Promise<{ locale: string
  * This is the first screen a new library owner sees after signing up, so it
  * takes the catalogue like every other page: it used to be hardcoded English
  * inside a document declaring `lang="el"`.
+ *
+ * The token is NOT read here from `searchParams` any more (privacy-legal-06).
+ * A query-string credential is written verbatim into Caddy's JSON access log
+ * as `request.uri`, and that directory is tarred into every nightly backup;
+ * a fragment never leaves the browser. The client child reads both — `?token=`
+ * still works for links minted before this change — see VerifyEmailClient.
  */
-export default async function VerifyEmailPage(props: {
-  params: Promise<{ locale: string }>;
-  searchParams: Promise<{ token?: string }>;
-}) {
-  const [{ locale }, { token }] = await Promise.all([props.params, props.searchParams]);
+export default async function VerifyEmailPage(props: { params: Promise<{ locale: string }> }) {
+  const { locale } = await props.params;
   if (!isLocale(locale)) notFound();
 
   const catalog = await loadCatalog(locale);
@@ -39,7 +42,7 @@ export default async function VerifyEmailPage(props: {
           <Asset name="brand/logo" width={160} height={40} />
         </div>
         <h1 className="lbr-auth-card__heading">{t('auth.verifyEmail.heading')}</h1>
-        <VerifyEmailClient token={token ?? null} locale={locale} catalog={catalog} />
+        <VerifyEmailClient locale={locale} catalog={catalog} />
       </div>
       <div style={{ marginTop: 'var(--sp-4)', textAlign: 'center' }}>
         <LocaleSwitcher locale={locale} label={t('shell.locale.label')} />

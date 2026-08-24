@@ -2,7 +2,6 @@ import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
-import { pinWorkerConnLimit } from './fine-accrual.job.js';
 import { describeError } from './job-error.js';
 import type { JobResult } from './jobs.types.js';
 
@@ -45,7 +44,7 @@ export async function sweepExpiredReservationPickups(): Promise<JobResult> {
     },
   });
 
-  const tenantPrisma = new TenantPrismaService();
+  const tenantPrisma = new TenantPrismaService('worker');
   let total = 0;
   let promoted = 0;
   let failed = 0;
@@ -54,11 +53,11 @@ export async function sweepExpiredReservationPickups(): Promise<JobResult> {
 
   try {
     for (const t of tenants) {
-      // Pin to one connection per tenant so overlapping crons don't multiply
-      // pools across tenants (PER-JOB-TENANTPRISMA-CONN-MULTIPLY).
+      // The one-connection-per-tenant pin lives in the service's 'worker' role
+      // now, not in this URL (performance-06: the old `connection_limit=1`
+      // query parameter was silently ignored by Prisma 7's driver adapter).
       const ctx: TenantContext = {
         ...t,
-        dbUrl: pinWorkerConnLimit(t.dbUrl),
         resolvedFrom: 'path',
       };
       try {

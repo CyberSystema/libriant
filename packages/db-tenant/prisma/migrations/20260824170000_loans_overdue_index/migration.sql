@@ -1,0 +1,61 @@
+-- performance-02, second attempt: make the dashboard's OVERDUE tile indexable.
+--
+-- WHY A SECOND MIGRATION. 20260824120000 shipped
+--   CREATE INDEX "loans_active_dueAt_idx" ON "loans" ("dueAt","id") WHERE "status" = 'active';
+-- and its comment claimed LoansService.list "now orders by dueAt ASC, id ASC".
+-- It did not; the service was never changed. But the deeper problem is that
+-- even WITH the ORDER BY fixed that index can never be used by this
+-- application, and that is worth stating precisely because it is not obvious:
+--
+--   Prisma does not emit `status = 'active'`. It emits
+--     status = CAST($1::text AS "public"."LoanStatus")
+--   which reaches the planner as a CoerceViaIO node over `enum_in`, and
+--   `enum_in` is provolatile='s' (STABLE, not IMMUTABLE), so
+--   eval_const_expressions will NOT fold it to a Const. Postgres' partial-index
+--   predicate prover only reasons about constants, so it cannot prove
+--   `status = <stable expr>` implies the index predicate `status = 'active'`,
+--   and it silently picks something else.
+--
+--   Measured on the audit's 2M-row tenant, EXACTLY the SQL Prisma emits
+--   (captured from a live $on('query') log):
+--     ORDER BY "dueAt" ASC  + partial index  -> Index Scan using loans_dueAt_idx
+--                                               Rows Removed by Filter: 1416000
+--                                               Buffers: shared hit=1393263 read=24069
+--                                               Execution Time: 343 ms
+--   The same statement with a hand-written `status = 'active'` literal DOES use
+--   the partial index (0.45 ms) — which is why it looked fixed when tested by
+--   hand and was not fixed in the product.
+--
+-- THE FIX: a plain, NON-partial composite index. `status` as the leading key
+-- needs no predicate proving — the planner just uses the (stable) expression as
+-- an index bound — and with `status` pinned by equality the remaining key order
+-- is exactly ("dueAt","id"), so `dueAt < now()` becomes an Index Cond and
+-- `ORDER BY "dueAt" ASC, "id" ASC` needs no sort node.
+--
+--   AFTER (same statement, same data, warm, run twice):
+--     Index Scan using "loans_status_dueAt_id_idx"
+--       Index Cond: ((status = ('active'::cstring)::"LoanStatus") AND ("dueAt" < now()))
+--       Buffers: shared hit=107      Execution Time: 0.107 ms
+--
+-- It also covers the whole-set overdue readers that `loans_active_dueAt_idx`
+-- was written for and could not serve for the same reason — fine accrual
+-- (`status:'active', dueAt:{lt:now}`) and the due-soon / overdue notices
+-- (`status:'active', dueAt:{gt:now, lte:horizon}`) are Prisma queries too.
+--
+-- Idempotent (IF NOT EXISTS / IF EXISTS), per repo convention: applying this
+-- file twice against the same database is a no-op the second time.
+--
+-- LOCK NOTE: plain CREATE INDEX takes a SHARE lock on `loans`, so writes to
+-- that table block for the duration (~5 s on a 2M-row table on the audit box).
+-- Not CONCURRENTLY, because `prisma migrate deploy` wraps each migration file
+-- in a transaction and CREATE INDEX CONCURRENTLY cannot run inside one. Deploy
+-- in the same maintenance window as the other tenant migrations.
+
+CREATE INDEX IF NOT EXISTS "loans_status_dueAt_id_idx"
+  ON "loans" ("status", "dueAt", "id");
+
+-- Retire the partial index this replaces. It is not merely redundant: as shown
+-- above, no query this application issues can ever use it, so all it does is
+-- add a second index write to every checkout, renewal and return on the
+-- busiest table in the schema.
+DROP INDEX IF EXISTS "loans_active_dueAt_idx";
