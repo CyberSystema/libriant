@@ -384,6 +384,55 @@ if [ "$CROSS" = "1" ]; then
   printf '      from the password manager entry for the SOURCE host. See RUNBOOK.md §8.\n'
 fi
 
+say "Backup encryption round-trip"
+# The offer terms a municipal committee files say "encrypted backups", and the
+# DPA says it too. backup.sh grew 470 lines of encryption and off-site handling
+# for that promise — and this drill, the thing that exists precisely because an
+# untested backup is not a backup, did not touch a line of it. An archive that
+# encrypts but never decrypts is not a backup either; it is a slower way to lose
+# the data, discovered at the worst possible moment.
+#
+# gpg is the mode asserted here because it is the one whose private half is on
+# the box, so a round-trip is possible unattended. `age` keeps its identity OFF
+# the host on purpose (a host compromise must not decrypt yesterday's archive),
+# which means its decrypt leg cannot be proven here by design — the quarterly
+# drill with the real identity is the only thing that closes that, and the
+# runbook says so rather than implying coverage.
+if command -v gpg >/dev/null 2>&1; then
+  # shellcheck source=_lib/backup-crypt.sh
+  . "$(dirname "$0")/_lib/backup-crypt.sh"
+  crypt_pass="$(mktemp "${TMPDIR:-/tmp}/lbr-drill-pass.XXXXXX")"
+  printf 'drill-only-passphrase-%s' "$$" > "$crypt_pass"
+  chmod 600 "$crypt_pass"
+  crypt_dir="$(mktemp -d "${TMPDIR:-/tmp}/lbr-drill-crypt.XXXXXX")"
+  (
+    export BACKUP_GPG_PASSPHRASE_FILE="$crypt_pass"
+    unset BACKUP_AGE_RECIPIENT BACKUP_AGE_RECIPIENTS_FILE
+    mode="$(backup_crypt_mode)" || exit 1
+    [ "$mode" = "gpg" ] || { echo "mode=$mode"; exit 1; }
+    backup_crypt_selftest "$mode" || exit 1
+    # A real artefact, not just the canary: gzip in, encrypted out.
+    printf 'Maria Papadopoulou,maria@example.gr\n' | gzip > "$crypt_dir/plain.gz"
+    backup_crypt_encrypt "$mode" < "$crypt_dir/plain.gz" > "$crypt_dir/enc" || exit 1
+    # The assertion that matters: what leaves the building carries no plaintext.
+    if grep -aq 'Papadopoulou' "$crypt_dir/enc"; then exit 2; fi
+    backup_crypt_verify_gz "$mode" "$crypt_dir/enc" >/dev/null 2>&1 || exit 3
+    out="$(backup_crypt_decrypt "$mode" "$crypt_dir/enc" | gunzip)" || exit 4
+    [ "$out" = 'Maria Papadopoulou,maria@example.gr' ] || exit 5
+  )
+  case "$?" in
+    0) pass "encrypted backup round-trips (no plaintext, gzip intact, exact bytes back)" ;;
+    2) bad  "encrypted backup — the PLAINTEXT survives in the artefact that ships off-site" ;;
+    3) bad  "encrypted backup — decrypts but the gzip stream inside is corrupt" ;;
+    4) bad  "encrypted backup — cannot be decrypted with the key that wrote it" ;;
+    5) bad  "encrypted backup — decrypted to different bytes than went in" ;;
+    *) bad  "encrypted backup — encryption did not run at all" ;;
+  esac
+  rm -rf "$crypt_dir"; rm -f "$crypt_pass"
+else
+  bad "gpg is not installed — the backup encryption path cannot be proven here"
+fi
+
 say "Cleaning up"
 psql -qtAX -d postgres >/dev/null 2>&1 <<SQL || true
 DROP DATABASE IF EXISTS $CTRL; DROP DATABASE IF EXISTS $T1; DROP DATABASE IF EXISTS $T2;
