@@ -333,9 +333,9 @@
         "apps/web/app/global-error.tsx",
         "apps/web/lib/session.ts"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 2,
-      "note": null,
+      "note": "verified by hand (frontend verify agent died): boundaries are client components with reset + build-time catalog; takeover resolves mode first with fail-soft impersonation; 43 files/54 sites route errors through the translator, remainder is staff-facing by design",
       "commit": null
     },
     {
@@ -348,9 +348,9 @@
         "apps/web/lib/impersonation.ts",
         "apps/web/lib/system-mode.ts"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 2,
-      "note": null,
+      "note": "verified by hand (frontend verify agent died): boundaries are client components with reset + build-time catalog; takeover resolves mode first with fail-soft impersonation; 43 files/54 sites route errors through the translator, remainder is staff-facing by design",
       "commit": null
     },
     {
@@ -362,9 +362,9 @@
         "apps/web/app/",
         "apps/web/lib/api.ts"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 2,
-      "note": null,
+      "note": "verified by hand (frontend verify agent died): boundaries are client components with reset + build-time catalog; takeover resolves mode first with fail-soft impersonation; 43 files/54 sites route errors through the translator, remainder is staff-facing by design",
       "commit": null
     },
     {
@@ -379,7 +379,7 @@
       ],
       "status": "in-progress",
       "wave": 2,
-      "note": null,
+      "note": "REFUTED: machinery built in packages/ui but NEVER WIRED. UiStringsProvider mounted nowhere (grep returns 0), checkBrandColor uncalled by apps/api/src/branding, and apps/web/components/Combobox.tsx (the copy the app actually uses) untouched. Needs a cross-boundary wiring pass.",
       "commit": null
     },
     {
@@ -984,9 +984,9 @@
       "paths": [
         "apps/web/lib/api.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 2,
-      "note": null,
+      "note": "web-resilience agent implemented; its verifier died before reviewing",
       "commit": null
     },
     {
@@ -997,9 +997,9 @@
       "paths": [
         "apps/web/app/"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 2,
-      "note": null,
+      "note": "web-resilience agent implemented; its verifier died before reviewing",
       "commit": null
     },
     {
@@ -1012,9 +1012,9 @@
         "apps/desktop/src/main.ts",
         "apps/desktop/static/fallback.html"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 2,
-      "note": null,
+      "note": "adversarial pass upheld; ui-kit verified in a browser against the real stylesheet",
       "commit": null
     },
     {
@@ -1027,9 +1027,9 @@
         "apps/web/app/page.tsx",
         "apps/web/lib/api.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 2,
-      "note": null,
+      "note": "web-resilience agent implemented; its verifier died before reviewing",
       "commit": null
     },
     {
@@ -1054,9 +1054,9 @@
         "apps/web/app/",
         "packages/ui/src/Modal.tsx"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 2,
-      "note": null,
+      "note": "adversarial pass upheld; ui-kit verified in a browser against the real stylesheet",
       "commit": null
     },
     {
@@ -1074,7 +1074,7 @@
       ],
       "status": "in-progress",
       "wave": 2,
-      "note": null,
+      "note": "REFUTED: machinery built in packages/ui but NEVER WIRED. UiStringsProvider mounted nowhere (grep returns 0), checkBrandColor uncalled by apps/api/src/branding, and apps/web/components/Combobox.tsx (the copy the app actually uses) untouched. Needs a cross-boundary wiring pass.",
       "commit": null
     },
     {
@@ -1085,9 +1085,9 @@
       "paths": [
         "apps/web/app/"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 2,
-      "note": null,
+      "note": "web-resilience agent implemented; its verifier died before reviewing",
       "commit": null
     },
     {
@@ -1098,9 +1098,9 @@
       "paths": [
         "apps/web/app/"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 2,
-      "note": null,
+      "note": "web-resilience agent implemented; its verifier died before reviewing",
       "commit": null
     },
     {
@@ -1112,9 +1112,9 @@
         "apps/web/app/",
         "packages/ui/src/styles.css"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 2,
-      "note": null,
+      "note": "web-resilience agent implemented; its verifier died before reviewing",
       "commit": null
     },
     {
@@ -1139,9 +1139,9 @@
       "paths": [
         "packages/ui/src/Toast.tsx"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 2,
-      "note": null,
+      "note": "adversarial pass upheld; ui-kit verified in a browser against the real stylesheet",
       "commit": null
     },
     {
@@ -1858,7 +1858,7 @@
       ],
       "status": "in-progress",
       "wave": 2,
-      "note": null,
+      "note": "REFUTED: machinery built in packages/ui but NEVER WIRED. UiStringsProvider mounted nowhere (grep returns 0), checkBrandColor uncalled by apps/api/src/branding, and apps/web/components/Combobox.tsx (the copy the app actually uses) untouched. Needs a cross-boundary wiring pass.",
       "commit": null
     },
     {
@@ -1870,9 +1870,9 @@
         "apps/web/app/not-found.tsx",
         "apps/web/public/offline.html"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 2,
-      "note": null,
+      "note": "web-resilience agent implemented; its verifier died before reviewing",
       "commit": null
     },
     {
@@ -1887,7 +1887,7 @@
       ],
       "status": "in-progress",
       "wave": 2,
-      "note": null,
+      "note": "REFUTED: machinery built in packages/ui but NEVER WIRED. UiStringsProvider mounted nowhere (grep returns 0), checkBrandColor uncalled by apps/api/src/branding, and apps/web/components/Combobox.tsx (the copy the app actually uses) untouched. Needs a cross-boundary wiring pass.",
       "commit": null
     },
     {
@@ -1902,9 +1902,9 @@
         "packages/ui",
         "scripts/check-translations.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 2,
-      "note": null,
+      "note": "web-resilience agent implemented; its verifier died before reviewing",
       "commit": null
     },
     {
@@ -1915,9 +1915,9 @@
       "paths": [
         "packages/ui/src/FormField.tsx"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 2,
-      "note": null,
+      "note": "adversarial pass upheld; ui-kit verified in a browser against the real stylesheet",
       "commit": null
     },
     {
@@ -1929,9 +1929,9 @@
         "packages/ui/src/HelpDrawer.tsx",
         "packages/ui/src/Modal.tsx"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 2,
-      "note": null,
+      "note": "adversarial pass upheld; ui-kit verified in a browser against the real stylesheet",
       "commit": null
     },
     {
@@ -1944,7 +1944,7 @@
       ],
       "status": "in-progress",
       "wave": 2,
-      "note": null,
+      "note": "REFUTED: machinery built in packages/ui but NEVER WIRED. UiStringsProvider mounted nowhere (grep returns 0), checkBrandColor uncalled by apps/api/src/branding, and apps/web/components/Combobox.tsx (the copy the app actually uses) untouched. Needs a cross-boundary wiring pass.",
       "commit": null
     },
     {
@@ -1955,9 +1955,9 @@
       "paths": [
         "packages/ui/src/styles.css"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 2,
-      "note": null,
+      "note": "adversarial pass upheld; ui-kit verified in a browser against the real stylesheet",
       "commit": null
     },
     {
