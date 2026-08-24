@@ -55,6 +55,20 @@ jobs:
       - name: Legal documents publish nothing addressed to their author
         run: pnpm check:legal
 
+      # The edge is the only thing between the internet and an API that trusts
+      # X-Real-IP. A `handle /webhooks/*` block shipped with no origin guard and
+      # nothing noticed, because nothing looked.
+      - name: Every Caddy backend route sits behind the origin guard
+        run: pnpm check:caddy
+
+      # And that the config is loadable at all — a syntax error here takes the
+      # whole edge down on deploy, and no job built or parsed it before now.
+      - name: Caddyfile adapts and validates
+        run: |
+          docker run --rm \
+            -v "$PWD/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
+
       - name: TypeScript typecheck (all packages)
         run: pnpm typecheck
 
