@@ -77,10 +77,10 @@
         "apps/api/src/system-mode/system-mode.middleware.ts",
         "apps/api/src/system-mode/system-mode.service.ts"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
-      "commit": null
+      "note": "re-fixed after refutation and proved by execution: lockout drives the real HTTP endpoint (bug reintroduced to confirm the test fails); Redis outage probe shows all reads serving and zero 500s",
+      "commit": "2f7ac41"
     },
     {
       "id": "data-integrity-01",
@@ -224,10 +224,10 @@
         "apps/api/src/admin/admin-auth.guard.ts",
         "apps/api/src/admin/admin-auth.service.ts"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
-      "commit": null
+      "note": "re-fixed after refutation and proved by execution: lockout drives the real HTTP endpoint (bug reintroduced to confirm the test fails); Redis outage probe shows all reads serving and zero 500s",
+      "commit": "2f7ac41"
     },
     {
       "id": "authn-authz-05",
@@ -582,10 +582,10 @@
         "apps/api/src/system-mode/system-mode.middleware.ts",
         "apps/api/src/system-mode/system-mode.service.ts"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
-      "commit": null
+      "note": "re-fixed after refutation and proved by execution: lockout drives the real HTTP endpoint (bug reintroduced to confirm the test fails); Redis outage probe shows all reads serving and zero 500s",
+      "commit": "2f7ac41"
     },
     {
       "id": "reliability-03",
