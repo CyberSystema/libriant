@@ -3,6 +3,8 @@ import { notFound } from 'next/navigation';
 import { isLocale, SUPPORTED_LOCALES, createTranslator } from '@libriant/i18n';
 import { AssetProvider, tokensToCssVars } from '@libriant/ui';
 import '@libriant/ui/styles.css';
+// After the design system on purpose — see the header of shell.css.
+import '../shell.css';
 import { loadManifest, loadTokens } from '@/lib/assets-server';
 import { loadCatalog } from '@/lib/locale-loader';
 import { ServiceWorkerManager } from '@/components/ServiceWorkerManager';
@@ -12,7 +14,11 @@ export const metadata: Metadata = {
   description: 'Library management, made simple.',
   icons: {
     icon: '/_assets/brand/favicon.svg',
-    apple: '/_assets/brand/logo-square.svg',
+    // frontend-19: iOS Safari does not accept an SVG here — it silently falls
+    // back to a screenshot of the page for the home-screen tile, so an iPad at
+    // the desk showed a thumbnail of whatever was open instead of the mark.
+    // The raster is committed under public/ (see app/manifest.ts).
+    apple: '/apple-touch-icon.png',
   },
   // iOS: launch standalone (no Safari chrome) when added to the home screen.
   appleWebApp: { capable: true, title: 'Libriant', statusBarStyle: 'default' },

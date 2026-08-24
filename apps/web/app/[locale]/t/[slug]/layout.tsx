@@ -3,7 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 import { Banner, ToastProvider } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
-import { ApiError, api } from '@/lib/api';
+import { ApiError, ApiUnavailableError, api } from '@/lib/api';
 import { currentAnnouncements } from '@/lib/announcements';
 import { currentImpersonation } from '@/lib/impersonation';
 import { currentSession, requestCookieHeader } from '@/lib/session';
@@ -17,6 +17,7 @@ import { FirstLoginSetup } from './FirstLoginSetup';
 import { ImpersonationBanner } from './ImpersonationBanner';
 import { type AvailablePlan } from './billing/PlanGrid';
 import { DesktopGate } from './DesktopGate';
+import { LogoutButton } from './LogoutButton';
 import { SidebarNav } from './SidebarNav';
 import { SystemModeTakeover } from './SystemModeTakeover';
 
@@ -44,15 +45,21 @@ export default async function TenantLayout(props: {
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);
 
-  // System mode resolves first. A maintenance / out_of_order takeover
-  // renders before any auth fetch (the API blocks those anyway, but we
+  // System mode resolves FIRST, and on its own. A maintenance / out_of_order
+  // takeover renders before any auth fetch (the API blocks those anyway, but we
   // also don't want to bounce the user to /login during an outage).
-  // Impersonating admins bypass — they're the people debugging the
-  // outage and need the library reachable.
-  const [systemMode, impersonation] = await Promise.all([
-    currentSystemMode(params.slug),
-    currentImpersonation(),
-  ]);
+  //
+  // It used to share a `Promise.all` with the impersonation probe, and that is
+  // what made the maintenance lever crash every signed-in librarian: the
+  // middleware's always-pass list does not cover /support/impersonation/me, so
+  // that probe 503s during a maintenance window and the combined promise
+  // rejected before this branch could ever be evaluated. The takeover is the
+  // one screen whose entire job is to work when the rest of the API does not,
+  // so nothing that can fail may be resolved alongside it.
+  const systemMode = await currentSystemMode(params.slug);
+  // Impersonating admins bypass the takeover — they're the people debugging the
+  // outage and need the library reachable. Fails soft to `null`.
+  const impersonation = await currentImpersonation();
   if (isTakeoverMode(systemMode.mode) && !impersonation) {
     return <SystemModeTakeover mode={systemMode} catalog={catalog} locale={params.locale} />;
   }
@@ -117,12 +124,30 @@ export default async function TenantLayout(props: {
         // Choosing a plan is an admin action. Staff just see a notice until an
         // admin picks one (they can't reach the rest of the library yet).
         if (!isLibraryAdmin) {
+          // Sign-out and a support address are not decoration here. This is a
+          // full-page takeover with no nav, and there is no GET logout route,
+          // so without the button the only way off this screen is clearing
+          // cookies — on a shared circulation-desk machine that also strands
+          // the admin who needs to sign in and pick the plan.
           return (
             <ToastProvider>
               <main className="lbr-choose-shell">
                 <div className="lbr-choose" style={{ maxWidth: 560 }}>
                   <h1 className="lbr-choose__title">{libraryName}</h1>
                   <p className="lbr-choose__subtitle">{t('billing.choosePlanGate')}</p>
+                  <div
+                    style={{
+                      display: 'flex',
+                      gap: 'var(--sp-3)',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      marginTop: 'var(--sp-5)',
+                    }}
+                  >
+                    <LogoutButton catalog={catalog} locale={params.locale} />
+                    <a href="mailto:hello@libriant.com">{t('billing.actions.contactSales')}</a>
+                  </div>
                 </div>
               </main>
             </ToastProvider>
@@ -144,9 +169,11 @@ export default async function TenantLayout(props: {
         );
       }
     } catch (err) {
-      if (!(err instanceof ApiError)) throw err;
-      // ApiError (e.g. billing snapshot unavailable) — fall through and let the
-      // library render rather than locking the user out on a transient error.
+      // A billing read that failed — a 5xx, or an API that never answered —
+      // must never lock the library out. `ApiUnavailableError` is in here
+      // because the fetch deadline turns a wedged API into a throw rather than
+      // a five-minute hang, and that must degrade the same way a 503 does.
+      if (!(err instanceof ApiError) && !(err instanceof ApiUnavailableError)) throw err;
     }
   }
 
@@ -164,7 +191,7 @@ export default async function TenantLayout(props: {
       });
       desktopBlocked = !access.allowed;
     } catch (err) {
-      if (!(err instanceof ApiError)) throw err;
+      if (!(err instanceof ApiError) && !(err instanceof ApiUnavailableError)) throw err;
     }
   }
 
@@ -189,6 +216,11 @@ export default async function TenantLayout(props: {
     <ToastProvider>
       <OfflineQueueProvider slug={params.slug} catalog={catalog} locale={params.locale}>
         <div className="lbr-shell" style={shellStyle}>
+          {/* WCAG 2.4.1: the brand link, 8-11 nav links and sign-out all sit
+              ahead of <main> in tab order on every page load. */}
+          <a href="#lbr-main" className="lbr-skip">
+            {t('shell.skipToContent')}
+          </a>
           <DesktopGate
             blocked={desktopBlocked}
             locale={params.locale}
@@ -206,7 +238,7 @@ export default async function TenantLayout(props: {
             billingEnabled={billingEnabled}
             role={role}
           />
-          <main className="lbr-shell__main">
+          <main className="lbr-shell__main" id="lbr-main" tabIndex={-1}>
             {impersonation ? (
               <ImpersonationBanner
                 tenantName={impersonation.tenant.name}
@@ -234,7 +266,11 @@ export default async function TenantLayout(props: {
               />
             ) : null}
             {session && !impersonation && session.user.emailVerified === false ? (
-              <EmailVerifyBanner email={session.user.email} />
+              <EmailVerifyBanner
+                email={session.user.email}
+                catalog={catalog}
+                locale={params.locale}
+              />
             ) : null}
             {children}
           </main>

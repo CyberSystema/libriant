@@ -3,7 +3,8 @@ import * as React from 'react';
 import { Button, Card, CardBody, CardHeader, FormField, Input, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 
 export type TenantSettingsView = {
   currency: string;
@@ -182,11 +183,10 @@ export function LibraryPolicyForm({
       setForm(fromView(updated));
       toast.show({ severity: 'success', title: t('settings.library.saved') });
     } catch (err) {
-      const msg = err instanceof ApiError ? err.message : '';
       toast.show({
         severity: 'critical',
         title: t('settings.library.saveError'),
-        body: msg || undefined,
+        body: translateApiError(err, t),
       });
     } finally {
       setBusy(false);

@@ -1,9 +1,16 @@
 <!doctype html>
-<html lang="en">
+<!--
+  The shell's offline/setup screen. Greek is written into the markup and the
+  script re-renders it in the locale the main process picked (?lang=) — so a
+  script that never runs still leaves a readable Greek page rather than an
+  English one. Strings live inline because a file:// page can reach neither the
+  web app's catalogs nor the network; src/i18n.ts carries the menu half.
+-->
+<html lang="el">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Libriant — connection</title>
+    <title>Libriant — σύνδεση</title>
     <style>
       :root {
         color-scheme: light;
@@ -243,14 +250,14 @@
           stroke-width="1.2"
         />
       </svg>
-      <h1>Can't reach Libriant</h1>
-      <p>
-        The app couldn't load the library server. Check your connection, or point it at the right
-        address.
+      <h1 id="heading">Δεν είναι δυνατή η σύνδεση με το Libriant</h1>
+      <p id="body">
+        Η εφαρμογή δεν μπόρεσε να φορτώσει τον διακομιστή της βιβλιοθήκης. Ελέγξτε τη σύνδεσή σας ή
+        ορίστε παρακάτω τη σωστή διεύθυνση.
       </p>
       <p class="err" id="err" hidden></p>
 
-      <label for="url">Library server URL</label>
+      <label for="url" id="urlLabel">Διεύθυνση διακομιστή βιβλιοθήκης</label>
       <input
         id="url"
         type="url"
@@ -259,30 +266,131 @@
         placeholder="https://library.example.org"
       />
       <div class="row">
-        <button class="primary" id="connect">Connect</button>
-        <button class="ghost" id="retry">Retry</button>
-        <button class="ghost" id="browser">Open in browser</button>
+        <button class="primary" id="connect">Σύνδεση</button>
+        <button class="ghost" id="retry">Δοκιμάστε ξανά</button>
+        <button class="ghost" id="browser">Άνοιγμα σε πρόγραμμα περιήγησης</button>
       </div>
       <p class="muted" id="status"></p>
     </main>
 
     <script>
       (function () {
+        var STRINGS = {
+          el: {
+            title: 'Libriant — σύνδεση',
+            heading: 'Δεν είναι δυνατή η σύνδεση με το Libriant',
+            body: 'Η εφαρμογή δεν μπόρεσε να φορτώσει τον διακομιστή της βιβλιοθήκης. Ελέγξτε τη σύνδεσή σας ή ορίστε παρακάτω τη σωστή διεύθυνση.',
+            crashedHeading: 'Το Libriant έκλεισε επανειλημμένα',
+            crashedBody:
+              'Η εφαρμογή έκλεισε αναπάντεχα αρκετές φορές στη σειρά, οπότε σταματήσαμε να την επαναφορτώνουμε αυτόματα. Δοκιμάστε ξανά.',
+            errNotFound:
+              'Η διεύθυνση του διακομιστή δεν βρέθηκε. Ελέγξτε ότι είναι γραμμένη σωστά παρακάτω.',
+            errOffline:
+              'Αυτός ο υπολογιστής φαίνεται εκτός σύνδεσης. Ελέγξτε το δίκτυο και δοκιμάστε ξανά.',
+            errNoAnswer:
+              'Ο διακομιστής της βιβλιοθήκης δεν απάντησε. Μπορεί να είναι προσωρινά εκτός λειτουργίας — δοκιμάστε ξανά σε λίγο.',
+            errCert:
+              'Το πιστοποιητικό ασφαλείας του διακομιστή δεν έγινε αποδεκτό. Επικοινωνήστε με όποιον διαχειρίζεται τον διακομιστή σας.',
+            errLabel: 'Τεχνική λεπτομέρεια',
+            urlLabel: 'Διεύθυνση διακομιστή βιβλιοθήκης',
+            connect: 'Σύνδεση',
+            retry: 'Δοκιμάστε ξανά',
+            openInBrowser: 'Άνοιγμα σε πρόγραμμα περιήγησης',
+            bridgeUnavailable: 'Η γέφυρα της εφαρμογής υπολογιστή δεν είναι διαθέσιμη.',
+            enterUrl: 'Εισαγάγετε τη διεύθυνση του διακομιστή.',
+            connecting: 'Γίνεται σύνδεση…',
+            retrying: 'Νέα προσπάθεια…',
+            applyFailed: 'Δεν εφαρμόστηκε',
+            reasonInvalidUrl: 'μη έγκυρη διεύθυνση',
+            reasonUnknown: 'άγνωστο σφάλμα',
+            wentWrong: 'Κάτι πήγε στραβά.',
+          },
+          en: {
+            title: 'Libriant — connection',
+            heading: "Can't reach Libriant",
+            body: "The app couldn't load the library server. Check your connection, or set the right address below.",
+            crashedHeading: 'Libriant closed repeatedly',
+            crashedBody:
+              'The app closed unexpectedly several times in a row, so we stopped reloading it automatically. Try again.',
+            errNotFound:
+              "The server address couldn't be found. Check that it's spelled correctly below.",
+            errOffline: 'This computer appears to be offline. Check the network and try again.',
+            errNoAnswer:
+              "The library server didn't answer. It may be temporarily down — try again shortly.",
+            errCert:
+              "The server's security certificate wasn't accepted. Contact whoever manages your server.",
+            errLabel: 'Technical detail',
+            urlLabel: 'Library server URL',
+            connect: 'Connect',
+            retry: 'Try again',
+            openInBrowser: 'Open in browser',
+            bridgeUnavailable: 'Desktop bridge unavailable.',
+            enterUrl: 'Enter a server URL.',
+            connecting: 'Connecting…',
+            retrying: 'Retrying…',
+            applyFailed: "Couldn't apply",
+            reasonInvalidUrl: 'invalid address',
+            reasonUnknown: 'unknown error',
+            wentWrong: 'Something went wrong.',
+          },
+        };
+
         var d = window.libriantDesktop;
         var params = new URLSearchParams(location.search);
         var failedUrl = params.get('url') || '';
         var errText = params.get('error') || '';
+        // Allowlist rather than an index lookup — anything else (including an
+        // Object.prototype key) must land on Greek, not on a blank page.
+        var lang = params.get('lang') === 'en' ? 'en' : 'el';
+        var s = STRINGS[lang];
         var errEl = document.getElementById('err');
         var urlEl = document.getElementById('url');
         var statusEl = document.getElementById('status');
+
+        function setText(id, text) {
+          document.getElementById(id).textContent = text;
+        }
+
+        /** Chromium hands us a raw code (ERR_NAME_NOT_RESOLVED); say what it
+         *  means to a librarian, and keep the code as a support detail. */
+        function explain(code) {
+          if (code.indexOf('ERR_CERT') === 0 || code.indexOf('ERR_SSL') === 0) return s.errCert;
+          if (code === 'ERR_NAME_NOT_RESOLVED' || code === 'ERR_NAME_RESOLUTION_FAILED')
+            return s.errNotFound;
+          if (code === 'ERR_INTERNET_DISCONNECTED' || code === 'ERR_NETWORK_CHANGED')
+            return s.errOffline;
+          if (
+            code.indexOf('ERR_CONNECTION') === 0 ||
+            code === 'ERR_ADDRESS_UNREACHABLE' ||
+            code === 'ERR_TIMED_OUT'
+          )
+            return s.errNoAnswer;
+          return null;
+        }
+
+        function reasonText(code) {
+          if (code === 'invalid-url') return s.reasonInvalidUrl;
+          return code || s.reasonUnknown;
+        }
+
+        var crashed = params.get('reason') === 'crashed';
+        document.documentElement.lang = lang;
+        document.title = s.title;
+        setText('heading', crashed ? s.crashedHeading : s.heading);
+        setText('body', crashed ? s.crashedBody : (errText && explain(errText)) || s.body);
+        setText('urlLabel', s.urlLabel);
+        setText('connect', s.connect);
+        setText('retry', s.retry);
+        setText('browser', s.openInBrowser);
+
         if (errText) {
-          errEl.textContent = (failedUrl ? failedUrl + ' — ' : '') + errText;
+          errEl.textContent = s.errLabel + ': ' + (failedUrl ? failedUrl + ' — ' : '') + errText;
           errEl.hidden = false;
         }
         urlEl.value = failedUrl;
 
         if (!d) {
-          statusEl.textContent = 'Desktop bridge unavailable.';
+          statusEl.textContent = s.bridgeUnavailable;
           return;
         }
         // Prefer the authoritative configured URL for the input.
@@ -297,24 +405,24 @@
           return p
             .then(function (r) {
               if (r && r.ok === false)
-                statusEl.textContent = 'Could not apply: ' + (r.reason || 'unknown');
+                statusEl.textContent = s.applyFailed + ': ' + reasonText(r.reason);
               else if (okMsg) statusEl.textContent = okMsg;
             })
             .catch(function () {
-              statusEl.textContent = 'Something went wrong.';
+              statusEl.textContent = s.wentWrong;
             });
         }
 
         document.getElementById('connect').addEventListener('click', function () {
           var v = urlEl.value.trim();
           if (!v) {
-            statusEl.textContent = 'Enter a server URL.';
+            statusEl.textContent = s.enterUrl;
             return;
           }
-          ack(d.setServerUrl(v), 'Connecting…');
+          ack(d.setServerUrl(v), s.connecting);
         });
         document.getElementById('retry').addEventListener('click', function () {
-          ack(d.retry(), 'Retrying…');
+          ack(d.retry(), s.retrying);
         });
         document.getElementById('browser').addEventListener('click', function () {
           if (failedUrl) d.openExternal(failedUrl);

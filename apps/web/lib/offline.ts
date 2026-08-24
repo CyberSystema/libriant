@@ -4,14 +4,28 @@ import { clearQueue } from '@/lib/offline-queue';
  * Client-side service-worker helpers. The SW itself lives at `public/sw.js`.
  */
 
-/** Register the service worker. Safe to call on every load — the browser
- *  no-ops a re-register. Only meaningful over a secure context (https /
- *  localhost), which the browser enforces. */
+/**
+ * Register the service worker. Safe to call on every load — the browser no-ops
+ * a re-register. Only meaningful over a secure context (https / localhost),
+ * which the browser enforces.
+ *
+ * frontend-27: the build id in the query string is load-bearing, not cosmetic.
+ * `public/sw.js` is a static file whose bytes never change between deploys, so
+ * registering it at a bare `/sw.js` meant the browser saw the same script
+ * forever: install never re-ran, the precached `offline.html` could never be
+ * corrected, and the caches named after the worker's version were never
+ * evicted. A different script URL at the same scope replaces the registration
+ * and runs install/activate, and the worker reads this same `v` to name its
+ * caches — see the header of public/sw.js.
+ */
 export function registerServiceWorker(): void {
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  const buildId = process.env.NEXT_PUBLIC_BUILD_ID || 'dev';
   // Defer to idle so registration never competes with first paint.
   const run = () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+    navigator.serviceWorker
+      .register(`/sw.js?v=${encodeURIComponent(buildId)}`)
+      .catch(() => undefined);
   };
   if (document.readyState === 'complete') run();
   else window.addEventListener('load', run, { once: true });

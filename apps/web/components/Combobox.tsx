@@ -1,7 +1,10 @@
 'use client';
 import * as React from 'react';
+import { useParams } from 'next/navigation';
 import { Input, Skeleton } from '@libriant/ui';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
+import { safeLocale, staticTranslator } from '@/lib/static-catalog';
 
 type ListResponse<T> = { items: T[]; nextCursor: string | null };
 
@@ -63,6 +66,12 @@ export function Combobox<T extends { id: string }>({
   const [error, setError] = React.useState<string | null>(null);
   const [activeIndex, setActiveIndex] = React.useState(0);
   const listboxId = `${id}-listbox`;
+  // Every caller of this picker sits under /[locale]/t/[slug], so the locale is
+  // in the route. Reading it here rather than adding an `errorText` prop keeps
+  // the failure message Greek at all ~15 call sites without threading one more
+  // string through each of them.
+  const params = useParams();
+  const t = staticTranslator(safeLocale(params?.locale));
   const wrapperRef = React.useRef<HTMLDivElement>(null);
 
   // Debounce queries so we don't hammer the API on every keystroke.
@@ -81,7 +90,7 @@ export function Combobox<T extends { id: string }>({
         setItems(res.items);
         setActiveIndex(0);
       } catch (err) {
-        setError(err instanceof ApiError ? err.message : 'Could not search.');
+        setError(translateApiError(err, t));
       } finally {
         setLoading(false);
       }

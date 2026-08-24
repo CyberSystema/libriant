@@ -13,7 +13,8 @@ import {
 } from '@libriant/ui';
 import { createTranslator, type Catalog, type Locale } from '@libriant/i18n';
 import { LIBRARY_TYPES } from '@libriant/shared/library';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 
 export type LibraryProfile = {
   id: string;
@@ -95,7 +96,7 @@ export function LibraryProfileForm({
       setFreeMsg(t('library.profile.contactSaved'));
       router.refresh();
     } catch (err) {
-      setFreeMsg(err instanceof ApiError ? err.message : t('library.errors.requestFailed'));
+      setFreeMsg(translateApiError(err, t, t('library.errors.requestFailed')));
     } finally {
       setSavingFree(false);
     }
@@ -122,7 +123,7 @@ export function LibraryProfileForm({
       setRequesting(false);
       router.refresh();
     } catch (err) {
-      setCoreErr(err instanceof ApiError ? err.message : t('library.errors.requestFailed'));
+      setCoreErr(translateApiError(err, t, t('library.errors.requestFailed')));
     } finally {
       setSubmitting(false);
     }

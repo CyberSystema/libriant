@@ -6,6 +6,7 @@ import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module.js';
 import { loadEnv } from './config/env.js';
 import { HttpExceptionFilter } from './platform/http-exception.filter.js';
+import { describeTrustedProxies, isTrustedProxy } from './platform/client-ip.js';
 
 async function bootstrap() {
   const env = loadEnv();
@@ -28,12 +29,18 @@ async function bootstrap() {
   });
   app.useLogger(app.get(Logger));
 
-  // We run behind Cloudflare → Caddy. Trust the proxy so `req.protocol` /
-  // `req.secure` reflect the original HTTPS request. NOTE: the real client IP
-  // is read from the `X-Real-IP` header (Caddy sets it from CF-Connecting-IP)
-  // via `platform/client-ip.ts` — not from `req.ip` / X-Forwarded-For, which
-  // in this topology carry the Cloudflare edge address, not the end user.
-  app.set('trust proxy', true);
+  // We run behind Cloudflare → Caddy, so the proxy has to be trusted for
+  // `req.protocol` / `req.secure` to reflect the original HTTPS request — but
+  // only the proxies we actually have. This was `trust proxy: true`, which
+  // trusts EVERY hop, and the audit (authn-authz-01) proved what that costs:
+  // `req.ip` became the leftmost `X-Forwarded-For` entry, i.e. a value the
+  // client writes, and six wrong logins carrying `X-Forwarded-For: 192.0.2.55`
+  // locked the bucket the attacker chose instead of their own. The predicate is
+  // the same one `clientIp()` uses, so Express and our rate-limit keys agree on
+  // exactly who counts as "our proxy". A malformed TRUSTED_PROXY_CIDRS throws
+  // here, at boot, rather than on the first request.
+  const trustedProxies = describeTrustedProxies();
+  app.set('trust proxy', (addr: string) => isTrustedProxy(addr));
 
   // Parse Cookie header into req.cookies — required by SessionMiddleware.
   app.use(cookieParser());
@@ -58,7 +65,9 @@ async function bootstrap() {
 
   await app.listen(env.port);
   // eslint-disable-next-line no-console
-  console.log(`[libriant-api] listening on :${env.port} (${env.nodeEnv})`);
+  console.log(
+    `[libriant-api] listening on :${env.port} (${env.nodeEnv}) — trusted proxies: ${trustedProxies}`,
+  );
 }
 
 // REL-09: last-resort process-level handlers. Node's default

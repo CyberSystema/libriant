@@ -13,6 +13,7 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import { controlDb } from '@libriant/db-control';
 import { AuthGuard } from './auth.guard.js';
@@ -30,6 +31,7 @@ import { ChangeEmailDto, VerifyEmailDto } from './dto/email-verification.dto.js'
 import type { SessionPayload } from './jwt-session.service.js';
 import { TenantResolverService } from '../tenancy/tenant-resolver.service.js';
 import { RateLimitService } from '../platform/rate-limit.service.js';
+import { RedisService } from '../platform/redis.service.js';
 import { clientIp } from '../platform/client-ip.js';
 import { validateDto } from './validate-dto.js';
 
@@ -49,6 +51,16 @@ import { validateDto } from './validate-dto.js';
  * page loudly when it's exceeded (the operator's signal to bring up real
  * provisioning-side admission control), but we never refuse a signup solely on
  * the global counter, so the cap can't be weaponised into an onboarding outage.
+ *
+ * input-and-files-03: that left NOTHING that refuses a signup once the per-IP
+ * key is defeated, and each accepted signup is a CREATE DATABASE plus a
+ * migration fork. The backstop is {@link PROVISIONING} — a hard cap on how many
+ * signups may be provisioning AT THE SAME MOMENT. It is a concurrency gate, not
+ * a window counter, and that difference is the whole point: slots are released
+ * ~1s later, so it bounds the damage a flood can do without being weaponisable
+ * into a lasting outage the way a fixed-window global cap is. It cannot be
+ * gated on an emailed verification link instead — EMAIL_DRIVER is `console`
+ * and nothing is delivered, so that would refuse every real signup.
  */
 const RL = {
   signupPerIp: { limit: 5, windowSec: 600 }, // 5 / 10 min / IP (hard)
@@ -59,6 +71,81 @@ const RL = {
   // per-account cap inside EmailVerificationService.
   emailVerifyPerIp: { limit: 10, windowSec: 900 }, // 10 / 15 min / IP
 } as const;
+
+/**
+ * Provisioning admission control (input-and-files-03).
+ *
+ * `staleMs` is the self-heal: a process killed between acquire and release
+ * would otherwise strand a slot forever, so an entry older than this is swept.
+ * 120s is ~100x the real hold time, so a sweep can only ever free a slot that
+ * is genuinely gone.
+ */
+const PROVISIONING = {
+  key: 'signup:provisioning',
+  maxConcurrent: provisioningCeiling(),
+  staleMs: 120_000,
+} as const;
+
+/**
+ * How many tenant databases may be under construction AT THE SAME MOMENT,
+ * across every replica (the counter is a Redis sorted set, so it is global).
+ *
+ * This started at 4, reasoned from cost alone: provisioning measures ~1.1s of
+ * DDL + migration, so 4 in flight is ~3 new libraries/second. What that
+ * reasoning left out is that the number is also a HARD REFUSAL of genuine
+ * customers, globally, with no per-IP component — and the launch campaign is
+ * one email to 277 Greek libraries offering twelve free months to the first
+ * five. Five people opening the form in the same second is the SUCCESS case,
+ * and at 4 the fifth got "we're setting up several libraries right now".
+ *
+ * 16 is the ceiling now, and the reasoning has to hold from both sides:
+ *   • as a limit on damage — the per-IP cap is 5 signups / 10 min, so filling
+ *     16 concurrent slots takes at least four distinct source addresses acting
+ *     within the same second, and holding it takes a sustained botnet rather
+ *     than a laptop. The box (4 cores / 8 threads, 62 GiB) carries 16
+ *     concurrent migration forks; they simply take longer each, which throttles
+ *     the flood further by lengthening the hold time. This gate was never the
+ *     only control — it is the backstop behind the per-IP cap.
+ *   • as a limit on customers — 16 simultaneous genuine signups is triple the
+ *     entire launch offer. If we ever refuse one, the log line below is the
+ *     event to act on.
+ *
+ * Override with SIGNUP_MAX_CONCURRENT_PROVISIONING when the shape of a
+ * campaign is known in advance. Read from process.env directly rather than
+ * through loadEnv() for the same reason RateLimitService reads
+ * RATE_LIMIT_DISABLED that way: this is an operational dial, not part of the
+ * validated boot config, and a bad value must not stop the API from starting.
+ */
+function provisioningCeiling(): number {
+  const raw = process.env.SIGNUP_MAX_CONCURRENT_PROVISIONING?.trim();
+  if (!raw) return 16;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    // Don't throw: a typo in an operational dial must not take signup down.
+    console.error(
+      `[auth] SIGNUP_MAX_CONCURRENT_PROVISIONING="${raw}" is not a positive integer — using 16.`,
+    );
+    return 16;
+  }
+  return n;
+}
+
+/**
+ * Claim one provisioning slot, atomically: sweep expired holders, refuse if the
+ * cap is already reached, otherwise record this holder. Returns 1 on admission,
+ * 0 when full. A sorted set (member = holder id, score = start time) rather than
+ * a counter, because a counter that misses a decrement is a permanent capacity
+ * loss, while a stale member sweeps itself.
+ */
+const ACQUIRE_PROVISIONING_SLOT_LUA = `
+redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[2])
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[3]) then
+  return 0
+end
+redis.call('ZADD', KEYS[1], ARGV[1], ARGV[4])
+redis.call('PEXPIRE', KEYS[1], ARGV[5])
+return 1
+`;
 
 /**
  * Platform-level auth endpoints (no tenant in the URL path).
@@ -82,6 +169,7 @@ export class AuthController {
     @Inject(EmailVerificationService) private readonly emailVerify: EmailVerificationService,
     @Inject(TenantResolverService) private readonly tenantResolver: TenantResolverService,
     @Inject(RateLimitService) private readonly rateLimit: RateLimitService,
+    @Inject(RedisService) private readonly redis: RedisService,
   ) {}
 
   /** Throw 429 if any of the supplied buckets is over budget. */
@@ -98,6 +186,105 @@ export class AuthController {
         );
       }
     }
+  }
+
+  /**
+   * Take one of the {@link PROVISIONING} slots, or refuse.
+   *
+   * Returns the release function — the caller MUST call it in a `finally`,
+   * otherwise the slot is held until the stale sweep reclaims it. Fails CLOSED
+   * on a Redis error, matching the signup buckets in RateLimitService (REM-2):
+   * an unmetered provisioning path during a Redis outage is exactly the DoS
+   * this gate exists to close. What changed is WHAT WE SAY when it does —
+   * see {@link provisioningUnavailable}.
+   */
+  private async enterProvisioningSlot(): Promise<() => Promise<void>> {
+    // AUTH-07 parity with RateLimitService.hit(): the integration suite runs
+    // many signups against a shared Redis and must not be gated, but a stray
+    // RATE_LIMIT_DISABLED in a prod env file must never disable admission
+    // control. (main.ts additionally refuses to boot in production with it
+    // set, so this branch is unreachable there — belt and braces, because the
+    // first version of this gate was simply absent from that escape hatch and
+    // nobody noticed until a test suite deadlocked on it.)
+    if (process.env.RATE_LIMIT_DISABLED === 'true' && process.env.NODE_ENV !== 'production') {
+      return async () => undefined;
+    }
+    const holder = randomUUID();
+    const now = Date.now();
+    let admitted: number;
+    try {
+      admitted = (await this.redis.client.eval(
+        ACQUIRE_PROVISIONING_SLOT_LUA,
+        1,
+        PROVISIONING.key,
+        String(now),
+        String(now - PROVISIONING.staleMs),
+        String(PROVISIONING.maxConcurrent),
+        holder,
+        String(PROVISIONING.staleMs * 2),
+      )) as number;
+    } catch (err) {
+      this.logger.error(
+        `provisioning admission check failed (DENYING — signup fails closed): ${(err as Error).message}`,
+      );
+      throw this.provisioningUnavailable();
+    }
+    if (admitted !== 1) {
+      // Not an error condition — this is the backstop doing its job. Logged at
+      // warn so a sustained flood is visible without paging on a single burst.
+      this.logger.warn(
+        `Signup refused: ${PROVISIONING.maxConcurrent} tenant databases are already being ` +
+          'provisioned. If this is not an attack, raise SIGNUP_MAX_CONCURRENT_PROVISIONING.',
+      );
+      throw this.provisioningBusy();
+    }
+    return async () => {
+      await this.redis.client.zrem(PROVISIONING.key, holder).catch(() => undefined);
+    };
+  }
+
+  /** Genuinely at capacity: {@link PROVISIONING.maxConcurrent} databases really
+   *  are being built right now. This message is TRUE, and only this path may
+   *  use it. */
+  private provisioningBusy(): HttpException {
+    return new HttpException(
+      {
+        message: "We're setting up several libraries right now. Please try again in a moment.",
+        retryAfterSec: 30,
+      },
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+
+  /**
+   * Redis is unreachable, so we cannot tell how many provisions are in flight
+   * and refuse rather than run unmetered.
+   *
+   * A separate exception from {@link provisioningBusy} on purpose. Both used to
+   * be the capacity message, which told a prospective customer — during a
+   * campaign whose whole promise is "you are one of the first five" — that we
+   * were busy with other libraries, when in reality a component of ours was
+   * down. That is a lie in the one place we are asking for trust, and it also
+   * mislabels an outage as demand: 429s look like traffic on a dashboard, so
+   * the Redis failure would have hidden inside a graph that looked like
+   * success.
+   *
+   * 503 is the honest status. HttpExceptionFilter re-skins 5xx into the generic
+   * "something went wrong on our end … here is a support code" envelope, which
+   * is exactly the right thing to say here — our fault, logged, retryable, with
+   * a code the customer can quote — so the message below is what lands in the
+   * server-side record rather than in the browser.
+   */
+  private provisioningUnavailable(): HttpException {
+    return new HttpException(
+      {
+        message:
+          'Sign-ups are temporarily unavailable: the service that meters new libraries is ' +
+          'unreachable. Nothing was created. Please try again in a minute.',
+        retryAfterSec: 60,
+      },
+      HttpStatus.SERVICE_UNAVAILABLE,
+    );
   }
 
   /**
@@ -137,17 +324,29 @@ export class AuthController {
     );
     await this.alarmIfOverBudget(
       { key: 'signup:global', ...RL.signupGlobal },
-      'Global signup rate exceeded the advisory ceiling — possible distributed signup abuse; ' +
-        'engage provisioning-side admission control',
+      'Global signup rate exceeded the advisory ceiling — possible distributed signup abuse. ' +
+        `Provisioning is capped at ${PROVISIONING.maxConcurrent} concurrent, so the cell is not ` +
+        'at risk; this is the signal to look at who is signing up',
     );
     const dto = await validateDto(SignupDto, raw);
-    // `@IsIn(LIBRARY_TYPES)` already validated libraryType; narrow the DTO's
-    // `string` to the LibraryType union for the typed service input.
-    const result = await this.signupSvc.signup({
-      ...dto,
-      ip,
-      libraryType: dto.libraryType as LibraryType,
-    });
+    // The hard backstop the per-IP bucket cannot be: a cap on how many tenant
+    // databases may be under construction at once (input-and-files-03). Held
+    // across the whole signup because CREATE DATABASE + the migration fork is
+    // what we are rationing, and released in `finally` so a failed signup — a
+    // duplicate slug, a provisioning error — hands its slot straight back.
+    const releaseSlot = await this.enterProvisioningSlot();
+    let result;
+    try {
+      // `@IsIn(LIBRARY_TYPES)` already validated libraryType; narrow the DTO's
+      // `string` to the LibraryType union for the typed service input.
+      result = await this.signupSvc.signup({
+        ...dto,
+        ip,
+        libraryType: dto.libraryType as LibraryType,
+      });
+    } finally {
+      await releaseSlot();
+    }
     // Invalidate any negative cache entry for this slug so the next
     // /t/<slug>/... request hits the fresh row.
     await this.tenantResolver.invalidate({ slug: result.tenant.slug });

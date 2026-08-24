@@ -4,7 +4,8 @@ import { useRouter } from 'next/navigation';
 import { Banner, Button, Card, CardBody, CardHeader, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { DynamicFields, type FieldDef } from '@/components/DynamicFields';
 import { AddFieldModal } from './AddFieldModal';
 import { EditFieldModal } from './EditFieldModal';
@@ -90,7 +91,7 @@ export function FieldEditor({ slug, entityKind, catalog, locale, initialFields }
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
       router.refresh();
     }
@@ -113,7 +114,7 @@ export function FieldEditor({ slug, entityKind, catalog, locale, initialFields }
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
     } finally {
       setBusyKey(null);
@@ -162,7 +163,7 @@ export function FieldEditor({ slug, entityKind, catalog, locale, initialFields }
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
       router.refresh();
     }
@@ -253,7 +254,7 @@ export function FieldEditor({ slug, entityKind, catalog, locale, initialFields }
                               : t('settings.dataModel.row.optional')}
                           </span>
                           {archived ? (
-                            <span style={{ color: 'var(--color-warning)' }}>
+                            <span style={{ color: 'var(--color-warning-text)' }}>
                               · {t('settings.dataModel.row.archived')}
                             </span>
                           ) : null}

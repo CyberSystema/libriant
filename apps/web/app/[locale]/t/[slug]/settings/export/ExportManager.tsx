@@ -3,7 +3,8 @@ import * as React from 'react';
 import { Button, Card, CardBody, CardHeader, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 
 type Format = 'csv' | 'json' | 'xlsx' | 'sql';
 type Status = 'queued' | 'running' | 'completed' | 'failed';
@@ -73,7 +74,7 @@ export function ExportManager({
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
     } finally {
       setBusy(false);

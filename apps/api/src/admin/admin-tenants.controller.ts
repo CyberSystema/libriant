@@ -28,12 +28,15 @@ import { DeleteTenantDto } from './admin-tenants.dto.js';
 
 /**
  *   GET    /admin/tenants?status=&planSlug=&q=&limit=
- *   GET    /admin/tenants/:id
+ *   GET    /admin/tenants/:id                          — owner only
  *   POST   /admin/tenants/:id/delete   — HARD delete (drop DB + cascade rows)
  *
  * Read endpoints are metadata only — admin must redeem a support key (Step 18a)
- * to see a tenant's actual library data. Delete is the one mutation here: it is
- * owner break-glass and irreversible (see the method comment).
+ * to see a tenant's actual library data. That claim was false until
+ * tenant-isolation-01: the detail route handed out the tenant's connection
+ * string, which is a way past the support-key gate that leaves no trace.
+ * Delete is the one mutation here: it is owner break-glass and irreversible
+ * (see the method comment).
  */
 @Controller('admin/tenants')
 @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -110,7 +113,21 @@ export class AdminTenantsController {
     };
   }
 
+  /**
+   * tenant-isolation-01: this select used to include `dbUrl` and `storageUrl`,
+   * and the handler carried no `@AdminRoles`, so any authenticated admin —
+   * including the support tier, the lowest platform privilege — could read a
+   * tenant's Postgres URL *with its plaintext password* out of a plain HTTP
+   * response body and then read and write that library's members, loans and
+   * fines directly in the database: no support key, no SupportSession, no
+   * SupportActionLog row. Nothing in the panel ever rendered them. The
+   * connection string belongs to provisioning and to the resolver; it has no
+   * business crossing the wire. Owner-gated too, because the rest of this
+   * detail view (billing account, Stripe customer, subscription) is
+   * owner business and the support role's job runs through /admin/support.
+   */
   @Get(':id')
+  @AdminRoles('owner')
   async get(@Param('id') id: string) {
     const tenant = await controlDb.tenant.findUnique({
       where: { id },
@@ -123,8 +140,6 @@ export class AdminTenantsController {
         primaryEmail: true,
         customSubdomain: true,
         cellId: true,
-        dbUrl: true,
-        storageUrl: true,
         createdAt: true,
         updatedAt: true,
         subscription: {

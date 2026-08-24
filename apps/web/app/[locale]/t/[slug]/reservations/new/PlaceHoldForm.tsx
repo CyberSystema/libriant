@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation';
 import { Banner, Button, Card, CardBody, FormField, Textarea, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { Combobox } from '@/components/Combobox';
 
 type MemberOption = { id: string; memberNumber: string; fullName: string; email: string | null };
@@ -74,7 +75,7 @@ export function PlaceHoldForm({ slug, catalog, locale }: Props) {
       router.push(`/${locale}/t/${slug}/reservations`);
       router.refresh();
     } catch (err) {
-      setFormError(err instanceof ApiError ? err.message : t('common.states.error'));
+      setFormError(translateApiError(err, t, t('common.states.error')));
       setSubmitting(false);
     }
   }

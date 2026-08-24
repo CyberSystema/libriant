@@ -4,7 +4,8 @@ import { Banner, Card, CardBody, CardHeader, PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale, type Locale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { guessPlatformFromRequest, type DesktopPlatform } from '@/lib/desktop-server';
 
 export const dynamic = 'force-dynamic';
@@ -44,7 +45,7 @@ export default async function DesktopPage(props: {
   try {
     info = await api<ReleaseInfo>(`/t/${params.slug}/desktop/release`, { cookie });
   } catch (err) {
-    fetchError = err instanceof ApiError ? err.message : t('common.states.error');
+    fetchError = translateApiError(err, t, t('common.states.error'));
   }
 
   const guessed = await guessPlatformFromRequest();

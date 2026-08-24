@@ -3,6 +3,20 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * A value that changes on every build, inlined into the client bundle and used
+ * to register the service worker as `/sw.js?v=<buildId>` (see lib/offline.ts).
+ *
+ * frontend-27: `public/sw.js` is byte-identical between deploys, so without
+ * this the browser never notices a new worker, never re-runs install/activate,
+ * and the caches named after the worker's version are never evicted — they grow
+ * by one full set of hashed chunks per release and a corrected `offline.html`
+ * never reaches an existing install. CI can pin it (`LIBRIANT_BUILD_ID`, e.g.
+ * the commit sha) so the same build is reproducible; otherwise the build's own
+ * timestamp is enough to make each deploy distinct.
+ */
+const buildId = process.env.LIBRIANT_BUILD_ID || Date.now().toString(36);
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -11,6 +25,9 @@ const nextConfig = {
   // (standalone) output traces.
   outputFileTracingRoot: path.join(here, '../../'),
   transpilePackages: ['@libriant/ui', '@libriant/i18n', '@libriant/shared'],
+  // Inlined at build time (NOT re-read at `next start`), which is what makes it
+  // a build id rather than a process id.
+  env: { NEXT_PUBLIC_BUILD_ID: buildId },
   // Don't bundle SVGs from /assets into JS — they're served via the
   // `/_assets/*` route so designers can hot-swap files at runtime.
   // Also proxy /lbr-api/* to the NestJS API so browser fetches stay

@@ -14,6 +14,14 @@ import { EffectivePlanService } from '../../src/plans/effective-plan.service.js'
 import { processImportJob } from '../../src/import/import-worker.js';
 import { loadEnv } from '../../src/config/env.js';
 import { listenOnce } from './listen-once.js';
+import { declareBillingPosture } from './billing-posture.js';
+
+declareBillingPosture(
+  'enforced',
+  'The first case exists to prove the bulk-import gate answers 402 when the plan does not ' +
+    'include it. With subscriptions off EffectivePlanService returns unlimitedPlan(), the gate ' +
+    'is open, and that assertion tests nothing.',
+);
 
 /**
  * Full bulk-import API + worker drill: upload → map → validate → commit,

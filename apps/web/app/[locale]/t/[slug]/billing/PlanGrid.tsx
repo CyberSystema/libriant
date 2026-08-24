@@ -3,7 +3,8 @@ import * as React from 'react';
 import { Button, Card, useToast } from '@libriant/ui';
 import type { Catalog, Locale, Translator } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 
 export type AvailablePlan = {
   id: string;
@@ -117,7 +118,7 @@ export function PlanGrid({ plans, slug, catalog, locale }: Props) {
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
       setBusy(null);
     }

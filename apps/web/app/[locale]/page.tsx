@@ -1,10 +1,11 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { isLocale, createTranslator, LOCALE_DISPLAY, SUPPORTED_LOCALES } from '@libriant/i18n';
+import { isLocale, createTranslator } from '@libriant/i18n';
 import { Asset, PoweredBy } from '@libriant/ui';
 import { loadCatalog } from '@/lib/locale-loader';
 import { LegalFooterLinks } from '@/components/LegalFooterLinks';
+import { LocaleSwitcher } from '@/components/LocaleSwitcher';
 
 /**
  * Public marketing landing page (the apex `/<locale>`). Introduces Libriant
@@ -74,18 +75,15 @@ export default async function LandingPage(props: { params: Promise<{ locale: str
           <Asset name="brand/logo" width={140} height={35} />
         </Link>
         <nav className="lbr-landing__nav-actions">
-          <div className="lbr-landing__locales" aria-label={t('common.nav.language')}>
-            {SUPPORTED_LOCALES.map((loc) => (
-              <Link
-                key={loc}
-                href={`/${loc}`}
-                className={`lbr-landing__locale${loc === locale ? ' lbr-landing__locale--active' : ''}`}
-                aria-current={loc === locale ? 'page' : undefined}
-              >
-                {LOCALE_DISPLAY[loc].native}
-              </Link>
-            ))}
-          </div>
+          {/* Same control as the one in the app shell, so a click here is
+              remembered and `/` stops sending the reader back to English. */}
+          <LocaleSwitcher
+            locale={locale}
+            label={t('common.nav.language')}
+            className="lbr-landing__locales"
+            optionClassName="lbr-landing__locale"
+            activeOptionClassName="lbr-landing__locale--active"
+          />
           <Link href={`/${locale}/login`} className="lbr-btn lbr-btn--ghost">
             {t('landing.nav.login')}
           </Link>

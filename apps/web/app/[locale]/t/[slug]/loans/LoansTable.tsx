@@ -78,7 +78,7 @@ export function LoansTable({ catalog, locale, slug, status, overdue, initial }: 
         }
         if (days <= 3) {
           return (
-            <span style={{ color: 'var(--color-warning)' }}>
+            <span style={{ color: 'var(--color-warning-text)' }}>
               {dueStr} · {t('loans.dueIn', { days })}
             </span>
           );

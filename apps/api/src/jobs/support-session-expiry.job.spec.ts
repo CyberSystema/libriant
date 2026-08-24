@@ -27,9 +27,15 @@ vi.mock('../config/env.js', () => ({
 
 import { sweepExpiredSupportSessions } from './support-session-expiry.job.js';
 import type { EmailService } from '../email/email.service.js';
+import type { JobContext } from './jobs.types.js';
 
-function ctx() {
-  return { emails: { enqueue: emailEnqueue } as unknown as EmailService };
+function ctx(): JobContext {
+  return {
+    emails: { enqueue: emailEnqueue } as unknown as EmailService,
+    // The runner hands every handler a connected client; this sweep doesn't
+    // touch it, but the shape has to be honest.
+    redis: { ready: async () => undefined } as unknown as JobContext['redis'],
+  };
 }
 
 describe('sweepExpiredSupportSessions', () => {

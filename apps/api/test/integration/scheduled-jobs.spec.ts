@@ -6,6 +6,13 @@ import {
   type ScheduledJobsHandle,
 } from '../../src/jobs/scheduled-jobs.runner.js';
 import type { JobContext, ScheduledJob } from '../../src/jobs/jobs.types.js';
+import { declareBillingPosture } from './billing-posture.js';
+
+declareBillingPosture(
+  'unenforced',
+  'This spec drives the BullMQ scheduler with stub job handlers and never touches a tenant, ' +
+    'a plan or a quota, so it runs the configuration customers actually get.',
+);
 
 /**
  * The scheduled-jobs runner drives every cron in the product — member due-soon

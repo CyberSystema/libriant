@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="el">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Offline · Libriant</title>
+    <title>Εκτός σύνδεσης · Libriant</title>
     <style>
       :root {
         color-scheme: light;
@@ -199,12 +199,44 @@
           stroke-width="1.2"
         />
       </svg>
-      <h1>You're offline</h1>
-      <p>
-        Libriant can't reach the network right now. Pages you've already opened may still be
-        available — otherwise reconnect and try again.
-      </p>
-      <button type="button" onclick="location.reload()">Try again</button>
+      <!-- Both languages ship inline: this page is served by the service worker
+           with no network at all, so it cannot fetch a catalogue. Greek is the
+           default because Greek libraries are the customer; the script below
+           switches to English only when the reader has actually asked for it. -->
+      <div data-lang="el">
+        <h1>Είστε εκτός σύνδεσης</h1>
+        <p>
+          Το Libriant δεν μπορεί να συνδεθεί στο δίκτυο αυτή τη στιγμή. Οι σελίδες που έχετε ήδη
+          ανοίξει μπορεί να είναι ακόμη διαθέσιμες — διαφορετικά επανασυνδεθείτε και δοκιμάστε ξανά.
+        </p>
+        <button type="button" onclick="location.reload()">Δοκιμάστε ξανά</button>
+      </div>
+      <div data-lang="en" lang="en" hidden>
+        <h1>You're offline</h1>
+        <p>
+          Libriant can't reach the network right now. Pages you've already opened may still be
+          available — otherwise reconnect and try again.
+        </p>
+        <button type="button" onclick="location.reload()">Try again</button>
+      </div>
     </main>
+    <script>
+      (function () {
+        // The in-app language switch writes `libriant_locale`; honour it first.
+        // Otherwise fall back to the browser's language, and to Greek when
+        // neither says anything useful. No JS at all still leaves Greek visible.
+        var cookie = / libriant_locale=([^;]*)/.exec('; ' + document.cookie);
+        var pick = cookie && cookie[1];
+        if (pick !== 'en' && pick !== 'el') {
+          pick = (navigator.language || '').toLowerCase().indexOf('en') === 0 ? 'en' : 'el';
+        }
+        document.documentElement.lang = pick;
+        document.title = (pick === 'en' ? 'Offline' : 'Εκτός σύνδεσης') + ' · Libriant';
+        var blocks = document.querySelectorAll('[data-lang]');
+        for (var i = 0; i < blocks.length; i++) {
+          blocks[i].hidden = blocks[i].getAttribute('data-lang') !== pick;
+        }
+      })();
+    </script>
   </body>
 </html>

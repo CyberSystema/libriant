@@ -4,6 +4,7 @@ import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { fetchOpenLibraryBook } from '../catalog/openlibrary.js';
 import { pinWorkerConnLimit } from './fine-accrual.job.js';
+import { describeError } from './job-error.js';
 import type { JobResult } from './jobs.types.js';
 
 /**
@@ -59,6 +60,10 @@ export async function refreshBookMetadata(): Promise<JobResult> {
   let enriched = 0;
   let attempted = 0;
   let failed = 0;
+  // Transport errors talking to OpenLibrary. Informational on purpose — see
+  // the note on the tenant loop below for why these do NOT flip the run red
+  // on their own.
+  let fetchErrors = 0;
   try {
     for (const t of tenants) {
       // One connection per tenant — overlapping crons mustn't multiply pools
@@ -72,28 +77,58 @@ export async function refreshBookMetadata(): Promise<JobResult> {
         const res = await refreshOneTenant(ctx, tenantPrisma);
         enriched += res.enriched;
         attempted += res.attempted;
+        fetchErrors += res.fetchErrors;
+        // reliability-07 at row granularity. The per-book `catch` around the
+        // OpenLibrary call used to `logger.debug` and continue, bumping
+        // nothing: with OpenLibrary unreachable every candidate was skipped,
+        // `attempted` stayed 0, and the sweep reported "N tenant(s) scanned;
+        // no books needed metadata" — a clean success for a run that did
+        // literally nothing, for six hours at a time.
+        //
+        // Judgement call on the threshold: a single flaky fetch among forty is
+        // noise (the 5 s timeout will trip occasionally on a free public API),
+        // and a job that goes red for six hours over one aborted request
+        // trains everyone to ignore it. So the failure signal is "this tenant
+        // had candidates and got NOTHING through" — zero progress despite
+        // trying — which is the state that actually means the sweep is broken.
+        // The raw count is still reported either way.
+        if (res.attempted === 0 && res.fetchErrors > 0) {
+          failed++;
+          logger.warn(
+            `metadata refresh made no progress for tenant=${t.slug}: ` +
+              `all ${res.fetchErrors} OpenLibrary fetch(es) failed`,
+          );
+        }
       } catch (err) {
         failed++;
-        logger.warn(`metadata refresh failed for tenant=${t.slug}: ${(err as Error).message}`);
+        logger.warn(`metadata refresh failed for tenant=${t.slug}: ${describeError(err)}`);
       }
     }
   } finally {
     await tenantPrisma.onModuleDestroy().catch(() => undefined);
   }
 
+  const summary =
+    attempted === 0
+      ? `${tenants.length} tenant(s) scanned; no books needed metadata`
+      : `enriched ${enriched}/${attempted} book(s) across ${tenants.length} tenant(s)`;
+
   return {
-    message:
-      attempted === 0
-        ? `${tenants.length} tenant(s) scanned; no books needed metadata`
-        : `enriched ${enriched}/${attempted} book(s) across ${tenants.length} tenant(s)`,
-    counts: { enriched, attempted, tenantsScanned: tenants.length, tenantsFailed: failed },
+    message: fetchErrors === 0 ? summary : `${summary}; ${fetchErrors} OpenLibrary fetch error(s)`,
+    counts: {
+      enriched,
+      attempted,
+      fetchErrors,
+      tenantsScanned: tenants.length,
+      tenantsFailed: failed,
+    },
   };
 }
 
 async function refreshOneTenant(
   ctx: TenantContext,
   tenantPrisma: TenantPrismaService,
-): Promise<{ enriched: number; attempted: number }> {
+): Promise<{ enriched: number; attempted: number; fetchErrors: number }> {
   const client = tenantPrisma.getClient(ctx);
   const cutoff = new Date(Date.now() - REFRESH_INTERVAL_DAYS * MS_PER_DAY);
 
@@ -129,6 +164,7 @@ async function refreshOneTenant(
 
   let enriched = 0;
   let attempted = 0;
+  let fetchErrors = 0;
   for (const book of candidates) {
     if (!book.isbn13) continue;
     let result;
@@ -136,8 +172,11 @@ async function refreshOneTenant(
       result = await fetchOpenLibraryBook(book.isbn13);
     } catch (err) {
       // Transient transport failure — leave metadataRefreshedAt untouched so
-      // the next sweep retries this book.
-      logger.debug(`OpenLibrary fetch failed for isbn=${book.isbn13}: ${(err as Error).message}`);
+      // the next sweep retries this book. Counted, not just logged: a `catch`
+      // that bumps nothing is how a 100%-failing run reported success (the
+      // caller decides what the count means).
+      fetchErrors++;
+      logger.debug(`OpenLibrary fetch failed for isbn=${book.isbn13}: ${describeError(err)}`);
       continue;
     }
     attempted++;
@@ -171,5 +210,5 @@ async function refreshOneTenant(
     await sleep(INTER_REQUEST_MS);
   }
 
-  return { enriched, attempted };
+  return { enriched, attempted, fetchErrors };
 }

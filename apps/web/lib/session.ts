@@ -32,6 +32,11 @@ export async function hasSessionCookie(): Promise<boolean> {
  * instead of silently logging the user out.
  */
 export async function currentSession(): Promise<AuthMeResponse | null> {
+  // Probe only when a session cookie is actually there. `requestCookieHeader()`
+  // hands back the WHOLE cookie header, so without this guard any cookie at all
+  // — a consent flag, an analytics id — made /auth/me fire, and /login therefore
+  // depended on the API being up for anyone who had ever visited before.
+  if (!(await hasSessionCookie())) return null;
   const cookie = await requestCookieHeader();
   if (!cookie) return null;
   try {
@@ -45,5 +50,21 @@ export async function currentSession(): Promise<AuthMeResponse | null> {
       return null;
     }
     throw err;
+  }
+}
+
+/**
+ * `currentSession()` for pages that are worth rendering even when the API is
+ * unreachable — the sign-in and sign-up cards. Both only use the session to
+ * skip a form the visitor doesn't need; neither has anything to gain from
+ * failing the whole render because /auth/me timed out. Swallow everything and
+ * show the form: a librarian trying to sign in during an outage should at
+ * least reach the field they were heading for.
+ */
+export async function optionalSession(): Promise<AuthMeResponse | null> {
+  try {
+    return await currentSession();
+  } catch {
+    return null;
   }
 }

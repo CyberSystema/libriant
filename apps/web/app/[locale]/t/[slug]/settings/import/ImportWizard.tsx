@@ -2,7 +2,8 @@
 import * as React from 'react';
 import { Banner, Button, Card, CardBody, CardHeader, EmptyState } from '@libriant/ui';
 import { createTranslator, type Catalog, type Locale } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { API_JOB_TIMEOUT_MS, ApiError, api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 
 // ---- shared shapes (mirror the API) ---------------------------------------
 export type FieldDef = { key: string; label: string; kind: string; required?: boolean };
@@ -118,7 +119,7 @@ export function ImportWizard({ catalog, locale, slug, entities, initialBatches }
   }
 
   function fail(err: unknown) {
-    const msg = err instanceof ApiError ? err.message : t('import.toast.error');
+    const msg = translateApiError(err, t, t('import.toast.error'));
     setError(msg);
   }
 
@@ -146,6 +147,10 @@ export function ImportWizard({ catalog, locale, slug, entities, initialBatches }
         method: 'POST',
         body: form,
         credentials: 'include',
+        // Multipart bypasses `api()`, so it bypassed its deadline too. A CSV
+        // upload can legitimately take a while; a wedged API must not leave
+        // the button spinning for undici's five minutes.
+        signal: AbortSignal.timeout(API_JOB_TIMEOUT_MS),
       });
       const body = (await res.json()) as DetailResponse & { message?: string };
       if (!res.ok) throw new ApiError(res.status, body);
@@ -206,8 +211,12 @@ export function ImportWizard({ catalog, locale, slug, entities, initialBatches }
     setBusy(true);
     try {
       await saveMapping(detail.batch.id);
+      // Validate/commit parses the whole file before answering — the one call
+      // in this app that legitimately needs longer than the interactive
+      // deadline.
       const updated = await api<ImportBatchDto>(`${apiBase}/${detail.batch.id}/${phase}`, {
         method: 'POST',
+        timeoutMs: API_JOB_TIMEOUT_MS,
       });
       const res = await api<DetailResponse>(`${apiBase}/${detail.batch.id}`);
       setDetail({ ...res, batch: updated.status ? updated : res.batch });
@@ -720,7 +729,7 @@ function StatusBadge(props: { t: T; status: string }) {
       : props.status === 'failed'
         ? 'var(--color-danger)'
         : props.status === 'partially_completed' || props.status === 'canceled'
-          ? 'var(--color-warning, #b26a00)'
+          ? 'var(--color-warning-text, #7c5e00)'
           : 'var(--color-text-muted)';
   return (
     <span style={{ color, fontWeight: 600, fontSize: 'var(--fs-sm)' }}>

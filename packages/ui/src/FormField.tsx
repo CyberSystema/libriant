@@ -16,16 +16,18 @@ type FormFieldProps = {
    * hint is hidden — we don't want to compete with the actionable error.
    */
   error?: React.ReactNode;
-  /** Mark visually as required. Server-side validation is still the source of truth. */
+  /** Mark as required. Server-side validation is still the source of truth. */
   required?: boolean;
   /**
-   * The actual input. We inject `id`, `aria-describedby`, and `aria-invalid`
-   * via `React.cloneElement` so the consumer doesn't have to keep them in sync.
+   * The actual input. We inject `id`, `aria-describedby`, `aria-invalid` and
+   * `aria-required` via `React.cloneElement` so the consumer doesn't have to
+   * keep them in sync.
    */
   children: React.ReactElement<{
     id?: string;
     'aria-describedby'?: string;
     'aria-invalid'?: boolean | 'true' | 'false';
+    'aria-required'?: boolean | 'true' | 'false';
     invalid?: boolean;
   }>;
   className?: string;
@@ -66,6 +68,13 @@ export function FormField({
         id,
         'aria-describedby': describedBy,
         'aria-invalid': error ? true : undefined,
+        // The asterisk above is `aria-hidden`, correctly — but it used to be
+        // the *only* signal that a field was mandatory, so screen-reader users
+        // could not tell until submission failed (frontend-23, WCAG 3.3.2).
+        // `aria-required` rather than the native `required` attribute: the
+        // forms here submit with their own validation and a browser bubble
+        // fighting the inline error helps nobody.
+        'aria-required': required ? true : undefined,
         invalid: error ? true : undefined,
       })}
       {error ? (

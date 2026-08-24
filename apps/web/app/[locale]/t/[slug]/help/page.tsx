@@ -3,7 +3,8 @@ import { notFound } from 'next/navigation';
 import { Banner, Card, CardBody, EmptyState, PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { HelpSearch } from './HelpSearch';
 
 export const dynamic = 'force-dynamic';
@@ -43,7 +44,7 @@ export default async function HelpIndexPage(props: {
     list = await api<ListResponse>(`/help/articles?${qs.toString()}`);
   } catch (err) {
     list = { locale: params.locale, items: [], query: q ?? null };
-    fetchError = err instanceof ApiError ? err.message : t('common.states.error');
+    fetchError = translateApiError(err, t, t('common.states.error'));
   }
 
   return (

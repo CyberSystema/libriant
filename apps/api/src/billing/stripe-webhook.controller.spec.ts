@@ -1,16 +1,29 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock the DB so the controller's persistence calls become no-ops.
-const { stripeUpsert, stripeUpdate } = vi.hoisted(() => ({
-  stripeUpsert: vi.fn().mockResolvedValue({}),
+// Mock the DB. The controller does NOT upsert: it CREATEs and lets the unique
+// violation tell it this delivery is a replay, then reads processedAt to learn
+// whether the earlier delivery finished. That distinction is the whole durable
+// replay guard, so the mock has to model it rather than flatten it.
+const { stripeCreate, stripeFindUnique, stripeUpdate } = vi.hoisted(() => ({
+  stripeCreate: vi.fn().mockResolvedValue({}),
+  stripeFindUnique: vi.fn().mockResolvedValue(null),
   stripeUpdate: vi.fn().mockResolvedValue({}),
 }));
 vi.mock('@libriant/db-control', () => ({
   controlDb: {
-    stripeWebhookEvent: { upsert: stripeUpsert, update: stripeUpdate },
+    stripeWebhookEvent: {
+      create: stripeCreate,
+      findUnique: stripeFindUnique,
+      update: stripeUpdate,
+    },
   },
 }));
+
+/** What Prisma throws when the event id is already in the table. */
+function uniqueViolation() {
+  return Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
+}
 
 import { StripeWebhookController } from './stripe-webhook.controller.js';
 import type { StripeDriver, StripeWebhookEvent } from './stripe-driver.js';
@@ -21,9 +34,12 @@ import type { BillingService } from './billing.service.js';
  * values so we can assert exactly what the dedupe contract does.
  */
 function makeRedis() {
-  const set = vi.fn();
-  const del = vi.fn();
-  const get = vi.fn();
+  // Every one of these is awaited (and .catch()ed) by the controller, so they
+  // must return promises — a bare vi.fn() yields undefined and the controller
+  // dies on `.catch` of undefined, which looks like a product bug and is not.
+  const set = vi.fn().mockResolvedValue('OK');
+  const del = vi.fn().mockResolvedValue(1);
+  const get = vi.fn().mockResolvedValue(null);
   return {
     service: { client: { set, del, get } } as never,
     set,
@@ -58,8 +74,9 @@ const sampleEvent: StripeWebhookEvent = {
 
 describe('StripeWebhookController.handle', () => {
   beforeEach(() => {
-    stripeUpsert.mockClear();
-    stripeUpdate.mockClear();
+    stripeCreate.mockReset().mockResolvedValue({});
+    stripeFindUnique.mockReset().mockResolvedValue(null);
+    stripeUpdate.mockReset().mockResolvedValue({});
   });
 
   it('rejects 400 when stripe-signature header is missing', async () => {
@@ -113,7 +130,7 @@ describe('StripeWebhookController.handle', () => {
       'NX',
     );
     expect(billing.syncStripeSubscription).toHaveBeenCalledTimes(1);
-    expect(stripeUpsert).toHaveBeenCalledTimes(1);
+    expect(stripeCreate).toHaveBeenCalledTimes(1);
     // processedAt + clear error
     expect(stripeUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -133,9 +150,10 @@ describe('StripeWebhookController.handle', () => {
 
     expect(out).toEqual({ received: true, deduped: true });
     expect(billing.syncStripeSubscription).not.toHaveBeenCalled();
-    // The durable row is now persisted BEFORE the Redis dedupe lock (audit
-    // billing-3), so the upsert still runs even when this delivery is a dup.
-    expect(stripeUpsert).toHaveBeenCalledTimes(1);
+    // The durable row is written BEFORE the Redis lock is taken, so it exists
+    // even for a delivery that loses the race — which is what lets the retry
+    // sweep find an event that crashed mid-dispatch.
+    expect(stripeCreate).toHaveBeenCalledTimes(1);
   });
 
   it('drops the Redis lock when dispatch throws so Stripe retries can re-attempt', async () => {
@@ -159,6 +177,68 @@ describe('StripeWebhookController.handle', () => {
         data: expect.objectContaining({ error: 'billing exploded' }),
       }),
     );
+  });
+
+  it('treats a completed earlier delivery as a replay, without Redis and without dispatching', async () => {
+    const redis = makeRedis();
+    stripeCreate.mockRejectedValue(uniqueViolation());
+    stripeFindUnique.mockResolvedValue({ processedAt: new Date('2026-08-01T00:00:00Z') });
+    const billing = makeBilling();
+    const c = new StripeWebhookController(makeStripeDriver(sampleEvent), billing, redis.service);
+
+    const out = await c.handle({ rawBody: Buffer.from('{}') } as never, 'sig');
+
+    expect(out).toEqual({ received: true, deduped: true });
+    expect(billing.syncStripeSubscription).not.toHaveBeenCalled();
+    // The durable row answered on its own. Redis is never consulted, which is
+    // the property that makes the replay guard survive a Redis outage.
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('re-dispatches an event whose earlier delivery never finished (processedAt null)', async () => {
+    const redis = makeRedis();
+    stripeCreate.mockRejectedValue(uniqueViolation());
+    stripeFindUnique.mockResolvedValue({ processedAt: null });
+    const billing = makeBilling();
+    const c = new StripeWebhookController(makeStripeDriver(sampleEvent), billing, redis.service);
+
+    const out = await c.handle({ rawBody: Buffer.from('{}') } as never, 'sig');
+
+    // A row is not a completion. An event that crashed mid-dispatch MUST be
+    // retried, or the subscription state stays wrong forever.
+    expect(out).toEqual({ received: true });
+    expect(billing.syncStripeSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it('still processes the event when Redis is unreachable but the durable row was written', async () => {
+    const redis = makeRedis();
+    redis.set.mockRejectedValue(new Error('Stream is not writeable'));
+    const billing = makeBilling();
+    const c = new StripeWebhookController(makeStripeDriver(sampleEvent), billing, redis.service);
+
+    const out = await c.handle({ rawBody: Buffer.from('{}') } as never, 'sig');
+
+    // Losing Redis costs only protection against two SIMULTANEOUS deliveries
+    // of an event that never completed. It must not turn every webhook into a
+    // 500 — Stripe would retry the lot and the outage would compound.
+    expect(out).toEqual({ received: true });
+    expect(billing.syncStripeSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses with 503 when NEITHER store is reachable, so Stripe redelivers', async () => {
+    const redis = makeRedis();
+    redis.set.mockRejectedValue(new Error('Stream is not writeable'));
+    stripeCreate.mockRejectedValue(new Error('could not connect to server'));
+    const billing = makeBilling();
+    const c = new StripeWebhookController(makeStripeDriver(sampleEvent), billing, redis.service);
+
+    // With no replay guard at all we cannot tell a first delivery from the
+    // fifth retry of one already applied, and could not record the outcome
+    // either. Refusing is the only honest answer; Stripe redelivers for days.
+    await expect(c.handle({ rawBody: Buffer.from('{}') } as never, 'sig')).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+    expect(billing.syncStripeSubscription).not.toHaveBeenCalled();
   });
 
   it('routes each event type to its billing handler', async () => {

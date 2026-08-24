@@ -11,7 +11,8 @@ import {
   useToast,
 } from '@libriant/ui';
 import { createTranslator, type Catalog, type Locale } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 
 type PendingKey = {
   id: string;
@@ -79,8 +80,7 @@ export function SupportAccessPanel({
   const [revokeOpen, setRevokeOpen] = React.useState(false);
   const [endSessionOpen, setEndSessionOpen] = React.useState(false);
 
-  const errTitle = (err: unknown) =>
-    err instanceof ApiError ? err.message : t('errors.generic.title');
+  const errTitle = (err: unknown) => translateApiError(err, t, t('errors.generic.title'));
 
   async function generate() {
     setBusy(true);
@@ -256,7 +256,7 @@ export function SupportAccessPanel({
                         })}
                       </span>
                     ) : (
-                      <span style={{ color: 'var(--color-warning)' }}>
+                      <span style={{ color: 'var(--color-warning-text)' }}>
                         {t('support.access.stillActive')}
                       </span>
                     )}

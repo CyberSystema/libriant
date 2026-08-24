@@ -1,7 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { stripeFindMany, stripeUpdate, billingMethods, redisDestroy } = vi.hoisted(() => ({
+const {
+  stripeFindMany,
+  stripeCount,
+  stripeUpdate,
+  billingMethods,
+  redisDestroy,
+  redisReady,
+  redisSet,
+  redisDel,
+} = vi.hoisted(() => ({
   stripeFindMany: vi.fn(),
+  /** Rows past the give-up budget — the `abandoned` backlog gauge. */
+  stripeCount: vi.fn().mockResolvedValue(0),
   stripeUpdate: vi.fn().mockResolvedValue({}),
   billingMethods: {
     syncStripeSubscription: vi.fn().mockResolvedValue(undefined),
@@ -10,11 +21,18 @@ const { stripeFindMany, stripeUpdate, billingMethods, redisDestroy } = vi.hoiste
     handleStripeInvoiceFailed: vi.fn().mockResolvedValue(undefined),
   },
   redisDestroy: vi.fn().mockResolvedValue(undefined),
+  redisReady: vi.fn().mockResolvedValue(undefined),
+  redisSet: vi.fn().mockResolvedValue('OK'),
+  redisDel: vi.fn().mockResolvedValue(1),
 }));
 
 vi.mock('@libriant/db-control', () => ({
   controlDb: {
-    stripeWebhookEvent: { findMany: stripeFindMany, update: stripeUpdate },
+    stripeWebhookEvent: {
+      findMany: stripeFindMany,
+      count: stripeCount,
+      update: stripeUpdate,
+    },
   },
 }));
 vi.mock('../config/env.js', () => ({
@@ -49,24 +67,74 @@ vi.mock('../platform/redis.service.js', () => ({
     // (short TTL) before dispatch — deliberately NOT the controller's 30-day
     // `stripe:event:<id>` dedup key, so it can rescue crash-recovery rows the
     // controller already locked. set→'OK' = lock acquired, so each row is
-    // processed and the existing succeeded/stillFailing assertions hold.
+    // processed and the existing succeeded/retryFailed assertions hold.
     return {
-      client: {
-        set: vi.fn().mockResolvedValue('OK'),
-        del: vi.fn().mockResolvedValue(1),
-      },
+      client: { set: redisSet, del: redisDel },
+      ready: redisReady,
       onModuleDestroy: redisDestroy,
     };
   }),
 }));
 
 import { sweepFailedStripeWebhooks } from './stripe-retry.job.js';
+import { RedisService } from '../platform/redis.service.js';
+import type { JobContext } from './jobs.types.js';
+
+const SUB_UPDATED = {
+  id: 'evt_1',
+  type: 'customer.subscription.updated',
+  payloadJson: { id: 'evt_1', type: 'customer.subscription.updated', data: { object: {} } },
+};
 
 describe('sweepFailedStripeWebhooks', () => {
   beforeEach(() => {
     stripeFindMany.mockReset();
+    stripeCount.mockReset().mockResolvedValue(0);
     stripeUpdate.mockClear();
+    vi.mocked(RedisService).mockClear();
+    redisReady.mockReset().mockResolvedValue(undefined);
+    redisSet.mockReset().mockResolvedValue('OK');
+    redisDel.mockReset().mockResolvedValue(1);
     for (const fn of Object.values(billingMethods)) fn.mockClear();
+  });
+
+  it('does not claim the sweep lock before the socket is ready', async () => {
+    // reliability-16: same cold-client defect as member-notifications, but the
+    // throw is not caught per row — the whole sweep aborted having retried
+    // nothing, and only ever when there was actually something to retry.
+    let socketReady = false;
+    redisReady.mockImplementation(async () => {
+      socketReady = true;
+    });
+    redisSet.mockImplementation(async () => {
+      if (!socketReady) {
+        throw new Error("Stream isn't writeable and enableOfflineQueue options is false");
+      }
+      return 'OK';
+    });
+    stripeFindMany.mockResolvedValue([SUB_UPDATED]);
+
+    const result = await sweepFailedStripeWebhooks();
+
+    expect(redisReady).toHaveBeenCalled();
+    expect(result.counts?.succeeded).toBe(1);
+  });
+
+  it("borrows the runner's long-lived client and does not close it", async () => {
+    stripeFindMany.mockResolvedValue([SUB_UPDATED]);
+    const shared = {
+      redis: {
+        client: { set: redisSet, del: redisDel },
+        ready: vi.fn().mockResolvedValue(undefined),
+        onModuleDestroy: vi.fn(),
+      },
+    };
+
+    await sweepFailedStripeWebhooks(shared as unknown as JobContext);
+
+    expect(shared.redis.ready).toHaveBeenCalled();
+    expect(shared.redis.onModuleDestroy).not.toHaveBeenCalled();
+    expect(vi.mocked(RedisService)).not.toHaveBeenCalled();
   });
 
   it('returns a no-op summary when nothing has failed', async () => {
@@ -74,7 +142,10 @@ describe('sweepFailedStripeWebhooks', () => {
 
     const result = await sweepFailedStripeWebhooks();
 
-    expect(result).toEqual({ message: 'no failed events to retry', counts: { retried: 0 } });
+    expect(result).toEqual({
+      message: 'no failed events to retry',
+      counts: { retried: 0, abandoned: 0 },
+    });
     expect(stripeUpdate).not.toHaveBeenCalled();
   });
 
@@ -95,7 +166,7 @@ describe('sweepFailedStripeWebhooks', () => {
     const result = await sweepFailedStripeWebhooks();
 
     expect(result.counts?.succeeded).toBe(2);
-    expect(result.counts?.stillFailing).toBe(0);
+    expect(result.counts?.retryFailed).toBe(0);
     expect(billingMethods.syncStripeSubscription).toHaveBeenCalledTimes(1);
     expect(billingMethods.handleStripeInvoicePaid).toHaveBeenCalledTimes(1);
     expect(stripeUpdate).toHaveBeenCalledTimes(2);
@@ -104,7 +175,7 @@ describe('sweepFailedStripeWebhooks', () => {
     });
   });
 
-  it('records the still-failing error message and bumps stillFailing count', async () => {
+  it('records the still-failing error message and bumps retryFailed count', async () => {
     stripeFindMany.mockResolvedValue([
       {
         id: 'evt_1',
@@ -117,7 +188,7 @@ describe('sweepFailedStripeWebhooks', () => {
     const result = await sweepFailedStripeWebhooks();
 
     expect(result.counts?.succeeded).toBe(0);
-    expect(result.counts?.stillFailing).toBe(1);
+    expect(result.counts?.retryFailed).toBe(1);
     expect(stripeUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ error: 'db lost' }),
@@ -144,5 +215,35 @@ describe('sweepFailedStripeWebhooks', () => {
     stripeFindMany.mockResolvedValue([]);
     await sweepFailedStripeWebhooks();
     expect(stripeFindMany).toHaveBeenCalledWith(expect.objectContaining({ take: 50 }));
+  });
+
+  it('drops rows past the give-up budget out of the retry set', async () => {
+    // A row that cannot be processed at all was re-dispatched every 5 minutes
+    // for 30 days, failing each time — which pinned the job at ok:false
+    // forever once `stillFailing` counted as a failure. The retry set is now
+    // age-bounded so the poison row stops being retried.
+    stripeFindMany.mockResolvedValue([]);
+
+    await sweepFailedStripeWebhooks();
+
+    const where = stripeFindMany.mock.calls[0]![0].where;
+    expect(where.receivedAt.gte).toBeInstanceOf(Date);
+    // ~24h ago, give or take the millisecond the test took.
+    expect(Date.now() - where.receivedAt.gte.getTime()).toBeGreaterThan(23 * 60 * 60_000);
+  });
+
+  it('still reports the abandoned pile, it just does not call the run broken', async () => {
+    // Dropping a row from the retry set must not drop it from the operator's
+    // view: `abandoned` is a backlog key (see scheduled-jobs.runner.ts), so it
+    // prints in the health message without flipping `ok`.
+    stripeFindMany.mockResolvedValue([]);
+    stripeCount.mockResolvedValue(3);
+
+    const result = await sweepFailedStripeWebhooks();
+
+    expect(result.counts?.abandoned).toBe(3);
+    expect(stripeCount).toHaveBeenCalledWith({
+      where: { processedAt: null, receivedAt: { lt: expect.any(Date) } },
+    });
   });
 });

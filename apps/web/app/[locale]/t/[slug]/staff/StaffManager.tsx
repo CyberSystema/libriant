@@ -3,7 +3,8 @@ import * as React from 'react';
 import { Banner, Button, Card, CardBody, CardHeader, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 
 type StaffRole = 'owner' | 'admin' | 'librarian' | 'volunteer';
 type AssignableRole = 'admin' | 'librarian' | 'volunteer';
@@ -49,7 +50,7 @@ export function StaffManager({
   function fail(err: unknown) {
     toast.show({
       severity: 'critical',
-      title: err instanceof ApiError ? err.message : t('common.states.error'),
+      title: translateApiError(err, t, t('common.states.error')),
     });
   }
 
@@ -206,7 +207,9 @@ export function StaffManager({
                       <td>
                         <strong>{m.fullName}</strong>
                         {m.mustChangeCredentials ? (
-                          <div style={{ color: 'var(--color-warning)', fontSize: 'var(--fs-xs)' }}>
+                          <div
+                            style={{ color: 'var(--color-warning-text)', fontSize: 'var(--fs-xs)' }}
+                          >
                             {t('settings.staff.pendingSetup')}
                           </div>
                         ) : null}

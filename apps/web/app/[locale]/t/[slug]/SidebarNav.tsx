@@ -6,6 +6,7 @@ import { Asset, Nav, PoweredBy } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { useDrawerA11y } from '@/lib/useDrawerA11y';
+import { LocaleSwitcher } from '@/components/LocaleSwitcher';
 import { LogoutButton } from './LogoutButton';
 
 type Props = {
@@ -86,7 +87,9 @@ export function SidebarNav({
     { href: `${base}/reservations`, label: t('common.nav.reservations') },
     // Admin-only "control the library" areas — hidden from librarian/volunteer,
     // and Billing is also hidden while subscriptions are off.
-    ...(isAdmin && billingEnabled ? [{ href: `${base}/billing`, label: 'Billing' }] : []),
+    ...(isAdmin && billingEnabled
+      ? [{ href: `${base}/billing`, label: t('shell.nav.billing') }]
+      : []),
     ...(isAdmin ? [{ href: `${base}/staff`, label: t('common.nav.staff') }] : []),
     ...(isAdmin ? [{ href: `${base}/settings`, label: t('common.nav.settings') }] : []),
     { href: `${base}/desktop`, label: t('common.nav.desktop') },
@@ -151,7 +154,7 @@ export function SidebarNav({
           {brandMark}
           <span className="lbr-shell__brand-name">{libraryName}</span>
         </Link>
-        <Nav ariaLabel="Sections">
+        <Nav ariaLabel={t('shell.nav.sections')}>
           {links.map((l) => {
             const active =
               l.href === base
@@ -174,6 +177,12 @@ export function SidebarNav({
         <div className="lbr-shell__footer">
           <div style={{ marginBottom: 'var(--sp-2)' }}>{userFullName}</div>
           <LogoutButton catalog={catalog} locale={locale} />
+          {/* The only language control used to be on the public landing page,
+              so a librarian on an en-US machine had no way to reach Greek from
+              inside their own library. */}
+          <div style={{ marginTop: 'var(--sp-3)' }}>
+            <LocaleSwitcher locale={locale} label={t('shell.locale.label')} />
+          </div>
           <div style={{ marginTop: 'var(--sp-3)' }}>
             <PoweredBy />
           </div>

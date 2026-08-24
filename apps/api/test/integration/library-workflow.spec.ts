@@ -11,6 +11,13 @@ import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { RedisService } from '../../src/platform/redis.service.js';
 import { listenOnce } from './listen-once.js';
+import { declareBillingPosture } from './billing-posture.js';
+
+declareBillingPosture(
+  'unenforced',
+  'The catalogue → member → loan workflow is what a library does on day one, with ' +
+    'subscriptions off. No assertion in this file depends on a limit being reached.',
+);
 
 /**
  * End-to-end library-profile workflow: signup captures the profile; a tenant

@@ -4,7 +4,8 @@ import { Banner, PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import type { FieldDef } from '@/components/DynamicFields';
 import { EntityTabs } from './EntityTabs';
 import { FieldEditor } from './FieldEditor';
@@ -56,7 +57,7 @@ export default async function DataModelPage(props: {
     });
     fields = res.fields;
   } catch (err) {
-    fetchError = err instanceof ApiError ? err.message : t('common.states.error');
+    fetchError = translateApiError(err, t, t('common.states.error'));
   }
 
   return (

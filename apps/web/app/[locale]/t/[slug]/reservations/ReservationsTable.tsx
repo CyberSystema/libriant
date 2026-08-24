@@ -77,7 +77,7 @@ export function ReservationsTable({
           queued: 'var(--color-info)',
           ready: 'var(--color-success)',
           fulfilled: 'var(--color-text-muted)',
-          expired: 'var(--color-warning)',
+          expired: 'var(--color-warning-text)',
           canceled: 'var(--color-text-muted)',
         };
         const expires =

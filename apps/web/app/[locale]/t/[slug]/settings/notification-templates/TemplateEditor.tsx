@@ -12,7 +12,8 @@ import {
 } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 
 export type Templates = Record<string, { subject?: string; body?: string }>;
 
@@ -74,7 +75,7 @@ export function TemplateEditor({
       toast.show({
         severity: 'critical',
         title: t('settings.templates.saveError'),
-        body: err instanceof ApiError ? err.message : undefined,
+        body: translateApiError(err, t),
       });
     } finally {
       setBusy(false);

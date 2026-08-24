@@ -17,6 +17,13 @@ import { autoMap } from '../../src/import/mapping/auto-map.js';
 import { executeImport } from '../../src/import/engine/runner.js';
 import type { EngineContext } from '../../src/import/engine/import-engine.js';
 import { listenOnce } from './listen-once.js';
+import { declareBillingPosture } from './billing-posture.js';
+
+declareBillingPosture(
+  'unenforced',
+  'Parsing, mapping and the commit engine are plan-independent; run them the way customers ' +
+    'do. Nothing here asserts a closed gate.',
+);
 
 /**
  * End-to-end import engine drill against a real tenant DB. Boots Nest, signs

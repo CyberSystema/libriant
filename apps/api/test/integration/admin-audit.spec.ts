@@ -11,6 +11,14 @@ import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { RedisService } from '../../src/platform/redis.service.js';
 import { listenOnce } from './listen-once.js';
+import { declareBillingPosture } from './billing-posture.js';
+
+declareBillingPosture(
+  'unenforced',
+  'Admin audit logging is orthogonal to the plan layer, so this runs the configuration ' +
+    'customers actually get. It also creates and deletes plans/overrides — under `enforced` ' +
+    'those edits would move real gates for the tenant it borrows.',
+);
 
 /**
  * Runtime proof that every sensitive Libriant-staff (admin) mutation writes a

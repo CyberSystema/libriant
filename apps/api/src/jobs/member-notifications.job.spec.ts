@@ -7,6 +7,7 @@ const {
   enqueue,
   emailDestroy,
   redisDestroy,
+  redisReady,
   getBool,
 } = vi.hoisted(() => ({
   tenantFindMany: vi.fn(),
@@ -15,6 +16,7 @@ const {
   enqueue: vi.fn(),
   emailDestroy: vi.fn().mockResolvedValue(undefined),
   redisDestroy: vi.fn().mockResolvedValue(undefined),
+  redisReady: vi.fn().mockResolvedValue(undefined),
   // Member notifications are a paid feature; the job asks the plan first.
   getBool: vi.fn().mockResolvedValue(true),
 }));
@@ -30,7 +32,7 @@ vi.mock('../tenancy/tenant-prisma.service.js', () => ({
 }));
 vi.mock('../platform/redis.service.js', () => ({
   RedisService: vi.fn(function () {
-    return { onModuleDestroy: redisDestroy };
+    return { ready: redisReady, onModuleDestroy: redisDestroy };
   }),
 }));
 vi.mock('../email/email.service.js', () => ({
@@ -50,6 +52,9 @@ vi.mock('../platform-settings/platform-settings.service.js', () => ({
 }));
 
 import { sendMemberNotifications } from './member-notifications.job.js';
+import { RedisService } from '../platform/redis.service.js';
+import { EmailService } from '../email/email.service.js';
+import type { JobContext } from './jobs.types.js';
 
 const TENANT = {
   id: 't1',
@@ -96,6 +101,7 @@ const hold = (id: string) => ({
 describe('sendMemberNotifications', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    redisReady.mockResolvedValue(undefined);
     getBool.mockResolvedValue(true);
     tenantFindMany.mockResolvedValue([TENANT]);
     enqueue.mockResolvedValue({ outboxId: 'o1', alreadyExisted: false });
@@ -227,6 +233,51 @@ describe('sendMemberNotifications', () => {
     expect(enqueue).not.toHaveBeenCalled();
     expect(getBool).toHaveBeenCalledWith('t1', 'email_notifications_enabled');
     expect(res.counts).toMatchObject({ dueSoon: 0, overdue: 0, holdReady: 0 });
+  });
+
+  it('waits for the Redis socket before issuing the first per-tenant command', async () => {
+    // reliability-01: the sweep constructed a RedisService and issued its first
+    // GET on the next tick. `enableOfflineQueue: false` rejects a command on a
+    // still-connecting socket, so EVERY tenant threw on EVERY hourly tick and
+    // no library ever received a reminder — while the job reported success.
+    let socketReady = false;
+    redisReady.mockImplementation(async () => {
+      socketReady = true;
+    });
+    getBool.mockImplementation(async () => {
+      if (!socketReady) {
+        throw new Error("Stream isn't writeable and enableOfflineQueue options is false");
+      }
+      return true;
+    });
+    tenantGetClient.mockReturnValue(
+      makeClient({
+        settings: { notifyDueSoon: false, notifyOverdue: false, notifyHoldReady: false },
+      }),
+    );
+
+    const res = await sendMemberNotifications();
+
+    expect(redisReady).toHaveBeenCalled();
+    expect(res.counts?.tenantsFailed).toBe(0);
+  });
+
+  it("borrows the runner's long-lived clients and does not close them", async () => {
+    // The structural half of the same fix: a job handed a warm client must not
+    // mint its own, and must not quit one the whole worker is sharing.
+    tenantGetClient.mockReturnValue(makeClient({ settings: null }));
+    const shared = {
+      redis: { ready: vi.fn().mockResolvedValue(undefined), onModuleDestroy: vi.fn() },
+      emails: { enqueue, onModuleDestroy: vi.fn() },
+    };
+
+    await sendMemberNotifications(shared as unknown as JobContext);
+
+    expect(shared.redis.ready).toHaveBeenCalled();
+    expect(shared.redis.onModuleDestroy).not.toHaveBeenCalled();
+    expect(shared.emails.onModuleDestroy).not.toHaveBeenCalled();
+    expect(vi.mocked(RedisService)).not.toHaveBeenCalled();
+    expect(vi.mocked(EmailService)).not.toHaveBeenCalled();
   });
 
   it('checks the plan before touching the tenant database', async () => {

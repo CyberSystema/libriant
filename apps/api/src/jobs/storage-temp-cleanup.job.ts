@@ -1,6 +1,7 @@
 import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { createStorageDriver } from '../storage/drivers/create-driver.js';
+import { describeError } from './job-error.js';
 import type { JobResult } from './jobs.types.js';
 
 /**
@@ -36,7 +37,7 @@ export async function sweepStaleStorageTemps(maxAgeMs = DEFAULT_MAX_AGE_MS): Pro
       removed += await driver.sweepStaleTemps(maxAgeMs);
     } catch (err) {
       failed++;
-      logger.warn(`temp sweep failed for tenant=${t.slug}: ${(err as Error).message}`);
+      logger.warn(`temp sweep failed for tenant=${t.slug}: ${describeError(err)}`);
     }
   }
 

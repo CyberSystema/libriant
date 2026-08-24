@@ -4,7 +4,8 @@ import { useRouter } from 'next/navigation';
 import { Button, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 
 type ReservationLite = {
   id: string;
@@ -67,7 +68,7 @@ export function ReservationRowActions({ slug, reservation, catalog, locale }: Pr
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
     } finally {
       setBusy(null);

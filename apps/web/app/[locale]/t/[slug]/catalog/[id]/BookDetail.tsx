@@ -14,7 +14,8 @@ import {
 } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { printDocument } from '@/lib/print';
 import type { FieldDef } from '@/components/DynamicFields';
 import { BookForm, type BookInitial } from '../new/BookForm';
@@ -99,7 +100,7 @@ export function BookDetail({ slug, catalog, locale, initial, customFields }: Pro
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
     } finally {
       setArchiveBusy(false);
@@ -119,7 +120,7 @@ export function BookDetail({ slug, catalog, locale, initial, customFields }: Pro
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
     } finally {
       setArchiveBusy(false);
@@ -460,7 +461,7 @@ function AddCopyModal({
       });
       onCreated(created);
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : t('common.states.error');
+      const message = translateApiError(err, t, t('common.states.error'));
       setError(message);
     } finally {
       setBusy(false);

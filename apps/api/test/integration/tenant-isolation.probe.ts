@@ -16,6 +16,13 @@ import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js
 import { RedisService } from '../../src/platform/redis.service.js';
 import { loadEnv } from '../../src/config/env.js';
 import { listenOnce } from './listen-once.js';
+import { declareBillingPosture } from './billing-posture.js';
+
+declareBillingPosture(
+  'unenforced',
+  'An audit instrument: it records what the server does in the configuration it ships in. ' +
+    'Turning gates on would change the answers it is there to record.',
+);
 
 /**
  * AUDIT PROBE — tenant isolation. Produced for the pre-release-2026-08-23

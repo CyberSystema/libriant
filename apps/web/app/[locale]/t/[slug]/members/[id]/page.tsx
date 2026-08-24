@@ -5,6 +5,7 @@ import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
 import { ApiError, api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import type { FieldDef } from '@/components/DynamicFields';
 import type { MemberInitial } from '../new/MemberForm';
 import { MemberDetail } from './MemberDetail';
@@ -43,7 +44,7 @@ export default async function MemberDetailPage(props: {
     });
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) notFound();
-    fetchError = err instanceof ApiError ? err.message : t('common.states.error');
+    fetchError = translateApiError(err, t, t('common.states.error'));
   }
 
   let customFields: FieldDef[] = [];

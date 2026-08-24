@@ -25,7 +25,7 @@
 #   SESSION_SECRET / ADMIN_SESSION_SECRET / IMPERSONATION_SECRET — JWT secrets
 #   MFA_MASTER_KEY              — 64-hex (32-byte) AES key
 #
-# Optional (default to trial-safe drivers — see x-app-env):
+# Optional (default to "not configured" — see x-app-env):
 #   STRIPE_DRIVER=real + STRIPE_API_KEY / STRIPE_WEBHOOK_SECRET — real billing
 #   EMAIL_DRIVER=smtp + SMTP_URL                                — real email
 #
@@ -53,16 +53,23 @@ x-app-env: &app-env
   STORAGE_SIGNING_SECRET: ${STORAGE_SIGNING_SECRET:-}
   ASSETS_ROOT: /srv/libriant/assets
   LOCALES_ROOT: /srv/libriant/locales
-  # Billing + email default to the no-cost "trial" drivers so a clean deploy
-  # boots without a Stripe account or a mail server. Flip these in .env.prod
-  # (STRIPE_DRIVER=real + keys, EMAIL_DRIVER=smtp + SMTP_URL) when you go live.
+  # Billing defaults to "switched off" so a clean deploy boots without a Stripe
+  # account. Flip it in .env.prod (STRIPE_DRIVER=real + keys, EMAIL_DRIVER=smtp
+  # + SMTP_URL) when you go live.
   # NOTE: every driver var the app reads MUST be listed here — Compose only
   # injects variables referenced in this block, not everything in .env.prod.
   # Plan/quota enforcement. Default OFF for a free pre-monetization launch:
   # every tenant gets unlimited access to all features. Set 'true' (and
   # STRIPE_DRIVER=real) when you start charging. (Admin panel is unaffected.)
   BILLING_ENABLED: ${BILLING_ENABLED:-false}
-  STRIPE_DRIVER: ${STRIPE_DRIVER:-fake}
+  # billing-02: `none` means NO Stripe driver is loaded — every billing action
+  # refuses with a 503 and POST /webhooks/stripe answers 503 without verifying
+  # anything. This default used to be `fake`, an in-memory stand-in that
+  # verified webhook signatures against a secret published in the Libriant
+  # repository; because that endpoint is unauthenticated by design, any host on
+  # the internet could rewrite any library's subscription. `fake` is now
+  # development/test only and the API downgrades it to `none` here.
+  STRIPE_DRIVER: ${STRIPE_DRIVER:-none}
   STRIPE_API_KEY: ${STRIPE_API_KEY:-}
   STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
   BILLING_RETURN_URL: https://${PUBLIC_HOST:-libriant.com}

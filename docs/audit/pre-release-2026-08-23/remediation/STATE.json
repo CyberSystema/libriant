@@ -333,8 +333,8 @@
         "apps/web/app/global-error.tsx",
         "apps/web/lib/session.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -348,8 +348,8 @@
         "apps/web/lib/impersonation.ts",
         "apps/web/lib/system-mode.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -362,8 +362,8 @@
         "apps/web/app/",
         "apps/web/lib/api.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -377,8 +377,8 @@
         "packages/ui/src/Modal.tsx",
         "packages/ui/src/Toast.tsx"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -392,8 +392,8 @@
         "apps/web/lib/offline-queue.ts",
         "packages/ui/src/Toast.tsx"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -465,10 +465,10 @@
         "apps/web/lib/legal.ts",
         "locales/en/legal/dpa.md"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "fixed",
+      "wave": 1,
       "note": null,
-      "commit": null
+      "commit": "f744e58"
     },
     {
       "id": "performance-02",
@@ -664,10 +664,10 @@
       "paths": [
         ".github/workflows/deploy.yml"
       ],
-      "status": "fixed",
+      "status": "verified",
       "wave": 1,
       "note": "25 actions SHA-pinned + CI pin gate; dependabot (actions/npm/docker); hermetic yq fleet parse; desktop publish behind an environment; CODEOWNERS",
-      "commit": null
+      "commit": "766f835"
     },
     {
       "id": "tenant-isolation-01",
@@ -984,8 +984,8 @@
       "paths": [
         "apps/web/lib/api.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -997,8 +997,8 @@
       "paths": [
         "apps/web/app/"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1012,8 +1012,8 @@
         "apps/desktop/src/main.ts",
         "apps/desktop/static/fallback.html"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1027,8 +1027,8 @@
         "apps/web/app/page.tsx",
         "apps/web/lib/api.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1040,8 +1040,8 @@
       "paths": [
         "apps/web/public/sw.js"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1054,8 +1054,8 @@
         "apps/web/app/",
         "packages/ui/src/Modal.tsx"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1072,8 +1072,8 @@
         "packages/ui/src/Modal.tsx",
         "packages/ui/src/Toast.tsx"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1085,8 +1085,8 @@
       "paths": [
         "apps/web/app/"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1098,8 +1098,8 @@
       "paths": [
         "apps/web/app/"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1112,8 +1112,8 @@
         "apps/web/app/",
         "packages/ui/src/styles.css"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1126,8 +1126,8 @@
         "apps/web/app/",
         "apps/web/app/manifest.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1139,8 +1139,8 @@
       "paths": [
         "packages/ui/src/Toast.tsx"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1210,10 +1210,10 @@
         "apps/site/content/programme-terms.en.md",
         "docs/cutover-three-hosts.md"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "fixed",
+      "wave": 1,
       "note": null,
-      "commit": null
+      "commit": "f744e58"
     },
     {
       "id": "launch-readiness-11",
@@ -1856,8 +1856,8 @@
         "apps/api/src/branding/branding.controller.ts",
         "apps/web/app/"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1870,8 +1870,8 @@
         "apps/web/app/not-found.tsx",
         "apps/web/public/offline.html"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1885,8 +1885,8 @@
         "packages/ui/src/Banner.tsx",
         "packages/ui/src/Toast.tsx"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1902,8 +1902,8 @@
         "packages/ui",
         "scripts/check-translations.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1915,8 +1915,8 @@
       "paths": [
         "packages/ui/src/FormField.tsx"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1929,8 +1929,8 @@
         "packages/ui/src/HelpDrawer.tsx",
         "packages/ui/src/Modal.tsx"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1942,8 +1942,8 @@
       "paths": [
         "apps/web/components/Combobox.tsx"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1955,8 +1955,8 @@
       "paths": [
         "packages/ui/src/styles.css"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1968,8 +1968,8 @@
       "paths": [
         "apps/web/public/sw.js"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -1983,8 +1983,8 @@
         "apps/web/components/ServiceWorkerManager.tsx",
         "packages/ui/src/styles.css"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 2,
       "note": null,
       "commit": null
     },
@@ -2408,10 +2408,10 @@
         ".github/dependabot.yml",
         ".github/workflows/verify.yml"
       ],
-      "status": "fixed",
+      "status": "verified",
       "wave": 1,
       "note": "25 actions SHA-pinned + CI pin gate; dependabot (actions/npm/docker); hermetic yq fleet parse; desktop publish behind an environment; CODEOWNERS",
-      "commit": null
+      "commit": "766f835"
     },
     {
       "id": "supply-chain-09",
@@ -2433,10 +2433,10 @@
         ".github/workflows/deploy.yml",
         "infra/deploy/fleet.yml"
       ],
-      "status": "fixed",
+      "status": "verified",
       "wave": 1,
       "note": "25 actions SHA-pinned + CI pin gate; dependabot (actions/npm/docker); hermetic yq fleet parse; desktop publish behind an environment; CODEOWNERS",
-      "commit": null
+      "commit": "766f835"
     },
     {
       "id": "supply-chain-11",
@@ -2447,10 +2447,10 @@
         ".github/workflows/deploy.yml",
         ".github/workflows/desktop-release.yml"
       ],
-      "status": "fixed",
+      "status": "verified",
       "wave": 1,
       "note": "25 actions SHA-pinned + CI pin gate; dependabot (actions/npm/docker); hermetic yq fleet parse; desktop publish behind an environment; CODEOWNERS",
-      "commit": null
+      "commit": "766f835"
     },
     {
       "id": "supply-chain-12",

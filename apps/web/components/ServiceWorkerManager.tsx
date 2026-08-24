@@ -9,9 +9,18 @@ import { registerServiceWorker } from '@/lib/offline';
  *
  * Renders nothing while online. The offline state is set in an effect (not at
  * render) so server and first client render agree (no hydration mismatch).
+ *
+ * frontend-28: the bar publishes its measured height as `--lbr-offline-bar-h`.
+ * Three overlays anchor to the bottom of the viewport — this bar, the queue
+ * dock and the toast stack — and they used to be stacked by z-index, which
+ * meant the "3 actions pending" pill was painted *underneath* the offline bar
+ * in the one state where both appear at once: offline, with queued checkouts.
+ * They now sit on top of each other in a column, and the height has to be
+ * measured because the bar wraps to two lines in Greek on a narrow phone.
  */
 export function ServiceWorkerManager({ offlineLabel }: { offlineLabel: string }) {
   const [offline, setOffline] = React.useState(false);
+  const barRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     if (process.env.NODE_ENV === 'production') registerServiceWorker();
@@ -25,25 +34,28 @@ export function ServiceWorkerManager({ offlineLabel }: { offlineLabel: string })
     };
   }, []);
 
+  React.useEffect(() => {
+    const root = document.documentElement;
+    const node = barRef.current;
+    if (!offline || !node) {
+      root.style.setProperty('--lbr-offline-bar-h', '0px');
+      return undefined;
+    }
+    const publish = () => {
+      root.style.setProperty('--lbr-offline-bar-h', `${Math.ceil(node.offsetHeight)}px`);
+    };
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      root.style.setProperty('--lbr-offline-bar-h', '0px');
+    };
+  }, [offline]);
+
   if (!offline) return null;
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      style={{
-        position: 'fixed',
-        left: 0,
-        right: 0,
-        bottom: 0,
-        zIndex: 2000,
-        padding: 'calc(var(--sp-2, 0.5rem)) var(--sp-3, 0.75rem)',
-        paddingBottom: 'calc(var(--sp-2, 0.5rem) + env(safe-area-inset-bottom, 0px))',
-        background: 'var(--color-text, #0d1117)',
-        color: 'var(--color-text-on-primary, #fff)',
-        fontSize: 'var(--fs-sm, 0.875rem)',
-        textAlign: 'center',
-      }}
-    >
+    <div ref={barRef} role="status" aria-live="polite" className="lbr-offline-bar">
       {offlineLabel}
     </div>
   );

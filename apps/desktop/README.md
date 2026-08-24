@@ -12,15 +12,38 @@ product logic lives on the web side, so the desktop app never drifts from it.
 
 - **Unreachable server / first run** — if the app can't load the server (offline,
   wrong URL, DNS), instead of a raw Chromium error it shows a bundled
-  [`static/fallback.html`](static/fallback.html) setup screen: it reports the
-  problem and lets the user retry, change the server URL, or open it in a
-  browser (all via the audited bridge).
+  [`static/fallback.html`](static/fallback.html) setup screen: it says in plain
+  Greek/English what went wrong (the `ERR_…` code is kept as a support detail,
+  not as the message) and lets the user retry, change the server URL, or open it
+  in a browser (all via the audited bridge).
 - **Renderer crash** — a render-process crash triggers a bounded auto-reload (up
   to 3× / 60s, then the fallback screen). Safe because circulation writes are
   idempotent + IndexedDB-queued, so a reload loses no in-flight action.
 - **Safe mode** — **Connection → Safe mode** (or launch with `--safe-mode` /
   `LIBRIANT_SAFE_MODE=1`) ignores a bad _saved_ server URL without hand-editing
   the config — an IT escape hatch.
+
+## Language
+
+Everything the shell itself draws is bilingual **el/en**, Greek by default:
+
+- The **native menu** follows the OS UI language (`app.getLocale()`), because
+  that is the same source Electron localizes its own `role` items from —
+  keying our labels off anything else gives a half-Greek menu bar. Set
+  `LIBRIANT_LOCALE=el|en` to override it on a desk whose OS language isn't the
+  staff's.
+- The **offline/setup screen** follows the language the librarian was working
+  in — every Libriant route is `/<locale>/…`, so the shell reads the locale off
+  the URL that failed and falls back to the OS one.
+
+The strings live in [`src/i18n.ts`](src/i18n.ts) (menu) and inline in
+[`static/fallback.html`](static/fallback.html) (offline screen) rather than in
+`/locales`: the main process is a packaged CommonJS bundle that ships only
+`dist/` + `static/`, and the offline page is a `file://` page with no network,
+so neither can read the web app's catalogs. Both keep the same flat el/en shape
+so they can move to `locales/{el,en}/desktop.json` if the packaging ever carries
+them. Adding a key to the English menu catalog without a Greek one fails
+`pnpm --filter @libriant/desktop typecheck`.
 
 ## Run in development
 

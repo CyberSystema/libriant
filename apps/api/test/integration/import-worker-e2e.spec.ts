@@ -14,6 +14,13 @@ import { EffectivePlanService } from '../../src/plans/effective-plan.service.js'
 import { startImportWorker, type ImportWorkerHandle } from '../../src/import/import-worker.js';
 import { loadEnv } from '../../src/config/env.js';
 import { listenOnce } from './listen-once.js';
+import { declareBillingPosture } from './billing-posture.js';
+
+declareBillingPosture(
+  'unenforced',
+  'This drives the BullMQ worker end to end and asserts rows land — no closed gate is ' +
+    'asserted anywhere in it, so the launch configuration is the honest one to run.',
+);
 
 /**
  * True end-to-end: the LIVE BullMQ import worker drains the queue. We POST the

@@ -28,6 +28,10 @@ export const NAMESPACES = [
   'landing',
   'legal',
   'library',
+  // App-shell chrome (skip link, nav landmark, language switch). Separate from
+  // `common` so the shell can grow strings without touching the design-system
+  // catalogue that every package shares.
+  'shell',
 ] as const;
 export type Namespace = (typeof NAMESPACES)[number];
 

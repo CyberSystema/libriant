@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { pinWorkerConnLimit } from './fine-accrual.job.js';
+import { describeError } from './job-error.js';
 import type { JobResult } from './jobs.types.js';
 
 /**
@@ -48,6 +49,8 @@ export async function sweepExpiredReservationPickups(): Promise<JobResult> {
   let total = 0;
   let promoted = 0;
   let failed = 0;
+  // reliability-07 at row granularity: see `expireOneTenant`.
+  let rowsFailed = 0;
 
   try {
     for (const t of tenants) {
@@ -62,9 +65,10 @@ export async function sweepExpiredReservationPickups(): Promise<JobResult> {
         const result = await expireOneTenant(ctx, tenantPrisma);
         total += result.expired;
         promoted += result.promoted;
+        rowsFailed += result.failed;
       } catch (err) {
         failed++;
-        logger.warn(`sweep failed for tenant=${t.slug}: ${(err as Error).message}`);
+        logger.warn(`sweep failed for tenant=${t.slug}: ${describeError(err)}`);
       }
     }
   } finally {
@@ -73,19 +77,44 @@ export async function sweepExpiredReservationPickups(): Promise<JobResult> {
     await tenantPrisma.onModuleDestroy().catch(() => undefined);
   }
 
+  const summary =
+    total === 0
+      ? `${tenants.length} tenant(s) scanned; no pickups to expire`
+      : `expired ${total} pickup(s) (${promoted} queue-promoted) across ${tenants.length} tenant(s)`;
+
   return {
-    message:
-      total === 0
-        ? `${tenants.length} tenant(s) scanned; no pickups to expire`
-        : `expired ${total} pickup(s) (${promoted} queue-promoted) across ${tenants.length} tenant(s)`,
-    counts: { expired: total, promoted, tenantsScanned: tenants.length, tenantsFailed: failed },
+    // Say it in the handler's own message too, not only via the runner's
+    // `FAILED —` suffix: this string is what the log line shows, and
+    // "no pickups to expire" next to a pile of failed expiries is the exact
+    // sentence that hid the problem.
+    message: rowsFailed === 0 ? summary : `${summary}; ${rowsFailed} reservation(s) failed`,
+    counts: {
+      expired: total,
+      promoted,
+      tenantsScanned: tenants.length,
+      tenantsFailed: failed,
+      rowsFailed,
+    },
   };
 }
 
+/**
+ * Expire (and re-promote behind) every overdue pickup for one tenant.
+ *
+ * Returns `failed` alongside the work done. reliability-07 was fixed at the
+ * TENANT loop above, but the identical lie survived one level down: the
+ * per-reservation `catch` here only emitted a `logger.warn`, bumped nothing,
+ * and never reached the tenant-level catch. A tenant whose every expiry
+ * transaction threw — a deadlock storm, a broken CHECK, a lock timeout —
+ * therefore returned `{ expired: 0 }` and the sweep reported
+ * "N tenant(s) scanned; no pickups to expire", green, forever. Rows the loop
+ * attempted and could not complete are now counted, and `rowsFailed` is a
+ * `…Failed` key, so the runner marks the run not-ok (see jobs.types.ts).
+ */
 async function expireOneTenant(
   ctx: TenantContext,
   tenantPrisma: TenantPrismaService,
-): Promise<{ expired: number; promoted: number }> {
+): Promise<{ expired: number; promoted: number; failed: number }> {
   const client = tenantPrisma.getClient(ctx);
   const now = new Date();
 
@@ -93,7 +122,7 @@ async function expireOneTenant(
     where: { status: 'ready', expiresAt: { lt: now } },
     select: { id: true, bookId: true, fulfilledByCopyId: true },
   });
-  if (overdue.length === 0) return { expired: 0, promoted: 0 };
+  if (overdue.length === 0) return { expired: 0, promoted: 0, failed: 0 };
 
   const settings = await client.tenantSetting.findUnique({ where: { id: 1 } });
   const holdPickupHours = settings?.holdPickupHours ?? 48;
@@ -101,6 +130,7 @@ async function expireOneTenant(
 
   let expired = 0;
   let promoted = 0;
+  let failed = 0;
 
   for (const r of overdue) {
     try {
@@ -198,9 +228,15 @@ async function expireOneTenant(
         promoted++;
       });
     } catch (err) {
-      logger.warn(`reservation ${r.id} expire failed: ${(err as Error).message}`);
+      failed++;
+      // describeError, not `.message`: a Prisma client-initialisation error
+      // carries an empty message, and "expire failed: " with nothing after the
+      // colon is barely better than no line at all (see job-error.ts).
+      logger.warn(
+        `reservation ${r.id} expire failed for tenant=${ctx.slug}: ${describeError(err)}`,
+      );
     }
   }
 
-  return { expired, promoted };
+  return { expired, promoted, failed };
 }

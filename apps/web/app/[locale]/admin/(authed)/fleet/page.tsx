@@ -76,7 +76,7 @@ function Stat({
     tone === 'crit'
       ? 'var(--color-danger, #b42318)'
       : tone === 'warn'
-        ? 'var(--color-warning, #b54708)'
+        ? 'var(--color-warning-text, #7c5e00)'
         : 'var(--color-text)';
   return (
     <Card>

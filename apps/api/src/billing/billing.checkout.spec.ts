@@ -8,18 +8,27 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * €79 — or the reverse.
  */
 
-const { subFindUnique, planFindUnique, subUpdate, accountFindUnique, createCheckoutSession } =
-  vi.hoisted(() => ({
-    subFindUnique: vi.fn(),
-    planFindUnique: vi.fn(),
-    subUpdate: vi.fn().mockResolvedValue({}),
-    accountFindUnique: vi.fn(),
-    createCheckoutSession: vi.fn(),
-  }));
+const {
+  subFindUnique,
+  planFindUnique,
+  subUpdate,
+  subUpdateMany,
+  accountFindUnique,
+  createCheckoutSession,
+  getSubscription,
+} = vi.hoisted(() => ({
+  subFindUnique: vi.fn(),
+  planFindUnique: vi.fn(),
+  subUpdate: vi.fn().mockResolvedValue({}),
+  subUpdateMany: vi.fn().mockResolvedValue({ count: 0 }),
+  accountFindUnique: vi.fn(),
+  createCheckoutSession: vi.fn(),
+  getSubscription: vi.fn(),
+}));
 
 vi.mock('@libriant/db-control', () => ({
   controlDb: {
-    subscription: { findUnique: subFindUnique, update: subUpdate },
+    subscription: { findUnique: subFindUnique, update: subUpdate, updateMany: subUpdateMany },
     plan: { findUnique: planFindUnique },
     billingAccount: { findUnique: accountFindUnique },
   },
@@ -44,11 +53,32 @@ const MUNICIPAL = {
   annualPriceCents: 79000,
 };
 
+/** In-memory stand-in for the Redis holding the in-flight-checkout marker. */
+function makeRedis() {
+  const store = new Map<string, string>();
+  return {
+    client: {
+      set: vi.fn(async (key: string, value: string, ..._rest: unknown[]) => {
+        if (_rest.at(-1) === 'NX' && store.has(key)) return null;
+        store.set(key, value);
+        return 'OK';
+      }),
+      get: vi.fn(async (key: string) => store.get(key) ?? null),
+      del: vi.fn(async (key: string) => (store.delete(key) ? 1 : 0)),
+    },
+  };
+}
+
 function makeService() {
-  const stripe = { createCheckoutSession };
+  const stripe = { createCheckoutSession, getSubscription };
   // Self-serve checkout is gated on the master subscriptions switch.
   const settings = { billingEnabled: vi.fn().mockResolvedValue(true) };
-  return new BillingService({ invalidate: vi.fn() } as never, stripe as never, settings as never);
+  return new BillingService(
+    { invalidate: vi.fn() } as never,
+    stripe as never,
+    settings as never,
+    makeRedis() as never,
+  );
 }
 
 describe('BillingService.startCheckout — billing cadence', () => {
@@ -56,9 +86,11 @@ describe('BillingService.startCheckout — billing cadence', () => {
     vi.clearAllMocks();
     accountFindUnique.mockResolvedValue({ stripeCustomerId: 'cus_1' });
     createCheckoutSession.mockResolvedValue({ url: 'https://stripe.test/s', sessionId: 's1' });
+    getSubscription.mockResolvedValue(null);
     subFindUnique.mockResolvedValue({
       planId: 'p-starter',
       status: 'active',
+      stripeSubscriptionId: null,
       planSelectedAt: new Date(),
       tenant: { slug: 'acme' },
     });

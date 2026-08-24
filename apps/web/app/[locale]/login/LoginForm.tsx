@@ -3,8 +3,9 @@ import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { Banner, Button, FormField, Input } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
-import { createTranslator } from '@libriant/i18n';
+import { createTranslator, isLocale } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
+import { preferredLocale } from '@/lib/locale-preference';
 
 type Props = {
   catalog: Catalog;
@@ -53,13 +54,20 @@ export function LoginForm({ catalog, locale }: Props) {
     setErrors({});
     setSubmitting(true);
     try {
-      await api<{ ok: true; tenant: { slug: string } }>('/auth/login', {
+      const res = await api<{ tenant: { slug: string; defaultLocale?: string } }>('/auth/login', {
         method: 'POST',
         body: { slug, identifier, password, remember },
       });
+      // Land in the library's own language. `defaultLocale` is collected at
+      // signup and was read nowhere, so a Greek library whose staff run en-US
+      // machines got the whole application in English. An explicit choice from
+      // the language switch still wins — that person has said the last word.
+      const chosen = preferredLocale();
+      const tenantLocale = res.tenant.defaultLocale;
+      const target = chosen ?? (tenantLocale && isLocale(tenantLocale) ? tenantLocale : locale);
       // Redirect to the tenant home. The cookie is set by the API and
       // travels back through the same-origin proxy.
-      router.push(`/${locale}/t/${slug}`);
+      router.push(`/${target}/t/${slug}`);
       router.refresh();
     } catch (err) {
       if (err instanceof ApiError && (err.status === 401 || err.status === 404)) {

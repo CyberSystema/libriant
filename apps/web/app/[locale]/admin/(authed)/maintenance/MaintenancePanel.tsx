@@ -61,7 +61,7 @@ function statusColor(s: MaintenanceStatus): string {
 
 function sevColor(s: Issue['severity']): string {
   if (s === 'error') return 'var(--color-danger)';
-  if (s === 'warning') return 'var(--color-warning)';
+  if (s === 'warning') return 'var(--color-warning-text)';
   return 'var(--color-text-muted)';
 }
 

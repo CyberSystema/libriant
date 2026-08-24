@@ -4,7 +4,8 @@ import { useRouter } from 'next/navigation';
 import { Asset, Banner, Button, FormField, Input, PoweredBy, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 
 /**
  * One-time forced setup for admin-created staff. Rendered by the tenant layout
@@ -51,7 +52,7 @@ export function FirstLoginSetup({
       toast.show({ severity: 'success', title: t('auth.firstLogin.done') });
       router.refresh();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : t('common.states.error'));
+      setError(translateApiError(err, t, t('common.states.error')));
       setBusy(false);
     }
   }

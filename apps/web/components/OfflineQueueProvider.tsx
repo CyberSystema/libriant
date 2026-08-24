@@ -1,19 +1,25 @@
 'use client';
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { useToast } from '@libriant/ui';
+import { Button, Modal, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
-import { createTranslator } from '@libriant/i18n';
+import { createTranslator, formatDateTime } from '@libriant/i18n';
 import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import {
   classifyReplayError,
+  dismissFailed,
   enqueueAction,
+  failQueued,
   isExpired,
+  listFailed,
   listQueued,
   MAX_REPLAY_ATTEMPTS,
   removeQueued,
+  requeueFailed,
   updateQueued,
   type CirculationKind,
+  type FailedAction,
   type QueuedAction,
 } from '@/lib/offline-queue';
 
@@ -47,12 +53,32 @@ export function useOfflineQueue(): OfflineQueueValue {
 }
 
 /**
+ * Where to send the librarian to redo a lost action by hand. A checkout has no
+ * loan to point at (it never existed), so it goes back to the checkout form;
+ * everything else acted on a loan whose id is the fifth segment of the queued
+ * path, `/t/<slug>/loans/<id>/<verb>`.
+ */
+function redoHref(action: FailedAction, locale: Locale): string {
+  const base = `/${locale}/t/${action.tenantSlug}`;
+  if (action.kind === 'checkout') return `${base}/loans/new`;
+  const loanId = action.path.split('/')[4];
+  return loanId ? `${base}/loans/${loanId}` : `${base}/loans`;
+}
+
+/**
  * Mounted once per tenant shell. Owns the offline circulation queue: lets
  * descendants enqueue actions, and replays them serially when the device is
  * online. Replays use the action's stored idempotency key, so a partially-sent
  * action never double-applies. Replay is scoped to THIS tenant's slug, and the
- * whole queue is cleared on logout (see lib/offline.ts callers) so a shared
+ * pending queue is cleared on logout (see lib/offline.ts callers) so a shared
  * device never syncs one user's actions under another's session.
+ *
+ * It also owns the other half of that promise (frontend-06): an action that can
+ * never be replayed is not thrown away. It moves to the failed store and is
+ * listed in a panel that stays on screen — through reloads, restarts and a
+ * weekend — until a librarian says it has been dealt with. A queued checkout
+ * that quietly disappears means a book is out of the building and the catalogue
+ * says it is on the shelf; that is not something a five-second toast can carry.
  */
 export function OfflineQueueProvider({
   slug,
@@ -69,6 +95,8 @@ export function OfflineQueueProvider({
   const router = useRouter();
   const toast = useToast();
   const [pendingCount, setPendingCount] = React.useState(0);
+  const [failed, setFailed] = React.useState<FailedAction[]>([]);
+  const [panelOpen, setPanelOpen] = React.useState(false);
   const [syncing, setSyncing] = React.useState(false);
   const flushing = React.useRef(false);
 
@@ -77,9 +105,13 @@ export function OfflineQueueProvider({
   const ctx = React.useRef({ t, router, toast, slug });
   ctx.current = { t, router, toast, slug };
 
-  const refreshCount = React.useCallback(async () => {
-    const all = await listQueued().catch(() => []);
-    setPendingCount(all.filter((a) => a.tenantSlug === ctx.current.slug).length);
+  const refresh = React.useCallback(async () => {
+    const [queued, dead] = await Promise.all([
+      listQueued().catch(() => []),
+      listFailed().catch(() => []),
+    ]);
+    setPendingCount(queued.filter((a) => a.tenantSlug === ctx.current.slug).length);
+    setFailed(dead.filter((a) => a.tenantSlug === ctx.current.slug));
   }, []);
 
   const flush = React.useCallback(async () => {
@@ -95,9 +127,9 @@ export function OfflineQueueProvider({
       for (const action of queue) {
         // A7-02: never replay an entry older than the server's idempotency
         // window — a stale replay would no longer dedupe and could double-apply.
-        // Drop it and tell the librarian to redo it.
+        // Retire it to the failed list so the librarian can redo it.
         if (isExpired(action)) {
-          await removeQueued(action.id);
+          await retire(action, 'expired');
           ctx.current.toast.show({
             severity: 'critical',
             title: ctx.current.t('loans.queue.expired', { label: action.label }),
@@ -129,12 +161,18 @@ export function OfflineQueueProvider({
               await updateQueued({ ...action, attempts });
               break; // transient server fault — back off, try the pass again later
             }
-            // else: exhausted — fall through and drop so it can't wedge the queue.
+            // else: exhausted — fall through and retire so it can't wedge the queue.
           }
           // Settled server-side (4xx conflict / invalid / quota) or out of
-          // retries — drop it and tell the librarian it didn't go through.
-          await removeQueued(action.id);
-          const reason = err instanceof Error ? err.message : ctx.current.t('common.states.error');
+          // retries. The API's rejection text is hardcoded English; the
+          // librarian reading "we couldn't sync X" needs the why in their own
+          // language, both in the toast and later in the failed list.
+          const reason = translateApiError(
+            err,
+            ctx.current.t,
+            ctx.current.t('common.states.error'),
+          );
+          await retire(action, verdict === 'retry' ? 'exhausted' : 'rejected', reason);
           ctx.current.toast.show({
             severity: 'critical',
             title: ctx.current.t('loans.queue.syncFailed', { label: action.label, reason }),
@@ -144,10 +182,10 @@ export function OfflineQueueProvider({
     } finally {
       flushing.current = false;
       setSyncing(false);
-      await refreshCount();
+      await refresh();
       if (synced > 0) ctx.current.router.refresh();
     }
-  }, [refreshCount]);
+  }, [refresh]);
 
   const enqueue = React.useCallback(
     async (input: EnqueueInput): Promise<boolean> => {
@@ -163,19 +201,19 @@ export function OfflineQueueProvider({
       };
       const ok = await enqueueAction(action);
       if (ok) {
-        await refreshCount();
+        await refresh();
         // If we're actually online (a one-off fetch blip), sync right away.
         void flush();
       }
       return ok;
     },
-    [refreshCount, flush],
+    [refresh, flush],
   );
 
   // Replay on mount, whenever we come back online, and periodically while there
   // are still-pending actions.
   React.useEffect(() => {
-    void refreshCount();
+    void refresh();
     void flush();
     const onOnline = () => void flush();
     window.addEventListener('online', onOnline);
@@ -186,7 +224,70 @@ export function OfflineQueueProvider({
       window.removeEventListener('online', onOnline);
       window.clearInterval(timer);
     };
-  }, [flush, refreshCount]);
+  }, [flush, refresh]);
+
+  // The panel has nothing left to show once the last entry is handled.
+  React.useEffect(() => {
+    if (panelOpen && failed.length === 0) setPanelOpen(false);
+  }, [panelOpen, failed.length]);
+
+  const dockRef = React.useRef<HTMLDivElement>(null);
+  const showDock = pendingCount > 0 || failed.length > 0;
+  // frontend-28: publish the dock's real height so the toast stack can sit
+  // above it instead of on top of it. Measured rather than assumed — the pill
+  // wraps to two lines in Greek on a narrow phone.
+  React.useEffect(() => {
+    const root = document.documentElement;
+    const node = dockRef.current;
+    if (!showDock || !node) {
+      root.style.setProperty('--lbr-offline-dock-h', '0px');
+      return undefined;
+    }
+    const publish = () => {
+      root.style.setProperty('--lbr-offline-dock-h', `${Math.ceil(node.offsetHeight)}px`);
+    };
+    publish();
+    const observer = new ResizeObserver(publish);
+    observer.observe(node);
+    return () => {
+      observer.disconnect();
+      root.style.setProperty('--lbr-offline-dock-h', '0px');
+    };
+  }, [showDock]);
+
+  const markHandled = React.useCallback(
+    async (id: string) => {
+      await dismissFailed(id);
+      await refresh();
+    },
+    [refresh],
+  );
+
+  const retry = React.useCallback(
+    async (action: FailedAction) => {
+      if (isExpired(action)) {
+        toast.show({ severity: 'critical', title: t('loans.queue.failed.retryUnsafe') });
+        return;
+      }
+      const ok = await requeueFailed(action.id);
+      await refresh();
+      if (!ok) {
+        toast.show({ severity: 'critical', title: t('common.states.error') });
+        return;
+      }
+      toast.show({ severity: 'info', title: t('loans.queue.failed.retried') });
+      void flush();
+    },
+    [flush, refresh, t, toast],
+  );
+
+  const redo = React.useCallback(
+    (action: FailedAction) => {
+      setPanelOpen(false);
+      router.push(redoHref(action, locale));
+    },
+    [locale, router],
+  );
 
   const value = React.useMemo<OfflineQueueValue>(
     () => ({ enqueue, pendingCount }),
@@ -196,41 +297,99 @@ export function OfflineQueueProvider({
   return (
     <OfflineQueueContext.Provider value={value}>
       {children}
-      {pendingCount > 0 ? (
-        <div
-          role="status"
-          aria-live="polite"
-          style={{
-            position: 'fixed',
-            right: 'var(--sp-3, 0.75rem)',
-            bottom: 'calc(var(--sp-3, 0.75rem) + env(safe-area-inset-bottom, 0px))',
-            zIndex: 1900,
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 'var(--sp-2, 0.5rem)',
-            padding: 'var(--sp-2, 0.5rem) var(--sp-3, 0.75rem)',
-            borderRadius: '999px',
-            background: 'var(--color-surface-raised, #fff)',
-            color: 'var(--color-text, #0d1117)',
-            border: '1px solid var(--color-border, #d0d7de)',
-            boxShadow: 'var(--shadow-md, 0 4px 12px rgba(0,0,0,0.12))',
-            fontSize: 'var(--fs-sm, 0.875rem)',
-          }}
-        >
-          <span
-            aria-hidden="true"
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              background: syncing
-                ? 'var(--color-success, #1a7f37)'
-                : 'var(--color-warning, #bf8700)',
-            }}
-          />
-          {syncing ? t('loans.queue.syncing') : t('loans.queue.pending', { count: pendingCount })}
+      {showDock ? (
+        <div className="lbr-offline-dock" ref={dockRef} role="status" aria-live="polite">
+          {failed.length > 0 ? (
+            <button
+              type="button"
+              className="lbr-offline-dock__alert"
+              onClick={() => setPanelOpen(true)}
+            >
+              <span aria-hidden="true" className="lbr-offline-dock__dot" />
+              <span>{t('loans.queue.failed.badge', { count: failed.length })}</span>
+              <span className="lbr-offline-dock__cta">{t('loans.queue.failed.review')}</span>
+            </button>
+          ) : null}
+          {pendingCount > 0 ? (
+            <div className="lbr-offline-dock__pill">
+              <span
+                aria-hidden="true"
+                className="lbr-offline-dock__dot"
+                data-state={syncing ? 'syncing' : 'waiting'}
+              />
+              {syncing
+                ? t('loans.queue.syncing')
+                : t('loans.queue.pending', { count: pendingCount })}
+            </div>
+          ) : null}
         </div>
       ) : null}
+      <Modal
+        open={panelOpen}
+        onClose={() => setPanelOpen(false)}
+        title={t('loans.queue.failed.title')}
+        closeLabel={t('common.actions.close')}
+        actions={
+          <Button variant="secondary" onClick={() => setPanelOpen(false)}>
+            {t('common.actions.close')}
+          </Button>
+        }
+      >
+        <p className="lbr-failed__intro">{t('loans.queue.failed.intro')}</p>
+        <ul className="lbr-failed">
+          {failed.map((action) => {
+            const canRetry = action.reason === 'exhausted' && !isExpired(action);
+            return (
+              <li key={action.id} className="lbr-failed__item">
+                <div className="lbr-failed__head">
+                  <span className="lbr-failed__kind">
+                    {t(`loans.queue.failed.kind.${action.kind}`)}
+                  </span>
+                  <span className="lbr-failed__when">
+                    {t('loans.queue.failed.when', {
+                      at: formatDateTime(new Date(action.createdAt), locale),
+                    })}
+                  </span>
+                </div>
+                <p className="lbr-failed__label">{action.label}</p>
+                <p className="lbr-failed__reason">
+                  {t(`loans.queue.failed.reason.${action.reason}`)}
+                  {action.detail ? ` ${action.detail}` : ''}
+                </p>
+                <div className="lbr-failed__actions">
+                  {canRetry ? (
+                    <Button size="sm" variant="secondary" onClick={() => void retry(action)}>
+                      {t('loans.queue.failed.retry')}
+                    </Button>
+                  ) : null}
+                  <Button size="sm" variant="secondary" onClick={() => redo(action)}>
+                    {t('loans.queue.failed.redo')}
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => void markHandled(action.id)}>
+                    {t('loans.queue.failed.handled')}
+                  </Button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </Modal>
     </OfflineQueueContext.Provider>
   );
+}
+
+/**
+ * Take an action off the pending queue and put it on the failed list. If the
+ * failed record can't be written (private-browsing IndexedDB, quota), the entry
+ * still has to leave the queue — an expired one would otherwise be re-dropped
+ * and re-announced every thirty seconds — and the sticky critical toast becomes
+ * the only record.
+ */
+async function retire(
+  action: QueuedAction,
+  reason: 'expired' | 'rejected' | 'exhausted',
+  detail?: string,
+): Promise<void> {
+  const recorded = await failQueued(action, reason, detail);
+  if (!recorded) await removeQueued(action.id);
 }

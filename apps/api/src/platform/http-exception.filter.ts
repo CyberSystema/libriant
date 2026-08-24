@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import type { Request, Response } from 'express';
+import { scrubUrl } from './log-redaction.js';
 
 /**
  * Plain-language exception envelope (UX principle: "Errors are human —
@@ -17,7 +18,11 @@ import type { Request, Response } from 'express';
  *   • 4xx from NestJS HttpException — pass through verbatim. These are
  *     already user-readable: BadRequest, NotFound, Forbidden, etc. The
  *     handlers wrote the message; we shouldn't second-guess it.
- *   • 5xx OR anything that wasn't an HttpException — generate a short
+ *   • 503 from an HttpException — pass through verbatim, log at warn. A
+ *     deliberate refusal is not an incident, and its message (which
+ *     dependency is down, whether anything was charged) is the reason it
+ *     was raised.
+ *   • any other 5xx, or anything that wasn't an HttpException — generate a short
  *     `supportCode` (8 chars, base36), log the full stack server-side
  *     against that code, and return ONLY a generic friendly message +
  *     the support code to the client. Users can copy/paste the code
@@ -48,9 +53,29 @@ export class HttpExceptionFilter implements ExceptionFilter {
         res.status(status).json(body);
         return;
       }
-      // 5xx HttpExceptions still get re-skinned — server-side bugs that
-      // were thrown deliberately (e.g. InternalServerErrorException) are
-      // just as much "Error 500" to the user.
+      // 503 is the exception to the exception: it is not a bug, it is a
+      // DELIBERATE refusal, and its message is the whole point of raising it.
+      // Every one this API throws was written for a human and names something
+      // actionable — "Billing is not configured on this server", "Nothing has
+      // been charged, please try again", and /readyz's dependency diagnostics,
+      // which the audit specifically wanted to survive so an operator can see
+      // WHICH dependency is down. Re-skinning those as "something went wrong
+      // on our end" threw away the answer and minted a support code for an
+      // incident that never happened — which is worse than useless, because it
+      // trains everyone to treat real support codes as noise.
+      if (status === HttpStatus.SERVICE_UNAVAILABLE) {
+        // Logged, because a service refusing work is worth seeing — but at
+        // warn and without a stack: the throw site is known and expected, and
+        // a health prober hitting a degraded /readyz every few seconds must
+        // not read as a storm of errors.
+        this.logger.warn(`503 ${req.method} ${scrubUrl(req.originalUrl)}: ${exception.message}`);
+        res.status(status).json(body);
+        return;
+      }
+
+      // Every other 5xx still gets re-skinned — a deliberately thrown
+      // InternalServerErrorException is just as much "Error 500" to the user,
+      // and its message was written for us, not for them.
       this.handle5xx(req, res, status, exception, body);
       return;
     }
@@ -85,12 +110,20 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const err = exception as Error;
     // Log the full diagnostic record on ONE line with the supportCode
     // so an operator who's holding the code from the user can grep it.
+    //
+    // `req.originalUrl` went in verbatim, which defeated reliability-03 from
+    // the other end: the signed-download endpoint takes its bearer token as a
+    // query parameter (`/_files/signed?token=<jwt>`), so any 5xx on that route
+    // wrote a live, replayable credential into the same stdout the access log
+    // had just been cleaned up for. `scrubUrl` keeps the path and the parameter
+    // names — everything an operator holding a support code needs — and drops
+    // the values. Shared with the access log so the two cannot drift.
     this.logger.error(
       JSON.stringify({
         supportCode,
         status,
         method: req.method,
-        url: req.originalUrl,
+        url: scrubUrl(req.originalUrl),
         message: err?.message ?? String(exception),
         stack: err?.stack ?? null,
         declaredBody,

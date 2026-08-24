@@ -2,6 +2,7 @@ import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
+import { describeError } from './job-error.js';
 import type { JobResult } from './jobs.types.js';
 
 /**
@@ -64,7 +65,7 @@ export async function sweepFineAccrual(): Promise<JobResult> {
         touched += await accrueOneTenant(ctx, tenantPrisma);
       } catch (err) {
         failed++;
-        logger.warn(`accrual failed for tenant=${t.slug}: ${(err as Error).message}`);
+        logger.warn(`accrual failed for tenant=${t.slug}: ${describeError(err)}`);
       }
     }
   } finally {

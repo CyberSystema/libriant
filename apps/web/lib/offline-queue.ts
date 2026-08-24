@@ -33,6 +33,25 @@ export type QueuedAction = {
   attempts?: number;
 };
 
+/**
+ * Why an action stopped being replayed. Each maps to a different next step for
+ * the librarian, which is why the code is stored rather than a message:
+ *   - `expired`   — sat longer than {@link MAX_QUEUE_AGE_MS}; replaying is no
+ *                   longer safe, so it can only be redone by hand.
+ *   - `rejected`  — the server answered 4xx: settled, and not coming back.
+ *   - `exhausted` — the server kept faulting (5xx) past the retry cap. This is
+ *                   the one case where trying again can still work.
+ */
+export type FailureReason = 'expired' | 'rejected' | 'exhausted';
+
+/** A queued action that will never be replayed automatically again. */
+export type FailedAction = QueuedAction & {
+  failedAt: number;
+  reason: FailureReason;
+  /** The server's explanation, already translated when it was recorded. */
+  detail?: string;
+};
+
 /** After this many transient server failures, give up on an entry so one
  *  poison action can't wedge the whole queue. */
 export const MAX_REPLAY_ATTEMPTS = 6;
@@ -55,8 +74,28 @@ export function isExpired(action: QueuedAction, now: number = Date.now()): boole
 }
 
 const DB_NAME = 'libriant-offline';
-const DB_VERSION = 1;
+/** v2 added FAILED_STORE (frontend-06). */
+const DB_VERSION = 2;
 const STORE = 'circulation-queue';
+/**
+ * frontend-06: a queued action that could never succeed used to be `delete`d,
+ * announced once in a toast, and gone. A librarian who checked out ten books
+ * during a Friday network cut and reopened the laptop on Monday lost all ten —
+ * every entry was past the replay window, so the mount-time flush dropped the
+ * lot, and the only trace was a stack of toasts nobody was there to read. Ten
+ * books physically out of the library, and the system saying they were on the
+ * shelf.
+ *
+ * Dropped entries now move HERE instead of being deleted, and the tenant shell
+ * keeps showing them until a human says they have been dealt with. This store
+ * is the record of work that happened in the building but not in the database,
+ * so it deliberately outlives page loads and restarts.
+ */
+const FAILED_STORE = 'failed-actions';
+
+/** Failed records are pruned after this long — they describe loans that were
+ *  redone weeks ago, and the store is not an audit log. */
+export const FAILED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 function hasIndexedDb(): boolean {
   return typeof indexedDB !== 'undefined';
@@ -70,6 +109,9 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE, { keyPath: 'id' });
       }
+      if (!db.objectStoreNames.contains(FAILED_STORE)) {
+        db.createObjectStore(FAILED_STORE, { keyPath: 'id' });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -77,17 +119,33 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 function runStore<T>(
+  storeName: string,
   mode: IDBTransactionMode,
   fn: (store: IDBObjectStore) => IDBRequest | null,
 ): Promise<T> {
+  let request: IDBRequest | null = null;
+  return runTx(storeName, mode, (tx) => {
+    request = fn(tx.objectStore(storeName));
+  }).then(() => (request ? request.result : undefined) as T);
+}
+
+/**
+ * Run `fn` inside one transaction and resolve when it commits. Spanning both
+ * stores in a single transaction is what makes "move to failed" atomic — a
+ * delete-then-put pair can lose the entry in the gap between the two, which is
+ * exactly the loss this store exists to stop.
+ */
+function runTx(
+  storeNames: string | string[],
+  mode: IDBTransactionMode,
+  fn: (tx: IDBTransaction) => void,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     openDb().then(
       (db) => {
-        const tx = db.transaction(STORE, mode);
-        const store = tx.objectStore(STORE);
-        let request: IDBRequest | null;
+        const tx = db.transaction(storeNames, mode);
         try {
-          request = fn(store);
+          fn(tx);
         } catch (err) {
           db.close();
           reject(err);
@@ -95,7 +153,7 @@ function runStore<T>(
         }
         tx.oncomplete = () => {
           db.close();
-          resolve((request ? request.result : undefined) as T);
+          resolve();
         };
         tx.onerror = () => {
           db.close();
@@ -122,7 +180,7 @@ export async function enqueueAction(action: QueuedAction): Promise<boolean> {
   try {
     const existing = await listQueued();
     if (existing.some((a) => a.idempotencyKey === action.idempotencyKey)) return true;
-    await runStore('readwrite', (store) => store.put(action));
+    await runStore(STORE, 'readwrite', (store) => store.put(action));
     return true;
   } catch {
     return false;
@@ -131,20 +189,20 @@ export async function enqueueAction(action: QueuedAction): Promise<boolean> {
 
 export async function listQueued(): Promise<QueuedAction[]> {
   if (!hasIndexedDb()) return [];
-  const all = await runStore<QueuedAction[]>('readonly', (store) => store.getAll());
+  const all = await runStore<QueuedAction[]>(STORE, 'readonly', (store) => store.getAll());
   return (all ?? []).slice().sort((a, b) => a.createdAt - b.createdAt);
 }
 
 export async function removeQueued(id: string): Promise<void> {
   if (!hasIndexedDb()) return;
-  await runStore('readwrite', (store) => store.delete(id));
+  await runStore(STORE, 'readwrite', (store) => store.delete(id));
 }
 
 /** Persist an updated entry (e.g. a bumped attempt count). Best-effort. */
 export async function updateQueued(action: QueuedAction): Promise<void> {
   if (!hasIndexedDb()) return;
   try {
-    await runStore('readwrite', (store) => store.put(action));
+    await runStore(STORE, 'readwrite', (store) => store.put(action));
   } catch {
     /* best-effort */
   }
@@ -152,7 +210,93 @@ export async function updateQueued(action: QueuedAction): Promise<void> {
 
 export async function clearQueue(): Promise<void> {
   if (!hasIndexedDb()) return;
-  await runStore('readwrite', (store) => store.clear());
+  await runStore(STORE, 'readwrite', (store) => store.clear());
+}
+
+/**
+ * Move a queued action into the failed store: it stops being replayed, and it
+ * starts being *listed*. One transaction, so the entry is never in neither
+ * store.
+ *
+ * Returns false when the record could not be written — private-browsing IDB,
+ * a quota refusal. The caller still has to get the entry out of the pending
+ * queue in that case (an `expired` entry would otherwise be re-dropped, and
+ * re-announced, on every 30-second pass), so the sticky critical toast is the
+ * only record left. That is the old behaviour, and it is why this returns a
+ * boolean rather than swallowing the failure.
+ */
+export async function failQueued(
+  action: QueuedAction,
+  reason: FailureReason,
+  detail?: string,
+): Promise<boolean> {
+  if (!hasIndexedDb()) return false;
+  const record: FailedAction = {
+    ...action,
+    failedAt: Date.now(),
+    reason,
+    ...(detail ? { detail } : {}),
+  };
+  try {
+    await runTx([STORE, FAILED_STORE], 'readwrite', (tx) => {
+      tx.objectStore(FAILED_STORE).put(record);
+      tx.objectStore(STORE).delete(action.id);
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Everything that failed, newest first — the librarian works through the most
+ * recent cut first. Entries past {@link FAILED_RETENTION_MS} are pruned here
+ * rather than on a timer, because this is the only code path guaranteed to run.
+ */
+export async function listFailed(): Promise<FailedAction[]> {
+  if (!hasIndexedDb()) return [];
+  const all = await runStore<FailedAction[]>(FAILED_STORE, 'readonly', (store) => store.getAll());
+  const cutoff = Date.now() - FAILED_RETENTION_MS;
+  const kept = (all ?? []).filter((a) => a.failedAt >= cutoff);
+  if (kept.length !== (all ?? []).length) {
+    const stale = (all ?? []).filter((a) => a.failedAt < cutoff).map((a) => a.id);
+    await runTx(FAILED_STORE, 'readwrite', (tx) => {
+      const store = tx.objectStore(FAILED_STORE);
+      for (const id of stale) store.delete(id);
+    }).catch(() => undefined);
+  }
+  return kept.sort((a, b) => b.failedAt - a.failedAt);
+}
+
+/** The librarian has redone this by hand — drop the record. */
+export async function dismissFailed(id: string): Promise<void> {
+  if (!hasIndexedDb()) return;
+  await runStore(FAILED_STORE, 'readwrite', (store) => store.delete(id)).catch(() => undefined);
+}
+
+/**
+ * Put a failed action back on the pending queue for another automatic attempt.
+ *
+ * Refuses an entry past {@link MAX_QUEUE_AGE_MS}: the server has forgotten the
+ * idempotency key by then, so a replay would no longer dedupe and could apply
+ * the loan a second time. The panel hides the button for those, and this is the
+ * check that makes hiding it more than a suggestion — the modal is not
+ * re-rendered on a timer, so an entry can expire while it is on screen.
+ */
+export async function requeueFailed(id: string): Promise<boolean> {
+  if (!hasIndexedDb()) return false;
+  try {
+    const record = (await listFailed()).find((a) => a.id === id);
+    if (!record || isExpired(record)) return false;
+    const { failedAt: _failedAt, reason: _reason, detail: _detail, ...action } = record;
+    await runTx([STORE, FAILED_STORE], 'readwrite', (tx) => {
+      tx.objectStore(STORE).put({ ...action, attempts: 0 } satisfies QueuedAction);
+      tx.objectStore(FAILED_STORE).delete(id);
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

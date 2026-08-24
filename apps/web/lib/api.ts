@@ -11,8 +11,11 @@
  *     own session cookie automatically and the request goes through the
  *     public origin.
  *
- * Both paths produce a typed `ApiError` for non-2xx responses so callers
- * can render a single, plain-language toast / banner.
+ * Both paths produce a typed `ApiError` for non-2xx responses and a typed
+ * `ApiUnavailableError` when the API never answered at all, so callers can
+ * render a single, plain-language toast / banner. Turn either into a sentence
+ * with `translateApiError()` — never with `err.message`, which is the API's
+ * hardcoded English.
  */
 
 export type ApiErrorBody = {
@@ -26,12 +29,72 @@ export type ApiErrorBody = {
 export class ApiError extends Error {
   readonly status: number;
   readonly body: ApiErrorBody;
+  /**
+   * Machine-readable error code, when the endpoint sends one. `message` is the
+   * API's English prose and must never be shown to a librarian as-is — use
+   * `translateApiError()` (lib/api-errors.ts), which prefers this code.
+   */
+  readonly code: string | null;
   constructor(status: number, body: ApiErrorBody) {
     const friendly = Array.isArray(body.message) ? body.message.join(' ') : body.message;
     super(friendly ?? `API error (${status})`);
     this.status = status;
     this.body = body;
+    this.code = typeof body.code === 'string' && body.code.length ? body.code : null;
   }
+}
+
+/**
+ * The API never answered — the request timed out, or the socket/DNS/TLS never
+ * got far enough to produce a status. Distinct from `ApiError` (which means the
+ * API *did* answer, unhappily) so the UI can say "the server is not responding"
+ * instead of leaking `TypeError: fetch failed`, and so the offline queue keeps
+ * treating it as "no connectivity" rather than a rejected action.
+ */
+export class ApiUnavailableError extends Error {
+  readonly reason: 'timeout' | 'network';
+  constructor(reason: 'timeout' | 'network', options?: { cause?: unknown }) {
+    super(reason === 'timeout' ? 'The API did not respond in time.' : 'The API is unreachable.', {
+      cause: options?.cause,
+    });
+    this.name = 'ApiUnavailableError';
+    this.reason = reason;
+  }
+}
+
+/**
+ * Deadline for a request a person is waiting on.
+ *
+ * Node's undici has no overall response deadline — only a 300 s
+ * `headersTimeout` — so an upstream that accepted the socket and then went
+ * quiet (deadlocked Prisma pool, saturated Postgres, half-open TCP through
+ * Caddy) held the server render for five minutes before failing. Librarians
+ * reload long before that, so every reload piled another wedged render onto
+ * the same wedged API. 10 s is comfortably above the slowest healthy request
+ * we serve and short enough to fail while the user is still looking at the tab.
+ *
+ * `NEXT_PUBLIC_` so the browser bundle and the server render agree on the knob.
+ */
+export const API_TIMEOUT_MS = Number(process.env.NEXT_PUBLIC_API_TIMEOUT_MS) || 10_000;
+
+/**
+ * Deadline for endpoints that legitimately do work before answering — the CSV
+ * import validate/commit pass and the multipart uploads. Nobody expects these
+ * to be instant, but they still must not inherit undici's five minutes. Pass
+ * `timeoutMs: API_JOB_TIMEOUT_MS` explicitly at those call sites.
+ */
+export const API_JOB_TIMEOUT_MS = 60_000;
+
+/**
+ * `AbortSignal.timeout` rejects with a `TimeoutError` DOMException; a caller's
+ * own abort surfaces as `AbortError`. Everything else thrown by `fetch` is a
+ * transport failure. Match on `name` rather than `instanceof DOMException`,
+ * which is not reliable across the server/browser split.
+ */
+function asUnavailable(err: unknown): ApiUnavailableError {
+  const name = (err as { name?: unknown })?.name;
+  const timedOut = name === 'TimeoutError' || name === 'AbortError';
+  return new ApiUnavailableError(timedOut ? 'timeout' : 'network', { cause: err });
 }
 
 type RequestOptions = {
@@ -56,6 +119,12 @@ type RequestOptions = {
    * `'no-store'` so authenticated pages never serve a stale tenant's data.
    */
   cache?: RequestCache;
+  /**
+   * Per-request deadline in milliseconds. Defaults to `API_TIMEOUT_MS`; pass
+   * `API_JOB_TIMEOUT_MS` for import/export-class work. `0` disables the
+   * deadline entirely — only for a stream the user explicitly started.
+   */
+  timeoutMs?: number;
 };
 
 function resolveBase(opts: RequestOptions): string {
@@ -99,13 +168,27 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
   if (opts.body !== undefined) {
     init.body = typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body);
   }
+  const timeoutMs = opts.timeoutMs ?? API_TIMEOUT_MS;
+  if (timeoutMs > 0) init.signal = AbortSignal.timeout(timeoutMs);
 
-  const res = await fetch(url, init);
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch (err) {
+    throw asUnavailable(err);
+  }
   // 204 / 205 carry no body; everything else we parse.
   if (res.status === 204 || res.status === 205) {
     return undefined as T;
   }
-  const text = await res.text();
+  // The deadline covers the body too, so a connection that dies mid-stream
+  // lands here rather than as an unhandled rejection.
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (err) {
+    throw asUnavailable(err);
+  }
   let parsed: unknown = null;
   if (text.length) {
     try {

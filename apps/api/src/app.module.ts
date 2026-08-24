@@ -7,6 +7,7 @@ import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { SessionMiddleware } from './auth/session.middleware.js';
 import { OriginCheckMiddleware } from './platform/origin-check.middleware.js';
+import { LOG_REDACT_CENSOR, logRedactPaths, serializeRes } from './platform/log-redaction.js';
 import { BillingModule } from './billing/billing.module.js';
 import { CatalogModule } from './catalog/catalog.module.js';
 import { CustomizationModule } from './customization/customization.module.js';
@@ -45,7 +46,11 @@ import { ApplicationsModule } from './applications/applications.module.js';
           process.env.NODE_ENV !== 'production'
             ? { target: 'pino-pretty', options: { singleLine: true } }
             : undefined,
-        redact: ['req.headers.authorization', 'req.headers.cookie'],
+        // reliability-03: request headers alone were not enough — the default
+        // res serializer logged the response header bag, Set-Cookie included,
+        // so stdout carried replayable session JWTs. See log-redaction.ts.
+        redact: { paths: logRedactPaths, censor: LOG_REDACT_CENSOR },
+        serializers: { res: serializeRes },
       },
     }),
     RedisModule,

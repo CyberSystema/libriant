@@ -3,7 +3,8 @@ import * as React from 'react';
 import { Button, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { API_JOB_TIMEOUT_MS, ApiError, api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 
 type Props = {
   slug: string;
@@ -42,6 +43,8 @@ export function PhotoUploader({ slug, memberId, photoAssetRef, catalog, locale, 
         method: 'POST',
         body: form,
         credentials: 'include',
+        // Multipart bypasses `api()` and therefore its deadline; set one here.
+        signal: AbortSignal.timeout(API_JOB_TIMEOUT_MS),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -53,7 +56,7 @@ export function PhotoUploader({ slug, memberId, photoAssetRef, catalog, locale, 
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
     } finally {
       setUploading(false);
@@ -69,7 +72,7 @@ export function PhotoUploader({ slug, memberId, photoAssetRef, catalog, locale, 
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
     } finally {
       setRemoving(false);

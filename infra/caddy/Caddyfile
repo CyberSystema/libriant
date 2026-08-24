@@ -120,6 +120,90 @@
 	tls /etc/caddy/origin/origin.crt /etc/caddy/origin/origin.key
 }
 
+(origin_guard) {
+	# Admit only a Cloudflare (or on-host) TCP peer, and then decide — from that
+	# peer, never from a header — who the client is. Was `(cloudflare_only)`;
+	# renamed because it now does BOTH halves, and the two must never be
+	# separated again. Takes one argument: a tag unique within the site block
+	# (`import origin_guard lbrapi`), because named matchers are scoped to the
+	# whole site block and a snippet imported twice would redefine them.
+	#
+	# THE RULE: every route that proxies to api:3001 or web:3000 imports this,
+	# first, inside a `route` (only `route` honours source order). Caddy serving a
+	# static file keys nothing on the client IP and does not need it. The
+	# /webhooks/* route on the app host is what happens when the rule is applied
+	# by memory instead of by rule — it was left unguarded in the first pass, so
+	# direct-to-origin traffic reached the API and its own X-Real-IP header was
+	# forwarded verbatim.
+	#
+	# --- what this closes ------------------------------------------------------
+	# authn-authz-01 / input-and-files-02 / input-and-files-03: `header_up
+	# X-Real-IP {http.request.header.CF-Connecting-IP}` used to run for EVERY
+	# peer, so anyone who could reach the origin directly chose their own value
+	# for the header that every rate limit, the login lockout and the signup
+	# admission gate key on. 25 logins with a rotating header never tripped the
+	# 20/5min cap; eight signups with a rotating header provisioned eight Postgres
+	# databases.
+	#
+	# The first fix admitted only Cloudflare + private peers, and a verifier
+	# walked straight through it over IPv6: the host has a public v6 address
+	# (2a01:4f8:13b:ac8::2), Docker publishes 443 on [::] as well as 0.0.0.0, and
+	# no compose network sets `enable_ipv6` — so a v6 connection is carried to the
+	# container by Docker's USERLAND PROXY, which opens a fresh v4 connection from
+	# the BRIDGE GATEWAY. `remote_ip` then sees a private address, `private_ranges`
+	# admits it, and the forged CF-Connecting-IP was stamped into X-Real-IP as
+	# before. 25 rotating headers, 25 buckets, again.
+	#
+	# So the peer decides the identity, and only a real Cloudflare peer is allowed
+	# to name someone else:
+	#   • peer in a Cloudflare range → CF-Connecting-IP is authoritative;
+	#   • any other admitted peer (on-host curl, the Docker userland proxy) → the
+	#     peer address IS the identity, and its CF-Connecting-IP is deleted.
+	# The worst an attacker on the v6/userland path can now do is share ONE bucket
+	# (the gateway) with every other such caller — a bounded, self-inflicted
+	# limit, not an unbounded supply of fresh buckets.
+	#
+	# X-Forwarded-For is dropped on the way in for the same reason: whatever the
+	# client wrote there is not evidence. reverse_proxy re-adds it with the true
+	# peer, so the upstream sees exactly one entry, one we vouch for.
+	#
+	# --- what this does NOT close ---------------------------------------------
+	# Any Cloudflare customer can point a Worker at our origin IP, so "peer is in
+	# a Cloudflare range" is not "peer is OUR zone". Closing that needs a secret
+	# only our zone can add — see the commented `@no_origin_secret` block below —
+	# or Authenticated Origin Pulls with a CUSTOM certificate. Until then this
+	# layer is worth exactly one thing: the attacker must go through Cloudflare,
+	# where they are rate-limited, logged and blockable. The host firewall
+	# (scripts/prod-bootstrap.sh --firewall-only) is the layer that makes that
+	# mandatory; this one is what keeps working if the firewall is flushed.
+	#
+	# The list is Cloudflare's published ranges (https://www.cloudflare.com/ips).
+	# It changes rarely, but it DOES change: if legitimate traffic starts getting
+	# 403s at the edge, re-check it against that URL before anything else. It
+	# appears TWICE below and once in `scripts/prod-bootstrap.sh` — update all
+	# three together.
+	@untrusted_peer_{args[0]} not remote_ip 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32 private_ranges
+	respond @untrusted_peer_{args[0]} 403
+
+	@cf_peer_{args[0]} remote_ip 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+	# Only reachable for a peer the guard above already admitted, so "not
+	# Cloudflare" here means "on-host or the Docker userland proxy".
+	@local_peer_{args[0]} remote_ip private_ranges
+
+	request_header -X-Forwarded-For
+	request_header @cf_peer_{args[0]} X-Real-IP {http.request.header.CF-Connecting-IP}
+	request_header @local_peer_{args[0]} X-Real-IP {remote_host}
+	request_header @local_peer_{args[0]} -CF-Connecting-IP
+
+	# NOT YET ENABLED — the closure for "any Cloudflare customer can reach us".
+	# Add a Transform Rule on the zone (Rules → Transform → Modify Request
+	# Header) that sets `X-Origin-Secret` to the value of $ORIGIN_SHARED_SECRET,
+	# put that secret in /srv/libriant/.env.prod, THEN uncomment these two lines
+	# and reload. Order matters: uncommenting first takes the whole site down.
+	# @no_origin_secret_{args[0]} not header X-Origin-Secret {$ORIGIN_SHARED_SECRET:unset}
+	# respond @no_origin_secret_{args[0]} 403
+}
+
 # ---------------------------------------------------------------------------
 # Plaintext HTTP (:80) — health probes + redirect everything else to HTTPS.
 #
@@ -161,6 +245,10 @@ http:// {
 		# evaluated BEFORE the catch-all reverse_proxy. The prefix is already
 		# stripped here, so these match /lbr-api/metrics, /lbr-api/healthz, …
 		route {
+			# Nothing reaches the API unless the TCP peer is Cloudflare or the
+			# host itself, and the X-Real-IP that every rate limit keys on is
+			# written HERE, from that peer — never taken from the client.
+			import origin_guard lbrapi
 			# /metrics, /healthz, /readyz carry fleet-wide operational intel
 			# (tenant counts, capacity + queue gauges, readiness internals).
 			# Prometheus scrapes api:3001 DIRECTLY on the private monitoring
@@ -168,13 +256,12 @@ http:// {
 			# proxy, so 404 them at the edge.
 			@internal path /metrics /metrics/* /healthz /readyz
 			respond @internal 404
+			# X-Real-IP is set by `origin_guard` above, deliberately NOT by a
+			# `header_up` here: header_up runs for every peer, which is exactly
+			# how the forged-CF-Connecting-IP bug worked. The guard's version is
+			# conditional on who the peer actually is. The API applies its own
+			# peer check on top (apps/api/src/platform/client-ip.ts).
 			reverse_proxy api:3001 {
-				# Pass the REAL client IP so audit logs + rate limits key off it.
-				# Behind Cloudflare the true client is in `CF-Connecting-IP`
-				# (the TCP peer {remote_host} is a Cloudflare edge node). The host
-				# firewall only admits Cloudflare's ranges, so the header can't be
-				# spoofed by hitting the origin directly.
-				header_up X-Real-IP {http.request.header.CF-Connecting-IP}
 				# A failed upstream should look like a 503, not a 502.
 				fail_duration 10s
 				max_fails 3
@@ -185,13 +272,30 @@ http:// {
 	# Webhook surface — Stripe + future providers. Same upstream as the
 	# API, no prefix stripping needed (the controller lives at the same
 	# /webhooks path on the API).
+	#
+	# This route was left unguarded in the first pass at authn-authz-01, which is
+	# why `origin_guard` now states the rule in its own comment instead of
+	# leaving it to memory: it was a straight path to api:3001 for anyone who
+	# could reach the origin, and because nothing rewrote the headers the API
+	# received the CLIENT'S OWN X-Real-IP verbatim and believed it — the peer was
+	# Caddy, so it was trusted. Stripe reaches us through Cloudflare like
+	# everything else; a webhook that 403s at the edge means the sender did not.
 	handle /webhooks/* {
-		reverse_proxy api:3001
+		route {
+			import origin_guard webhooks
+			reverse_proxy api:3001
+		}
 	}
 
-	# Everything else → Next.js.
+	# Everything else → Next.js. Guarded too. This host only ever works behind
+	# Cloudflare (it presents an Origin CA certificate no browser trusts), so
+	# nothing legitimate arrives direct-to-origin, and guarding EVERY proxied
+	# path rather than the ones we remember is what stops the next /webhooks.
 	handle {
-		reverse_proxy web:3000
+		route {
+			import origin_guard appweb
+			reverse_proxy web:3000
+		}
 	}
 }
 
@@ -211,13 +315,16 @@ http:// {
 
 	handle_path /lbr-api/* {
 		route {
+			# This host carries the admin login, whose brute-force lockout keys on
+			# the client IP (authn-authz-03) — origin traffic must not reach it.
+			import origin_guard adminapi
 			# Internal ops endpoints are scraped on the private network only —
 			# never expose them through the public admin proxy. See public host.
 			@internal path /metrics /metrics/* /healthz /readyz
 			respond @internal 404
-			reverse_proxy api:3001 {
-				header_up X-Real-IP {http.request.header.CF-Connecting-IP}
-			}
+			# X-Real-IP comes from origin_guard, not from a header_up. See the
+			# app host above for why that distinction is the whole fix.
+			reverse_proxy api:3001
 		}
 	}
 
@@ -231,6 +338,9 @@ http:// {
 	# so the "/" redirect is matched before the catch-all proxy.
 	@bare path /
 	route {
+		# The admin console itself, not just its API: this host is the one an
+		# attacker would want to reach directly.
+		import origin_guard adminweb
 		redir @bare /admin/login 302
 		reverse_proxy web:3000
 	}
@@ -270,12 +380,18 @@ http:// {
 	# PUBLIC_APEX_DOMAIN is still libriant.com.
 	@apply path /apply /en/apply
 	handle @apply {
-		reverse_proxy api:3001 {
-			# The real client IP, for the form's throttle. Behind Cloudflare the
-			# TCP peer is an edge node.
-			header_up X-Real-IP {http.request.header.CF-Connecting-IP}
-			fail_duration 10s
-			max_fails 3
+		# `route`, not a bare reverse_proxy: the origin guard has to be evaluated
+		# before the proxy, and only route honours source order.
+		route {
+			# Writes the X-Real-IP the form's 5/hour throttle keys on, from the
+			# TCP peer. The static handlers below are deliberately NOT guarded:
+			# they key nothing on the client and they are the pages that must stay
+			# readable when everything else is down. Anything reaching api:3001 is.
+			import origin_guard apply
+			reverse_proxy api:3001 {
+				fail_duration 10s
+				max_fails 3
+			}
 		}
 	}
 

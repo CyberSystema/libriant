@@ -1,5 +1,8 @@
 'use client';
 import * as React from 'react';
+import { Banner } from './Banner';
+import { registerOpenModal } from './layers';
+import { useUiStrings } from './ui-strings';
 
 type ModalProps = {
   /** Whether the modal is currently shown. */
@@ -12,7 +15,16 @@ type ModalProps = {
   children: React.ReactNode;
   /** Trailing buttons (Cancel, Confirm, etc.). Right-aligned. */
   actions?: React.ReactNode;
-  /** Aria label for the close button; localized by the caller. */
+  /**
+   * A failure that happened while this dialog was open — a rejected checkout,
+   * a 409, a quota refusal. Rendered as a critical banner at the top of the
+   * body and focused, because a toast cannot serve here: a modal dialog makes
+   * everything outside itself inert, so a toast fired from a modal can be read
+   * but never clicked (frontend-05). Report the failure where the librarian
+   * still is.
+   */
+  error?: React.ReactNode;
+  /** Overrides the shared "Close" label for this dialog's × button. */
   closeLabel?: string;
   /**
    * Accessibility: tag for the underlying `<dialog>` element. Most modals
@@ -26,6 +38,19 @@ type ModalProps = {
  * Minimal accessible modal. Wraps the native `<dialog>` element so the
  * platform handles focus trapping, Esc, and overlay backdrop. Falls back
  * to a CSS-only modal for browsers without `<dialog>` support.
+ *
+ * The title id is per-instance (`useId`). It used to be the literal
+ * `lbr-modal-title`, and pages like the loan detail keep three modals mounted
+ * at once differing only by `open`, so three elements carried the same id and
+ * `aria-labelledby` resolved to whichever came first in the document — a
+ * screen-reader user opening "Mark lost" was told they were in "Return «Dune»"
+ * (frontend-12).
+ *
+ * The header and actions rows are plain `<div>`s. `<header>`/`<footer>` map to
+ * the `banner`/`contentinfo` landmarks unless they sit inside an `article`,
+ * `aside`, `main`, `nav` or `section` — and `<dialog>` is not on that list, so
+ * every mounted modal was donating a second page header and footer to landmark
+ * navigation (frontend-24).
  */
 export function Modal({
   open,
@@ -33,10 +58,16 @@ export function Modal({
   title,
   children,
   actions,
-  closeLabel = 'Close',
+  error,
+  closeLabel,
   role = 'dialog',
 }: ModalProps) {
   const ref = React.useRef<HTMLDialogElement>(null);
+  const errorRef = React.useRef<HTMLDivElement>(null);
+  const ui = useUiStrings();
+  const instanceId = React.useId();
+  const titleId = `${instanceId}-title`;
+  const errorId = `${instanceId}-error`;
 
   React.useEffect(() => {
     const dlg = ref.current;
@@ -47,6 +78,19 @@ export function Modal({
       dlg.close();
     }
   }, [open]);
+
+  // Tell the toast stack a dialog has entered the browser top layer, so it can
+  // re-promote itself above us instead of being painted under the backdrop.
+  React.useEffect(() => {
+    if (!open) return undefined;
+    return registerOpenModal();
+  }, [open]);
+
+  // Focus the failure so it is both announced and scrolled into view — the
+  // body scrolls independently and a long form can push the banner off-screen.
+  React.useEffect(() => {
+    if (open && error) errorRef.current?.focus();
+  }, [open, error]);
 
   // Native <dialog> dispatches a `cancel` event when the user hits Esc.
   // We swallow the default (which would just close it) and route through
@@ -60,7 +104,8 @@ export function Modal({
     <dialog
       ref={ref}
       className="lbr-modal"
-      aria-labelledby="lbr-modal-title"
+      aria-labelledby={titleId}
+      aria-describedby={error ? errorId : undefined}
       role={role}
       onCancel={handleCancel}
       onClick={(e) => {
@@ -69,21 +114,28 @@ export function Modal({
       }}
     >
       <div className="lbr-modal__inner">
-        <header className="lbr-modal__header">
-          <h2 id="lbr-modal-title" className="lbr-modal__title">
+        <div className="lbr-modal__header">
+          <h2 id={titleId} className="lbr-modal__title">
             {title}
           </h2>
           <button
             type="button"
             className="lbr-modal__close"
-            aria-label={closeLabel}
+            aria-label={closeLabel ?? ui.close}
             onClick={onClose}
           >
             ×
           </button>
-        </header>
-        <div className="lbr-modal__body">{children}</div>
-        {actions ? <footer className="lbr-modal__actions">{actions}</footer> : null}
+        </div>
+        <div className="lbr-modal__body">
+          {error ? (
+            <div ref={errorRef} id={errorId} tabIndex={-1} className="lbr-modal__error">
+              <Banner severity="critical">{error}</Banner>
+            </div>
+          ) : null}
+          {children}
+        </div>
+        {actions ? <div className="lbr-modal__actions">{actions}</div> : null}
       </div>
     </dialog>
   );

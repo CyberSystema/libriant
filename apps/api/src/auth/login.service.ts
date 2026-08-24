@@ -12,6 +12,13 @@ import type { SessionPayload } from './jwt-session.service.js';
 // out of their own sessions by guessing — a trivial, renewable DoS. Per-(account
 // +IP) lockout still stops a single attacker hammering one account, but a victim
 // signing in from their own IP is never affected by an attacker elsewhere.
+//
+// That design only holds while the IP is something the attacker cannot choose.
+// It wasn't: until authn-authz-01 the caller passed a raw client-supplied
+// header, so six wrong logins with six different `X-Real-IP` values opened six
+// empty buckets and the lockout never fired. `clientIp()` now honours a
+// forwarded address only from a trusted proxy peer — read the comment there
+// before changing anything about how `ip` reaches this file.
 const FAIL_KEY = (uid: string, ip: string): string => `login:fail:${uid}:${ip}`;
 const LOCK_KEY = (uid: string, ip: string): string => `login:lock:${uid}:${ip}`;
 

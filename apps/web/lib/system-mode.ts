@@ -1,4 +1,4 @@
-import { ApiError, api } from './api';
+import { api } from './api';
 
 export type SystemModeKind =
   'normal' | 'maintenance' | 'read_only' | 'out_of_order' | 'under_construction';
@@ -13,8 +13,8 @@ export type ResolvedSystemMode = {
   allowAdminBypass: boolean;
 };
 
-const NORMAL: ResolvedSystemMode = {
-  mode: 'normal',
+const OUT_OF_ORDER: ResolvedSystemMode = {
+  mode: 'out_of_order',
   source: 'default',
   eventId: null,
   messageMarkdown: null,
@@ -26,8 +26,15 @@ const NORMAL: ResolvedSystemMode = {
 /**
  * Fetch the effective system mode for a given slug (or global if omitted).
  * The endpoint is anonymous + always reachable (the API's
- * SystemModeMiddleware exempts `/system-mode/*`). Any failure resolves
- * to `normal` so a flaky control-plane never breaks the page render.
+ * SystemModeMiddleware exempts `/system-mode/*`).
+ *
+ * EVERY failure resolves to `out_of_order`, not just an `ApiError`. This used
+ * to return `normal` for a raw fetch rejection — API process down, DNS gone,
+ * connection refused, request timed out — which is the most common outage
+ * shape there is and a strictly stronger signal than a 5xx: we could not reach
+ * the control plane at all. Returning `normal` there sent the layout on to
+ * `/auth/me`, which then threw, so the branded takeover never rendered in the
+ * situation it was written for.
  */
 export async function currentSystemMode(slug?: string): Promise<ResolvedSystemMode> {
   try {
@@ -36,21 +43,8 @@ export async function currentSystemMode(slug?: string): Promise<ResolvedSystemMo
       : '/system-mode/current';
     const res = await api<{ mode: ResolvedSystemMode }>(path);
     return res.mode;
-  } catch (err) {
-    if (err instanceof ApiError) {
-      // Even when the maintenance middleware kicks in, /system-mode/* is
-      // exempt — so a 5xx here means a real outage. Render the takeover.
-      return {
-        mode: 'out_of_order',
-        source: 'default',
-        eventId: null,
-        messageMarkdown: null,
-        startsAt: null,
-        endsAt: null,
-        allowAdminBypass: true,
-      };
-    }
-    return NORMAL;
+  } catch {
+    return OUT_OF_ORDER;
   }
 }
 

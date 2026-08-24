@@ -4,7 +4,8 @@ import { useRouter } from 'next/navigation';
 import { Button, Card, CardBody, CardHeader, Input, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { API_JOB_TIMEOUT_MS, ApiError, api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 
 const DEFAULT_SWATCH = '#1f6feb';
 
@@ -33,7 +34,7 @@ export function BrandingForm({
   const fail = (err: unknown) =>
     toast.show({
       severity: 'critical',
-      title: err instanceof ApiError ? err.message : t('common.states.error'),
+      title: translateApiError(err, t, t('common.states.error')),
     });
 
   async function saveColor(value: string | null) {
@@ -61,6 +62,8 @@ export function BrandingForm({
         method: 'POST',
         body: form,
         credentials: 'include',
+        // Multipart bypasses `api()` and therefore its deadline; set one here.
+        signal: AbortSignal.timeout(API_JOB_TIMEOUT_MS),
       });
       if (!res.ok) throw new ApiError(res.status, await res.json().catch(() => ({})));
       const json = (await res.json()) as { brandLogoRef: string };

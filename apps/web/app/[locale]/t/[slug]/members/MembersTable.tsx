@@ -54,7 +54,7 @@ export function MembersTable({ catalog, locale, slug, status, initial }: Props) 
           m.status === 'active'
             ? 'var(--color-success)'
             : m.status === 'suspended'
-              ? 'var(--color-warning)'
+              ? 'var(--color-warning-text)'
               : 'var(--color-text-muted)';
         return (
           <span

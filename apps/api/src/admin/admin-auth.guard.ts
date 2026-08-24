@@ -39,12 +39,33 @@ export class AdminAuthGuard implements CanActivate {
         role: true,
         status: true,
         disabledAt: true,
+        lockedUntil: true,
         mfaEnabled: true,
         sessionsValidAfter: true,
       },
     });
+    // Deny-by-default on status: anything other than 'active' kills the session
+    // on the next request. That is the right behaviour for a DISABLED admin and
+    // it is exactly why nothing on an unauthenticated path may write this column
+    // — until authn-authz-03, five wrong passwords from a stranger set
+    // `status = 'locked'` here and 403'd the real admin's live cookie. The
+    // brute-force lockout now lives in Redis, keyed on (admin, IP); see
+    // admin-auth.service.ts. A row still stuck at 'locked' from before that fix
+    // heals on the next successful sign-in (recordSuccess).
     if (!admin || admin.disabledAt || admin.status !== 'active') {
       throw new ForbiddenException('Your admin account is no longer active.');
+    }
+    // An operator freezing an account by hand — `UPDATE admin_users SET
+    // "lockedUntil" = now() + interval '1 hour'` — is the documented incident
+    // response for a compromised admin, and it has to reach the LIVE cookie or
+    // it does nothing for the hour that matters. Safe to enforce here for
+    // exactly one reason, and it is the same reason spelled out in
+    // admin-auth.service.ts: nothing on an unauthenticated path writes this
+    // column. If that ever changes, this line turns straight back into the
+    // remote-controlled admin lockout of authn-authz-03 — so it does not
+    // change.
+    if (admin.lockedUntil && admin.lockedUntil.getTime() > Date.now()) {
+      throw new ForbiddenException('Your admin account is temporarily locked.');
     }
     // A1-02 / AUTH-01: reject a session minted before a forced reset/disable.
     // NOTE: today admins are seed-managed — there is NO in-app admin

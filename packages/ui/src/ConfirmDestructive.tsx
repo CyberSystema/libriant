@@ -2,6 +2,7 @@
 import * as React from 'react';
 import { Button } from './Button';
 import { Modal } from './Modal';
+import { splitAroundMarker, useUiStrings } from './ui-strings';
 
 type ConfirmDestructiveProps = {
   open: boolean;
@@ -19,8 +20,11 @@ type ConfirmDestructiveProps = {
    */
   confirmText: string;
   /**
-   * Localized button labels. Defaults are English. The "confirm" button
-   * is rendered in the critical (red) variant.
+   * Per-dialog overrides for the button labels. Both fall back to the shared
+   * `UiStringsProvider` copy — this dialog's standing text ("This cannot be
+   * undone.", the typing instructions) used to be English literals in the
+   * middle of a Greek interface (frontend-13). The "confirm" button is
+   * rendered in the critical (red) variant.
    */
   confirmLabel?: string;
   cancelLabel?: string;
@@ -57,10 +61,12 @@ export function ConfirmDestructive({
   title,
   children,
   confirmText,
-  confirmLabel = 'Delete forever',
-  cancelLabel = 'Cancel',
+  confirmLabel,
+  cancelLabel,
   busy = false,
 }: ConfirmDestructiveProps) {
+  const ui = useUiStrings();
+  const [promptBefore, promptAfter] = splitAroundMarker(ui.confirmTypePrompt);
   const [typed, setTyped] = React.useState('');
   // Reset on every open so a closed-and-reopened dialog doesn't carry
   // the previous attempt's state.
@@ -86,7 +92,7 @@ export function ConfirmDestructive({
       actions={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
-            {cancelLabel}
+            {cancelLabel ?? ui.cancel}
           </Button>
           <Button
             variant="primary"
@@ -94,18 +100,20 @@ export function ConfirmDestructive({
             disabled={!armed || busy}
             loading={busy}
           >
-            {confirmLabel}
+            {confirmLabel ?? ui.confirmDeleteForever}
           </Button>
         </>
       }
     >
       {children}
       <div className="lbr-confirm-destructive__warning" role="note">
-        This cannot be undone.
+        {ui.confirmIrreversible}
       </div>
       <label className="lbr-field">
         <span className="lbr-field__label">
-          Type <code>{confirmText}</code> to confirm
+          {promptBefore}
+          <code>{confirmText}</code>
+          {promptAfter}
         </span>
         <input
           className="lbr-input"
@@ -126,9 +134,7 @@ export function ConfirmDestructive({
           }}
         />
       </label>
-      <p className="lbr-confirm-destructive__type-hint">
-        Match is case-insensitive. The confirm button stays disabled until the text matches.
-      </p>
+      <p className="lbr-confirm-destructive__type-hint">{ui.confirmTypeHint}</p>
     </Modal>
   );
 }

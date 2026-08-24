@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
-import { RedisService } from '../platform/redis.service.js';
+import { FailOpenMemo, RedisService } from '../platform/redis.service.js';
 import { loadEnv } from '../config/env.js';
 import type { TenantContext } from './tenant-context.js';
 
@@ -18,11 +18,18 @@ export const SUBDOMAIN_KEY = (sub: string) => `tenant:sub:${sub}`;
 /** Short TTL for negative entries so an admin creating the tenant doesn't
  *  have to wait for the positive TTL to expire. */
 const NEGATIVE_TTL_SEC = 30;
+/**
+ * How long a resolution Redis refused to store survives in-process. Only
+ * consulted while Redis is erroring (BOOT-01) — see `readCache` below.
+ */
+const DEGRADED_MEMO_MS = 5_000;
 
 @Injectable()
 export class TenantResolverService {
   private readonly logger = new Logger(TenantResolverService.name);
   private readonly ttlSec: number;
+  /** Populated only when Redis I/O throws — see FailOpenMemo. */
+  private readonly degraded = new FailOpenMemo<CacheValue>(DEGRADED_MEMO_MS);
 
   constructor(@Inject(RedisService) private readonly redis: RedisService) {
     this.ttlSec = loadEnv().tenantCacheTtlSec;
@@ -62,6 +69,10 @@ export class TenantResolverService {
     if (opts.slug) keys.push(SLUG_KEY(opts.slug));
     if (opts.customSubdomain) keys.push(SUBDOMAIN_KEY(opts.customSubdomain));
     if (keys.length) {
+      this.degraded.delete(...keys);
+      // Deliberately NOT fail-open: this is the call that stops a suspended or
+      // relocated tenant being served from cache (TEN-03 / TEN-04), so the
+      // caller must learn that the invalidation did not happen.
       await this.redis.client.del(...keys);
       this.logger.debug(`Invalidated ${keys.length} cache key(s).`);
     }
@@ -91,20 +102,41 @@ export class TenantResolverService {
     return { ...tenant, resolvedFrom };
   }
 
+  /**
+   * Fail-open: a Redis error is reported as a cache miss so the caller falls
+   * through to the control-plane lookup. BOOT-01 — this runs inside
+   * SystemModeMiddleware on every `/t/<slug>/*` request, so an unguarded GET
+   * here meant an unreachable Redis 500'd every tenant route rather than
+   * degrading them to a control-DB read.
+   */
   private async readCache(key: string): Promise<CacheValue | null> {
-    const raw = await this.redis.client.get(key);
+    let raw: string | null;
+    try {
+      raw = await this.redis.client.get(key);
+    } catch (err) {
+      this.logger.warn(
+        `Redis read failed (${(err as Error).message}) — resolving the tenant from the DB.`,
+      );
+      return this.degraded.get(key);
+    }
     if (!raw) return null;
     try {
       return JSON.parse(raw) as CacheValue;
     } catch {
-      // Garbage in the cache → drop it.
-      await this.redis.client.del(key);
+      // Garbage in the cache → drop it (best-effort: see above).
+      await this.redis.client.del(key).catch(() => undefined);
       return null;
     }
   }
 
   private async writeCache(key: string, value: CacheValue, ttlSec: number): Promise<void> {
-    await this.redis.client.set(key, JSON.stringify(value), 'EX', ttlSec);
+    try {
+      await this.redis.client.set(key, JSON.stringify(value), 'EX', ttlSec);
+    } catch {
+      // Redis wouldn't take it — hold it in-process for a few seconds so the
+      // outage costs one control-DB lookup per slug, not one per request.
+      this.degraded.set(key, value);
+    }
   }
 
   private async lookupBySlug(slug: string): Promise<TenantContext | null> {

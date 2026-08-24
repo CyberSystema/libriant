@@ -7,7 +7,8 @@ import { EmailService } from '../email/email.service.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { pinWorkerConnLimit } from './fine-accrual.job.js';
-import type { JobResult } from './jobs.types.js';
+import { describeError } from './job-error.js';
+import type { JobContext, JobResult } from './jobs.types.js';
 
 /**
  * Member circulation reminders — opt-in per library (default OFF), so a library
@@ -118,7 +119,7 @@ function pickTemplate(
   };
 }
 
-export async function sendMemberNotifications(): Promise<JobResult> {
+export async function sendMemberNotifications(ctx?: JobContext): Promise<JobResult> {
   const tenants = await controlDb.tenant.findMany({
     where: { status: 'active' },
     select: {
@@ -135,35 +136,53 @@ export async function sendMemberNotifications(): Promise<JobResult> {
   });
 
   const tenantPrisma = new TenantPrismaService();
-  const redis = new RedisService();
-  const emails = new EmailService(redis);
-  // Member notifications are a paid feature, and until now nothing enforced
-  // that: this job gated only on the tenant's own settings, so a free-plan
-  // library that switched reminders on got them — while the pricing table said
-  // otherwise. Sending email costs real money per message, so the free tier
-  // cannot have an open tap.
-  const plans = new EffectivePlanService(redis, new PlatformSettingsService(redis));
+  // reliability-01: this sweep used to construct its own RedisService here and
+  // issue its first Redis GET microseconds later, on the first line of
+  // notifyOneTenant. The client is built with `enableOfflineQueue: false`, so
+  // that command rejected while the socket was still `connecting` — every
+  // tenant fell into the catch below on every hourly tick, and no library ever
+  // received a single reminder. Prefer the runner's long-lived client; when
+  // running without a context, wait for our own to come up before using it.
+  const redis = ctx?.redis ?? new RedisService();
+  /** Non-null only when this call created the client and therefore owns it. */
+  const ownedRedis = ctx?.redis ? null : redis;
   const counts = { dueSoon: 0, overdue: 0, holdReady: 0 };
   let failed = 0;
+  let ownedEmails: EmailService | null = null;
   try {
+    await redis.ready();
+    const emails = ctx?.emails ?? new EmailService(redis);
+    ownedEmails = ctx?.emails ? null : emails;
+    // Member notifications are a paid feature, and until now nothing enforced
+    // that: this job gated only on the tenant's own settings, so a free-plan
+    // library that switched reminders on got them — while the pricing table said
+    // otherwise. Sending email costs real money per message, so the free tier
+    // cannot have an open tap.
+    const plans = new EffectivePlanService(redis, new PlatformSettingsService(redis));
     for (const t of tenants) {
       // PER-JOB-TENANTPRISMA-CONN-MULTIPLY: pin a 1-connection pool for the
       // worker's per-tenant client so overlapping hourly sweeps don't march
       // toward Postgres max_connections.
-      const ctx: TenantContext = { ...t, dbUrl: pinWorkerConnLimit(t.dbUrl), resolvedFrom: 'path' };
+      const tenantCtx: TenantContext = {
+        ...t,
+        dbUrl: pinWorkerConnLimit(t.dbUrl),
+        resolvedFrom: 'path',
+      };
       try {
-        const c = await notifyOneTenant(ctx, tenantPrisma, emails, plans);
+        const c = await notifyOneTenant(tenantCtx, tenantPrisma, emails, plans);
         counts.dueSoon += c.dueSoon;
         counts.overdue += c.overdue;
         counts.holdReady += c.holdReady;
       } catch (err) {
         failed++;
-        logger.warn(`member notifications failed for tenant=${t.slug}: ${(err as Error).message}`);
+        logger.warn(`member notifications failed for tenant=${t.slug}: ${describeError(err)}`);
       }
     }
   } finally {
-    await emails.onModuleDestroy().catch(() => undefined);
-    await redis.onModuleDestroy().catch(() => undefined);
+    // Only tear down what this call created — a client that came in through
+    // the context outlives the tick and is shared with the other jobs.
+    await ownedEmails?.onModuleDestroy().catch(() => undefined);
+    await ownedRedis?.onModuleDestroy().catch(() => undefined);
     await tenantPrisma.onModuleDestroy().catch(() => undefined);
   }
 

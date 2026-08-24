@@ -10,8 +10,15 @@ import { controlDb } from '@libriant/db-control';
 import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { RedisService } from '../../src/platform/redis.service.js';
-import { PlatformSettingsService } from '../../src/platform-settings/platform-settings.service.js';
 import { listenOnce } from './listen-once.js';
+import { declareBillingPosture } from './billing-posture.js';
+
+declareBillingPosture(
+  'unenforced',
+  'The subject is guard DI + role checks, not a plan gate. It also drives ' +
+    'POST /admin/subscriptions, which WRITES the global switch — starting from the shipped ' +
+    'value keeps what this file leaves behind predictable for the next file.',
+);
 
 /**
  * Regression guard for the AdminRolesGuard DI bug.
@@ -32,7 +39,7 @@ let app: NestExpressApplication;
 let adminEmail: string;
 const adminPassword = 'role-guard-test-pw-1';
 let adminCookie = '';
-let settings: PlatformSettingsService;
+let redisService: RedisService;
 
 function adminCookieFrom(res: request.Response): string {
   const raw = res.headers['set-cookie'] as unknown as string[] | string | undefined;
@@ -55,11 +62,10 @@ beforeAll(async () => {
   // One ephemeral port for the file — see listen-once.ts.
   await listenOnce(app);
 
-  const redis = app.get(RedisService);
-  settings = app.get(PlatformSettingsService);
+  redisService = app.get(RedisService);
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
-    if (await redis.ping()) break;
+    if (await redisService.ping()) break;
     await new Promise((r) => setTimeout(r, 100));
   }
 
@@ -100,11 +106,15 @@ afterAll(async () => {
   // across six spec files and 25 seconds, and surfaced as import-api.spec.ts
   // getting 201 instead of 402 roughly one run in ten.
   //
-  // So restore through the service that owns both halves, then drop the row.
-  await settings.setBillingEnabled(true).catch(() => undefined);
-  await controlDb.platformSetting
-    .deleteMany({ where: { key: { contains: 'billing' } } })
-    .catch(() => undefined);
+  // So clear BOTH halves explicitly. This used to call
+  // `settings.setBillingEnabled(true)` to bust the cache through the owning
+  // service — but billing-02 later taught that method to REFUSE while
+  // STRIPE_DRIVER is not 'real', which it never is in CI. It threw, the
+  // `.catch()` ate the throw, and the DEL that lives after the throw never ran:
+  // the restore had quietly stopped restoring anything. Delete the row and the
+  // cached key directly, and let a failure of either be visible.
+  await controlDb.platformSetting.deleteMany({ where: { key: { contains: 'billing' } } });
+  await redisService?.client.del('platform_setting:billing.enabled');
   if (adminEmail) {
     await controlDb.adminUser.deleteMany({ where: { email: adminEmail } }).catch(() => undefined);
   }

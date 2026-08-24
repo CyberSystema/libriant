@@ -1,4 +1,4 @@
-import { ApiError, api } from './api';
+import { api } from './api';
 import { requestCookieHeader } from './session';
 
 export type ImpersonationSnapshot = {
@@ -27,8 +27,14 @@ export async function currentImpersonation(): Promise<ImpersonationSnapshot | nu
       { cookie },
     );
     return res.impersonation;
-  } catch (err) {
-    if (err instanceof ApiError && (err.status === 401 || err.status === 403)) return null;
-    throw err;
+  } catch {
+    // Fail soft on EVERYTHING. An impersonation probe we couldn't complete is
+    // not an impersonation, and this used to rethrow anything that wasn't a
+    // 401/403 — including the 503 the maintenance middleware returns for
+    // /support/impersonation/me, which is NOT on its always-pass list. That
+    // rejection reached the tenant layout before it could evaluate the takeover
+    // branch, so pulling the maintenance lever crashed every signed-in
+    // librarian with a bare 500 instead of showing them the maintenance screen.
+    return null;
   }
 }

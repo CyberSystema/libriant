@@ -3,7 +3,8 @@ import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { Banner, Button, Modal, useToast } from '@libriant/ui';
 import { createTranslator, type Catalog, type Locale } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { type ActiveAnnouncement } from '@/lib/announcements';
 
 type Props = {
@@ -54,7 +55,7 @@ export function AnnouncementsTopBanners({ slug, catalog, locale, initial }: Prop
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('errors.generic.title'),
+        title: translateApiError(err, t, t('errors.generic.title')),
       });
     } finally {
       setPending(null);
@@ -70,7 +71,7 @@ export function AnnouncementsTopBanners({ slug, catalog, locale, initial }: Prop
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('errors.generic.title'),
+        title: translateApiError(err, t, t('errors.generic.title')),
       });
     } finally {
       setPending(null);

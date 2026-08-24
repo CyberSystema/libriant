@@ -94,7 +94,7 @@ export function AuditLog({
                 : t('settings.activity.actor.unknown'))}
           </div>
           {r.viaSupport ? (
-            <div style={{ color: 'var(--color-warning)', fontSize: 'var(--fs-xs)' }}>
+            <div style={{ color: 'var(--color-warning-text)', fontSize: 'var(--fs-xs)' }}>
               {t('settings.activity.viaSupport')}
             </div>
           ) : null}

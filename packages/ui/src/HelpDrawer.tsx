@@ -1,5 +1,7 @@
 'use client';
 import * as React from 'react';
+import { registerOpenModal } from './layers';
+import { useUiStrings } from './ui-strings';
 
 type HelpDrawerProps = {
   open: boolean;
@@ -8,7 +10,7 @@ type HelpDrawerProps = {
   title: React.ReactNode;
   /** Body — markdown-rendered or arbitrary React. Caller decides the format. */
   children: React.ReactNode;
-  /** Aria label for the close button; localized by the caller. */
+  /** Overrides the shared "Close help" label for this drawer's × button. */
   closeLabel?: string;
 };
 
@@ -23,17 +25,18 @@ type HelpDrawerProps = {
  *
  * Body content is intentionally untyped (React node) — callers can pass
  * either plain markdown rendered to HTML, or fully composed JSX. The
- * primitive doesn't know about i18n; bind translated content at the
- * caller.
+ * primitive doesn't know about page copy; bind translated content at the
+ * caller. Its own chrome (the close button's accessible name) comes from
+ * `UiStringsProvider`, because the English default it used to carry was never
+ * once overridden (frontend-13).
+ *
+ * Title id is per-instance and the header is a `<div>`, for the same reasons
+ * as `Modal` — see frontend-12 and frontend-24 there.
  */
-export function HelpDrawer({
-  open,
-  onClose,
-  title,
-  children,
-  closeLabel = 'Close help',
-}: HelpDrawerProps) {
+export function HelpDrawer({ open, onClose, title, children, closeLabel }: HelpDrawerProps) {
   const ref = React.useRef<HTMLDialogElement>(null);
+  const ui = useUiStrings();
+  const titleId = `${React.useId()}-title`;
 
   React.useEffect(() => {
     const dlg = ref.current;
@@ -45,11 +48,16 @@ export function HelpDrawer({
     }
   }, [open]);
 
+  React.useEffect(() => {
+    if (!open) return undefined;
+    return registerOpenModal();
+  }, [open]);
+
   return (
     <dialog
       ref={ref}
       className="lbr-help-drawer"
-      aria-labelledby="lbr-help-drawer-title"
+      aria-labelledby={titleId}
       onCancel={(e) => {
         e.preventDefault();
         onClose();
@@ -59,19 +67,19 @@ export function HelpDrawer({
       }}
     >
       <div className="lbr-help-drawer__inner">
-        <header className="lbr-help-drawer__header">
-          <h2 id="lbr-help-drawer-title" className="lbr-help-drawer__title">
+        <div className="lbr-help-drawer__header">
+          <h2 id={titleId} className="lbr-help-drawer__title">
             {title}
           </h2>
           <button
             type="button"
             className="lbr-help-drawer__close"
-            aria-label={closeLabel}
+            aria-label={closeLabel ?? ui.helpClose}
             onClick={onClose}
           >
             ×
           </button>
-        </header>
+        </div>
         <div className="lbr-help-drawer__body">{children}</div>
       </div>
     </dialog>
@@ -87,7 +95,7 @@ type HelpButtonProps = {
    */
   title: React.ReactNode;
   children: React.ReactNode;
-  /** What the screen reader announces; defaults to "Show help for this page". */
+  /** Overrides the shared "Show help for this page" label. */
   ariaLabel?: string;
 };
 
@@ -99,12 +107,13 @@ type HelpButtonProps = {
  */
 export function HelpButton({ title, children, ariaLabel }: HelpButtonProps) {
   const [open, setOpen] = React.useState(false);
+  const ui = useUiStrings();
   return (
     <>
       <button
         type="button"
         className="lbr-help-button"
-        aria-label={ariaLabel ?? 'Show help for this page'}
+        aria-label={ariaLabel ?? ui.helpShow}
         aria-expanded={open}
         onClick={() => setOpen(true)}
       >

@@ -3,7 +3,8 @@ import { notFound, redirect } from 'next/navigation';
 import { Asset, PoweredBy } from '@libriant/ui';
 import { isLocale, createTranslator } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
-import { currentSession } from '@/lib/session';
+import { LocaleSwitcher } from '@/components/LocaleSwitcher';
+import { optionalSession } from '@/lib/session';
 import { SignupForm } from './SignupForm';
 
 export async function generateMetadata(props: { params: Promise<{ locale: string }> }) {
@@ -17,7 +18,7 @@ export default async function SignupPage(props: { params: Promise<{ locale: stri
   const params = await props.params;
   if (!isLocale(params.locale)) notFound();
 
-  const session = await currentSession();
+  const session = await optionalSession();
   if (session) redirect(`/${params.locale}/t/${session.tenant.slug}`);
 
   const catalog = await loadCatalog(params.locale);
@@ -40,6 +41,11 @@ export default async function SignupPage(props: { params: Promise<{ locale: stri
         </p>
       </div>
       <div style={{ marginTop: 'var(--sp-4)', textAlign: 'center' }}>
+        {/* Reachable before sign-in: a librarian sent here by an en-US browser
+            should be able to switch to Greek without editing the URL. */}
+        <LocaleSwitcher locale={params.locale} label={t('shell.locale.label')} />
+      </div>
+      <div style={{ marginTop: 'var(--sp-3)', textAlign: 'center' }}>
         <PoweredBy />
       </div>
     </main>

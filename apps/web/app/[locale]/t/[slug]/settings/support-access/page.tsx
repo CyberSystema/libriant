@@ -2,7 +2,8 @@ import { notFound } from 'next/navigation';
 import { Banner, HelpButton, PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { requestCookieHeader } from '@/lib/session';
 import { SupportAccessPanel } from './SupportAccessPanel';
 
@@ -57,7 +58,7 @@ export default async function SupportAccessPage(props: {
     active = a.session;
     history = l.sessions;
   } catch (err) {
-    error = err instanceof ApiError ? err.message : t('errors.generic.title');
+    error = translateApiError(err, t, t('errors.generic.title'));
   }
 
   return (

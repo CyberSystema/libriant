@@ -6,12 +6,15 @@ import type {
   StripeCustomerInput,
   StripeDriver,
   StripePortalInput,
+  StripePriceChangeInput,
+  StripeSubscriptionState,
   StripeWebhookEvent,
 } from './stripe-driver.js';
 
 @Injectable()
 export class RealStripeDriver implements StripeDriver {
   readonly isReal = true;
+  readonly kind = 'real' as const;
   private readonly logger = new Logger(RealStripeDriver.name);
   private readonly stripe: Stripe;
   private readonly webhookSecret: string;
@@ -80,6 +83,16 @@ export class RealStripeDriver implements StripeDriver {
     return { url: session.url, sessionId: session.id };
   }
 
+  /**
+   * billing-03: expire an open Checkout session so a second click cannot leave
+   * two completable sessions outstanding. Stripe refuses this on a session
+   * that is already `complete`; that rejection is meaningful and must reach
+   * the caller rather than being swallowed — it means a subscription exists.
+   */
+  async expireCheckoutSession(sessionId: string): Promise<void> {
+    await this.stripe.checkout.sessions.expire(sessionId);
+  }
+
   async createBillingPortalSession(input: StripePortalInput): Promise<{ url: string }> {
     const session = await this.stripe.billingPortal.sessions.create({
       customer: input.customerId,
@@ -94,6 +107,75 @@ export class RealStripeDriver implements StripeDriver {
 
   async resumeSubscription(subscriptionId: string): Promise<void> {
     await this.stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: false });
+  }
+
+  /**
+   * billing-03: the ONLY way to change what a live subscription costs. Stripe
+   * re-prices by replacing the item, so we must send the existing item's id —
+   * omitting it appends a second item and the customer pays for both.
+   *
+   * `create_prorations` credits the unused remainder of the old price and
+   * charges the new one pro rata on the next invoice, which is what an upgrade
+   * mid-period should do. We refuse anything but a single-item subscription:
+   * every subscription this app creates has exactly one line, so more than one
+   * means a human edited it in the Dashboard and guessing which line to
+   * replace would silently drop what they added.
+   */
+  async changeSubscriptionPrice(input: StripePriceChangeInput): Promise<void> {
+    const current = await this.stripe.subscriptions.retrieve(input.subscriptionId);
+    const items = current.items.data;
+    const item = items[0];
+    if (items.length !== 1 || !item) {
+      throw new Error(
+        `Subscription ${input.subscriptionId} has ${items.length} items — refusing to re-price it automatically.`,
+      );
+    }
+    // Already on that price (a double-submit, or a resumed cancellation).
+    // Sending it again would raise a zero-value proration on the invoice.
+    if (item.price.id === input.priceId) {
+      this.logger.log(`Subscription ${input.subscriptionId} already on price ${input.priceId}.`);
+      return;
+    }
+    await this.stripe.subscriptions.update(input.subscriptionId, {
+      items: [{ id: item.id, price: input.priceId }],
+      proration_behavior: 'create_prorations',
+    });
+  }
+
+  /**
+   * billing-03 (lockout half): the authoritative answer to "is the id on our
+   * row still a real, live subscription?". A deleted subscription answers with
+   * Stripe's `resource_missing` error, which we translate to `null` so the
+   * purchase path can clear the dead pointer and sell again — rather than
+   * letting a single missed `customer.subscription.deleted` webhook lock a
+   * library out of buying anything, forever.
+   *
+   * Any OTHER error (network, 5xx, auth) propagates on purpose. "Stripe did
+   * not answer" is not the same as "there is no subscription", and treating
+   * it as the latter is how you sell a second subscription to someone who
+   * already has one.
+   */
+  async getSubscription(subscriptionId: string): Promise<StripeSubscriptionState | null> {
+    try {
+      const sub = await this.stripe.subscriptions.retrieve(subscriptionId);
+      const items = sub.items.data;
+      return {
+        id: sub.id,
+        status: sub.status,
+        // Only meaningful for a single-item subscription; `changeSubscriptionPrice`
+        // refuses to touch anything else anyway.
+        priceId: items.length === 1 ? (items[0]?.price.id ?? null) : null,
+      };
+    } catch (err) {
+      if (
+        err instanceof Stripe.errors.StripeInvalidRequestError &&
+        err.code === 'resource_missing'
+      ) {
+        this.logger.warn(`Stripe has no subscription ${subscriptionId} — treating it as gone.`);
+        return null;
+      }
+      throw err;
+    }
   }
 
   verifyWebhookSignature(rawBody: Buffer, signatureHeader: string): StripeWebhookEvent {

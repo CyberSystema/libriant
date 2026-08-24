@@ -4,7 +4,8 @@ import { createTranslator, isLocale } from '@libriant/i18n';
 import { notFound } from 'next/navigation';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { CatalogTable, type CatalogBook } from './CatalogTable';
 
 type ListResponse<T> = { items: T[]; nextCursor: string | null };
@@ -34,7 +35,7 @@ export default async function CatalogPage(props: {
     );
   } catch (err) {
     initial = { items: [], nextCursor: null };
-    fetchError = err instanceof ApiError ? err.message : t('common.states.error');
+    fetchError = translateApiError(err, t, t('common.states.error'));
   }
 
   return (

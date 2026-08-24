@@ -5,6 +5,7 @@ import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
 import { ApiError, api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import type { FieldDef } from '@/components/DynamicFields';
 import type { BookInitial } from '../new/BookForm';
 import { BookDetail } from './BookDetail';
@@ -42,7 +43,7 @@ export default async function BookDetailPage(props: {
     book = await api<BookWithCopies>(`/t/${params.slug}/catalog/books/${params.id}`, { cookie });
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) notFound();
-    fetchError = err instanceof ApiError ? err.message : t('common.states.error');
+    fetchError = translateApiError(err, t, t('common.states.error'));
   }
 
   let customFields: FieldDef[] = [];

@@ -19,6 +19,7 @@ import {
   saveConfig,
   type DesktopConfig,
 } from './config.js';
+import { localeFromUrl, t, uiLocale } from './i18n.js';
 
 const { autoUpdater } = electronUpdater;
 
@@ -208,10 +209,26 @@ function loadAppUrl(url: string): void {
   if (mainWindow && !mainWindow.isDestroyed()) void mainWindow.loadURL(url);
 }
 
-/** Show the bundled offline/setup page when the server can't be reached. */
-function loadFallback(failedUrl: string, errorDesc: string): void {
+/**
+ * Show the bundled offline/setup page when the server can't be reached.
+ *
+ * The page carries its own el/en strings, so we hand it a locale rather than a
+ * sentence — `reason` names the situation and the page words it. Prefer the
+ * language the librarian was working in (every Libriant route is `/<locale>/…`,
+ * on the URL that failed or on the last page that loaded) and fall back to the
+ * machine's, the same one the menu uses.
+ */
+function loadFallback(
+  failedUrl: string,
+  errorDesc: string,
+  reason: 'unreachable' | 'crashed' = 'unreachable',
+): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  void mainWindow.loadFile(FALLBACK_FILE, { query: { url: failedUrl, error: errorDesc } });
+  const lang =
+    localeFromUrl(failedUrl) ?? localeFromUrl(mainWindow.webContents.getURL()) ?? uiLocale();
+  void mainWindow.loadFile(FALLBACK_FILE, {
+    query: { url: failedUrl, error: errorDesc, reason, lang },
+  });
 }
 
 function createWindow(): void {
@@ -302,7 +319,7 @@ function createWindow(): void {
     if (crashReloads.length <= CRASH_RELOADS_MAX) {
       loadAppUrl(resolvedWithSource().url);
     } else {
-      loadFallback(appOrigin ?? '', 'The app crashed repeatedly.');
+      loadFallback(appOrigin ?? '', '', 'crashed');
     }
   });
 }
@@ -335,7 +352,7 @@ function buildMenu(): void {
     { role: 'fileMenu' },
     { role: 'editMenu' },
     {
-      label: 'View',
+      label: t('menu.view'),
       submenu: [
         { role: 'reload' },
         { role: 'forceReload' },
@@ -349,17 +366,20 @@ function buildMenu(): void {
       ],
     },
     {
-      label: 'Connection',
+      label: t('menu.connection'),
       submenu: [
-        { label: 'Reload from server', click: () => loadAppUrl(resolvedWithSource().url) },
+        { label: t('menu.reloadFromServer'), click: () => loadAppUrl(resolvedWithSource().url) },
         {
-          label: 'Safe mode (ignore saved server)',
+          label: t('menu.safeMode'),
           click: () => loadAppUrl(resolveStartUrl(config, { ignoreSaved: true })),
         },
         { type: 'separator' },
-        { label: 'Open config folder…', click: () => void shell.openPath(app.getPath('userData')) },
         {
-          label: 'Reset to default server',
+          label: t('menu.openConfigFolder'),
+          click: () => void shell.openPath(app.getPath('userData')),
+        },
+        {
+          label: t('menu.resetServer'),
           click: () => {
             delete config.serverUrl;
             saveConfig(config);
@@ -372,12 +392,12 @@ function buildMenu(): void {
       role: 'help',
       submenu: [
         {
-          label: 'Check for updates…',
+          label: t('menu.checkUpdates'),
           enabled: app.isPackaged,
           click: () => void autoUpdater.checkForUpdates().catch(() => undefined),
         },
         {
-          label: 'Open logs…',
+          label: t('menu.openLogs'),
           click: () => shell.showItemInFolder(log.transports.file.getFile().path),
         },
       ],

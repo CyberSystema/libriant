@@ -97,7 +97,24 @@ ensure_rand POSTGRES_PASSWORD 24     # preserved if the DB already has one
 
 echo "Ensuring config defaults ..."
 ensure_default BILLING_ENABLED false # free launch: all tenants get every feature; set 'true' to enforce plans
-ensure_default STRIPE_DRIVER fake    # trial-safe; set 'real' + keys to charge
+# billing-02: `none` means the API loads NO Stripe driver — every billing
+# action refuses with a 503 and POST /webhooks/stripe answers 503 without
+# verifying anything. This line used to write `fake`, an in-memory stand-in
+# that verified webhook signatures against a secret published in this
+# repository; since that endpoint is unauthenticated by design, every host this
+# script provisioned could have its libraries' subscriptions rewritten by
+# anyone on the internet. `fake` is development/test only now.
+#
+# Hosts provisioned before that change still carry STRIPE_DRIVER=fake, and
+# ensure_default never overwrites an existing value — so rewrite it here.
+# Safe: 'fake' on a server always meant "we are not charging anyone", which is
+# exactly what 'none' does, minus the remote-write hole. Anyone actually taking
+# payments has 'real' and is untouched.
+if [ "$(getv STRIPE_DRIVER)" = "fake" ]; then
+  setv STRIPE_DRIVER none
+  echo "  migrated STRIPE_DRIVER=fake -> none (the stand-in driver is dev/test only)"
+fi
+ensure_default STRIPE_DRIVER none    # billing off; set 'real' + keys to charge
 ensure_default EMAIL_DRIVER console  # trial-safe: NOT delivered; body withheld from prod logs (A12-02). Set 'resend'+RESEND_API_KEY or 'smtp'+SMTP_URL to send.
 # PUBLIC_HOST is the APP host; the marketing site owns the apex. Changing this
 # default only affects a NEWLY provisioned host — an existing .env.prod keeps

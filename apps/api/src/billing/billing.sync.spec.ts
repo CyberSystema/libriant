@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -146,5 +147,71 @@ describe('BillingService.handleStripeSubscriptionDeleted (A6-01 stale-delete gua
     subFindUnique.mockResolvedValue({ stripeSubscriptionId: 'sub_new' });
     await makeService().handleStripeSubscriptionDeleted(basilPayload({ id: 'sub_old' }));
     expect(subUpdate).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * billing-03, detection half. `startCheckout` can no longer open a second
+ * subscription, but a Dashboard-created one or a stale Checkout link still
+ * can — and this write is where the previous `stripeSubscriptionId` (the only
+ * pointer the product has to it) disappears. Overwriting it silently is what
+ * made the duplicate charge invisible to the library and to us.
+ */
+describe('BillingService.syncStripeSubscription (duplicate live subscription)', () => {
+  let error: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    billingFindFirst.mockReset().mockResolvedValue({ tenantId: 'tnt_1' });
+    planFindFirst.mockReset().mockResolvedValue({ id: 'plan_1' });
+    subFindUnique.mockReset();
+    subUpdate.mockClear();
+    subUpdateMany.mockClear();
+    // Re-spying an already-spied method hands back the SAME mock, so clear it
+    // explicitly or the previous test's call leaks into this one.
+    error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    error.mockClear();
+  });
+
+  it('screams when a NEW subscription id supersedes one that is still live', async () => {
+    subFindUnique.mockResolvedValue({
+      status: 'active',
+      graceUntil: null,
+      stripeSubscriptionId: 'sub_old',
+      currentPeriodStart: null,
+    });
+
+    await makeService().syncStripeSubscription(basilPayload({ id: 'sub_new' }));
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(String(error.mock.calls[0]![0])).toMatch(/sub_old.*sub_new/s);
+    // Stripe is still the source of truth — we apply the event, we just refuse
+    // to lose the old id quietly.
+    expect(subUpdate.mock.calls[0]![0].data.stripeSubscriptionId).toBe('sub_new');
+  });
+
+  it('stays quiet when the superseded subscription is already canceled', async () => {
+    subFindUnique.mockResolvedValue({
+      status: 'canceled',
+      graceUntil: null,
+      stripeSubscriptionId: 'sub_old',
+      currentPeriodStart: null,
+    });
+
+    await makeService().syncStripeSubscription(basilPayload({ id: 'sub_new' }));
+
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet on an ordinary update of the subscription we already track', async () => {
+    subFindUnique.mockResolvedValue({
+      status: 'active',
+      graceUntil: null,
+      stripeSubscriptionId: 'sub_1',
+      currentPeriodStart: null,
+    });
+
+    await makeService().syncStripeSubscription(basilPayload({ id: 'sub_1' }));
+
+    expect(error).not.toHaveBeenCalled();
   });
 });

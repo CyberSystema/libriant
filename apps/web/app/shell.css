@@ -1,0 +1,231 @@
+/* Web-app styles that are not part of the shared design system.
+ *
+ * Loaded AFTER `@libriant/ui/styles.css` in app/[locale]/layout.tsx. Two kinds
+ * of rule live here: chrome that only the Next app has (skip link, language
+ * switch) and WCAG contrast corrections for design-system classes. The
+ * corrections carry an extra ancestor class so they win on specificity rather
+ * than on stylesheet order, which is the one thing a bundler is free to change.
+ */
+
+/* --- skip link (WCAG 2.4.1 Bypass Blocks) ---------------------------------
+ * Every tenant page puts the brand link, 8-11 nav links and sign-out ahead of
+ * <main> in tab order. A keyboard or switch-access librarian had to traverse
+ * all of it on every page load before reaching the checkout form. Visible only
+ * while focused, exactly like the one the marketing site already ships. */
+.lbr-skip {
+  position: absolute;
+  left: var(--sp-2);
+  top: -100%;
+  z-index: 1100;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: var(--color-text-on-primary);
+  font-weight: 600;
+  text-decoration: none;
+}
+.lbr-skip:focus {
+  top: var(--sp-2);
+}
+/* <main> takes tabIndex={-1} so the skip target actually receives focus; it
+   must not then draw a focus ring around the whole page on mouse clicks. */
+.lbr-shell__main:focus {
+  outline: none;
+}
+.lbr-shell__main:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: -2px;
+}
+
+/* --- in-app language switch ----------------------------------------------- */
+.lbr-locale-switch {
+  display: inline-flex;
+  gap: var(--sp-1);
+  align-items: center;
+}
+.lbr-locale-switch__option {
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  color: var(--color-text-muted);
+  text-decoration: none;
+}
+.lbr-locale-switch__option:hover {
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+}
+.lbr-locale-switch__option--active {
+  color: var(--color-text);
+  font-weight: 600;
+  background: var(--color-surface-sunken);
+}
+
+/* --- contrast corrections (WCAG 1.4.3, normal text needs 4.5:1) ------------
+ * The hero dims white text with `opacity` over the #1f6feb→#8957e5 gradient.
+ * Measured on the composited colours: eyebrow and note 3.78-3.99, sub-headline
+ * 4.34-4.54 — the sentence that explains what the product does was the least
+ * legible element on the page every prospective library sees first. Undimmed
+ * white clears AA everywhere along the gradient. */
+.lbr-landing .lbr-landing__eyebrow,
+.lbr-landing .lbr-landing__hero-sub,
+.lbr-landing .lbr-landing__hero-note {
+  opacity: 1;
+}
+
+/* `--color-warning` (#bf8700) measures 3.14:1 on white — fine for a border or
+ * a swatch, below AA as text. `--color-warning-text` is the same hue at the
+ * banner's foreground value, which clears 4.5:1, and is what the overdue
+ * marker and the small warning labels use. */
+:root {
+  --color-warning-text: #7c5e00;
+}
+
+/* --- bottom overlays: offline bar, queue dock, toasts (frontend-28) --------
+ * Three things anchor to the bottom of the viewport and used to be ordered
+ * only by z-index: the full-width offline bar (2000), the "N pending sync"
+ * pill (1900) and the toast stack. The pill therefore sat *underneath* the
+ * offline bar in the one state where both are on screen — offline, with
+ * queued checkouts — so the indicator telling the librarian their work was
+ * safely queued was hidden exactly when it mattered. And the toast stack had
+ * no `env(safe-area-inset-bottom)` at all, so on a notched iPhone its close
+ * button could land under the home indicator.
+ *
+ * They are now a column instead of a pile: the bar owns the bottom edge, the
+ * dock sits above the bar, the toasts above the dock. The two heights are
+ * measured at runtime (the bar and the pill both wrap to two lines in Greek on
+ * a narrow phone) and published as custom properties by the components that
+ * own them; these are the values before either has mounted. */
+:root {
+  --lbr-offline-bar-h: 0px;
+  --lbr-offline-dock-h: 0px;
+}
+
+.lbr-offline-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2000;
+  padding: var(--sp-2) var(--sp-3);
+  /* The bar owns the notch, so everything stacked above it measures from the
+     bar's height rather than adding the inset a second time. */
+  padding-bottom: calc(var(--sp-2) + env(safe-area-inset-bottom, 0px));
+  background: var(--color-text);
+  color: var(--color-text-on-primary);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.lbr-offline-dock {
+  position: fixed;
+  right: var(--sp-3);
+  bottom: calc(var(--sp-3) + max(var(--lbr-offline-bar-h), env(safe-area-inset-bottom, 0px)));
+  z-index: 2001;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sp-2);
+  max-width: min(24rem, calc(100vw - 2 * var(--sp-3)));
+}
+.lbr-offline-dock__pill,
+.lbr-offline-dock__alert {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.lbr-offline-dock__alert {
+  border-color: var(--color-danger);
+  font-family: inherit;
+  cursor: pointer;
+}
+.lbr-offline-dock__cta {
+  font-weight: 600;
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+.lbr-offline-dock__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-danger);
+}
+.lbr-offline-dock__dot[data-state='waiting'] {
+  background: var(--color-warning);
+}
+.lbr-offline-dock__dot[data-state='syncing'] {
+  background: var(--color-success);
+}
+
+/* Specificity, not stylesheet order: `.lbr-toast-stack` is also declared in the
+   design system, and a bundler is free to reorder the two files. `body` is an
+   ancestor of the stack wherever it is mounted. */
+body .lbr-toast-stack,
+body .lbr-toast-stack[popover] {
+  bottom: calc(
+    var(--sp-5) + var(--lbr-offline-dock-h) +
+      max(var(--lbr-offline-bar-h), env(safe-area-inset-bottom, 0px))
+  );
+}
+
+/* --- the "these were never saved" panel (frontend-06) ---------------------- */
+.lbr-failed__intro {
+  margin: 0 0 var(--sp-4) 0;
+  color: var(--color-text-muted);
+  font-size: var(--fs-sm);
+}
+.lbr-failed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lbr-failed__item {
+  border: 1px solid var(--color-border-muted);
+  border-left: 3px solid var(--color-danger);
+  border-radius: var(--radius-md);
+  padding: var(--sp-3);
+}
+.lbr-failed__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.lbr-failed__kind {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+.lbr-failed__when {
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+}
+.lbr-failed__label {
+  margin: var(--sp-1) 0 0 0;
+  font-weight: 600;
+}
+.lbr-failed__reason {
+  margin: var(--sp-1) 0 0 0;
+  font-size: var(--fs-sm);
+  color: var(--color-text-muted);
+}
+.lbr-failed__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}

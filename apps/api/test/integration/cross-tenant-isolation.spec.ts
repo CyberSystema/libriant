@@ -12,6 +12,14 @@ import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js
 import { RedisService } from '../../src/platform/redis.service.js';
 import { loadEnv } from '../../src/config/env.js';
 import { listenOnce } from './listen-once.js';
+import { declareBillingPosture } from './billing-posture.js';
+
+declareBillingPosture(
+  'unenforced',
+  'Tenant isolation must hold in the configuration we ship. Under `enforced` a signup ' +
+    'without a subscription resolves to the conservative default plan, which can refuse the ' +
+    'very writes this drill needs in order to prove they stay invisible across tenants.',
+);
 
 /**
  * Drill 3 from the plan, verbatim:

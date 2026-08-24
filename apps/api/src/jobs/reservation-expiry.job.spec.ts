@@ -263,6 +263,61 @@ describe('sweepExpiredReservationPickups', () => {
     expect(copies[0]!.status).toBe('available');
   });
 
+  it('counts a per-reservation failure instead of reporting a clean sweep', async () => {
+    // reliability-07, one level down: the per-reservation `catch` only emitted
+    // a logger.warn, so a tenant in which EVERY expiry transaction threw
+    // returned `{expired: 0}` and the sweep said "1 tenant(s) scanned; no
+    // pickups to expire" — green, forever. `rowsFailed` is a `…Failed` key, so
+    // the runner now marks the run not-ok (scheduled-jobs.runner.ts).
+    tenantFindMany.mockResolvedValue([
+      {
+        id: 't-1',
+        slug: 'acme',
+        dbUrl: '',
+        storageUrl: '',
+        defaultLocale: 'en',
+        status: 'active',
+        name: 'Acme',
+        customSubdomain: null,
+        tags: [],
+      },
+    ]);
+    const client = makeTenantClient(
+      [
+        {
+          id: 'r-1',
+          bookId: 'b-1',
+          status: 'ready',
+          expiresAt: new Date(Date.now() - 60_000),
+          queuePosition: null,
+          fulfilledByCopyId: 'c-1',
+        },
+        {
+          id: 'r-2',
+          bookId: 'b-2',
+          status: 'ready',
+          expiresAt: new Date(Date.now() - 60_000),
+          queuePosition: null,
+          fulfilledByCopyId: 'c-2',
+        },
+      ],
+      [],
+    );
+    // Every expiry transaction dies — a deadlock storm, a lock timeout, a
+    // CHECK the data violates.
+    client.$transaction.mockRejectedValue(new Error('deadlock detected'));
+    tenantGetClient.mockReturnValue(client);
+
+    const result = await sweepExpiredReservationPickups();
+
+    expect(result.counts?.expired).toBe(0);
+    // The tenant itself did not blow up — only its rows did, which is exactly
+    // the case the tenant-level counter cannot see.
+    expect(result.counts?.tenantsFailed).toBe(0);
+    expect(result.counts?.rowsFailed).toBe(2);
+    expect(result.message).toContain('2 reservation(s) failed');
+  });
+
   it('continues to the next tenant when one tenant blows up', async () => {
     tenantFindMany.mockResolvedValue([
       {

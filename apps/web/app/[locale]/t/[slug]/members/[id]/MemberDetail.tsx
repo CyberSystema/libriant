@@ -6,6 +6,7 @@ import { Banner, Button, Card, CardBody, CardHeader, Modal, useToast } from '@li
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import type { FieldDef } from '@/components/DynamicFields';
 import { MemberForm, type MemberInitial } from '../new/MemberForm';
 import { PhotoUploader } from './PhotoUploader';
@@ -74,7 +75,7 @@ export function MemberDetail({ slug, catalog, locale, initial, customFields }: P
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
     } finally {
       setStatusBusy(false);
@@ -92,7 +93,7 @@ export function MemberDetail({ slug, catalog, locale, initial, customFields }: P
       setArchiveOpen(false);
       router.refresh();
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : t('common.states.error');
+      const message = translateApiError(err, t, t('common.states.error'));
       // The API may include a structured body with active loan / reservation
       // counts when archive is refused. Surface that directly.
       if (err instanceof ApiError && err.body.activeLoans !== undefined) {
@@ -122,7 +123,7 @@ export function MemberDetail({ slug, catalog, locale, initial, customFields }: P
     } catch (err) {
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
     } finally {
       setArchiveBusy(false);

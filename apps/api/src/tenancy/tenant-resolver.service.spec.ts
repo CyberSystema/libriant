@@ -159,3 +159,55 @@ describe('TenantResolverService.invalidate', () => {
     expect(redis.store.has('tenant:slug:acme')).toBe(true);
   });
 });
+
+describe('TenantResolverService with Redis unavailable', () => {
+  /**
+   * BOOT-01: this resolver runs inside SystemModeMiddleware for every
+   * `/t/<slug>/*` request, so an unguarded `redis.client.get()` meant a Redis
+   * restart 500'd every tenant route — staff could not check a book out —
+   * rather than degrading to a control-DB lookup.
+   */
+  function deadRedis() {
+    const boom = () => {
+      throw new Error("Stream isn't writeable and enableOfflineQueue options is false");
+    };
+    return {
+      client: {
+        get: vi.fn(boom),
+        set: vi.fn(boom),
+        del: vi.fn(boom),
+      } as unknown as Redis,
+    };
+  }
+
+  beforeEach(() => {
+    findUnique.mockReset();
+    findFirst.mockReset();
+  });
+
+  it('resolves the tenant from the control DB instead of throwing', async () => {
+    findUnique.mockResolvedValue(tenantRow());
+    const service = new TenantResolverService(deadRedis() as never);
+
+    const result = await service.resolveBySlug('acme');
+
+    expect(result?.id).toBe('tnt-1');
+  });
+
+  it('does not turn the outage into a control-DB lookup per request', async () => {
+    findUnique.mockResolvedValue(tenantRow());
+    const service = new TenantResolverService(deadRedis() as never);
+
+    await service.resolveBySlug('acme');
+    await service.resolveBySlug('acme');
+    await service.resolveBySlug('acme');
+
+    expect(findUnique).toHaveBeenCalledTimes(1);
+  });
+
+  it('still surfaces a failed invalidate — a stale suspended tenant is not safe', async () => {
+    const service = new TenantResolverService(deadRedis() as never);
+
+    await expect(service.invalidate({ slug: 'acme' })).rejects.toThrow(/Stream isn't writeable/);
+  });
+});

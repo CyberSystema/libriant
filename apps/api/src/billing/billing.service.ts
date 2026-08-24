@@ -1,4 +1,13 @@
-import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import type {
   BillingAccount,
@@ -11,14 +20,67 @@ import { loadEnv } from '../config/env.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { recordAdminAudit, type AdminAuditActor } from '../platform/admin-audit.js';
+import { RedisService } from '../platform/redis.service.js';
 import {
   STRIPE_DRIVER,
+  STRIPE_LIVE_STATUSES,
+  type StripeCheckoutSessionShape,
   type StripeDriver,
   type StripeInvoiceShape,
   type StripeSubscriptionShape,
+  type StripeSubscriptionState,
 } from './stripe-driver.js';
 
 const MS_PER_DAY = 86_400_000;
+
+/**
+ * Redis key holding the Checkout session a tenant currently has open.
+ *
+ * billing-03 (duplicate-purchase half). The old guard keyed on our own
+ * `stripeSubscriptionId`, so it did nothing at all while that was still null —
+ * exactly the state a brand-new library is in. Executed path: open billing,
+ * click Community (session A), press Back, click Municipal (id still null, so
+ * session B), complete both. Two live Stripe subscriptions, two charges, and
+ * our row only ever remembered the newer id, so cancelling from the app
+ * stopped one of them. A subscription does not exist in Stripe until a session
+ * COMPLETES, so nothing on Stripe's side can be consulted to close this
+ * window; the only place the two clicks meet is here.
+ */
+const CHECKOUT_MARKER_KEY = (tenantId: string) => `billing:checkout:${tenantId}`;
+/**
+ * Matches Stripe's default Checkout session lifetime (24h). The marker is not
+ * a lock the user waits out — a second click for a DIFFERENT plan expires the
+ * session it names and opens a new one — so a long TTL costs nothing and a
+ * short one would reopen the window it exists to close.
+ */
+const CHECKOUT_MARKER_TTL_SEC = 24 * 60 * 60;
+/** Written between claiming the marker and having a session id to put in it. */
+const CHECKOUT_MARKER_PENDING = 'pending';
+/**
+ * TTL for that placeholder. Short on purpose: it is held only across one
+ * Stripe round trip, and a process that dies mid-create must not leave the
+ * tenant unable to buy anything for the marker's full 24h. A minute of
+ * "try again in a moment" is the whole cost of a crash here.
+ */
+const CHECKOUT_CLAIM_TTL_SEC = 60;
+
+type CheckoutMarker = { sessionId: string; priceId: string; url: string };
+
+/**
+ * Read a stored marker. Returns null for the placeholder, for a missing key,
+ * and for anything unparsable — all three mean "we do not know of a reusable
+ * session", which is the safe reading in every caller.
+ */
+function parseCheckoutMarker(raw: string | null): CheckoutMarker | null {
+  if (!raw || raw === CHECKOUT_MARKER_PENDING) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<CheckoutMarker>;
+    if (!parsed.sessionId || !parsed.priceId || !parsed.url) return null;
+    return { sessionId: parsed.sessionId, priceId: parsed.priceId, url: parsed.url };
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Convert a Stripe epoch-seconds timestamp to a Date, or null when absent.
@@ -28,6 +90,22 @@ const MS_PER_DAY = 86_400_000;
 function epochSecsToDate(secs: number | null | undefined): Date | null {
   return typeof secs === 'number' && Number.isFinite(secs) ? new Date(secs * 1000) : null;
 }
+
+/**
+ * What `startCheckout` did. Two very different things share the entry point
+ * because the caller only ever redirects to `url`:
+ *
+ *   - `checkout`     — a Stripe Checkout session for the library's FIRST paid
+ *                      subscription; `url` is Stripe's.
+ *   - `plan_changed` — the library already had a live subscription and it was
+ *                      re-priced in place (billing-03), so there is no session
+ *                      and `url` just sends the browser back to billing.
+ */
+export type StartCheckoutResult = {
+  url: string;
+  sessionId: string | null;
+  outcome: 'checkout' | 'plan_changed';
+};
 
 export type BillingSnapshot = {
   tenantId: string;
@@ -45,7 +123,15 @@ export type BillingSnapshot = {
   stripeCustomerId: string | null;
   /** Stripe subscription id, if there's an active Stripe subscription. */
   stripeSubscriptionId: string | null;
-  /** Driver kind so the UI can decide whether to show "Open portal". */
+  /**
+   * Driver kind so the UI can decide whether to show "Open portal".
+   *
+   * The `disabled` posture (the shipped production default, where no Stripe
+   * driver is loaded at all) reports `fake` here: this field exists only to
+   * tell the UI "there is no real Stripe behind this", which is true of both.
+   * Widening the union would need a matching change in `apps/web/lib/api.ts`,
+   * which declares its own copy of this type.
+   */
   driver: 'real' | 'fake';
   /** When false, plan/quota enforcement is off — every feature is free and
    *  the UI hides plans / upgrade actions. */
@@ -63,6 +149,14 @@ export class BillingService {
     @Inject(EffectivePlanService) private readonly effectivePlan: EffectivePlanService,
     @Inject(STRIPE_DRIVER) private readonly stripe: StripeDriver,
     @Inject(PlatformSettingsService) private readonly settings: PlatformSettingsService,
+    /**
+     * Holds the in-flight-Checkout marker (billing-03). OPTIONAL because the
+     * Stripe retry sweep (`jobs/stripe-retry.job.ts`) constructs this service
+     * by hand to replay webhook events, and that path never touches the
+     * purchase flow. `startCheckout` refuses outright rather than proceeding
+     * without it — see `claimCheckoutMarker`.
+     */
+    @Optional() @Inject(RedisService) private readonly redis?: RedisService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -200,12 +294,6 @@ export class BillingService {
   // Stripe-mode self-serve flows
   // -------------------------------------------------------------------------
 
-  /**
-   * Start a Stripe Checkout session for a plan change. Idempotent in spirit
-   * — re-clicking the upgrade button before the first session completes
-   * just creates a second session; both reference the same customer id and
-   * once one succeeds the webhook reconciles state.
-   */
   /** Self-serve billing flows are unavailable while subscriptions are disabled. */
   private async assertBillingEnabled(): Promise<void> {
     if (!(await this.settings.billingEnabled())) {
@@ -248,10 +336,23 @@ export class BillingService {
     return this.getSnapshot(tenantId);
   }
 
+  /**
+   * Put the library on `planSlug`, by whichever route is correct for where it
+   * stands today: a Stripe Checkout session when there is nothing to change,
+   * or an in-place re-price when there already is a live subscription.
+   *
+   * billing-03: this used to be Checkout unconditionally. Checkout in
+   * `mode:'subscription'` can only ever CREATE a subscription, so an upgrade
+   * opened a second one and left the first billing; `syncStripeSubscription`
+   * then overwrote `stripeSubscriptionId`, erasing the only pointer we had to
+   * the abandoned one. A library upgrading Community → Municipal paid €39 AND
+   * €79 every month, and cancelling from the app stopped only the newer of the
+   * two.
+   */
   async startCheckout(
     tenantId: string,
     input: { planSlug: string; interval?: 'month' | 'year'; returnPath?: string },
-  ): Promise<{ url: string; sessionId: string }> {
+  ): Promise<StartCheckoutResult> {
     await this.assertBillingEnabled();
     const env = loadEnv();
     const sub = await controlDb.subscription.findUnique({
@@ -284,12 +385,25 @@ export class BillingService {
       throw new BadRequestException(`You're already on the ${plan.name} plan.`);
     }
 
-    const customerId = await this.ensureStripeCustomer(tenantId);
+    const base = env.billingReturnUrl.replace(/\/$/, '');
+    const returnPath = input.returnPath?.startsWith('/')
+      ? input.returnPath
+      : '/t/' + sub.tenant.slug + '/billing';
+    const successUrl = `${base}${returnPath}?checkout=success`;
+    const cancelUrl = `${base}${returnPath}?checkout=cancelled`;
+    // The re-price branch below returns the BARE billing path, not
+    // `?checkout=success`. Nothing in apps/web reads that parameter — no page,
+    // no layout — so it was a confirmation we promised the browser and never
+    // rendered. Stripe's own redirect still carries it (it is Stripe that
+    // appends the query to `successUrl`), so the day apps/web grows a handler
+    // both branches light up together. See the package report for what the web
+    // side would need to show "your plan was changed".
+    const planChangedUrl = `${base}${returnPath}`;
 
-    // Starting paid checkout counts as making a choice — stamp it now so the
+    // Picking a paid plan counts as making a choice — stamp it now so the
     // library isn't bounced back to the chooser in the window between the
-    // Stripe success redirect and the confirming webhook. (If they abandon
-    // checkout, they simply stay on their current free plan, un-gated.)
+    // Stripe redirect and the confirming webhook. (If they abandon checkout,
+    // they simply stay on their current free plan, un-gated.)
     if (!sub.planSelectedAt) {
       await controlDb.subscription.update({
         where: { tenantId },
@@ -297,20 +411,106 @@ export class BillingService {
       });
     }
 
-    const base = env.billingReturnUrl.replace(/\/$/, '');
-    const returnPath = input.returnPath?.startsWith('/')
-      ? input.returnPath
-      : '/t/' + sub.tenant.slug + '/billing';
-    const successUrl = `${base}${returnPath}?checkout=success`;
-    const cancelUrl = `${base}${returnPath}?checkout=cancelled`;
+    // A live subscription is CHANGED, never re-bought — but "live" is a
+    // question only Stripe can answer. See `resolveLiveSubscription`.
+    const live = await this.resolveLiveSubscription(tenantId, sub.stripeSubscriptionId);
+    if (live) {
+      await this.stripe.changeSubscriptionPrice({
+        subscriptionId: live.id,
+        priceId,
+      });
+      this.logger.log(
+        `Re-priced ${live.id} onto ${plan.slug} (${priceId}) for tenant ${tenantId}.`,
+      );
+      // A re-price cannot produce a second subscription, so any Checkout
+      // session still hanging around for this tenant is now stale — and
+      // completing it WOULD produce one. Drop it.
+      await this.discardCheckoutMarker(tenantId).catch(() => undefined);
+      // Our own row moves when `customer.subscription.updated` arrives — the
+      // same path a Dashboard-side change takes. The browser lands back on
+      // billing meanwhile, exactly as it would from Stripe's success redirect.
+      return { url: planChangedUrl, sessionId: null, outcome: 'plan_changed' };
+    }
 
-    return this.stripe.createCheckoutSession({
+    const customerId = await this.ensureStripeCustomer(tenantId);
+    const session = await this.openCheckoutSession(tenantId, priceId, {
       customerId,
-      priceId,
       successUrl,
       cancelUrl,
-      tenantId,
     });
+    return { ...session, outcome: 'checkout' };
+  }
+
+  /**
+   * Decide whether the tenant has a subscription that must be RE-PRICED rather
+   * than re-bought, asking Stripe rather than trusting our own row.
+   *
+   * Two failures this replaces, both executed by the auditor:
+   *
+   *   1. HARD PURCHASE LOCKOUT. The test was `stripeSubscriptionId != null &&
+   *      status !== 'canceled'`, evaluated entirely against our own row. Any
+   *      tenant whose row still carried an id could therefore never reach
+   *      Checkout again, even when that subscription was long gone in Stripe —
+   *      `changeSubscriptionPrice` then failed forever on a dead id. A single
+   *      missed `customer.subscription.deleted` webhook bricked purchasing for
+   *      that library permanently, with no operator recovery short of a manual
+   *      SQL update.
+   *   2. SILENT NO-CHARGE "SUCCESS". Stripe's `incomplete` (first payment never
+   *      completed) and `unpaid` (dunning exhausted) both collapse into our
+   *      local `past_due`, and `past_due` reads as live — so a subscription
+   *      nobody ever paid for got RE-PRICED instead of re-purchased. The
+   *      library saw a plan change succeed and was never charged.
+   *
+   * When Stripe says the subscription is gone we clear the dead pointer, so
+   * the next read of the row does not lie either.
+   */
+  private async resolveLiveSubscription(
+    tenantId: string,
+    subscriptionId: string | null,
+  ): Promise<StripeSubscriptionState | null> {
+    if (!subscriptionId) return null;
+
+    let state: StripeSubscriptionState | null;
+    try {
+      state = await this.stripe.getSubscription(subscriptionId);
+    } catch (err) {
+      // FAIL CLOSED, deliberately. "Stripe did not answer" is not "there is no
+      // subscription": guessing the latter opens a SECOND live subscription
+      // and double-charges a real library every month until someone notices.
+      // Refusing costs the operator a retry ten seconds later.
+      this.logger.error(
+        `Could not confirm Stripe subscription ${subscriptionId} for tenant ${tenantId}: ` +
+          `${(err as Error).message}. Refusing to open a second subscription.`,
+      );
+      throw new ServiceUnavailableException(
+        'We could not reach Stripe to check your current subscription. ' +
+          'Nothing has changed — please try again in a moment.',
+      );
+    }
+
+    if (state && STRIPE_LIVE_STATUSES.has(state.status)) return state;
+
+    // Not live. Whatever the row said, this id can no longer be re-priced.
+    const detail = state ? `status ${state.status}` : 'no such subscription';
+    this.logger[state?.status === 'unpaid' ? 'error' : 'warn'](
+      `Tenant ${tenantId} still pointed at Stripe subscription ${subscriptionId} (${detail}) — ` +
+        'clearing the pointer and treating this as a fresh purchase.' +
+        (state?.status === 'unpaid'
+          ? ' The unpaid subscription still exists in Stripe; cancel it there so it does not linger.'
+          : ''),
+    );
+    // Only clear the pointer we actually looked up: a concurrent webhook may
+    // have moved the row onto a different, genuinely live subscription while
+    // we were talking to Stripe, and blanking that would lose the new id.
+    await controlDb.subscription
+      .updateMany({
+        where: { tenantId, stripeSubscriptionId: subscriptionId },
+        data: { stripeSubscriptionId: null },
+      })
+      .catch((err: Error) => {
+        this.logger.warn(`Could not clear stale stripeSubscriptionId: ${err.message}`);
+      });
+    return null;
   }
 
   /** Open a Stripe Customer Portal session (manage payment methods, view invoices). */
@@ -611,6 +811,44 @@ export class BillingService {
       return;
     }
 
+    // Events about a subscription that is NOT the one we track.
+    //
+    // Two separate defects lived in the old single condition, which required
+    // `localStatus !== 'canceled'` before it would even speak up:
+    //
+    //   a) It went SILENT whenever the incoming event was the cancellation of
+    //      a different subscription — the one case where the operator most
+    //      needs to know which of a customer's two subscriptions just died.
+    //   b) Worse than silent: it then APPLIED that event. A terminal event for
+    //      a foreign subscription would overwrite the plan, status and
+    //      subscription id of a tenant who is actively paying on the one we do
+    //      track, cancelling a live customer's access from a webhook about
+    //      something else. `handleStripeSubscriptionDeleted` has guarded
+    //      against exactly this since A6-01; the update path never did.
+    const tracked = existing?.stripeSubscriptionId ?? null;
+    if (tracked != null && tracked !== payload.id) {
+      if (!STRIPE_LIVE_STATUSES.has(payload.status)) {
+        this.logger.warn(
+          `Webhook: ignoring ${payload.status} event for foreign subscription ${payload.id} ` +
+            `(tenant ${billing.tenantId} is on ${tracked}). Applying it would have downgraded a ` +
+            'subscription this event says nothing about.',
+        );
+        return;
+      }
+      if (existing?.status !== 'canceled') {
+        // Both are live. We are about to overwrite `stripeSubscriptionId`, the
+        // ONLY record we keep of the previous one — after this write nothing
+        // in the product can see it and cancelling reaches only the newest.
+        // `startCheckout` can no longer produce this, but a Dashboard-created
+        // subscription still can.
+        this.logger.error(
+          `Tenant ${billing.tenantId} has TWO live Stripe subscriptions: ${tracked} ` +
+            `(ours until now) and ${payload.id} (this event). The older one keeps billing and is about to ` +
+            'disappear from our records — cancel it in Stripe and refund the overlap.',
+        );
+      }
+    }
+
     await controlDb.subscription.update({
       where: { tenantId: billing.tenantId },
       data: {
@@ -627,8 +865,15 @@ export class BillingService {
         // anchor the deadline to the first failure — if we're already past_due
         // with a future grace window, keep it instead of sliding it forward on
         // every dunning redelivery.
+        //
+        // Keyed on STRIPE's status, not our collapsed local one. `incomplete`
+        // and `unpaid` also map to local `past_due`, and granting either of
+        // them a grace window hands out N days of paid features on a
+        // subscription whose first payment never completed (`incomplete`) or
+        // whose dunning is already over (`unpaid`). A grace window is for a
+        // paying customer whose RENEWAL failed; those two never paid.
         graceUntil:
-          localStatus === 'past_due'
+          payload.status === 'past_due'
             ? existing?.status === 'past_due' &&
               existing.graceUntil != null &&
               existing.graceUntil.getTime() > Date.now()
@@ -644,7 +889,37 @@ export class BillingService {
       where: { tenantId: billing.tenantId, planSelectedAt: null },
       data: { planSelectedAt: new Date() },
     });
+    // The purchase landed. Any Checkout session still recorded as open for this
+    // tenant is now a loaded gun (billing-03) — completing it would open a
+    // SECOND subscription. Best-effort: a failure here only means the tenant's
+    // next purchase reuses or expires a stale session, both of which the
+    // openCheckoutSession path handles.
+    await this.discardCheckoutMarker(billing.tenantId).catch(() => undefined);
     await this.effectivePlan.invalidate(billing.tenantId);
+  }
+
+  /**
+   * `checkout.session.completed`. The `customer.subscription.created` event
+   * that follows carries the full state, so there is nothing to sync here —
+   * but this is the EARLIEST signal that the tenant's outstanding session has
+   * been used up, and dropping the marker now means a user who immediately
+   * clicks another plan gets the re-price path rather than a reused session
+   * (billing-03).
+   */
+  async handleCheckoutSessionCompleted(payload: StripeCheckoutSessionShape): Promise<void> {
+    const tenantId =
+      payload.client_reference_id ??
+      (
+        await controlDb.billingAccount.findFirst({
+          where: { stripeCustomerId: payload.customer },
+          select: { tenantId: true },
+        })
+      )?.tenantId ??
+      null;
+    if (!tenantId) return;
+    await this.discardCheckoutMarker(tenantId).catch((err: Error) => {
+      this.logger.warn(`Could not clear the checkout marker for ${tenantId}: ${err.message}`);
+    });
   }
 
   /** Stripe killed the subscription (final cancellation). Downgrade to Starter. */
@@ -738,6 +1013,157 @@ export class BillingService {
   // -------------------------------------------------------------------------
   // Internals
   // -------------------------------------------------------------------------
+
+  /**
+   * Open a Stripe Checkout session for a tenant that has no live subscription,
+   * allowing AT MOST ONE completable session per tenant at a time.
+   *
+   * billing-03 (duplicate-purchase half). Executed path before this existed: a
+   * brand-new library opens billing, clicks Community (session A), presses
+   * Back, clicks Municipal (our `stripeSubscriptionId` is still null, so the
+   * re-price guard does not fire — session B), and completes both. Two live
+   * Stripe subscriptions, two monthly charges, and `syncStripeSubscription`
+   * overwrites our single `stripeSubscriptionId` column with whichever arrived
+   * last, so cancelling from the app only ever stopped one of them.
+   *
+   * Stripe cannot close this window for us: in `mode:'subscription'` the
+   * subscription does not exist until a session COMPLETES, so at the moment of
+   * the second click there is nothing to find. The marker below is the only
+   * place the two clicks meet.
+   *
+   * Three outcomes when a session is already outstanding:
+   *   - same price  → hand back the SAME session. A double-submit or a reload
+   *     must be idempotent, and reusing the session cannot create a second
+   *     subscription. It also leaves a half-finished Stripe tab working.
+   *   - other price → the user changed their mind. Expire session A at Stripe
+   *     first, so only session B can ever complete, then open B.
+   *   - mid-create  → another request holds the placeholder; 409, retry.
+   */
+  private async openCheckoutSession(
+    tenantId: string,
+    priceId: string,
+    urls: { customerId: string; successUrl: string; cancelUrl: string },
+  ): Promise<{ url: string; sessionId: string }> {
+    const key = CHECKOUT_MARKER_KEY(tenantId);
+    const claimed = await this.redisCall(
+      (r) => r.client.set(key, CHECKOUT_MARKER_PENDING, 'EX', CHECKOUT_CLAIM_TTL_SEC, 'NX'),
+      'claim the checkout slot',
+    );
+
+    if (claimed !== 'OK') {
+      const raw = await this.redisCall((r) => r.client.get(key), 'read the checkout slot');
+      const existing = parseCheckoutMarker(raw);
+      if (!existing) {
+        // Placeholder still in place: a concurrent request is between "claimed
+        // the slot" and "got a session id back from Stripe". Refusing is the
+        // point — the alternative is the second subscription.
+        throw new ConflictException(
+          'A checkout is already being opened for this library. Try again in a moment.',
+        );
+      }
+      if (existing.priceId === priceId) {
+        this.logger.log(
+          `Reusing open Checkout session ${existing.sessionId} for tenant ${tenantId} ` +
+            '(same price, repeat request).',
+        );
+        return { url: existing.url, sessionId: existing.sessionId };
+      }
+      // Take the slot back under the short placeholder TTL before touching
+      // Stripe, so a crash mid-swap costs a minute rather than a day.
+      await this.redisCall(
+        (r) => r.client.set(key, CHECKOUT_MARKER_PENDING, 'EX', CHECKOUT_CLAIM_TTL_SEC),
+        'reclaim the checkout slot',
+      );
+      try {
+        await this.stripe.expireCheckoutSession(existing.sessionId);
+        this.logger.log(
+          `Expired Checkout session ${existing.sessionId} for tenant ${tenantId} before opening ` +
+            `a new one on ${priceId}.`,
+        );
+      } catch (err) {
+        // Stripe refuses to expire a session that is already COMPLETE — which
+        // means a subscription now exists and opening a second session would
+        // buy a second one. Fail closed and send them back to a page that will
+        // show the subscription they just bought.
+        this.logger.error(
+          `Could not expire Checkout session ${existing.sessionId} for tenant ${tenantId}: ` +
+            `${(err as Error).message}`,
+        );
+        throw new ConflictException(
+          'Your previous checkout may already have completed. Reload the billing page to see ' +
+            'your current plan before starting another purchase.',
+        );
+      }
+    }
+
+    let session: { url: string; sessionId: string };
+    try {
+      session = await this.stripe.createCheckoutSession({
+        customerId: urls.customerId,
+        priceId,
+        successUrl: urls.successUrl,
+        cancelUrl: urls.cancelUrl,
+        tenantId,
+      });
+    } catch (err) {
+      // No session exists, so nothing is outstanding — release the slot rather
+      // than making the user wait out the placeholder to retry.
+      await this.discardCheckoutMarker(tenantId).catch(() => undefined);
+      throw err;
+    }
+
+    const marker: CheckoutMarker = {
+      sessionId: session.sessionId,
+      priceId,
+      url: session.url,
+    };
+    await this.redisCall(
+      (r) => r.client.set(key, JSON.stringify(marker), 'EX', CHECKOUT_MARKER_TTL_SEC),
+      'record the open checkout session',
+    ).catch(() => undefined);
+    return session;
+  }
+
+  /**
+   * Forget the outstanding Checkout session for a tenant. Called once the
+   * purchase has landed (webhook) or become moot (an in-place re-price), so
+   * the next purchase is not answered with a stale session.
+   */
+  async discardCheckoutMarker(tenantId: string): Promise<void> {
+    if (!this.redis) return;
+    await this.redis.client.del(CHECKOUT_MARKER_KEY(tenantId));
+  }
+
+  /**
+   * Run one Redis command for the duplicate-purchase guard, FAILING CLOSED.
+   *
+   * The considered trade: with Redis unreachable we cannot tell a first click
+   * from a second, and the thing we are guarding is a real library being
+   * charged twice a month, indefinitely, for a mistake it cannot see. A 503
+   * that says "try again" is recoverable in seconds; a duplicate live
+   * subscription needs a human, a refund and an apology. (Note the webhook
+   * route's replay guard resolves the same question the other way — but only
+   * because it has a DURABLE second guard in Postgres to fall back on. This
+   * path has no second guard, which is exactly why it refuses.)
+   */
+  private async redisCall<T>(fn: (redis: RedisService) => Promise<T>, what: string): Promise<T> {
+    if (!this.redis) {
+      // Only reachable if something constructs BillingService without Redis
+      // and then calls the purchase path — today nothing does.
+      throw new ServiceUnavailableException(
+        'Checkout is unavailable: this process has no Redis connection to guard against ' +
+          'duplicate purchases.',
+      );
+    }
+    try {
+      return await fn(this.redis);
+    } catch (err) {
+      this.logger.error(`Redis unavailable, could not ${what}: ${(err as Error).message}`);
+      throw new ServiceUnavailableException(
+        'Checkout is temporarily unavailable. Nothing has been charged — please try again in a moment.',
+      );
+    }
+  }
 
   /**
    * Get-or-create the tenant's Stripe Customer. The id is cached on the

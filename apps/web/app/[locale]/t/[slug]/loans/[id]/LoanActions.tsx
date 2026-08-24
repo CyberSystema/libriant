@@ -4,7 +4,8 @@ import { useRouter } from 'next/navigation';
 import { Button, FormField, Input, Modal, Textarea, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { printDocument } from '@/lib/print';
 import { useIdempotencyKey } from '@/lib/useIdempotencyKey';
 import { useOfflineQueue } from '@/components/OfflineQueueProvider';
@@ -152,7 +153,7 @@ export function LoanActions({ slug, loan, catalog, locale }: Props) {
       }
       toast.show({
         severity: 'critical',
-        title: err instanceof ApiError ? err.message : t('common.states.error'),
+        title: translateApiError(err, t, t('common.states.error')),
       });
     }
   }

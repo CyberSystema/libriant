@@ -3,9 +3,9 @@
  * Strategy:
  *   - Immutable static assets (/_next/static, /_assets, fonts, images):
  *     cache-first. Safe — not tenant-specific.
- *   - API reads through the /lbr-api proxy (GET only): stale-while-revalidate
- *     into a runtime DATA cache, so an online user always gets fresh data and an
- *     offline user sees the last-known response.
+ *   - API reads through the /lbr-api proxy (GET only): network-first into a
+ *     runtime DATA cache. An online client always gets the server's answer; the
+ *     cache is only ever read when the network fails.
  *   - Full-page navigations: network-first, falling back to the cached copy of
  *     that page and finally the offline page.
  *
@@ -16,7 +16,21 @@
  *     logout via the LBR_CLEAR_OFFLINE message — see lib/offline.ts.
  *   - Non-200 / opaque responses are not cached.
  */
-const VERSION = 'v1';
+/**
+ * frontend-27: the cache names used to end in a hand-maintained `'v1'`, so no
+ * deploy ever evicted anything — every release added a fresh set of hashed
+ * `/_next/static` chunks on top of the last one, forever. Worse, this file is
+ * a static asset that is byte-identical between deploys, so the browser saw no
+ * change, never re-installed the worker, and a corrected `offline.html` could
+ * not reach an install that already had the old one.
+ *
+ * The registration URL now carries the build id (`/sw.js?v=<buildId>`, see
+ * lib/offline.ts), which both changes the script URL on every deploy — forcing
+ * the install/activate cycle — and gives us a version to name the caches with,
+ * so `activate` drops the previous build's set. `dev` is the fallback for a
+ * registration made without the parameter.
+ */
+const VERSION = new URL(self.location.href).searchParams.get('v') || 'dev';
 const STATIC_CACHE = `lbr-static-${VERSION}`;
 const PAGES_CACHE = `lbr-pages-${VERSION}`;
 const DATA_CACHE = `lbr-data-${VERSION}`;
@@ -63,8 +77,12 @@ self.addEventListener('install', (event) => {
     (async () => {
       const cache = await caches.open(STATIC_CACHE);
       // Precache the offline fallback so it's available on the very first
-      // network failure.
-      await cache.add(OFFLINE_URL).catch(() => undefined);
+      // network failure. `cache: 'reload'` skips the HTTP cache — otherwise a
+      // fresh install can re-precache the browser's stale copy of the very page
+      // the new build was meant to correct.
+      await cache
+        .add(new Request(OFFLINE_URL, { cache: 'reload' }))
+        .catch(() => cache.add(OFFLINE_URL).catch(() => undefined));
       await self.skipWaiting();
     })(),
   );
@@ -120,6 +138,34 @@ async function staleWhileRevalidate(request, cacheName) {
   return cached || (await network) || Response.error();
 }
 
+/**
+ * frontend-11: API reads are network-first, never stale-while-revalidate.
+ *
+ * SWR returns the cached body to the caller and keeps the fresh one for *next*
+ * time, and nothing in the app observes the revalidation — no postMessage, no
+ * re-render. So every client-side read was one round behind: add a member, type
+ * the first letters of her name into the checkout picker, and if that exact
+ * query had been typed before she existed the worker replayed the old empty
+ * result and the librarian was told there was no such member. At a circulation
+ * desk the couple of hundred milliseconds SWR saves are not worth a duplicate
+ * patron record. The cache is still written on every success, so the offline
+ * fallback below is unchanged.
+ */
+async function networkFirstData(request, cacheName) {
+  const cache = await caches.open(cacheName);
+  try {
+    const response = await fetch(request);
+    if (response && response.status === 200 && response.type === 'basic') {
+      cache.put(request, response.clone()).catch(() => undefined);
+    }
+    return response;
+  } catch (err) {
+    const cached = await cache.match(request);
+    if (cached) return cached;
+    throw err;
+  }
+}
+
 async function networkFirstPage(request) {
   const cache = await caches.open(PAGES_CACHE);
   try {
@@ -159,7 +205,7 @@ self.addEventListener('fetch', (event) => {
   // branch, so tenant images go to the wiped DATA_CACHE, never STATIC_CACHE.
   if (url.pathname.startsWith('/lbr-api/')) {
     if (isSensitive(url.pathname)) return; // auth/billing/admin — straight to network
-    event.respondWith(staleWhileRevalidate(request, DATA_CACHE));
+    event.respondWith(networkFirstData(request, DATA_CACHE));
     return;
   }
 

@@ -3,7 +3,8 @@ import { createTranslator, isLocale } from '@libriant/i18n';
 import { notFound, redirect } from 'next/navigation';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
-import { ApiError, api, type BillingSnapshot } from '@/lib/api';
+import { api, type BillingSnapshot } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { BillingActions } from './BillingActions';
 import { PlanGrid, type AvailablePlan } from './PlanGrid';
 
@@ -29,9 +30,7 @@ export default async function BillingPage(props: {
   const plans = plansResult.status === 'fulfilled' ? plansResult.value.plans : [];
   const errorMessage =
     snapshotResult.status === 'rejected'
-      ? snapshotResult.reason instanceof ApiError
-        ? snapshotResult.reason.message
-        : t('common.states.error')
+      ? translateApiError(snapshotResult.reason, t, t('common.states.error'))
       : null;
 
   const fmtDate = (iso: string | null) =>

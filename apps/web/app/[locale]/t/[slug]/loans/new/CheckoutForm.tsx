@@ -5,7 +5,8 @@ import Link from 'next/link';
 import { Banner, Button, Card, CardBody, FormField, Input, Textarea, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { useIdempotencyKey } from '@/lib/useIdempotencyKey';
 import { useOfflineQueue } from '@/components/OfflineQueueProvider';
 import { isNetworkError } from '@/lib/offline-queue';
@@ -138,7 +139,7 @@ export function CheckoutForm({
         if (firstAvailable) setCopyId(firstAvailable.id);
       })
       .catch((err) => {
-        setCopiesError(err instanceof ApiError ? err.message : t('common.states.error'));
+        setCopiesError(translateApiError(err, t, t('common.states.error')));
       })
       .finally(() => setCopiesLoading(false));
   }, [book, slug, t]);
@@ -236,7 +237,7 @@ export function CheckoutForm({
         setSubmitting(false);
         return;
       }
-      setFormError(err instanceof ApiError ? err.message : t('common.states.error'));
+      setFormError(translateApiError(err, t, t('common.states.error')));
       setSubmitting(false);
     }
   }

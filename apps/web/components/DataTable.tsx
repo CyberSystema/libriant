@@ -1,8 +1,10 @@
 'use client';
 import * as React from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { Button, EmptyState, Input } from '@libriant/ui';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
+import { safeLocale, staticTranslator } from '@/lib/static-catalog';
 
 /**
  * A `<Column>` describes how to render one cell from a row. The accessor
@@ -78,6 +80,11 @@ export function DataTable<T extends { id: string }>({
   const router = useRouter();
   const searchParams = useSearchParams();
   const currentQ = searchParam ? (searchParams?.get(searchParam) ?? '') : '';
+  // Same reasoning as Combobox: the locale is in the route on every screen that
+  // renders a table, so the load-more failure can be localized without adding a
+  // prop to each of them.
+  const params = useParams();
+  const t = staticTranslator(safeLocale(params?.locale));
 
   // Client-side state: items + the cursor for the next page. Reset to the
   // server-rendered initial values whenever the URL search params change.
@@ -120,8 +127,7 @@ export function DataTable<T extends { id: string }>({
       setItems((prev) => [...prev, ...res.items]);
       setNextCursor(res.nextCursor);
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : 'Something went wrong. Try again.';
-      setError(message);
+      setError(translateApiError(err, t));
     } finally {
       setLoading(false);
     }

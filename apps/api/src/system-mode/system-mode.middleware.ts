@@ -97,7 +97,14 @@ export class SystemModeMiddleware implements NestMiddleware {
     if (ALWAYS_PASS.some((re) => re.test(fullPath))) {
       // Always set req.systemMode so handlers can inspect it for headers
       // / banners even on bypassed routes (`/system-mode/current` does this).
-      req.systemMode = await this.modes.resolveGlobal();
+      //
+      // BOOT-01: this branch is the whole reason ALWAYS_PASS exists, so it
+      // must not be able to throw. It used to call the plain resolveGlobal(),
+      // whose Redis GET rejects outright when Redis is unreachable — turning a
+      // `docker restart redis` into a 500 on /healthz, /readyz, /metrics AND
+      // /admin/system-mode, i.e. exactly the paths that keep the platform
+      // recoverable. `resolveGlobalSafe` degrades instead of rejecting.
+      req.systemMode = await this.modes.resolveGlobalSafe();
       return next();
     }
 

@@ -9,5 +9,17 @@
   "takeover.soon": "shortly",
   "takeover.statusRef": "Status reference",
   "readOnly.title": "Read-only mode.",
-  "readOnly.body": "We're not accepting changes right now. You can still browse, but saves will fail until we're back."
+  "readOnly.body": "We're not accepting changes right now. You can still browse, but saves will fail until we're back.",
+  "crash.title": "This page didn't load",
+  "crash.description": "Something went wrong while we were putting this page together. Your library's records are safe. Try again — and if it keeps happening, send us the reference below.",
+  "crash.retry": "Try again",
+  "crash.home": "Go to the start page",
+  "crash.support": "Email Libriant support",
+  "crash.reference": "Error reference",
+  "notFound.title": "We couldn't find that page",
+  "notFound.description": "The address you followed doesn't lead anywhere in Libriant. It may have been removed, or the link may have a typo.",
+  "notFound.home": "Go to the start page",
+  "offline.title": "You're offline",
+  "offline.description": "Libriant can't reach the network right now. Pages you've already opened may still be available — otherwise reconnect and try again.",
+  "offline.retry": "Try again"
 }

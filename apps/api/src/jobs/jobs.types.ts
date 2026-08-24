@@ -9,7 +9,27 @@
 export type JobResult = {
   /** Free-form short status line for logging. */
   message: string;
-  /** Counts that get bumped on `libriant_worker_jobs_total{job=...}` later. */
+  /**
+   * Named counters for the run. Surfaced verbatim on the worker's /healthz
+   * next to the message, and exported per-job on /metrics.
+   *
+   * Two naming rules, both read by `toScheduledJobResult` in
+   * scheduled-jobs.runner.ts — get them wrong and the health surface lies:
+   *
+   *   1. Anything this run ATTEMPTED and could not complete goes in a counter
+   *      whose name ends in `Failed` (`tenantsFailed`, `rowsFailed`,
+   *      `retryFailed`). Non-zero makes the run NOT ok. This applies at EVERY
+   *      granularity: a per-row `catch` that only logs is the same lie as a
+   *      per-tenant one, just further down — reservation-expiry reported clean
+   *      successes for a tenant in which every single expiry threw.
+   *   2. Work deliberately NOT attempted because it is known-stuck (a poison
+   *      row a sweep has given up retrying) goes in `abandoned` / `backlog` /
+   *      `stuck`. Those are printed for the operator but do NOT flip `ok`,
+   *      because a job that is permanently red tells you exactly as much as
+   *      one that is permanently green.
+   *
+   * Everything else is informational (`tenantsScanned`, `expired`, …).
+   */
   counts?: Record<string, number>;
 };
 
@@ -22,7 +42,26 @@ export type JobResult = {
 export interface JobContext {
   /** EmailService for outgoing transactional notifications (18d). */
   emails: import('../email/email.service.js').EmailService;
+  /**
+   * A Redis client that is already connected.
+   *
+   * Handlers must NOT do `new RedisService()`: the client is built with
+   * `enableOfflineQueue: false`, so the first command on a socket that is
+   * still `connecting` rejects with "Stream isn't writeable…". Every job that
+   * minted its own client lost that race on every tick (reliability-01 / -16).
+   * This one is owned by the process that started the runner and outlives any
+   * single tick — so a handler shares it and never calls `onModuleDestroy()`
+   * on it.
+   */
+  redis: import('../platform/redis.service.js').RedisService;
 }
+
+/**
+ * What `startScheduledJobs` accepts. `redis` is optional here only so the
+ * embedding process can leave it out and let the runner own a long-lived
+ * client of its own; handlers always get one.
+ */
+export type JobRunnerContext = Omit<JobContext, 'redis'> & Partial<Pick<JobContext, 'redis'>>;
 
 export type ScheduledJob = {
   /** Unique stable name. Used as the BullMQ `jobId` for the scheduler entry. */

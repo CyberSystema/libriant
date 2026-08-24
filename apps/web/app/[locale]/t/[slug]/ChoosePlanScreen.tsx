@@ -4,7 +4,8 @@ import { useRouter } from 'next/navigation';
 import { Asset, Button, Card, PoweredBy, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { ApiError, api } from '@/lib/api';
+import { api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import {
   type AvailablePlan,
   type Cadence,
@@ -12,6 +13,7 @@ import {
   anyAnnual,
   bookableCadence,
 } from './billing/PlanGrid';
+import { LogoutButton } from './LogoutButton';
 
 type Props = {
   slug: string;
@@ -44,7 +46,7 @@ export function ChoosePlanScreen({ slug, locale, catalog, plans, libraryName }: 
   function fail(err: unknown) {
     toast.show({
       severity: 'critical',
-      title: err instanceof ApiError ? err.message : t('common.states.error'),
+      title: translateApiError(err, t, t('common.states.error')),
     });
     setBusy(null);
   }
@@ -185,6 +187,14 @@ export function ChoosePlanScreen({ slug, locale, catalog, plans, libraryName }: 
         {hasPaid ? <p className="lbr-choose__hint">{t('billing.chooser.paidHint')}</p> : null}
 
         <div className="lbr-choose__footer">
+          {/* This screen replaces the whole shell, and there is no GET logout
+              route, so without a sign-out button an admin who doesn't want to
+              pick a plan today can only leave by clearing cookies — and nobody
+              else can sign in at the same circulation desk. DesktopGate, the
+              other full-page takeover, has always got this right. */}
+          <div style={{ marginBottom: 'var(--sp-3)' }}>
+            <LogoutButton catalog={catalog} locale={locale} />
+          </div>
           <PoweredBy />
         </div>
       </div>

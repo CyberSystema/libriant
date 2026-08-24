@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import type { FeatureKey } from '@libriant/shared';
-import { RedisService } from '../platform/redis.service.js';
+import { FailOpenMemo, RedisService } from '../platform/redis.service.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { loadEnv } from '../config/env.js';
 import type { EffectivePlan, EffectiveSource, EffectiveValue } from './effective-plan.types.js';
@@ -34,9 +34,35 @@ type Row = {
 
 const CACHE_KEY = (tenantId: string) => `plan:effective:${tenantId}`;
 
+/**
+ * How long a resolution Redis refused to store survives in-process. Only ever
+ * consulted while Redis is erroring (BOOT-01) — see `readCache` below. Same
+ * value, and the same reasoning, as TenantResolverService / SystemModeService:
+ * long enough that an outage costs one control-DB resolve per tenant rather
+ * than one per request, short enough that the extra staleness on top of the
+ * Redis TTL is a few seconds.
+ */
+const DEGRADED_MEMO_MS = 5_000;
+
 /** Effectively-infinite ceiling for every int limit when billing is off. */
-const UNLIMITED_INT = Number.MAX_SAFE_INTEGER;
+export const UNLIMITED_INT = Number.MAX_SAFE_INTEGER;
 const FREE_NOTE = 'Included — subscriptions are currently disabled.';
+
+/**
+ * Is this effective int limit the "no ceiling" sentinel rather than a real
+ * number? Consumers must ASK instead of doing arithmetic on the value.
+ *
+ * StorageService used to scale `max_storage_mb` by 1024² into a byte ceiling:
+ * 9007199254740991 MB is 9444732965739289378816 bytes, ~1024× the Postgres
+ * bigint maximum, so the quota UPDATE was rejected with SQLSTATE 22003 and
+ * EVERY upload 500'd — in the configuration we actually ship
+ * (BILLING_ENABLED=false), and only in that one. `>=` rather than `===` so a
+ * value at or above the sentinel is read as unlimited instead of overflowing
+ * whatever it gets multiplied into next.
+ */
+export function isUnlimitedInt(limit: number): boolean {
+  return limit >= UNLIMITED_INT;
+}
 
 /**
  * Copy of `plan` with every gate on and every limit lifted — returned for all
@@ -83,6 +109,14 @@ function unlimitedPlan(plan: EffectivePlan): EffectivePlan {
 export class EffectivePlanService {
   private readonly logger = new Logger(EffectivePlanService.name);
   private readonly ttlSec: number;
+  /** Populated only when Redis I/O throws — see FailOpenMemo. */
+  private readonly degraded = new FailOpenMemo<EffectivePlan>(DEGRADED_MEMO_MS);
+  /**
+   * Last value `PlatformSettingsService.billingEnabled()` actually returned.
+   * The floor for the master-switch read when that lookup throws — see
+   * `getEffectivePlan`.
+   */
+  private lastKnownBillingEnabled: boolean | null = null;
 
   constructor(
     @Inject(RedisService) private readonly redis: RedisService,
@@ -107,8 +141,7 @@ export class EffectivePlanService {
     // time (the per-tenant cache keeps the real plan) so flipping the master
     // switch in the admin panel takes effect within the toggle's own short
     // cache window, not after each tenant's plan TTL.
-    const billingEnabled = await this.settings.billingEnabled();
-    return billingEnabled ? plan : unlimitedPlan(plan);
+    return (await this.billingEnabledSafe()) ? plan : unlimitedPlan(plan);
   }
 
   /** Convenience: read one feature as a boolean. False if missing/not-bool. */
@@ -128,13 +161,60 @@ export class EffectivePlanService {
     return v.value;
   }
 
-  /** Drop the cached plan for a tenant. Call after any layer changes. */
+  /**
+   * Drop the cached plan for a tenant. Call after any layer changes.
+   *
+   * Deliberately NOT fail-open, unlike the reads below: this is the call that
+   * stops a downgraded (or lapsed) tenant being served their old ceilings for
+   * a full TTL, so the caller must learn that it did not happen. Same trade as
+   * `TenantResolverService.invalidate`. Callers that genuinely prefer stale
+   * limits over a failed mutation opt out explicitly (see
+   * admin-tenants.controller.ts, which wraps this in a `.catch`).
+   */
   async invalidate(tenantId: string): Promise<void> {
+    // Clear the degraded memo first and unconditionally — if the DEL below
+    // throws we must not leave this process serving the value we were just
+    // told is wrong.
+    this.degraded.delete(CACHE_KEY(tenantId));
     await this.redis.client.del(CACHE_KEY(tenantId));
     this.logger.debug(`Invalidated effective-plan cache for ${tenantId}`);
   }
 
   // --- internals ---------------------------------------------------------
+
+  /**
+   * The master subscriptions switch, which must never be the reason a read
+   * 500s.
+   *
+   * BOOT-01 completion: `PlatformSettingsService.billingEnabled()` is a bare
+   * Redis GET. Making this service's own cache fail open was not enough — with
+   * Redis unreachable, `getEffectivePlan` still rejected here, so PlanGuard
+   * still turned every authenticated tenant route into a 500 and the audit's
+   * "kill Redis, reads still serve" criterion still failed. Guarding at the
+   * call site keeps that promise regardless of what the settings service does.
+   *
+   * Which way it fails matters. Falling back to `true` (enforce real plans)
+   * during an outage would start 402ing tenants on a platform that ships with
+   * BILLING_ENABLED=false — a self-inflicted outage. Falling back to `false`
+   * unconditionally would hand every tenant an unlimited plan the moment Redis
+   * blinks. So: last value we actually resolved, else the bootstrap env
+   * default — which is exactly what PlatformSettingsService itself falls back
+   * to when there is no `platform_settings` row.
+   */
+  private async billingEnabledSafe(): Promise<boolean> {
+    try {
+      const enabled = await this.settings.billingEnabled();
+      this.lastKnownBillingEnabled = enabled;
+      return enabled;
+    } catch (err) {
+      const fallback = this.lastKnownBillingEnabled ?? loadEnv().billingEnabled;
+      this.logger.warn(
+        `Could not read the subscriptions master switch (${describeFailure(err)}) — ` +
+          `assuming billingEnabled=${fallback} so plan reads keep serving.`,
+      );
+      return fallback;
+    }
+  }
 
   private async loadFromDb(
     tenantId: string,
@@ -272,13 +352,35 @@ export class EffectivePlanService {
     return 'default';
   }
 
+  /**
+   * Fail-open: a Redis error is reported as a cache miss, so the caller falls
+   * through to the resolver SQL instead of propagating a 500.
+   *
+   * BOOT-01 (wave 1 left this one behind): PlanGuard calls `getEffectivePlan`
+   * on every `@RequiresFeature` route, so this bare GET was still enough to
+   * 500 `GET /t/:slug/reservations` and friends with Redis down — the
+   * middleware and the tenant resolver had been fixed, and reads still did not
+   * serve. The FailOpenMemo is what stops one unreachable Redis becoming one
+   * resolver query per request, i.e. moving the outage onto Postgres.
+   */
   private async readCache(tenantId: string): Promise<EffectivePlan | null> {
-    const raw = await this.redis.client.get(CACHE_KEY(tenantId));
+    const key = CACHE_KEY(tenantId);
+    let raw: string | null;
+    try {
+      raw = await this.redis.client.get(key);
+    } catch (err) {
+      this.logger.warn(
+        `Redis read failed (${describeFailure(err)}) — resolving the effective plan from the DB.`,
+      );
+      return this.degraded.get(key);
+    }
     if (!raw) return null;
     try {
       return JSON.parse(raw) as EffectivePlan;
     } catch {
-      await this.redis.client.del(CACHE_KEY(tenantId));
+      // Garbage in the cache → drop it. Best-effort for the same reason as
+      // above: a failed DEL must not fail the read.
+      await this.redis.client.del(key).catch(() => undefined);
       return null;
     }
   }
@@ -297,6 +399,29 @@ export class EffectivePlanService {
       const secsUntilExpiry = Math.floor((soonestExpiry.getTime() - Date.now()) / 1000);
       ttl = Math.max(1, Math.min(ttl, secsUntilExpiry));
     }
-    await this.redis.client.set(CACHE_KEY(tenantId), JSON.stringify(plan), 'EX', ttl);
+    try {
+      await this.redis.client.set(CACHE_KEY(tenantId), JSON.stringify(plan), 'EX', ttl);
+    } catch (err) {
+      // Redis wouldn't take it — hold it in-process for a few seconds so the
+      // outage costs one resolver query per tenant, not one per request.
+      this.logger.warn(
+        `Redis write failed (${describeFailure(err)}) — caching the effective plan in-process.`,
+      );
+      // ...unless the PQF-3 clamp is tighter than the memo's own lifetime. The
+      // memo has one fixed TTL, so memoising a blob that Redis was told to
+      // expire in 2 s would keep granting a lapsed override for 5 — an outage
+      // must not be allowed to widen a time-boxed grant. In that narrow window
+      // we pay a resolver query per request instead, which is the cheaper
+      // mistake.
+      if (ttl * 1000 > DEGRADED_MEMO_MS) {
+        this.degraded.set(CACHE_KEY(tenantId), plan);
+      }
+    }
   }
+}
+
+/** Prisma/ioredis errors sometimes carry an empty `message`; name the type too. */
+function describeFailure(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  return err.message ? `${err.name}: ${err.message}` : err.name;
 }

@@ -5,6 +5,7 @@ import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
 import { ApiError, api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { LoanActions } from './LoanActions';
 
 type LoanDetail = {
@@ -54,7 +55,7 @@ export default async function LoanDetailPage(props: {
     loan = await api<LoanDetail>(`/t/${params.slug}/loans/${params.id}`, { cookie });
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) notFound();
-    fetchError = err instanceof ApiError ? err.message : t('common.states.error');
+    fetchError = translateApiError(err, t, t('common.states.error'));
   }
 
   if (!loan) {

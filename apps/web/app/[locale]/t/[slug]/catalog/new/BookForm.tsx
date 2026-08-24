@@ -16,6 +16,7 @@ import {
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
+import { translateApiError } from '@/lib/api-errors';
 import { AuthorPicker } from '@/components/AuthorPicker';
 import { DynamicFields, type FieldDef } from '@/components/DynamicFields';
 import { BarcodeScanner, SCAN_FORMATS, scanningSupported } from '@/components/BarcodeScanner';
@@ -178,7 +179,7 @@ export function BookForm({
       if (err instanceof ApiError && err.status === 404) {
         setLookupError(t('catalog.book.isbnNotFound'));
       } else {
-        setLookupError(err instanceof ApiError ? err.message : t('common.states.error'));
+        setLookupError(translateApiError(err, t, t('common.states.error')));
       }
     } finally {
       setLookingUp(false);

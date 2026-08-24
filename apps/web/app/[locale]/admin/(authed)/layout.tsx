@@ -1,6 +1,7 @@
 import { notFound, redirect } from 'next/navigation';
-import { isLocale } from '@libriant/i18n';
+import { createTranslator, isLocale } from '@libriant/i18n';
 import { currentAdminSession } from '@/lib/admin-session';
+import { loadCatalog } from '@/lib/locale-loader';
 import { AdminSidebar } from './AdminSidebar';
 
 /**
@@ -23,10 +24,19 @@ export default async function AuthedAdminLayout(props: {
   const admin = await currentAdminSession();
   if (!admin) redirect(`/admin/login`);
 
+  // The admin plane is English-only, but the skip link is a keyboard
+  // affordance, not copy — it comes from the catalogue like everything else.
+  const t = createTranslator(await loadCatalog(params.locale, ['shell']), params.locale);
+
   return (
     <div className="lbr-shell">
+      <a href="#lbr-main" className="lbr-skip">
+        {t('shell.skipToContent')}
+      </a>
       <AdminSidebar admin={admin} />
-      <main className="lbr-shell__main">{children}</main>
+      <main className="lbr-shell__main" id="lbr-main" tabIndex={-1}>
+        {children}
+      </main>
     </div>
   );
 }

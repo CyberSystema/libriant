@@ -12,6 +12,14 @@ import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js
 import { RedisService } from '../../src/platform/redis.service.js';
 import { loadEnv } from '../../src/config/env.js';
 import { listenOnce } from './listen-once.js';
+import { declareBillingPosture } from './billing-posture.js';
+
+declareBillingPosture(
+  'unenforced',
+  'This spec asserts the free-for-all desktop entitlement that is live today ' +
+    '(`allowed: true, reason: free-for-all`), which only exists while subscriptions are off. ' +
+    'The paid-vs-free decision table is covered by src/desktop/desktop-access.spec.ts.',
+);
 
 /**
  * End-to-end check for the desktop download + entitlement endpoints. Boots the

@@ -34,7 +34,9 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: 'stripe-webhook-retry',
     intervalMs: 5 * 60_000,
-    handler: () => sweepFailedStripeWebhooks(),
+    // Takes the ctx for its Redis client: a sweep that mints its own loses the
+    // race against `enableOfflineQueue: false` and retries nothing (rel-16).
+    handler: (ctx) => sweepFailedStripeWebhooks(ctx),
   },
   {
     // Hourly: fines only change at day boundaries, so re-running within a day
@@ -67,7 +69,8 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     // pipeline dedups on idempotencyKey).
     name: 'member-notifications',
     intervalMs: 60 * 60_000,
-    handler: () => sendMemberNotifications(),
+    // Same reason as stripe-webhook-retry: use the runner's warm Redis client.
+    handler: (ctx) => sendMemberNotifications(ctx),
   },
   {
     // Hourly: best-effort disk cleanup of crash-orphaned upload temps. Each tick
