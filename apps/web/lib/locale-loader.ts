@@ -42,11 +42,37 @@ async function loadNamespace(locale: Locale, ns: Namespace): Promise<Catalog> {
   const hit = cache.get(key);
   if (hit) return hit;
   const file = path.join(LOCALES_ROOT, locale, `${ns}.json`);
-  const raw = await fs.readFile(file, 'utf8');
-  const obj = JSON.parse(raw) as Record<string, string>;
-  // Prefix each key with its namespace so we can merge namespaces without collision.
-  const prefixed: Catalog = {};
-  for (const [k, v] of Object.entries(obj)) prefixed[`${ns}.${k}`] = v;
+  let prefixed: Catalog;
+  try {
+    const raw = await fs.readFile(file, 'utf8');
+    const obj = JSON.parse(raw) as Record<string, string>;
+    // Prefix each key with its namespace so we can merge namespaces without collision.
+    prefixed = {};
+    for (const [k, v] of Object.entries(obj)) prefixed[`${ns}.${k}`] = v;
+  } catch (err) {
+    // A catalog we cannot read must not be able to take a page down.
+    //
+    // This read is the FIRST await in the tenant layout, ahead of the system-mode
+    // resolution, so that even the pre-auth takeover screen is localized. That
+    // ordering is deliberate — but it also meant an unreadable namespace file
+    // threw before the takeover branch could be evaluated, reproducing
+    // frontend-03 one layer down: the maintenance screen, whose entire job is to
+    // work when everything else is broken, would render as a bare 500 instead.
+    // LOCALES_ROOT is a mount in production, so "unreadable" is a real
+    // deployment state, not a hypothetical.
+    //
+    // Degrading to an empty namespace means its keys render as raw ids — visibly
+    // wrong, and loud in the log — but the page, and the recovery screen, still
+    // work. `pnpm check:translations` keeps this from happening by accident.
+    console.error(
+      `[i18n] could not load ${locale}/${ns}.json from ${LOCALES_ROOT}: ${(err as Error).message}. ` +
+        'Rendering that namespace untranslated — check LOCALES_ROOT and the image contents.',
+    );
+    // Deliberately NOT cached: caching the empty result would turn a transient
+    // read failure into a permanently untranslated namespace for the lifetime
+    // of the process, long after the mount came back.
+    return {};
+  }
   cache.set(key, prefixed);
   return prefixed;
 }
