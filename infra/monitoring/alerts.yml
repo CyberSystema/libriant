@@ -96,3 +96,88 @@ groups:
         annotations:
           summary: 'Postgres cache hit ratio < 95%'
           description: 'Working set is outgrowing RAM — queries are hitting disk. Add RAM (vertical) or shard tenants (horizontal).'
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # The alerts about the alerting, and about the backups.
+  #
+  # reliability-09: "a backup that never runs, or aborts every night, is
+  # undetectable". Everything above alerts on something being WRONG. These two
+  # alert on something failing to HAPPEN, which is the harder and more valuable
+  # case — a backup that silently stopped three weeks ago looks exactly like a
+  # backup that is working, right up until the restore.
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: liveness-of-the-safety-nets
+    rules:
+      - alert: Watchdog
+        # Fires ALWAYS, on purpose. Its absence is the signal: if this stops
+        # arriving, the chain — node-exporter, Prometheus, Alertmanager, the
+        # network out — is broken, and every other rule in this file has gone
+        # quiet for the same reason. Routed to a heartbeat receiver that alerts
+        # on SILENCE (see alertmanager.yml).
+        expr: vector(1)
+        labels: { severity: none }
+        annotations:
+          summary: 'Alert pipeline is alive'
+          description: 'This should always be firing. If it is not, alerting itself is broken — assume every other rule is also silent, and check Prometheus and Alertmanager before believing the system is healthy.'
+
+      - alert: BackupNeverRan
+        # `absent()` is the point: this fires when the metric does not exist at
+        # all, which is what a backup that has never run since the exporter
+        # started looks like. A rule written as `time() - metric > threshold`
+        # would evaluate to nothing here and never fire.
+        expr: absent(libriant_backup_last_success_timestamp_seconds)
+        for: 30m
+        labels: { severity: critical }
+        annotations:
+          summary: 'No backup has EVER reported success'
+          description: 'The metric is absent entirely. Either the nightly cron is not installed, backup.sh cannot write BACKUP_TEXTFILE_DIR, or node-exporter is not reading it (--collector.textfile.directory). Until this clears there is no evidence any backup exists.'
+
+      - alert: BackupStale
+        # The nightly job runs at 02:15. 36h means one missed night alerts, and
+        # a single late run does not.
+        expr: time() - libriant_backup_last_success_timestamp_seconds > 36 * 3600
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Last successful backup is over 36h old'
+          description: 'At least one nightly backup has not completed. Check /var/log/libriant/backup.log. The offer terms promise daily backups with an off-server copy; this alert firing means that promise is currently untrue.'
+
+      - alert: BackupOffsiteStale
+        expr: time() - libriant_backup_offsite_last_success_timestamp_seconds > 36 * 3600
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Last successful OFF-SITE copy is over 36h old'
+          description: 'Local backups may still be running. An on-box-only backup does not survive the event it exists for — losing the host loses both. Check RCLONE_REMOTE and the Storage Box credentials.'
+
+      - alert: BackupNotEncrypted
+        # The DPA and the offer terms both say "encrypted backups". backup.sh
+        # reports whether the artefacts it wrote actually are. A 0 here means
+        # the sentence customers were shown is false right now.
+        expr: libriant_backup_encrypted == 0
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Backups are being written UNENCRYPTED'
+          description: "BACKUP_AGE_RECIPIENT / BACKUP_GPG_PASSPHRASE_FILE is unset or the tool is missing, so last night's archive is plaintext. The DPA states backups are encrypted; that is currently untrue."
+
+      - alert: BackupDegraded
+        # The run finished, but not as intended — a leg was skipped, a verify
+        # was unavailable, or something was retried. Not urgent enough to wake
+        # someone, loud enough that it cannot run for a month unnoticed.
+        expr: libriant_backup_degraded == 1
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: 'Backup completed in a degraded mode'
+          description: 'The nightly run reported success with caveats. Read /var/log/libriant/backup.log — a degraded backup that nobody reads becomes an unrestorable one.'
+
+      - alert: BackupOffsiteNotConfigured
+        # Distinct from BackupOffsiteStale, which needs the metric to exist. If
+        # off-site was never set up, this says so instead of staying silent.
+        expr: libriant_backup_offsite_configured == 0
+        for: 6h
+        labels: { severity: warning }
+        annotations:
+          summary: 'No off-site backup destination is configured'
+          description: 'RCLONE_REMOTE is empty, so every backup lives only on the host it protects. The offer terms promise an off-server copy.'

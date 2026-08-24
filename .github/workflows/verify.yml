@@ -61,6 +61,20 @@ jobs:
       - name: Every Caddy backend route sits behind the origin guard
         run: pnpm check:caddy
 
+      # An alert on a metric nothing emits is a rule that can never fire, and
+      # PromQL will not tell you — the expression is valid, it just matches
+      # nothing. This cross-checks the rules against the metrics the code writes
+      # and asserts the dead man's switch exists and is routed separately.
+      - name: Alert rules reference metrics that exist
+        run: pnpm check:alerts
+
+      - name: Prometheus rules and Alertmanager config are valid
+        run: |
+          docker run --rm -v "$PWD/infra/monitoring:/m:ro" --entrypoint promtool \
+            prom/prometheus:v3.1.0 check rules /m/alerts.yml
+          docker run --rm -v "$PWD/infra/monitoring:/m:ro" --entrypoint amtool \
+            prom/alertmanager:v0.28.0 check-config /m/alertmanager.yml
+
       # And that the config is loadable at all — a syntax error here takes the
       # whole edge down on deploy, and no job built or parsed it before now.
       - name: Caddyfile adapts and validates

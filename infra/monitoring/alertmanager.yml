@@ -1,0 +1,94 @@
+# Where an alert actually goes.
+#
+# reliability-04 / launch-readiness-06: Prometheus was evaluating a full set of
+# rules and delivering none of them, because this file did not exist and
+# `alerting:` in prometheus.yml was commented out. A rule that fires into
+# nothing is worse than no rule — it reads like coverage on the page and pages
+# nobody at 3am.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# OWNER ACTION REQUIRED BEFORE THIS DOES ANYTHING.
+#
+# Replace [PLACEHOLDER: …] below with a real destination. No engineer can invent
+# it: it is a decision about who gets woken up, and by what. Until it is filled
+# in, `libriant-monitoring` refuses to start rather than pretending to alert —
+# Alertmanager rejects a webhook receiver with an unparseable URL at boot, which
+# is deliberate. A monitoring stack that starts cleanly while routing nowhere is
+# the exact failure this file exists to end.
+#
+# Reasonable choices, cheapest first:
+#   • an email receiver via the same provider that sends transactional mail
+#     (nothing is configured yet — EMAIL_DRIVER is 'console' and there is no
+#     API key, so this is not available today);
+#   • a webhook into whatever you already read on your phone;
+#   • a paid on-call service if this ever carries more than the pilot.
+# ─────────────────────────────────────────────────────────────────────────────
+
+global:
+  # How long a firing alert stays "firing" without a fresh evaluation before
+  # Alertmanager assumes it resolved. Must exceed Prometheus's evaluation
+  # interval by a comfortable margin or alerts flap.
+  resolve_timeout: 5m
+
+route:
+  # Group by alertname AND instance: one host filling its disk is one page, not
+  # one per filesystem, but two different hosts are two different problems.
+  group_by: ['alertname', 'instance']
+  # Wait this long to collect other alerts of the same group before sending —
+  # an outage usually trips several rules within seconds and they belong in one
+  # message.
+  group_wait: 30s
+  group_interval: 5m
+  # Do not re-send an unchanged firing alert more often than this. Long enough
+  # not to become noise, short enough that a page lost to a flaky network is
+  # retried the same night.
+  repeat_interval: 4h
+  receiver: default
+
+  routes:
+    # The dead man's switch. This alert fires CONTINUOUSLY and on purpose; its
+    # silence is the signal. Route it somewhere that expects a heartbeat and
+    # complains when one stops arriving — a cron-monitoring service, or a script
+    # that pages when it has not been poked in an hour.
+    #
+    # Without this, the whole chain — exporter, Prometheus, this file, the
+    # network out — fails silently, and everything looks calm precisely because
+    # nothing can report. That is indistinguishable from "nothing is wrong",
+    # which is how an outage runs all weekend.
+    - matchers: ['alertname = Watchdog']
+      receiver: watchdog
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 1m
+
+    # Anything that means data is at risk jumps the queue and repeats sooner.
+    - matchers: ['severity = critical']
+      receiver: default
+      group_wait: 10s
+      repeat_interval: 1h
+
+receivers:
+  - name: default
+    webhook_configs:
+      - url: '[PLACEHOLDER: alert webhook URL — see the note at the top of this file]'
+        send_resolved: true
+
+  - name: watchdog
+    webhook_configs:
+      # A heartbeat endpoint that alerts when it STOPS being called. Not the
+      # same destination as `default`: sending the heartbeat to the same place
+      # as real alerts means a broken pipeline looks like a quiet night.
+      - url: '[PLACEHOLDER: heartbeat/dead-man URL — must alert on SILENCE, not on receipt]'
+        send_resolved: false
+
+inhibit_rules:
+  # If the whole API is down, do not also page about its connection pool, its
+  # queue depth and its latency. One cause, one page.
+  - source_matchers: ['alertname = LibriantApiDown']
+    target_matchers: ['severity =~ "warning|critical"']
+    equal: ['instance']
+
+  # A host that is critically out of disk will trip the warning rule too.
+  - source_matchers: ['alertname = HostDiskCritical']
+    target_matchers: ['alertname = HostDiskFilling']
+    equal: ['instance', 'mountpoint']

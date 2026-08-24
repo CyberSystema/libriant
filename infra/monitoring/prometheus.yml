@@ -15,10 +15,12 @@ rule_files:
   - /etc/prometheus/alerts.yml
 
 # Wire an Alertmanager here when you want delivery (email/Slack/ntfy).
-# alerting:
-#   alertmanagers:
-#     - static_configs:
-#         - targets: ['alertmanager:9093']
+# Where a firing rule is DELIVERED. This was commented out, so every rule in
+# alerts.yml evaluated correctly and reached nobody (reliability-04).
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
 
 scrape_configs:
   - job_name: prometheus
