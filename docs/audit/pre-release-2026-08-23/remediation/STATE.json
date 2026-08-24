@@ -22,9 +22,9 @@
         "docs/deployment-hetzner.md",
         "infra/caddy/Caddyfile"
       ],
-      "status": "in-progress",
-      "wave": 3,
-      "note": "REFUTED: host has public IPv6, compose network does not, so Docker's userland proxy presents the bridge gateway as peer and cloudflare_only allows it. Also /webhooks/* Caddy route unguarded; admin unknown-IP lockout bucket still shared.",
+      "status": "verified",
+      "wave": 4,
+      "note": "adversarially verified by execution 2026-08-24",
       "commit": null
     },
     {
@@ -36,8 +36,8 @@
         "apps/api/src/billing/stripe-fake.driver.ts"
       ],
       "status": "verified",
-      "wave": 1,
-      "note": "proved by execution: API boots under the shipped prod templates in all 3 stripe postures; upload integration test runs with subscriptions OFF",
+      "wave": 4,
+      "note": "adversarially verified by execution 2026-08-24",
       "commit": null
     },
     {
@@ -48,9 +48,9 @@
       "paths": [
         "apps/api/src/billing/billing.service.ts"
       ],
-      "status": "fixed",
-      "wave": 1,
-      "note": null,
+      "status": "in-progress",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": null
     },
     {
@@ -77,9 +77,9 @@
         "apps/api/src/system-mode/system-mode.middleware.ts",
         "apps/api/src/system-mode/system-mode.service.ts"
       ],
-      "status": "verified",
-      "wave": 1,
-      "note": "proved by execution: API boots under the shipped prod templates in all 3 stripe postures; upload integration test runs with subscriptions OFF",
+      "status": "in-progress",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": null
     },
     {
@@ -121,9 +121,9 @@
         "docs/deployment-hetzner.md",
         "scripts/prod-bootstrap.sh"
       ],
-      "status": "in-progress",
-      "wave": 3,
-      "note": "REFUTED: host has public IPv6, compose network does not, so Docker's userland proxy presents the bridge gateway as peer and cloudflare_only allows it. Also /webhooks/* Caddy route unguarded; admin unknown-IP lockout bucket still shared.",
+      "status": "verified",
+      "wave": 4,
+      "note": "adversarially verified by execution 2026-08-24",
       "commit": null
     },
     {
@@ -135,9 +135,9 @@
         "apps/api/src/email/drivers/console-driver.ts",
         "docs/deploy-from-the-server.md"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "status": "in-progress",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": "369c4af"
     },
     {
@@ -148,9 +148,9 @@
       "paths": [
         "apps/api/src/export/export-processors.ts"
       ],
-      "status": "fixed",
-      "wave": 1,
-      "note": null,
+      "status": "in-progress",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": null
     },
     {
@@ -193,9 +193,9 @@
       "paths": [
         "apps/api/src/jobs/member-notifications.job.ts"
       ],
-      "status": "fixed",
-      "wave": 1,
-      "note": null,
+      "status": "verified",
+      "wave": 4,
+      "note": "adversarially verified by execution 2026-08-24",
       "commit": null
     },
     {
@@ -225,8 +225,8 @@
         "apps/api/src/admin/admin-auth.service.ts"
       ],
       "status": "in-progress",
-      "wave": 3,
-      "note": "REFUTED: host has public IPv6, compose network does not, so Docker's userland proxy presents the bridge gateway as peer and cloudflare_only allows it. Also /webhooks/* Caddy route unguarded; admin unknown-IP lockout bucket still shared.",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": null
     },
     {
@@ -252,9 +252,9 @@
       "paths": [
         "apps/api/src/billing/billing.service.ts"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "status": "verified",
+      "wave": 4,
+      "note": "adversarially verified by execution 2026-08-24",
       "commit": "369c4af"
     },
     {
@@ -265,9 +265,9 @@
       "paths": [
         "apps/api/src/billing/stripe-webhook.controller.ts"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "status": "verified",
+      "wave": 4,
+      "note": "adversarially verified by execution 2026-08-24",
       "commit": "369c4af"
     },
     {
@@ -405,9 +405,9 @@
       "paths": [
         "apps/api/src/auth/auth.controller.ts"
       ],
-      "status": "in-progress",
-      "wave": 3,
-      "note": "REFUTED: host has public IPv6, compose network does not, so Docker's userland proxy presents the bridge gateway as peer and cloudflare_only allows it. Also /webhooks/* Caddy route unguarded; admin unknown-IP lockout bucket still shared.",
+      "status": "verified",
+      "wave": 4,
+      "note": "adversarially verified by execution 2026-08-24",
       "commit": null
     },
     {
@@ -478,9 +478,9 @@
       "paths": [
         "apps/api/src/loans/loans.service.ts"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "status": "in-progress",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": "369c4af"
     },
     {
@@ -491,9 +491,9 @@
       "paths": [
         "apps/api/src/members/member-numbers.ts"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "status": "in-progress",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": "369c4af"
     },
     {
@@ -519,9 +519,9 @@
         "apps/api/src/members/members.service.ts",
         "locales/en/legal/dpa.md"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "status": "in-progress",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": "369c4af"
     },
     {
@@ -535,9 +535,9 @@
         "locales/en/legal/privacy.md",
         "packages/db-control/prisma/schema.prisma"
       ],
-      "status": "verified",
-      "wave": 3,
-      "note": "proved against real Postgres: outbox cascades, audit row survives redacted, slug kept, platform rows untouched",
+      "status": "in-progress",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": "369c4af"
     },
     {
@@ -551,9 +551,9 @@
         "packages/db-tenant/prisma/schema.prisma",
         "packages/shared/src/features.ts"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "status": "in-progress",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": "369c4af"
     },
     {
@@ -568,9 +568,9 @@
         "infra/caddy/Caddyfile",
         "scripts/backup.sh"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "status": "in-progress",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": "369c4af"
     },
     {
@@ -582,9 +582,9 @@
         "apps/api/src/system-mode/system-mode.middleware.ts",
         "apps/api/src/system-mode/system-mode.service.ts"
       ],
-      "status": "fixed",
-      "wave": 1,
-      "note": null,
+      "status": "in-progress",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": null
     },
     {
@@ -637,9 +637,9 @@
         "apps/api/src/jobs/member-notifications.job.ts",
         "apps/api/src/jobs/scheduled-jobs.runner.ts"
       ],
-      "status": "fixed",
-      "wave": 1,
-      "note": null,
+      "status": "verified",
+      "wave": 4,
+      "note": "adversarially verified by execution 2026-08-24",
       "commit": null
     },
     {
@@ -1476,9 +1476,9 @@
         "apps/api/src",
         "apps/api/src/jobs/stripe-retry.job.ts"
       ],
-      "status": "fixed",
-      "wave": 1,
-      "note": null,
+      "status": "in-progress",
+      "wave": 4,
+      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
       "commit": null
     },
     {

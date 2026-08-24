@@ -1,0 +1,745 @@
+{
+  "summary": "Adversarially verify the fixes that landed without a verification pass",
+  "agentCount": 6,
+  "logs": [
+    "verification complete: 6/6 areas"
+  ],
+  "result": [
+    {
+      "area": "redis-and-jobs",
+      "ids": [
+        "reliability-01",
+        "reliability-02",
+        "reliability-07",
+        "reliability-16",
+        "boot-and-config-01"
+      ],
+      "result": {
+        "area": "redis-and-jobs",
+        "verdicts": [
+          {
+            "id": "boot-and-config-01",
+            "actually_fixed": false,
+            "confidence": "high",
+            "bypass": "With the API booted under NODE_ENV=production / BILLING_ENABLED=false / STRIPE_DRIVER=none and REDIS_URL=redis://127.0.0.1:6399 (nothing listening), five request paths still return HTTP 500 with the identical \"Stream isn't writeable and enableOfflineQueue options is false\" stack the finding names. Two are authenticated tenant READS, which is the explicit acceptance criterion: GET /t/auditlib/billing -> 500 at PlatformSettingsService.billingEnabled (platform-settings.service.ts:34, reached from BillingService which calls settings.billingEnabled() unguarded at billing.service.ts:225/257/273/300); GET /t/auditlib/announcements/active -> 500 at AnnouncementDeliveryService.activeForUser (announcement-delivery.service.ts:71). Also GET /t/auditlib/catalog/isbn-lookup/9780140328721 -> 500 at IsbnLookupService.readCache (isbn.service.ts:52), POST /auth/password-reset/request -> 500 at PasswordResetService.request (password-reset.service.ts:72), POST /auth/verify-email/resend -> 500 at EmailVerificationService.send (email-verification.service.ts:83). Reproduced identically two ways: cold boot against a dead Redis port, and `redis-cli -p 6390 shutdown nosave` under a live API.",
+            "reasoning": "The half the finding is titled after IS fixed and I proved it twice. With Redis unreachable: /healthz 200, /readyz 503 with the DESIGNED diagnostic body {\"redis\":false,\"controlDb\":true} (not the generic 500 envelope), /metrics 200, /system-mode/current 200, /admin/system-mode/current 401 (guard reached, not 500). SystemModeMiddleware now calls resolveGlobalSafe() and SystemModeService/TenantResolverService/EffectivePlanService readCache+writeCache are try/catch fail-open with a bounded FailOpenMemo. Core circulation survives: login 200, POST /t/:slug/catalog/books 201, signup 201, members/loans/reservations/library/settings all 200. I also checked the fail-open cannot point the wrong way: with Redis dead and a tenant-scoped maintenance row live in the control DB, GET /system-mode/current?slug=auditlib correctly returned mode=maintenance,source=tenant and both a write and a read into that tenant returned 503 maintenance — so it degrades to the DB rather than fabricating 'normal'. And it does not hide the outage: /readyz flips to 503 and every degrade logs a warn. But the finding's own `fix` field is explicit that TenantResolverService alone is not enough 'otherwise tenant routes still 500 with Redis down', and the remediation's own comment in effective-plan.service.ts claims 'Guarding at the call site keeps that promise regardless of what the settings service does' — it guarded ONE of five call sites of a method it knew throws, and left four other unguarded Redis call sites on request paths. Any 500 is a refutation; there are five."
+          },
+          {
+            "id": "reliability-02",
+            "actually_fixed": false,
+            "confidence": "high",
+            "bypass": "Same execution as boot-and-config-01. The finding's stated acceptance test is 'Add an integration test that kills Redis and asserts /healthz stays 200 and reads still serve.' /healthz stays 200 — reads do not all serve. `redis-cli -p 6390 shutdown nosave` against a live production-config API: /t/auditlib/billing 500, /t/auditlib/announcements/active 500, /t/auditlib/catalog/isbn-lookup/9780140328721 500. The billing one is fetched by the tenant home page itself (apps/web/app/[locale]/t/[slug]/page.tsx:42) and is the whole content of the /t/:slug/billing screen. No such integration test was added either — `grep -rn 'renderScheduledJobMetrics|toScheduledJobResult' apps infra` shows the new specs are pure-function unit tests; there is no kill-Redis integration test anywhere.",
+            "reasoning": "Probes and the mode resolver are genuinely fixed (see boot-and-config-01 reasoning; /readyz now returns its designed 503+dependencies body instead of a 500 envelope, which is the specific diagnosability defect this finding was downgraded to). But the acceptance criterion is a conjunction and the second half fails on three routes, including the ISBN lookup that backs the barcode-scan / add-a-book flow — a librarian at the desk cannot catalogue a book during a Redis restart, and gets a 500 support code rather than a degraded answer. This is the same shape as the previously-refuted attempt (EffectivePlanService behind PlanGuard), one layer further out."
+          },
+          {
+            "id": "reliability-01",
+            "actually_fixed": true,
+            "confidence": "high",
+            "bypass": "",
+            "reasoning": "EXECUTED, not read. (1) Booted apps/api/src/worker.ts under NODE_ENV=production against the live audit control plane with 2 active tenants and a real Redis; the runner's own boot tick produced `[scheduled] member-notifications (41ms): 2 tenant(s) scanned; no member reminders due` with ZERO 'member notifications failed for tenant=' warn lines, and /healthz reported member-notifications counts {dueSoon:0,overdue:0,holdReady:0,tenantsScanned:2,tenantsFailed:0}. Previously this was 100% tenantsFailed on every tick. (2) Called `sendMemberNotifications()` directly with NO context — the exact cold-client shape that used to reject — and got tenantsFailed:0, ok:true. The fix is doubly held: RedisService.ready() awaits the 'ready' event before the first command (with an 'end' listener and a 10s backstop so a genuinely dead Redis fails loudly rather than hanging), AND registry.ts now passes the runner's long-lived client through JobContext. I checked the failure mode is still loud rather than newly silent: with tenant DBs unreachable the same handler reported tenantsFailed=2 and ok=false. I looked for the same cold-client pattern elsewhere: `grep -rn 'new RedisService()'` leaves only worker.ts:161, scheduled-jobs.runner.ts:183 and email-worker.ts:106, all long-lived, and email-worker.ts:107 awaits ready()."
+          },
+          {
+            "id": "reliability-07",
+            "actually_fixed": true,
+            "confidence": "high",
+            "bypass": "",
+            "reasoning": "EXECUTED at both granularities. (a) Tenant level: pointed every tenant's dbUrl at 127.0.0.1:55999 and ran the real registry handlers through toScheduledJobResult — reservation-pickup-expiry, fine-accrual, book-metadata-refresh and member-notifications all returned ok=false with '…; FAILED — tenantsFailed=2' and the full counts object, and the runner now console.warn()s instead of console.log()ing them. Confirmed end-to-end on a booted worker: /healthz scheduledLastResults showed ok=false + 'FAILED — tenantsFailed=3' on four jobs. (b) The one-level-down lie the previous round flagged as a bypass is also closed: I installed a BEFORE UPDATE trigger raising an exception on the tenant's `reservations` table so only the per-ROW transaction fails, and got `ok=false msg=\"2 tenant(s) scanned; no pickups to expire; 1 reservation(s) failed; FAILED — rowsFailed=1\" counts={...rowsFailed:1}` — previously that exact scenario reported a clean success. The `/Failed$/` suffix convention is opt-out rather than opt-in, and 'failed' is grandfathered for export-cleanup (verified LEGACY_RUN_FAILURE_KEYS contains it). describeError now renders empty-message Prisma errors — the warn lines carry 'PrismaClientKnownRequestError:\\n…Can't reach database server at 127.0.0.1:55999' instead of the empty colon the audit caught. I am marking the FINDING fixed because its named defect (tenantsFailed discarded, ok hard-coded true) is demonstrably gone; the metrics/alerting half of its suggested fix was written but never wired, which I report as a separate new problem rather than folding into this verdict."
+          },
+          {
+            "id": "reliability-16",
+            "actually_fixed": false,
+            "confidence": "high",
+            "bypass": "The Redis defect is fixed but the finding's stated outcome — 'the safety net for failed Stripe webhooks … fails on its first event every 5 minutes' and 'the sweep aborts having retried nothing' — is still literally true in the SHIPPED production configuration, for a third distinct reason. Reproduction: insert `stripe_webhook_events {id:'evt_rj_16', type:'customer.subscription.updated', error:'previous failure'}` into the control plane, then run sweepFailedStripeWebhooks() with NODE_ENV=production, STRIPE_DRIVER=none, BILLING_ENABLED=false (verbatim .env.prod.example + x-app-env). Result: `STRIPE no-ctx THREW: STRIPE_API_KEY is required when STRIPE_DRIVER=real. Set it (e.g. sk_test_…) or switch to STRIPE_DRIVER=fake in development.` Cause: stripe-retry.job.ts:130-131 selects the driver with `env.stripeDriver === 'real' ? new RealStripeDriver() : new FakeStripeDriver()`, bypassing the createStripeDriver()/resolveStripeDriverKind() factory this same diff introduced; config/env.ts:352-359 maps the new shipped value STRIPE_DRIVER=none to 'real' outside development, so RealStripeDriver's constructor throws. Confirmed live on a booted worker: /healthz shows `stripe-webhook-retry ok=false FAILED: Error: STRIPE_API_KEY is required when STRIPE_DRIVER=real`, every 5 minutes, retrying nothing. Note the other branch is no better: STRIPE_DRIVER=fake would construct FakeStripeDriver, which stripe-driver-kind.ts says must never run off a dev/test host.",
+            "reasoning": "The cold-Redis mechanism IS fixed and I proved the lock line is now reached: with STRIPE_DRIVER=real + dummy keys and NO job context (freshly-minted client), the sweep got past `await redis.ready()`, acquired the per-event SETNX lock, dispatched the row, and returned `{message:'retried 1: 0 succeeded, 1 still failing, 0 skipped (locked); FAILED — retryFailed=1; backlog — abandoned=1', ok:false, counts:{considered:1,succeeded:0,retryFailed:1,skipped:0,abandoned:1}}` — no 'Stream isn't writeable' anywhere, and the stillFailing->retryFailed rename plus the 24h give-up budget behave as documented (my 48h-old poison row landed in `abandoned`, which correctly did NOT flip ok). But I cannot call the finding fixed: run it under the configuration that actually ships and the sweep still aborts having retried nothing. Defaulting to false as instructed."
+          }
+        ],
+        "new_problems": [
+          {
+            "file": "apps/api/src/platform-settings/platform-settings.service.ts",
+            "line": 34,
+            "issue": "PlatformSettingsService.billingEnabled() does a bare `await this.redis.client.get(CACHE_KEY)` with no try/catch. EffectivePlanService added billingEnabledSafe() to guard ONE caller and its own comment claims that 'keeps that promise regardless of what the settings service does' — but BillingService calls settings.billingEnabled() unguarded at billing.service.ts:225, 257, 273 and 300, so an authenticated tenant read still 500s. Fix belongs in the method, not at one of five call sites.",
+            "severity": "high",
+            "reproduction": "Boot apps/api with NODE_ENV=production, BILLING_ENABLED=false, STRIPE_DRIVER=none against the audit Postgres and REDIS_URL=redis://127.0.0.1:6399. `curl -H \"Cookie: libriant_session=…\" http://127.0.0.1:3117/t/auditlib/billing` -> HTTP 500, logged stack: \"Stream isn't writeable and enableOfflineQueue options is false … at PlatformSettingsService.billingEnabled (platform-settings.service.ts:34:44)\". Same result from a live API after `redis-cli -p 6390 shutdown nosave`."
+          },
+          {
+            "file": "apps/api/src/announcements/announcement-delivery.service.ts",
+            "line": 71,
+            "issue": "activeForUser() does an unguarded `await this.redis.client.get(cacheKey)` (and an unguarded SET at :136 plus SCAN/DEL at :230-244), so GET /t/:slug/announcements/active 500s during a Redis outage. Every peer cache (system-mode, tenant-resolver, effective-plan) got a try/catch + FailOpenMemo in this diff; this one was missed.",
+            "severity": "high",
+            "reproduction": "Same production-config API with Redis unreachable: `curl -H \"Cookie: …\" /t/auditlib/announcements/active` -> HTTP 500, stack \"… at AnnouncementDeliveryService.activeForUser (announcement-delivery.service.ts:71:44)\". Verified on both a cold boot with a dead REDIS_URL and a live `redis shutdown nosave`. The web wrapper (apps/web/lib/announcements.ts) swallows it, so the browser degrades — the desktop app and any direct API consumer do not."
+          },
+          {
+            "file": "apps/api/src/catalog/isbn.service.ts",
+            "line": 52,
+            "issue": "IsbnLookupService.readCache (:52) and writeCache (:63) both call Redis with no try/catch, so the ISBN / barcode-scan lookup that backs the add-a-book flow returns 500 whenever Redis is unreachable — even though the OpenLibrary fetch itself would have succeeded. Note guarding only readCache is insufficient: writeCache would then throw on the way out.",
+            "severity": "high",
+            "reproduction": "Production-config API, Redis unreachable: `curl -H \"Cookie: …\" /t/auditlib/catalog/isbn-lookup/9780140328721` -> HTTP 500 supportCode 5M6DTFX0, stack \"… at IsbnLookupService.readCache (isbn.service.ts:52:41)\". With Redis up the same call returns 200 with the full Open Library record, so Redis is the only reason it fails."
+          },
+          {
+            "file": "apps/api/src/auth/password-reset.service.ts",
+            "line": 72,
+            "issue": "PasswordResetService.request() stores the reset token with an unguarded `await this.redis.client.set(...)`, so password reset is unavailable during a Redis outage — the recovery path a locked-out librarian needs. Same shape at EmailVerificationService.send (apps/api/src/auth/email-verification.service.ts:83). AuthGuard and LoginService were correctly wrapped in try/catch; these two were not.",
+            "severity": "medium",
+            "reproduction": "Production-config API with Redis unreachable: `curl -X POST /auth/password-reset/request -d '{\"email\":\"owner@audit.test\",\"slug\":\"auditlib\"}'` -> HTTP 500, stack \"… at PasswordResetService.request (password-reset.service.ts:72:29)\". `curl -X POST /auth/verify-email/resend` -> HTTP 500 at EmailVerificationService.send (email-verification.service.ts:83:29). Login, signup and catalog writes on the same process return 200/201, so this is specific to these two services."
+          },
+          {
+            "file": "apps/api/src/jobs/stripe-retry.job.ts",
+            "line": 130,
+            "issue": "The sweep picks its Stripe driver with `env.stripeDriver === 'real' ? new RealStripeDriver() : new FakeStripeDriver()` instead of the createStripeDriver()/resolveStripeDriverKind() factory this same diff introduced. config/env.ts:352-359 only recognises 'real'|'fake' and defaults everything else to 'real' outside development, so the newly-shipped STRIPE_DRIVER=none resolves to 'real' and RealStripeDriver's constructor throws. The stripe-webhook-retry job therefore crashes every 5 minutes, retrying nothing, on any host that has an unprocessed webhook row — i.e. exactly the failure reliability-16 was meant to remove, now permanent rather than intermittent. The else-branch is no safer: it would construct FakeStripeDriver, the driver stripe-driver-kind.ts exists to keep off production hosts.",
+            "severity": "high",
+            "reproduction": "Insert `stripe_webhook_events {id:'evt_rj_16', type:'customer.subscription.updated', payloadJson:'{...}', receivedAt: now()-10min, processedAt: null, error:'previous failure'}` into the control DB, then run sweepFailedStripeWebhooks() with NODE_ENV=production STRIPE_DRIVER=none BILLING_ENABLED=false (the .env.prod.example values): 'THREW: STRIPE_API_KEY is required when STRIPE_DRIVER=real'. On a booted worker the same config yields /healthz `stripe-webhook-retry: ok=false, FAILED: Error: STRIPE_API_KEY is required when STRIPE_DRIVER=real`. Re-running with STRIPE_DRIVER=real + dummy keys completes normally, proving the driver line is the sole cause."
+          },
+          {
+            "file": "apps/api/src/jobs/scheduled-jobs.runner.ts",
+            "line": 113,
+            "issue": "renderScheduledJobMetrics() — 40 lines emitting libriant_worker_job_last_ok / _last_run_timestamp_seconds / _count, with a doc comment calling it 'the surface an alert can finally sit on' and a dedicated unit test — is never called by anything but its own spec. apps/api/src/worker.ts is completely untouched in 7c2e2b0..HEAD, so /metrics still emits only uptime + in-flight gauges. reliability-07's fix field asked for these gauges 'from worker.ts /metrics and add a Prometheus rule on them'; the remediation's own round-1 note (docs/audit/.../rounds/wave1-round1.json:84) gave the exact instruction, and it was not carried out. infra/monitoring/alerts.yml has no rule referencing any job series, and worker /healthz returns HTTP 200 even when every job row is ok:false — so a 100%-failed sweep is still invisible to any alert that does not parse the health JSON body.",
+            "severity": "medium",
+            "reproduction": "Boot apps/api/src/worker.ts with every tenant dbUrl unreachable. `curl :3119/healthz` -> HTTP 200 with four jobs at ok=false / 'FAILED — tenantsFailed=3'. `curl :3119/readyz` -> HTTP 200 {\"status\":\"ready\"}. `curl :3119/metrics | grep -c libriant_worker_job_` -> 0. `grep -n 'worker|job' infra/monitoring/alerts.yml` -> only the generic scrape-target rules."
+          },
+          {
+            "file": "apps/api/src/worker.ts",
+            "line": 163,
+            "issue": "startScheduledJobs(SCHEDULED_JOBS, { emails: sharedEmails }) still omits `redis: sharedRedis`, although JobRunnerContext was added in this diff specifically to accept it and round-1 asked for it by name. The runner therefore mints a second long-lived RedisService (scheduled-jobs.runner.ts:183) alongside the one on line 161, doubling the worker's Redis connections for no reason. Harmless today, but it is the same untouched-file symptom as the missing metrics wiring.",
+            "severity": "low",
+            "reproduction": "Read apps/api/src/worker.ts:161-170 (unchanged by `git diff 7c2e2b0..HEAD -- apps/api/src/worker.ts`, which returns empty) against scheduled-jobs.runner.ts:183 `const redis = ctx.redis ?? new RedisService();`."
+          }
+        ],
+        "what_i_executed": [
+          "python3 -c \"…INDEX.json…\" for the 5 findings — recovered the original executed evidence and the acceptance criterion (kill Redis: /healthz 200 AND reads still serve).",
+          "git log --oneline -15; git diff --stat 7c2e2b0..HEAD -- apps/api/src/{system-mode,platform/redis.service.ts,jobs,tenancy,plans,billing} -> 40 files, +4004/-223. Read the full diff of redis.service.ts, system-mode.middleware.ts, system-mode.service.ts, tenant-resolver.service.ts, effective-plan.service.ts, public-system-mode.controller.ts, scheduled-jobs.runner.ts, jobs.types.ts, job-error.ts, registry.ts and all seven job handlers.",
+          "git diff 7c2e2b0..HEAD -- apps/api/src/worker.ts -> EMPTY. worker.ts was never touched.",
+          "grep -rn 'renderScheduledJobMetrics|toScheduledJobResult' apps infra -> only scheduled-jobs.runner.ts, its spec, and a jobs.types.ts comment. renderScheduledJobMetrics has no production caller.",
+          "grep -rn 'redis\\.client\\.' apps/api/src (non-spec) -> enumerated every Redis call site and hand-checked each for a try/catch; found auth.guard.ts, rate-limit, idempotency, admin-outbox, admin-tenants guarded, and isbn/announcements/platform-settings/password-reset/email-verification NOT.",
+          "source docs/audit/pre-release-2026-08-23/env/setup-audit-env.sh -> 'audit env ready — postgres :55440, redis :6390'. The pre-existing libriant_control had a FAILED 20260526175126_init migration (P3009), so I created lbr_ctl_v2, applied all 18 migrations ('All migrations have been successfully applied'), seeded it (plans=6, plan_feature_values=90) and ran tenant:migrate:deploy.",
+          "Booted apps/api/src/main.ts with NODE_ENV=production and the shipped x-app-env values (BILLING_ENABLED=false, STRIPE_DRIVER=none, EMAIL_DRIVER=console, TENANT_PATH_PREFIX=/t/, ADMIN_HOST=admin.libriant.com) against lbr_ctl_v2 + Redis :6390 on port 3111. POST /auth/signup -> 201 (tenant auditlib); POST /auth/login -> 200 + libriant_session cookie.",
+          "BASELINE with Redis UP (port 3111): /healthz 200, /readyz 200 {redis:true,controlDb:true}, /metrics 200, /system-mode/current 200, /auth/me 200, /t/auditlib/{catalog/books,announcements/active,members,loans,reservations,library,settings,catalog/isbn-lookup/9780140328721} all 200.",
+          "redis-cli -p 6390 shutdown nosave, then re-probed the SAME live process: /healthz 200, /readyz 503 {redis:false,controlDb:true}, /metrics 200, /system-mode/current 200 (with and without ?slug), /admin/system-mode/current 401, /auth/me 200, catalog/books 200, members 200, loans 200, reservations 200, library 200, settings 200 — BUT announcements/active 500 and catalog/isbn-lookup 500. Also POST /auth/login 200, POST /t/auditlib/catalog/books 201, POST /auth/signup 201 with Redis down.",
+          "Parsed the 500s out of the API log: supportCode 7EWHAYAU at AnnouncementDeliveryService.activeForUser (announcement-delivery.service.ts:71:44) and 5M6DTFX0 at IsbnLookupService.readCache (isbn.service.ts:52:41), both 'Stream isn't writeable and enableOfflineQueue options is false'.",
+          "COLD BOOT (the finding's original repro): killed 3111 by port, restarted Redis, booted a fresh production-config API on 3117 with REDIS_URL=redis://127.0.0.1:6399 (nothing listening). Identical result: /healthz 200, /readyz 503 with the designed dependency body, /metrics 200, /system-mode/current 200, /admin/system-mode/current 401, tenant reads 200 — except announcements/active 500 and isbn-lookup 500.",
+          "Second probe sweep on 3117 (dead Redis) found three more: POST /auth/password-reset/request 500 (password-reset.service.ts:72:29), POST /auth/verify-email/resend 500 (email-verification.service.ts:83:29), GET /t/auditlib/billing 500 (platform-settings.service.ts:34:44). POST /admin/auth/login returned 401 (guarded), /t/auditlib/imports and /exports 200.",
+          "FAIL-OPEN DIRECTION TEST: inserted an active tenant-scoped maintenance row into system_mode_events (UTC-corrected startsAt) with Redis still dead. GET /system-mode/current?slug=auditlib -> 200 {mode:maintenance, source:tenant, eventId:rj_tenant_evt}; POST /t/auditlib/catalog/books -> 503 {reason:maintenance,source:tenant}; GET catalog/books -> 503. So the fail-open degrades to the control DB and cannot report a healthy system while a tenant is in maintenance.",
+          "Booted apps/api/src/worker.ts under the same production config (port 3118). Boot tick: '[scheduled] member-notifications (41ms): 2 tenant(s) scanned; no member reminders due' with ZERO 'failed for tenant=' warns; /healthz member-notifications counts tenantsFailed:0 -> reliability-01 fixed. /metrics returned ONLY libriant_worker_uptime_seconds + libriant_worker_jobs_running; `grep -c libriant_worker_job_` = 0.",
+          "JOB FAILURE SWEEP: repointed both tenants' dbUrl at 127.0.0.1:55999 and invoked the real registry handlers through toScheduledJobResult — reservation-pickup-expiry ok=false 'FAILED — tenantsFailed=2', fine-accrual ok=false, book-metadata-refresh ok=false, member-notifications ok=false, each with full counts; warn lines carried the real Prisma reason (\"Can't reach database server at 127.0.0.1:55999\") rather than the empty colon the audit caught.",
+          "ROW-LEVEL LIE TEST: restored dbUrls, seeded a 'ready' reservation past expiry, installed a plpgsql BEFORE UPDATE trigger on the tenant's reservations table raising an exception, re-ran the sweep -> 'reservation rjres1 expire failed for tenant=auditlib: PrismaClientKnownRequestError' and ok=false, msg '2 tenant(s) scanned; no pickups to expire; 1 reservation(s) failed; FAILED — rowsFailed=1', counts.rowsFailed=1. Dropped the trigger afterwards.",
+          "STRIPE SWEEP: inserted evt_rj_16 (10 min old, error set) and evt_rj_old (48 h old) into stripe_webhook_events. sweepFailedStripeWebhooks() with NO ctx under NODE_ENV=production/STRIPE_DRIVER=none -> 'THREW: STRIPE_API_KEY is required when STRIPE_DRIVER=real'. Re-ran with STRIPE_DRIVER=real + dummy keys -> completed, ok=false, 'retried 1: 0 succeeded, 1 still failing, 0 skipped (locked); FAILED — retryFailed=1; backlog — abandoned=1' — proving `await redis.ready()` and the SETNX lock now work on a cold client. sendMemberNotifications() with no ctx -> tenantsFailed:0, ok:true.",
+          "Read apps/api/src/billing/stripe-driver-kind.ts and apps/api/src/config/env.ts:352-359 -> confirmed env.stripeDriver maps STRIPE_DRIVER=none to 'real' outside development, while stripe-retry.job.ts:130-131 uses env.stripeDriver instead of the new factory.",
+          "FINAL WORKER RUN (port 3119) with every tenant DB unreachable: /healthz HTTP 200 body showing four jobs ok=false with 'FAILED — tenantsFailed=3' plus stripe-webhook-retry ok=false 'STRIPE_API_KEY is required…'; /readyz HTTP 200 {\"status\":\"ready\"}; /metrics `grep -c libriant_worker_job_` = 0; grep of infra/monitoring/alerts.yml shows no job rule.",
+          "pnpm --filter @libriant/api exec vitest run --project unit -> 62 files / 567 tests passed.",
+          "pnpm --filter @libriant/api exec vitest run --project integration -> first run failed 3 files (429 Too Many Requests + a BILLING_ENABLED boot guard) because my production env leaked in; re-ran with a clean `env -i` audit env after redis flushall -> 11 files / 49 tests passed.",
+          "pnpm check:translations && pnpm check:caddy && pnpm check:legal -> exit 0 (legal check still lists unfilled [PLACEHOLDER]s by design). (cd apps/web && npx tsc --noEmit) -> exit 0.",
+          "CLEANUP: killed 3111/3112/3117/3118/3119 BY PORT (lsof -tiTCP:$port -sTCP:LISTEN | xargs kill -9) and verified all five report 'clear'; restored tenant dbUrls, deleted the evt_rj% rows, dropped the injected trigger."
+        ]
+      }
+    },
+    {
+      "area": "email-escape-hatch",
+      "ids": [
+        "launch-readiness-01",
+        "privacy-legal-06"
+      ],
+      "result": {
+        "area": "email-escape-hatch",
+        "verdicts": [
+          {
+            "id": "launch-readiness-01",
+            "actually_fixed": false,
+            "confidence": "high",
+            "reasoning": "Two of the three dead-end flows are genuinely fixed and I proved both by execution against a production-configured API (NODE_ENV=production, EMAIL_DRIVER=console, SESSION_COOKIE_SECURE=true, STRIPE_DRIVER=none, values taken from x-app-env in infra/compose/docker-compose.prod.yml + .env.prod.example, against the audit Postgres :55440 / Redis :6390). The loud boot banner fires at pino level 50 ('EMAIL IS NOT BEING DELIVERED'). GET /admin/outbox and /admin/outbox/:id are owner-only for real: owner 200, support-role admin 403 'This action requires an owner-level admin.', anon 401 — and the AdminRolesGuard is applied at class level so a later route inherits it. I read a LIVE email_verification body out of /admin/outbox/:id (linkState 'live'), pasted its token into the real POST /auth/verify-email and got {\"ok\":true,\"mode\":\"signup\"} with users.emailVerifiedAt written. POST /admin/account-recovery/users/:id/verify-email flipped a fresh owner from a 403 {\"code\":\"email_verification_required\"} on POST /t/:slug/staff to a 201 with a staff account and temp password — the exact onboarding path the finding said terminated with no exit. Audit rows land for both (user.email.force_verified, email_outbox.body.read with linkState, email_outbox.listed) and carry no URL. BUT the password-reset leg — the one the finding called 'locked out permanently', and the only recovery a library OWNER has — does not work for the human it is aimed at. POST /admin/account-recovery/users/:id/reset-link returns https://app.libriant.com/el/login/reset?token=...&slug=..., and /[locale]/login/reset IS NOT A ROUTE. apps/web/.next/app-path-routes-manifest.json contains only /[locale]/login, /[locale]/admin/login and /[locale]/verify-email; there is no apps/web/app/[locale]/login/reset/page.tsx and no code anywhere in apps/web calls /auth/password-reset/request or /complete. The operator reads a URL that 404s in the browser. The token IS valid — I redeemed it with a hand-built POST /auth/password-reset/complete {token,newPassword} (200) and logged in with the new password (200) — so the escape hatch has merely moved the undocumented manoeuvre from psql to curl. Compounding it, the operator-facing runbook still says the opposite: docs/RUNBOOK.md:29 'Nothing is delivered, and the body is withheld from logs. BLOCKER launch-readiness-01' and :974 'Password reset, email verification and staff invites are dead ends with **no operator recovery path**', citing docs/deploy-from-the-server.md:113 — a file now reduced to a 26-line 'superseded' stub. grep -rln 'admin/emails|account-recovery' docs/ returns only a June 2026 audit JSON: the escape hatch is documented nowhere an operator would look. Finally, admin-outbox.service.ts:57 claims 'The integration spec email-escape-hatch.spec.ts mints a link through this service and then redeems it through the real POST /auth/password-reset/complete, so a change to either side fails the build' — that file does not exist (the only hit repo-wide is the comment itself), and nothing in apps/api/test/integration touches /admin/outbox or /admin/account-recovery. The duplicated pwreset TTL/key/payload contract is unguarded.",
+            "bypass": "Owner of a library forgets their password. Operator opens /en/admin/account-recovery, clicks 'Issue reset link', reads out https://app.libriant.com/el/login/reset?token=<t>&slug=<s>. The librarian opens it and gets a Next.js 404 — that route does not exist in the app-path manifest or the source tree, and there is no forgot-password UI at all. The only way to spend the token is `curl -X POST /auth/password-reset/complete -d '{\"token\":\"<t>\",\"newPassword\":\"...\"}'` (verified 200), which no document describes. Meanwhile docs/RUNBOOK.md:974 — the only runbook — tells the operator there is 'no operator recovery path' and points at docs/deploy-from-the-server.md:113, a line that no longer exists."
+          },
+          {
+            "id": "privacy-legal-06",
+            "actually_fixed": false,
+            "confidence": "high",
+            "reasoning": "The headline leg is genuinely fixed and I verified it by execution. Under the shipped production config, a signup wrote email_outbox.bodyMarkdown = 'https://app.libriant.com/el/verify-email?token={{lbr-secret:c2b56a37026bc21336f8b6e4:1}}' — psql shows a placeholder, not a token. The plaintext sits in Redis under lbr:email:secret:<ref> with a 26h TTL, and scripts/backup.sh captures pg_dumpall + storage + caddy logs but never Redis. The worker re-hydrates in memory only (I confirmed neither the verify token nor the reset token appears anywhere in the api or worker logs: grep count 0 for both), and the admin viewer degrades honestly — I deleted the Redis key and /admin/outbox/:id returned linkState 'expired' with '?token=[link expired]' instead of a dead URL. The 90-day body sweep is real: I backdated a delivered row to 100 days, restarted the worker, and got '[email-worker] retention: cleared 1 outbox bodies older than 90d' with the body replaced by the marker. EmailService.enqueue is the single chokepoint — every bodyMarkdown producer goes through it, no direct controlDb.emailOutbox.create exists. HOWEVER two of the four legs the finding enumerated are untouched, and one of them is precisely what the fix field asked for 'regardless'. (1) EXPORT REDACTION, proved by execution: I ran POST /admin/exports {format:csv,scope:control} as the owner admin, downloaded the 14KB zip and unzipped it. email_outbox.csv ships id,idempotencyKey,kind,toEmail,fromEmail,replyToEmail,subject,bodyMarkdown,... with ZERO occurrences of '[redacted]' (users.csv has 5). export-processors.ts:214 SENSITIVE_COLUMNS still has no email_outbox key and isSensitive at :227 still tests only the COLUMN NAME against /token|secret|passwordhash|password_hash/, so 'bodymarkdown', 'toemail' and 'subject' match nothing. Up to 90 days of member names, addresses, borrowed titles and every recipient address still leave the box in an ordinary owner-admin export. The suggested fix — email_outbox: new Set(['bodymarkdown','toemail','subject']) — was not applied. (2) CADDY ACCESS LOG: entirely unaddressed. grep -c filter infra/caddy/Caddyfile returns 0; the global block at :25-31 is byte-identical (`log { output file /var/log/caddy/access.log { roll_size 100mb roll_keep 14 } format json }`), and the credential is STILL delivered as a URL query parameter — apps/web/app/[locale]/verify-email/page.tsx:27 reads searchParams.token, and password-reset.service.ts:79 / admin-outbox.service.ts:366 both build '?token=...'. Caddy's json format records request.uri with the query string, and scripts/backup.sh:401-405 still tars that directory. Neither suggested fix (fragment/POST delivery, or a log filter) landed. The off-site copy is now protected by privacy-legal-02's backup-crypt (backup_crypt_mode fails closed unless BACKUP_ALLOW_PLAINTEXT=1), but the on-host log — 14 rolls x 100MB — carries live 60-minute reset tokens and 24-hour verification tokens in the clear. The API's own pino log is fine: scrubUrl turned /healthz?token=SUPERSECRET... into '/healthz?token=[redacted]' when I probed it.",
+            "bypass": "Two concrete ones. (a) Owner admin runs POST /admin/exports {\"format\":\"csv\",\"scope\":\"control\"} and downloads libriant-control-<date>.zip. email_outbox.csv contains every recipient address, subject and full message prose for the last 90 days with no redaction at all — I did this and counted 0 '[redacted]' tokens in that file against 5 in users.csv from the same zip. The support_keys.codeHash redaction is still notionally defeated by the same file for any producer that later prints a credential outside a URL. (b) Anyone with read access to /var/log/caddy/access.log (host operator, a leaked rolled log, a misconfigured log shipper) can grep 'token=' and recover a live verification token for 24h or a live reset token for 60min, because the link is still a GET query parameter and the site-wide `log { format json }` block has no filter."
+          }
+        ],
+        "new_problems": [
+          {
+            "file": "apps/web/app/[locale]/login",
+            "issue": "The password-reset link that both PasswordResetService and the NEW admin account-recovery endpoint compose (`${publicAppUrl}/${locale}/login/reset?token=...&slug=...`) points at a Next.js route that does not exist. apps/web/.next/app-path-routes-manifest.json lists only /[locale]/login, /[locale]/admin/login and /[locale]/verify-email; there is no app/[locale]/login/reset/page.tsx in the source tree, and no file under apps/web calls /auth/password-reset/request or /auth/password-reset/complete — there is no forgot-password UI at all. The remediation for launch-readiness-01 is built on handing that URL to a human, so the owner-recovery escape hatch delivers a 404.",
+            "line": 366,
+            "severity": "high",
+            "reproduction": "POST /admin/account-recovery/users/<ownerId>/reset-link as an owner admin -> 200 {\"url\":\"https://app.libriant.com/el/login/reset?token=S7e_FHnc...&slug=escfc0ac9\"}. That path is absent from apps/web/.next/app-path-routes-manifest.json and from `find apps/web/app -name page.tsx`. The token itself is valid: POST /auth/password-reset/complete {\"token\":\"S7e_FHnc...\",\"newPassword\":\"brand-new-password-9\"} -> {\"ok\":true}, then POST /auth/login with the new password -> 200. So the only working redemption is a hand-built API call, which is documented nowhere."
+          },
+          {
+            "file": "apps/api/src/admin/admin-outbox.controller.ts",
+            "issue": "GET /admin/account-recovery/users is a new cross-tenant user-directory search that writes NO audit row, contradicting its own documentation. The controller docblock (line 106) says 'every route writes an `audit_log` row' and admin-outbox.service.ts:41 says 'an `audit_log` row for every single call including the reads'. findUsers takes neither @AdminSess nor @Req and never calls recordAdminAudit, yet it returns up to 25 users — email, username, full name, role, status, emailVerified, locked, archived, tenantSlug — matched across ALL tenants on a 2-character query. The sibling /admin/outbox list IS audited, so this is an inconsistency inside the same fix.",
+            "line": 119,
+            "severity": "medium",
+            "reproduction": "As an owner admin: audit_log count = 13; GET /admin/account-recovery/users?q=ow returns 13 users spanning 13 different tenants with full name + email; audit_log count = 13 afterwards. No trace of who searched the platform's user directory or for what."
+          },
+          {
+            "file": "docs/RUNBOOK.md",
+            "issue": "The single operator runbook still states there is no recovery path and cites a file:line that no longer exists. Line 29: 'Email | `EMAIL_DRIVER=console`. Nothing is delivered, and the body is withheld from logs. `BLOCKER launch-readiness-01`.' Line 974: '...Password reset, email verification and staff invites are dead ends with **no operator recovery path**. `docs/deploy-from-the-server.md:113` claims the link is in `docker logs api`. It is not.' — but deploy-from-the-server.md is now a 26-line 'superseded' stub with no line 113. `grep -rln 'admin/emails|account-recovery' docs/` returns only docs/audit/production-readiness-findings-2026-06-14.json: the new outbox viewer and account-recovery page are documented in no runbook. The finding's impact paragraph named exactly this failure mode.",
+            "line": 974,
+            "severity": "medium",
+            "reproduction": "grep -n 'no operator recovery path' docs/RUNBOOK.md -> line 974; wc -l docs/deploy-from-the-server.md -> 26; grep -rln 'admin/emails' docs/ -> nothing current."
+          },
+          {
+            "file": "apps/api/src/admin/admin-outbox.service.ts",
+            "issue": "A code comment asserts a build-time guard that does not exist. Lines 55-60: 'The duplication is CHECKED, not trusted: the integration spec `email-escape-hatch.spec.ts` mints a link through this service and then redeems it through the real `POST /auth/password-reset/complete`, so a change to either side fails the build instead of silently producing links that 400.' No such file exists anywhere in the repo (the only hit for the string is the comment itself), and nothing in apps/api/test/integration/ exercises /admin/outbox or /admin/account-recovery. AdminOutboxService duplicates PasswordResetService's TOKEN_TTL_SEC (60*60), the `pwreset:<token>` key shape and the {uid,tid} payload with nothing enforcing they stay in step — and the false comment makes it less likely anyone adds the guard.",
+            "line": 57,
+            "severity": "medium",
+            "reproduction": "grep -rn 'email-escape-hatch' . --exclude-dir=node_modules --exclude-dir=.git -> one hit, admin-outbox.service.ts:57. ls apps/api/test/integration/ -> no outbox or recovery spec. The whole owner-only escape hatch (5 routes) has zero automated coverage; I had to prove it works by hand."
+          }
+        ],
+        "what_i_executed": [
+          "source docs/audit/pre-release-2026-08-23/env/setup-audit-env.sh -> 'audit env ready — postgres :55440, redis :6390, control+tenant migrated and seeded'",
+          "python3 -c \"...INDEX.json...\" for launch-readiness-01 + privacy-legal-06 -> read both findings' evidence/verification fields in full",
+          "git log --oneline 7c2e2b0..HEAD (24 commits) + git diff --stat 7c2e2b0..HEAD -- apps/api/src apps/web/src -> located admin-outbox.controller.ts (+168), admin-outbox.service.ts (+383), email/outbox-secrets.ts (+204), console-driver.ts (+15), create-email-driver.ts (+47), email-worker.ts (+132), email.service.ts (+33)",
+          "pnpm --filter @libriant/api exec vitest run --project unit -> 62 files / 567 tests PASSED (includes email/outbox-secrets.spec.ts)",
+          "pnpm --filter @libriant/api exec vitest run --project integration -> run 1: 5 files failed / 3 tests failed; run 2 (identical command): 1 file failed / 1 test failed (import-api.spec.ts 'blocks upload when bulk_import_enabled is off (402)'). The suite is order/state flaky; the failure is in bulk import, not this area. NOTE: there is no integration spec for the admin outbox or account-recovery at all",
+          "pnpm check:translations -> passed (el, en); pnpm check:caddy -> 'all 6 backend route(s) sit behind the origin guard'; pnpm check:legal -> passed (still lists 2 docs with [PLACEHOLDER]s)",
+          "(cd apps/web && npx tsc --noEmit) -> exit 0",
+          "Booted the API under SHIPPED PROD CONFIG (NODE_ENV=production, EMAIL_DRIVER=console, SESSION_COOKIE_SECURE=true, STRIPE_DRIVER=none, PUBLIC_APP_URL=https://app.libriant.com, BCRYPT_COST=12, values lifted from x-app-env in infra/compose/docker-compose.prod.yml + .env.prod.example) against the audit DB. Two crash-on-boot iterations first: 'Env var SESSION_SECRET is too short — needs at least 24 characters', then 'Env var HASH_PEPPER is too short — needs at least 32 characters' (env.ts fail-fast working). Third boot: /healthz {\"status\":\"ok\"}",
+          "Boot log line 4, pino level 50: the EMAIL IS NOT BEING DELIVERED banner, naming https://<ADMIN_HOST>/en/admin/emails and .../en/admin/account-recovery. Confirmed present in BOTH the api and the worker process",
+          "Also started the worker (tsx src/worker.ts): '[email-worker] started (driver=console)', '[export-worker] started', '[scheduled] started — 9 job(s)'",
+          "Created probe-owner@test.local (owner) and probe-support@test.local (support) admins; had to set ADMIN_MFA_REQUIRED=false + mfaEnabled=false to get past the AUTH-06 enrollment gate (documented deviation; orthogonal to the role check). Cleared lbr:rl:admin-login:ip:127.0.0.1 between logins (the limiter fired)",
+          "AUTHZ MATRIX on the new surface: owner GET /admin/outbox?limit=2 -> 200 {\"driver\":\"console\",\"delivering\":false,...}; support GET /admin/outbox -> 403 'This action requires an owner-level admin.'; support GET /admin/account-recovery/users -> 403; support POST /admin/account-recovery/users/xyz/reset-link -> 403; anonymous -> 401. Owner-only gate is real and applied at class level",
+          "POST /auth/signup (fresh tenant escfc0ac9) -> 201. psql: email_outbox.bodyMarkdown = 'https://app.libriant.com/el/verify-email?token={{lbr-secret:c2b56a37026bc21336f8b6e4:1}}' — SEALED in Postgres. redis-cli --scan 'lbr:email:secret:*' shows the ref",
+          "GET /admin/outbox/<id> as owner -> 200, linkState 'live', body re-hydrated to '?token=Mck_GPrD0hshhdZ12SmwX0tJPf3I5LMcbhZW77JW_oA'. POST /auth/verify-email with that token -> {\"ok\":true,\"mode\":\"signup\",\"slug\":\"escfc0ac9\"}; psql users.emailVerifiedAt = 2026-08-24 15:23:05. The read-a-link escape hatch works end to end",
+          "Deleted lbr:email:secret:<ref> then re-read /admin/outbox/<id> -> linkState 'expired', body shows '?token=[link expired]'. Honest degradation confirmed",
+          "Second signup (esc50ec41): POST /t/esc50ec41/staff -> 403 {\"code\":\"email_verification_required\"} (the finding reproduced). POST /admin/account-recovery/users/<id>/verify-email -> 200 {\"alreadyVerified\":false}. POST /t/esc50ec41/staff {\"role\":\"librarian\"} -> 201 {\"user\":{...\"username\":\"staff_1\"},\"tempPassword\":\"C4VRH39GG5Z4\"}. The blocked onboarding path is unblocked",
+          "POST /admin/account-recovery/users/<id>/reset-link -> 200 url https://app.libriant.com/el/login/reset?token=S7e_FHnc08JvBnJmRhL_y9C8DIXdbJvgBbDJiXlBOEU&slug=escfc0ac9. POST /auth/password-reset/complete {token,newPassword} -> {\"ok\":true}; POST /auth/login with the new password -> 200. Token round-trip works; the URL's landing page does not exist",
+          "find apps/web/app -name page.tsx (57 routes) and python3 over apps/web/.next/app-path-routes-manifest.json -> /[locale]/login, /[locale]/admin/login, /[locale]/verify-email present; NO /[locale]/login/reset. grep -rn 'password-reset' apps/web -> only a comment in the admin account-recovery page",
+          "psql audit_log -> user.email.force_verified, user.password_reset_link.issued (afterJson {identity, expiresAt} — no URL), email_outbox.body.read (afterJson {kind,toEmail,tenantSlug,linkState}), email_outbox.listed. No live link in any audit row",
+          "AUDIT GAP: audit_log count 13 -> GET /admin/account-recovery/users?q=ow returned 13 users across 13 tenants (email + full name + role) -> audit_log count still 13. findUsers writes nothing",
+          "EXPORT: POST /admin/exports {\"format\":\"csv\",\"scope\":\"control\"} -> 202, completed, libriant-control-2026-08-24.zip (14023 bytes). Downloaded + unzipped: 29 CSVs incl. email_outbox.csv. header = id,idempotencyKey,kind,toEmail,fromEmail,replyToEmail,subject,bodyMarkdown,... ; grep -c '[redacted]' email_outbox.csv -> 0 (users.csv -> 5). python3 csv scan of 16 rows: 0 bodies with a raw bearer token, 5 with a sealed placeholder. So the credential no longer ships, but every recipient address, subject and message body does",
+          "RETENTION: backdated one delivered email_verification row to createdAt now()-100 days, restarted the worker -> '[email-worker] retention: cleared 1 outbox bodies older than 90d'; psql shows bodyMarkdown = '[body removed after 90 days — outbox retention]'",
+          "LOG SCRUBBING: grep for the verify token and the reset token in api.log and worker.log -> 0 hits each. curl '/healthz?token=SUPERSECRETTOKENVALUE123456' -> api.log records \"url\":\"/healthz?token=[redacted]\" (scrubUrl in platform/log-redaction.ts). The API's own log is clean",
+          "CADDY: grep -c filter infra/caddy/Caddyfile -> 0; the global log block at :25-31 is unchanged (output file /var/log/caddy/access.log, roll 100mb x14, format json, no URI/query filter). scripts/backup.sh:401-405 still tars CADDY_LOG_DIR. apps/web/app/[locale]/verify-email/page.tsx:27 reads searchParams.token, so the credential is still a GET query parameter that Caddy records in request.uri",
+          "BACKUP CRYPT (context for the Caddy leg): scripts/_lib/backup-crypt.sh backup_crypt_mode() returns non-zero with 'NO ENCRYPTION CONFIGURED' unless BACKUP_AGE_RECIPIENT / BACKUP_GPG_PASSPHRASE_FILE / BACKUP_ALLOW_PLAINTEXT=1 — the off-site copy fails closed, the on-host access log does not",
+          "grep -rn 'emailOutbox.create' apps/api/src -> none outside EmailService; every bodyMarkdown producer (password-reset, email-verification, support-notifications, announcements, member-notifications, applications, library-profile) goes through EmailService.enqueue, so the seal has no bypass",
+          "grep -rn 'email-escape-hatch' . --exclude-dir=node_modules --exclude-dir=.git -> ONE hit: the comment at admin-outbox.service.ts:57 claiming the spec exists. ls apps/api/test/integration/ confirms it does not",
+          "CLEANUP: rm apps/api/src/zz-probe-mkadmins.ts (throwaway admin-seeding script); lsof -ti tcp:3001 | xargs kill -9 and same for :3002 -> 0 listeners on both; git status --porcelain -> empty (no files edited, nothing committed)"
+        ]
+      }
+    },
+    {
+      "area": "export-and-scans",
+      "ids": [
+        "performance-01",
+        "performance-02",
+        "performance-04"
+      ],
+      "result": {
+        "area": "export-and-scans",
+        "verdicts": [
+          {
+            "id": "performance-01",
+            "actually_fixed": false,
+            "confidence": "high",
+            "bypass": "TWO independent, executed bypasses put peak RSS back over the 1 GB worker mem_limit.\n\nBYPASS A — the byte budget is blind to jsonb. `approxRowBytes` (export-processors.ts:622-630) counts a string at 2 bytes/char and a Buffer at its length, but EVERYTHING ELSE — including the parsed jsonb object node-pg hands back — falls to `bytes += 16` (line 628). Every tenant table carries a `customFields` jsonb; `audit_log` carries a jsonb payload; `collection_records.data` is entirely tenant-shaped. EXECUTED: a 53 MB `jsonb_probe` table (13,000 rows, one ~256 KB jsonb each) through the real, exported `readTableInBatches` with production bounds:\n  batch 1: 256 rows | approxRowBytes says 0.01 MiB | actual JSON 64.0 MiB | RSS 223 MB\n  batch 4: 2048 rows | approxRowBytes says 0.08 MiB | actual JSON 512.1 MiB | RSS 990 MB\n  batch 6: 5000 rows | approxRowBytes says 0.20 MiB | actual JSON 1250.2 MiB | RSS 2629 MB\n  PEAK RSS 2632 MB — budget was 8 MiB/batch\nThe estimator never sees the budget being exceeded, so the loop ramps to the 5,000-row ceiling and stays there. This is the previous verifier's exact complaint (\"a tenant still controls peak memory by making rows wide\") left open for the jsonb half of the schema.\n\nBYPASS B — the adaptation is reactive, one batch too late. `batchSize` for FETCH n+1 is derived from FETCH n (line 683). A table whose first ~7,936 rows are narrow drives the ramp 256→512→1024→2048→4096→5000; the NEXT fetch then pulls 5,000 rows of whatever follows. EXECUTED against `wide_probe` (7,936 tiny rows then 6,000 rows of 1 MiB text, only 80 MB on disk because the text compresses in TOAST):\n  batch 5: 4096 rows, ~0.2 MiB payload, RSS 103 MB\n  batch 6: 5000 rows, ~10000.2 MiB payload, RSS 5197 MB\nAnd END TO END through the real entry point, a genuine `processExportJob('probe-csv')` on a control-plane job row pointing at that tenant:\n  job probe-csv: status=completed bytes=49158092 ms=53791 PEAK RSS=5132 MB\ninfra/compose/docker-compose.prod.yml:311 is still `mem_limit: ${WORKER_MEM_LIMIT:-1g}` with no NODE_OPTIONS/--max-old-space-size anywhere. 5,132 MB in a 1 GB container is the original blocker, unchanged in effect.\n\nRealism of the trigger: text fields are DTO-capped at 2,000 chars, but custom-field length is `def.validationJson?.maxLength ?? DEFAULT_MAX_LENGTH[type] ?? 1000` (field-types.ts:327) and `validationJson` is a bare `@IsObject() Record<string, unknown>` (collections.dto.ts:93) — a tenant admin sets maxLength to any number through the product's own UI. No DB access needed.",
+            "reasoning": "The streaming rewrite is real and it does work on ordinary data — I measured it, not read it. A genuine CSV export of a 3.02M-row / 372 MB tenant (400k books, 520k copies, 100k members, 2M loans) peaked at 429 MB RSS from a 185 MB baseline; the XLSX path peaked at 551 MB. Against the original evidence (one table alone reaching 1,443 MB) that is a real fix, and the surrounding work is genuinely thorough: MAX_EXPORT_ROWS raised to 25M and pre-checked from `reltuples` before any allocation; `idle_in_transaction_session_timeout = 60s` set outside the BEGIN; the cleanup reaper's staleness bound now derived from EXPORT_MAX_RUNTIME_MS instead of a 1 h guess; and the spool-space guard genuinely fires — I mounted a 200 MB HFS+ RAM disk as STORAGE_ROOT and the same export refused before writing a byte: `status=failed ... needs about 745 MB and only 195 MB is free on the storage volume`, with no partial spool left behind. Three of the four sub-concerns in the brief are closed. But the row-count-vs-byte-budget concern — the one the previous verifier raised — is NOT closed, and I have two executed reproductions putting the worker 2.6x and 5.1x over its container limit. A blocker that a tenant can still trigger is not fixed."
+          },
+          {
+            "id": "performance-02",
+            "actually_fixed": false,
+            "confidence": "high",
+            "bypass": "The overdue tile — one of the two loans queries the finding says fires on EVERY dashboard render — is not fixed, and in buffer terms is now WORSE than before.\n\n`LoansService.list` was never touched: apps/api/src/loans/loans.service.ts:805 still reads `orderBy: [{ loanedAt: 'desc' }, { id: 'desc' }]` for every branch including `opts.overdue`. So the partial index the migration shipped for that path, `loans_active_dueAt_idx ON loans (\"dueAt\",\"id\") WHERE status='active'`, cannot serve it — the sort key is wrong. The migration's own comment at migrations/20260824120000_retention_erasure_and_scan_indexes/migration.sql:75 asserts the change was made: \"the overdue LIST — which now orders by `dueAt ASC, id ASC` (see LoansService.list)\". It does not.\n\nEXECUTED on a 2M-row loans table (237 MB heap, shared_buffers 128MB, el_GR.UTF-8, 200k active / 10k overdue — a healthy library where most active loans are not yet late), on the EXACT SQL Prisma emits (captured from a live `$on('query')` log of `loan.findMany` with the service's real `fullInclude`):\n\n  WITH the shipped indexes (warm, run twice, identical):\n    Index Scan using \"loans_status_loanedAt_id_idx\" on loans\n      Filter: (\"dueAt\" < now())\n      Rows Removed by Filter: 190000\n      Buffers: shared hit=118682\n      Execution Time: 57.619 ms\n\n  PRE-FIX (the three new indexes dropped, same data, same query):\n    Parallel Seq Scan on loans\n      Buffers: shared hit=3700 read=29456   (33,156 total)\n      Execution Time: 70.478 ms\n\n  COUNTERFACTUAL — what the migration comment claims the service does:\n    ORDER BY \"dueAt\" ASC, id ASC\n    Index Scan using \"loans_active_dueAt_idx\" on loans\n      Index Cond: (\"dueAt\" < now())\n      Buffers: shared hit=101 read=3\n      Execution Time: 0.115 ms\n\nSo the fix left this query touching 3.6x MORE buffers (118,682 vs 33,156) for the same 70→58 ms, and 1,140x more than the one-line ORDER BY change would have cost. `Rows Removed by Filter` scales with the library's active-loan backlog exactly as the seq scan did, and it gets worse as the library gets healthier (fewer overdue loans = more rows walked before 101 matches are found). Newest-first ordering starts at precisely the loans that are NOT yet overdue, which is why this path degrades rather than improves.\n\nSecondary: the finding's remedy also called for setting shared_buffers explicitly. infra/compose/docker-compose.prod.yml still passes only `shared_preload_libraries` and `max_connections` to Postgres, so it remains the image default 128 MB against a 237 MB loans heap.",
+            "reasoning": "Two of the three paths ARE genuinely fixed and I measured both. Unfiltered list (`WHERE 1=1 ORDER BY loanedAt DESC, id DESC LIMIT 26`): pre-fix Parallel Seq Scan + top-N heapsort, 30,444 buffers, 217.331 ms → post-fix Index Scan using loans_loanedAt_id_idx, 32 buffers, 0.085 ms. `status='active' LIMIT 101`: pre-fix 30,469 buffers / 107.982 ms → post-fix Index Scan using loans_status_loanedAt_id_idx, 73 buffers, 0.131 ms. Those are real and large. But the finding is explicitly about the tenant home page firing TWO of these per render, and the second one — the overdue tile — regressed. A migration that adds an index proves nothing without the query change that makes it usable, and here the query change was written into a SQL comment instead of into the service. Partial fix on a high-severity finding, with a measured regression on the named hot path, is not fixed."
+          },
+          {
+            "id": "performance-04",
+            "actually_fixed": false,
+            "confidence": "high",
+            "bypass": "The application code was never changed. `git diff 7c2e2b0..HEAD -- apps/api/src/members/` returns EMPTY — apps/api/src/members/member-numbers.ts is byte-for-byte identical to the audited version. Line 40 is still:\n\n  const rows = await client.member.findMany({\n    where: { memberNumber: { startsWith: prefix } },\n    select: { memberNumber: true },\n  });\n\nNo `take`, no aggregate, no `archivedAt: null`, and the doc comment at lines 32-33 still asserts the falsehood the audit called out (\"LIKE is fine here even on big tables because ... the column has a B-tree index via the partial unique index\").\n\nThe migration ships a `member_number_counters` table and the Prisma schema documents it as the O(1) minting mechanism — but NOTHING READS OR WRITES IT. `grep -rn 'memberNumberCounter|member_number_counters|MemberNumberCounter' apps packages --include='*.ts' --include='*.tsx'` matches ONLY generated typings in packages/db-tenant/node_modules/.prisma/tenant-client/index.d.ts. Both callers still go through the scan: members.service.ts:249 (`const seq = await nextSequenceForYear(client, year)`) and import-engine.ts:565 inside `generateMemberNumber`'s 5-attempt loop, which is itself called per row at import-engine.ts:521.\n\nEXECUTED against the 100,000-member el_GR.UTF-8 tenant, calling the REAL exported function through a real tenant Prisma client:\n  baseline RSS 156 MB\n  call 1: nextSequenceForYear -> 100001 in 92ms, RSS 279 MB\n  call 5: nextSequenceForYear -> 100001 in 42ms, RSS 351 MB\n  mean 47.2 ms/call\nStill 100,000 rows transferred into Node per single member create. The roster import is still O(n^2).\n\nAnd the index that WAS shipped does not touch this query. EXPLAIN (ANALYZE,BUFFERS) of `SELECT \"memberNumber\" FROM members WHERE \"memberNumber\" LIKE 'M-2026-%'`:\n  Seq Scan on members (actual rows=100000)  Buffers: shared read=1809  Execution Time: 16.129 ms\nThe planner will not use `members_member_number_pattern_idx` because the predicate matches 100% of the table; forcing it with enable_seqscan=off gives an Index Only Scan at 19.143 ms — SLOWER. A prefix index cannot rescue a query whose problem is that it returns every row.",
+            "reasoning": "Exactly one half of this finding was fixed, and it is the smaller half. The importer's per-row follow-up lookup `SELECT id FROM members WHERE \"memberNumber\"='M-2026-050000' LIMIT 1` now runs `Index Scan using members_member_number_pattern_idx, Buffers: shared read=3, Execution Time: 0.469 ms` instead of the seq scan the audit measured — text_pattern_ops does carry plain `=`, so that part of the collation trap is genuinely closed and I verified it on a database created with LC_COLLATE 'el_GR.UTF-8', matching `LANG: el_GR.UTF-8` in docker-compose.prod.yml. But the headline of the finding is the full scan on every create and the quadratic import, and that code is untouched. Shipping the counter table without wiring it is worse than not shipping it: the schema and migration now both document a fix that does not exist, so the next reader will believe perf-04 is closed."
+          }
+        ],
+        "new_problems": [
+          {
+            "file": "apps/api/src/export/export-processors.ts",
+            "line": 628,
+            "severity": "blocker",
+            "issue": "approxRowBytes — the whole basis of the new FETCH byte budget — counts a parsed jsonb value as 16 bytes. `typeof v === 'string'` and `Buffer.isBuffer(v)` are handled; a jsonb column comes back from node-pg as a plain JS object and falls through to the flat `bytes += 16`. Every tenant table has a `customFields` jsonb, audit_log has a jsonb payload, and collection_records.data is entirely tenant-shaped, so the budget is blind on exactly the columns a tenant can grow without limit.",
+            "reproduction": "psql -d libriant_scale -c \"CREATE TABLE jsonb_probe (id text primary key, \\\"customFields\\\" jsonb not null); INSERT INTO jsonb_probe SELECT 'j'||g, jsonb_build_object('note', repeat('abcdefgh',32768)) FROM generate_series(1,13000) g;\" (53 MB on disk) then drive the real exported readTableInBatches with production bounds: batch 6 reports `5000 rows | approxRowBytes says 0.20 MiB | actual JSON 1250.2 MiB | RSS 2629 MB`; PEAK RSS 2632 MB against WORKER_MEM_LIMIT 1g."
+          },
+          {
+            "file": "apps/api/src/export/export-processors.ts",
+            "line": 683,
+            "severity": "blocker",
+            "issue": "The batch-size adaptation is reactive: the row count for FETCH n+1 is derived from the payload measured in FETCH n. A table whose narrow rows precede its wide rows (heap order = roughly insertion order, and the cursor reads in heap order) ramps the batch to the FETCH_MAX_ROWS ceiling of 5,000 on the narrow prefix, and the very next FETCH then materialises 5,000 wide rows in one result set — the identical failure performance-01 was raised for.",
+            "reproduction": "Table with 7,936 tiny rows followed by 6,000 rows of 1 MiB text (only 80 MB on disk, TOAST-compressed). readTableInBatches: `batch 5: 4096 rows, ~0.2 MiB payload, RSS 103 MB` then `batch 6: 5000 rows, ~10000.2 MiB payload, RSS 5197 MB`. End-to-end through processExportJob on a real control-plane job row: `job probe-csv: status=completed bytes=49158092 ms=53791 PEAK RSS=5132 MB` — 5x the 1 GB worker container limit."
+          },
+          {
+            "file": "apps/api/src/loans/loans.service.ts",
+            "line": 805,
+            "severity": "high",
+            "issue": "LoansService.list still orders EVERY branch, including `opts.overdue`, by `[{ loanedAt: 'desc' }, { id: 'desc' }]`. The partial index shipped for the overdue path (loans_active_dueAt_idx on (\"dueAt\",\"id\") WHERE status='active') therefore cannot be used, and the planner instead walks loans_status_loanedAt_id_idx newest-first — starting at precisely the active loans that are NOT yet overdue. The result is a measured REGRESSION in buffer traffic versus the pre-fix seq scan on the single most-hit page in the product. The migration comment at packages/db-tenant/prisma/migrations/20260824120000_retention_erasure_and_scan_indexes/migration.sql:75 states the service was changed to order by `dueAt ASC, id ASC`; it was not.",
+            "reproduction": "2M-row loans table, 200k active / 10k overdue, shared_buffers 128MB. Post-fix: `Index Scan using loans_status_loanedAt_id_idx ... Rows Removed by Filter: 190000, Buffers: shared hit=118682, Execution Time: 57.619 ms`. Pre-fix (same data, new indexes dropped): `Parallel Seq Scan, Buffers: shared hit=3700 read=29456, Execution Time: 70.478 ms`. Same query with `ORDER BY \"dueAt\" ASC, id ASC`: `Index Scan using loans_active_dueAt_idx, Buffers: shared hit=101 read=3, Execution Time: 0.115 ms`."
+          },
+          {
+            "file": "apps/api/src/members/member-numbers.ts",
+            "line": 40,
+            "severity": "high",
+            "issue": "performance-04's fix is schema-only. `member_number_counters` is created by the migration and documented in packages/db-tenant/prisma/schema.prisma as the O(1) replacement, but no application code references it — the only grep hits in the repo are generated Prisma typings. nextSequenceForYear is unchanged and still pulls every member number for the year into Node; members.service.ts:249 and import-engine.ts:565 both still call it. The stale doc comment at member-numbers.ts:32-33 asserting the column is index-served is also still there.",
+            "reproduction": "`git diff 7c2e2b0..HEAD -- apps/api/src/members/` returns empty. `grep -rn 'memberNumberCounter|member_number_counters' apps packages --include='*.ts'` matches only .prisma/tenant-client/index.d.ts. Calling the real nextSequenceForYear against a 100,000-member tenant: mean 47.2 ms/call, RSS 156 MB -> 351 MB, 100,000 rows per call. EXPLAIN of its SQL: `Seq Scan on members (actual rows=100000), Buffers: shared read=1809`."
+          },
+          {
+            "file": "apps/api/src/export/export-processors.ts",
+            "line": 868,
+            "severity": "medium",
+            "issue": "The export run deadline is per-TARGET, not per-run: `new ExportRunGuard(spoolDir(), Date.now() + EXPORT_MAX_RUNTIME_MS)` is constructed inside withTableReader, which generate() calls once per target, and dumpSql passes the same value as a fresh execFile timeout per target. For scope='all' (control plane + every non-archived tenant) the wall-clock bound is therefore N x 4 h. export-cleanup.job.ts reaps a 'running' job at startedAt + EXPORT_MAX_RUNTIME_MS + 10 min and calls purgeJobArtifacts, which deletes `${jobId}-*` — the temp spools a live worker is still writing. apps/api/src/export/export.constants.ts states this interlock is true by construction (\"a run cannot exceed it ... anything older is dead rather than merely slow\"); for multi-target scopes it is not.",
+            "reproduction": "Read path only — not exercised at pilot scale (my 15-tenant control plane finishes in minutes). Concretely: an 'all'-scope export where the sum of per-target runtimes exceeds 4 h 10 m — e.g. ~50 Institutional tenants at the ~83 min/25M-rows the constants file itself assumes — is reaped mid-run by sweepExpiredExports, its spool files unlinked underneath the writer, and marked failed."
+          },
+          {
+            "file": "infra/compose/docker-compose.prod.yml",
+            "line": 366,
+            "severity": "medium",
+            "issue": "performance-02's remedy included setting shared_buffers explicitly (25% of PG_MEM_LIMIT). The postgres service still passes only `shared_preload_libraries=pg_stat_statements` and `max_connections=200`, so it runs the postgres:16-alpine default of 128 MB against a loans heap I measured at 237 MB on a single 2M-row tenant, on a Postgres shared by every library on the box.",
+            "reproduction": "`SHOW shared_buffers` = 128MB on a stack started from this compose file; `pg_relation_size('loans')` = 237 MB at the Institutional row counts the pricing page sells."
+          },
+          {
+            "file": "apps/api/src/config/env.ts",
+            "line": 352,
+            "severity": "medium",
+            "issue": "Outside my area but found by booting under the shipped production configuration. The compose default is `STRIPE_DRIVER: ${STRIPE_DRIVER:-none}`, but env.ts only accepts 'real' or 'fake' and otherwise defaults to 'real' whenever NODE_ENV !== 'development'. So the documented safe default resolves to 'real', and stripe-retry.job.ts:133 constructs RealStripeDriver() on every sweep tick that has failed webhook rows to process.",
+            "reproduction": "Booted apps/api/src/worker.ts with NODE_ENV=production and the docker-compose.prod.yml x-app-env values (STRIPE_DRIVER=none) against the audit control DB. GET /healthz returned: \"stripe-webhook-retry\":{\"message\":\"FAILED: Error: STRIPE_API_KEY is required when STRIPE_DRIVER=real. Set it (e.g. sk_test_…) or switch to STRIPE_DRIVER=fake in development.\",\"ok\":false}. Only fires when stripe_webhook_events holds failed rows, so a clean install returns early and looks healthy."
+          }
+        ],
+        "what_i_executed": [
+          "python3 -c \"...json.load(INDEX.json)...\" for performance-01/02/04 — read the executed evidence + verification fields, not the fix suggestions.",
+          "git log --oneline 7c2e2b0..HEAD (24 commits) and git diff --stat 7c2e2b0..HEAD -- apps/api/src/export apps/api/src/members apps/api/src/loans apps/api/src/import apps/api/src/jobs packages/db-tenant → export-processors.ts +889, export.constants.ts new, import-engine.ts +349, tenant migration +91, schema +53. NOTE: apps/api/src/members/ and apps/api/src/loans/loans.service.ts appear NOWHERE in the diff.",
+          "git diff --name-only 7c2e2b0..HEAD | grep -iE 'member|loan|export' → no apps/api/src/members/*, no apps/api/src/loans/*.ts. git status --porcelain → clean.",
+          "grep -rn 'memberNumberCounter|member_number_counters|MemberNumberCounter' apps packages --include='*.ts' --include='*.tsx' → matches ONLY packages/db-tenant/node_modules/.prisma/tenant-client/index.d.ts. Zero application references.",
+          "source docs/audit/pre-release-2026-08-23/env/setup-audit-env.sh → 'audit env ready — postgres :55440, redis :6390'.",
+          "pnpm --filter @libriant/api exec vitest run --project unit → 62 files, 567 tests passed, EXIT=0.",
+          "pnpm --filter @libriant/api exec vitest run --project integration → FIRST run 1 failed/48 passed (import-api.spec 'commits and lands the rows', expected 1 to be 2). RED HERRING: `ps aux` found a sibling session's `tsx apps/api/src/worker.ts` (pid 30262) running against the same Redis :6390, whose startImportWorker consumer was racing the spec's direct processImportJob call. After it exited, the spec passed 6/6 and the FULL suite passed 11 files / 49 tests, EXIT=0.",
+          "pnpm check:translations && pnpm check:caddy && pnpm check:legal → all pass (legal still lists its [PLACEHOLDER] inventory by design). (cd apps/web && npx tsc --noEmit) → exit 0.",
+          "createdb libriant_scale TEMPLATE template0 LC_COLLATE 'el_GR.UTF-8' (matching `LANG: el_GR.UTF-8` in docker-compose.prod.yml); pnpm tenant:migrate:deploy applied all 7 migrations incl. 20260824120000_retention_erasure_and_scan_indexes; seeded 400k books / 520k copies / 100k members / 2,000,000 loans (200k active on distinct copies). \\d loans confirms loans_loanedAt_id_idx, loans_status_loanedAt_id_idx, loans_active_dueAt_idx; \\d members confirms members_member_number_pattern_idx (text_pattern_ops) and erasedAt. pg_relation_size('loans')=237 MB, SHOW shared_buffers=128MB.",
+          "Captured the ACTUAL app SQL by running LoansService.list's exact findMany (same fullInclude) through makeTenantPrismaClient with a $on('query') listener — Prisma emits `... WHERE status = CAST($1::text AS \"LoanStatus\") AND \"dueAt\" < $2 ORDER BY \"loanedAt\" DESC, \"id\" DESC LIMIT $3 OFFSET $4` plus 4 join queries.",
+          "EXPLAIN (ANALYZE,BUFFERS) on that exact SQL, three variants, WITH the shipped indexes / with them DROPPED / and the dueAt-ordered counterfactual. Unfiltered LIMIT 26: 30,444 buffers + top-N heapsort + 217.331 ms → 32 buffers / 0.085 ms. status='active' LIMIT 101: 30,469 buffers / 107.982 ms → 73 buffers / 0.131 ms. OVERDUE LIMIT 101 on a realistic 200k-active/10k-overdue library: post-fix `Rows Removed by Filter: 190000, Buffers: shared hit=118682, 57.619 ms`; pre-fix `Parallel Seq Scan, 33,156 buffers, 70.478 ms`; ORDER BY dueAt ASC,id ASC `Index Scan using loans_active_dueAt_idx, 104 buffers, 0.115 ms`.",
+          "EXPLAIN (ANALYZE,BUFFERS) SELECT \"memberNumber\" FROM members WHERE \"memberNumber\" LIKE 'M-2026-%' → `Seq Scan on members (actual rows=100000), Buffers: shared read=1809, 16.129 ms`; forced with enable_seqscan=off → `Index Only Scan using members_member_number_pattern_idx, 19.143 ms` (slower). Equality lookup `WHERE \"memberNumber\"='M-2026-050000' LIMIT 1` → `Index Scan using members_member_number_pattern_idx, Buffers: shared read=3, 0.469 ms` (this half IS fixed).",
+          "Ran the REAL exported nextSequenceForYear against the 100k-member tenant: baseline RSS 156 MB; 47.2 ms mean per call; RSS climbs to 351 MB; 100,000 rows pulled into Node per call. Unchanged from the audit's original measurement.",
+          "Drove the REAL exported readTableInBatches (production BatchBounds) inside a REPEATABLE READ READ ONLY transaction against `wide_probe` (7,936 tiny rows then 6,000 x 1 MiB text; 80 MB on disk): batch 5 = 4096 rows / RSS 103 MB, then `batch 6: 5000 rows, ~10000.2 MiB payload, RSS 5197 MB`. PEAK RSS 3454-5202 MB across runs.",
+          "Same against `jsonb_probe` (13,000 rows x ~256 KB customFields jsonb, 53 MB on disk): `batch 6: 5000 rows | approxRowBytes says 0.20 MiB | actual JSON 1250.2 MiB | RSS 2629 MB`, PEAK RSS 2632 MB. The estimator under-reports by ~6,000x on jsonb.",
+          "Ran the REAL entry point processExportJob() against a control-plane export_jobs row targeting libriant_scale. With the wide table present: `status=completed bytes=49158092 ms=53791 PEAK RSS=5132 MB` (worker mem_limit 1g). With it parked into another schema (ordinary data only, 3.02M rows): CSV `PEAK RSS=429 MB` in 32 s, XLSX `PEAK RSS=551 MB` in 36 s — the streaming rewrite genuinely works on normal data.",
+          "Spool-space guard test: diskutil eraseVolume HFS+ on a 200 MB RAM disk, STORAGE_ROOT=/Volumes/SPOOLTEST, re-ran the same export → `status=failed ... error: Not enough free space to build this export: it needs about 745 MB and only 195 MB is free on the storage volume.` Refused before writing anything; no partial spool. Guard confirmed working. Ramdisk detached afterwards.",
+          "Booted apps/api/src/worker.ts under the SHIPPED PRODUCTION configuration (NODE_ENV=production + docker-compose.prod.yml x-app-env values: STRIPE_DRIVER=none, BILLING_ENABLED=false, EMAIL_DRIVER=smtp, SESSION_COOKIE_SECURE=true, BCRYPT_COST=12, PORT/WORKER_PORT=3002) against the audit control DB. /readyz → {\"status\":\"ready\",\"redis\":\"up\"}; /healthz → all five queues running incl. export, export-file-cleanup ok. One prod-config defect surfaced: stripe-webhook-retry FAILED with 'STRIPE_API_KEY is required when STRIPE_DRIVER=real' despite STRIPE_DRIVER=none.",
+          "Killed the worker BY PORT: `lsof -nP -iTCP:3002 -sTCP:LISTEN -t` → 33214, kill -9, re-checked → 0 listeners, 0 stray src/main.ts|src/worker.ts processes. Dropped jsonb_probe and the parked schema; deleted the scale-tenant control row and probe export_jobs rows. libriant_scale left in place as evidence."
+        ]
+      }
+    },
+    {
+      "area": "billing",
+      "ids": [
+        "billing-01",
+        "billing-02",
+        "billing-03",
+        "billing-08"
+      ],
+      "result": {
+        "area": "billing",
+        "verdicts": [
+          {
+            "id": "billing-01",
+            "actually_fixed": true,
+            "confidence": "high",
+            "reasoning": "Re-ran the original probe against the shipped production web build and drove the real API code path. apps/api/src/billing/return-url.ts is now the single URL builder; startCheckout (billing.service.ts:393-410) and openCustomerPortal (:546-554) both go through it. EXECUTED: startCheckout for tenant libwf-fba68b emitted successUrl `https://app.libriant.com/el/t/libwf-fba68b/billing?checkout=success`, and `next start -p 3999` on apps/web/.next (BUILD_ID AfxqpM4-I3_F1d6D1Dj4S) answered: /t/demo/billing?checkout=success -> 404 (the old shape, still broken, as it should be) and /el/t/demo/billing?checkout=success -> 307 with `location: /el/login` (route exists). Portal EXECUTED too: no returnPath -> /el/t/<slug>/billing; legacy locale-less returnPath `/t/x/billing` -> rescued to /el/t/x/billing; hostile `//evil.example/pwn` -> refused and replaced by the tenant billing path; `/en/t/x/billing` -> left alone (no double locale). apps/web/.next/types/routes.d.ts still lists exactly one billing route, so the builder's declared shape and the real route agree, and return-url.spec.ts pins that against the file tree.",
+            "bypass": ""
+          },
+          {
+            "id": "billing-02",
+            "actually_fixed": true,
+            "confidence": "high",
+            "reasoning": "Booted the API under NODE_ENV=production with .env.prod.example / docker-compose.prod.yml x-app-env values against the audit Postgres, and forged webhooks with the literal from stripe-fake.driver.ts. POSTURE MATRIX, all executed by booting on :4599: (A) STRIPE_DRIVER=none BILLING_ENABLED=false -> BOOTS; forged POST signed with 'fake-webhook-secret-for-dev' -> HTTP 503 'Billing is not configured on this server'; subscription row unchanged (starter/active/null) and stripe_webhook_events count = 0. (B) STRIPE_DRIVER=fake (the value every pre-upgrade host carries) -> BOOTS with an error-level downgrade line, DisabledStripeDriver loaded, forged POST -> 503, row unchanged. So the wave-1 crash-loop is gone: the shipped config and the legacy config both start. (C) NODE_ENV UNSET + STRIPE_DRIVER=fake -> BOOTS, downgraded ('NODE_ENV=(unset)'), forged POST -> 503; the escape hatch that reinstated the hole last time is closed because stripe-driver-kind.ts reads the RAW variable, not loadEnv().nodeEnv. (D) BILLING_ENABLED=true with no usable driver -> refuses to start, both with NODE_ENV=production/none and with NODE_ENV unset/fake ('BILLING_ENABLED is on but no Stripe driver is available ... refusing to start'). (E) STRIPE_DRIVER=fakee (typo) -> refuses to start rather than guessing; STRIPE_DRIVER=real without keys -> refuses. Runtime door also closed: settings.setBillingEnabled(true) under production+none THREW BadRequest instead of logging a warning. Templates now ship none (.env.prod.example:78, compose STRIPE_DRIVER:${STRIPE_DRIVER:-none}) and scripts/ensure-env.sh:159-161 rewrites an existing fake to none on deploy. No path found from any shipped template to a driver that verifies against the published literal.",
+            "bypass": ""
+          },
+          {
+            "id": "billing-03",
+            "actually_fixed": false,
+            "confidence": "high",
+            "reasoning": "HALF of it is genuinely fixed and I proved it: with a live subscription, startCheckout re-prices in place. EXECUTED against the audit DB with BillingService driven directly — S5: row carries sub_live_1, click Municipal -> outcome=plan_changed, changeSubscriptionPrice(sub_live_1 -> price_seed_municipal), 0 Checkout sessions created; stripe-real.driver.ts:139-142 does subscriptions.update with proration_behavior:'create_prorations'. The lockout the earlier guard caused is also gone — S6: dead pointer + Stripe says resource_missing -> pointer cleared, fresh Checkout opened (row now null), so a missed deleted-webhook no longer bricks purchasing; S7: Stripe unreachable -> 503 'try again', it does NOT open a second subscription. Concurrency is handled: same-price repeat click reuses the session (S4, 1 session), mid-create placeholder -> 409, Redis unreachable -> fails closed. BUT the null-stripeSubscriptionId window the fix was supposed to close is still open, and the new guard itself opens it: handleCheckoutSessionCompleted (billing.service.ts:922-936) DELETES the Redis checkout marker, while stripeSubscriptionId is only ever set by syncStripeSubscription from customer.subscription.created/updated. Between those two events our row has no id AND no marker, so startCheckout takes the fresh-purchase branch and opens a SECOND Checkout session without expiring the first — and the first has already completed, i.e. a live subscription already exists.",
+            "bypass": "EXECUTED (probe S8, and S2 for the different-plan variant): 1) tenant on starter, click Community -> Checkout session A opened, marker written. 2) Stripe charges the card and delivers checkout.session.completed first; the controller dispatches it, handleCheckoutSessionCompleted deletes billing:checkout:<tenantId>. Row still reads stripeSubscriptionId=null, plan=starter, so the billing page the user is redirected to still shows the OLD plan. 3) The user clicks the same Community plan again (or any other plan): resolveLiveSubscription(null) returns null, the marker is gone, so openCheckoutSession opens session B. Observed: 'checkout sessions created = 2 [..(price_seed_community), ..(price_seed_community)] expired = []' — nothing was expired at Stripe, so BOTH sessions can complete and the customer ends up with two live subscriptions on the same price; syncStripeSubscription then logs 'Tenant … has TWO live Stripe subscriptions' and overwrites stripeSubscriptionId, so cancel-from-the-app reaches only the newer one. The window is normally the gap between the two webhooks (Stripe does not guarantee their delivery order), but it widens to >=5 minutes whenever the customer.subscription.created dispatch fails once — the retry sweep's stale window — and up to the 24h give-up budget if it keeps failing. Same outcome if the marker is lost any other way: S3 (marker deleted between the two clicks) also produced 2 sessions with expired=[]."
+          },
+          {
+            "id": "billing-08",
+            "actually_fixed": true,
+            "confidence": "high",
+            "reasoning": "Proved over HTTP, not by reading. Booted the API (fake driver, NODE_ENV=development so the endpoint verifies) and drove three cases against the audit Postgres. (1) Healthy: signed customer.subscription.updated -> 200, stripe_webhook_events row processedAt set, subscription moved to institutional/sub_probe_ok. (2) DATABASE OUTAGE — pg_ctl -m fast stop, then two signed deliveries: both returned HTTP 503 {'message':'Webhook storage unavailable — please redeliver.'}, NOT 200. After restarting Postgres, neither event had a row (nothing was silently accepted), which is exactly right: no row exists, but Stripe was never told we had it, so it redelivers. This is the executed refutation of the old behaviour, where the same sequence returned 200 and the event was gone. persistEvent (stripe-webhook.controller.ts:216-247) uses create-then-catch-P2002 so it can tell a first delivery from a retry, and reports durable:false both when the insert fails and when the P2002 follow-up read fails — the caller 503s on either. (3) Dispatch failure AFTER the row is on disk: a payload with no `items` -> 200, row left processedAt=null with error='Cannot read properties of undefined (reading data)' — i.e. visible to the sweep, which I then ran and which reported 'retried 1: 0 succeeded, 1 still failing'. So the 200-means-durably-ours contract holds on all three paths. Caveat, filed separately as a new problem rather than as a refutation: the sweep this contract hands off to is dead on any non-'real' posture because jobs/stripe-retry.job.ts:133 builds its driver from env.stripeDriver instead of the posture resolver.",
+            "bypass": ""
+          }
+        ],
+        "new_problems": [
+          {
+            "file": "apps/api/src/jobs/stripe-retry.job.ts",
+            "line": 133,
+            "severity": "high",
+            "issue": "The Stripe retry sweep — the recovery arm billing-08's whole '200 means durably ours, the sweep owns it' contract hands off to — never got the posture resolver. It still selects its driver with `env.stripeDriver === 'real' ? new RealStripeDriver() : new FakeStripeDriver()`, and AppEnv.stripeDriver is typed 'real' | 'fake' only (config/env.ts:352-358 returns 'real' for ANY non-development NODE_ENV). So on every posture except a fully configured real one, the sweep throws as soon as there is a single row to retry, and the job goes red on every 5-minute tick instead of rescuing anything.",
+            "reproduction": "With one unprocessed stripe_webhook_events row present, running sweepFailedStripeWebhooks() directly: NODE_ENV=production STRIPE_DRIVER=none (the SHIPPED default) -> 'SWEEP THREW: STRIPE_API_KEY is required when STRIPE_DRIVER=real'; NODE_ENV=production STRIPE_DRIVER=fake (a legacy host, whose API boots fine because the factory downgrades it to disabled) -> 'SWEEP THREW: STRIPE_DRIVER=fake is not usable with NODE_ENV=production'; NODE_ENV unset + fake -> same throw. Control: NODE_ENV=development STRIPE_DRIVER=fake -> 'SWEEP OK: retried 1: 0 succeeded, 1 still failing'. The throw is caught by the BullMQ handler (scheduled-jobs.runner.ts:250-259) so the worker survives, but libriant_worker_job_last_ok{job=stripe-webhook-retry} pins to 0 and no row is ever retried. Reachable on a host upgraded from the old fake default that still holds unprocessed rows (<24h), and on any host where an operator sets keys but leaves STRIPE_DRIVER empty."
+          },
+          {
+            "file": "apps/api/src/billing/billing.service.ts",
+            "line": 933,
+            "severity": "high",
+            "issue": "handleCheckoutSessionCompleted deletes the Redis checkout marker — the only guard against a duplicate first purchase — at a point where our subscriptions row still has stripeSubscriptionId = null, because the id is written only by syncStripeSubscription from customer.subscription.created/updated. Between those two webhooks (and for as long as the subscription sync keeps failing) startCheckout has neither guard and opens a second, un-expired Checkout session for a customer who already has a live subscription.",
+            "reproduction": "Executed against the audit control DB + Redis with BillingService driven directly (fake driver, BILLING_ENABLED=true): (1) startCheckout('community') -> session A, marker written; (2) handleCheckoutSessionCompleted({customer:'cus_fake_<tid>', client_reference_id:'<tid>'}) — i.e. Stripe's checkout.session.completed processed before customer.subscription.created — row still stripeSubscriptionId=null, plan=starter; (3) startCheckout('community') again -> 'checkout sessions created = 2 ... expired = []'. Session A already completed, so completing B gives the tenant two live subscriptions on the same price; syncStripeSubscription then logs 'has TWO live Stripe subscriptions' and overwrites the id, leaving the older one billing and invisible. Same result if the marker is lost for any other reason (probe S3). Note this is the exact harm billing-03 was filed for, arriving through the fix's own cleanup step; the plan-change half of the fix is sound."
+          },
+          {
+            "file": "apps/api/src/billing/stripe-driver.factory.ts",
+            "line": 54,
+            "severity": "medium",
+            "issue": "The 'enforcement armed with nothing that can charge' boot guard reads only env.billingEnabled, but PlatformSettingsService says the platform_settings DB row is the authoritative runtime switch and wins over the env (platform-settings.service.ts:33-42). A row left at 'true' by an earlier release — where setBillingEnabled only WARNED in this state — survives the upgrade, is never re-validated at boot, and arms plan/quota enforcement for every tenant against DisabledStripeDriver. The boot guard's own comment says this is the state it exists to prevent.",
+            "reproduction": "Executed with NODE_ENV=production STRIPE_DRIVER=none BILLING_ENABLED=false: settings.setBillingEnabled(true) is correctly REFUSED, but writing platform_settings key='billing.enabled' value='true' directly (what the previous release's admin panel was allowed to do) gives: billingEnabled() = true, createStripeDriver() = kind 'disabled' with no boot refusal, getGate -> {billingEnabled:true,...}, and startCheckout -> 503 'We could not reach Stripe to check your current subscription. Nothing has changed — please try again in a moment.' Every library is gated behind a purchase flow that 503s forever, and the error text tells them to retry something that can never succeed. Fix shape: have the boot guard (or a startup reconciliation) read the platform_settings row, not just the env var."
+          },
+          {
+            "file": "apps/api/test/integration/import-api.spec.ts",
+            "line": 1,
+            "severity": "low",
+            "issue": "The integration suite is not green when run the documented way. import-api.spec.ts passes in isolation but fails inside the full `vitest run --project integration` run, with a different assertion failing between runs — cross-file shared-DB/worker state, not a billing defect. Flagged because the audit's own certification claim rests on this suite being green.",
+            "reproduction": "Against a freshly migrated+seeded audit DB: `pnpm --filter @libriant/api exec vitest run --project integration` -> run 1: 'blocks upload when bulk_import_enabled is off (402)' fails; run 2: 'commits and lands the rows in the tenant catalog' (expected 1 to be 2) and 'reports a dirty row error + downloadable errors.csv on commit' (expected +0 to be 1) fail; `vitest run --project integration test/integration/import-api.spec.ts` alone -> 6 passed. Unit suite is clean: 62 files / 567 tests passed."
+          }
+        ],
+        "what_i_executed": [
+          "python3 -c \"import json; ... INDEX.json\" for billing-01/02/03/08 — read the executed evidence + verification fields for all four originals.",
+          "git log --oneline -15 and git diff --stat 7c2e2b0..HEAD — billing changes land inside the wave commits (8c72415 / 369c4af), not a named billing commit: new files stripe-driver-kind.ts, stripe-driver.factory.ts, stripe-disabled.driver.ts, return-url.ts (+4 new spec files), billing.service.ts +495 lines, stripe-webhook.controller.ts +224.",
+          "source docs/audit/pre-release-2026-08-23/env/setup-audit-env.sh — Postgres :55440 + Redis :6390. The audit control DB was left with a FAILED 20260526175126_init migration (P3009) and only 10 tables; dropped+recreated libriant_control/libriant_demo with the four extensions and re-ran migrate/seed -> 30 tables, 6 plans. Redis on 6390 had also died; restarted it.",
+          "pnpm --filter @libriant/api exec vitest run --project unit -> 62 files / 567 tests passed.",
+          "pnpm --filter @libriant/api exec vitest run --project integration -> 1 failed | 10 passed, twice, both times import-api.spec.ts, different tests each run; the same file alone -> 6 passed. Not billing.",
+          "pnpm check:translations -> passed (el, en). pnpm check:caddy -> passed, all 6 backend routes behind the origin guard. pnpm check:legal -> passed (still prints the pre-launch placeholder banner).",
+          "(cd apps/web && npx tsc --noEmit) -> exit 0. (cd apps/api && npx tsc --noEmit) -> exit 0.",
+          "Booted apps/api under NODE_ENV=production on :4599 with a production-shaped env mirroring infra/compose/docker-compose.prod.yml x-app-env + .env.prod.example (SESSION_COOKIE_SECURE=true, HASH_PEPPER, 64-hex MFA_MASTER_KEY, STORAGE_SIGNING_SECRET, EMAIL_DRIVER=smtp, BILLING_RETURN_URL=https://app.libriant.com) against the audit DB. Killed BY PORT (lsof -ti tcp:4599 | xargs kill -9) after every posture; final sweep shows 4599 and 3999 free and no orphaned tsx.",
+          "Posture A — NODE_ENV=production STRIPE_DRIVER=none BILLING_ENABLED=false: BOOTED. Forged POST /webhooks/stripe signed with 'fake-webhook-secret-for-dev' -> 503 'Billing is not configured on this server — Stripe webhooks are not accepted.'; subscription row unchanged (starter|active|null); select count(*) from stripe_webhook_events = 0.",
+          "Posture B — NODE_ENV=production STRIPE_DRIVER=fake: BOOTED (no crash-loop) with 'STRIPE_DRIVER=fake is not usable with NODE_ENV=production — running with billing DISABLED instead' + DisabledStripeDriver loaded; forged POST -> 503; row unchanged.",
+          "Posture C — NODE_ENV UNSET, STRIPE_DRIVER=fake, BILLING_ENABLED=false: BOOTED downgraded ('NODE_ENV=(unset)'), forged POST -> 503, row unchanged. With BILLING_ENABLED=true: NOT-LISTENING after 30s, 'BILLING_ENABLED is on but no Stripe driver is available (STRIPE_DRIVER=fake, NODE_ENV=(unset)) — refusing to start'.",
+          "Posture D/E/F — production + STRIPE_DRIVER=none + BILLING_ENABLED=true -> refuses to start; STRIPE_DRIVER=fakee -> refuses ('is not a recognised value'); STRIPE_DRIVER=real with no keys -> refuses ('STRIPE_API_KEY is required').",
+          "billing-08 over HTTP: healthy signed event -> 200, row processedAt set, subscription moved to institutional|sub_probe_ok. Then pg_ctl -m fast stop; two signed deliveries -> HTTP 503 {'message':'Webhook storage unavailable — please redeliver.'} each; pg_ctl start; select from stripe_webhook_events shows neither event was recorded (nothing silently accepted). Then a payload with no `items` -> 200 with the row left processedAt=null and error='Cannot read properties of undefined (reading data)'.",
+          "Ran sweepFailedStripeWebhooks() directly under four postures: production+none -> THREW 'STRIPE_API_KEY is required when STRIPE_DRIVER=real'; production+fake -> THREW 'STRIPE_DRIVER=fake is not usable with NODE_ENV=production'; NODE_ENV unset+fake -> same throw; development+fake -> 'SWEEP OK: retried 1: 0 succeeded, 1 still failing'.",
+          "billing-03 drill (BillingService + FakeStripeDriver + real Redis/Postgres, createCheckoutSession and expireCheckoutSession instrumented): S1 two clicks/different plans with a null id -> 2 sessions but session A EXPIRED at Stripe first; S2 checkout.session.completed processed before the subscription sync, then a different plan -> 2 sessions, expired=[]; S3 marker lost between clicks -> 2 sessions, expired=[]; S4 same plan twice -> 1 session (reused); S5 live subscription -> outcome=plan_changed, 0 sessions, subscriptions.update to price_seed_municipal; S6 dead pointer + Stripe 'no such subscription' -> pointer cleared, fresh Checkout (no permanent brick); S7 Stripe unreachable -> REFUSED 503, no second subscription; S8 impatient-customer repro -> 'checkout sessions created = 2 [community, community] expired = []'.",
+          "openCustomerPortal executed: no returnPath -> https://app.libriant.com/el/t/libwf-fba68b/billing; '/t/x/billing' -> /el/t/x/billing; '//evil.example/pwn' -> refused, fell back to the tenant billing path; '/en/t/x/billing' -> left alone.",
+          "Booted the shipped web build: (cd apps/web && NODE_ENV=production npx next start -p 3999) -> /t/demo/billing?checkout=success = 404; /el/t/demo/billing?checkout=success = 307 with location: /el/login; /en/t/demo/billing = 307. Killed by port. grep -o '\"/[^\"]*billing[^\"]*\"' apps/web/.next/types/routes.d.ts -> exactly \"/[locale]/t/[slug]/billing\".",
+          "platform_settings drill under production+none: settings.setBillingEnabled(true) -> REFUSED BadRequest ('Cannot enable subscriptions while STRIPE_DRIVER resolves to \"disabled\"'), but upserting the row to 'true' by hand gave billingEnabled()=true, createStripeDriver() kind='disabled' with no boot refusal, getGate {billingEnabled:true}, startCheckout -> 503 'please try again in a moment'.",
+          "grep -rn 'new FakeStripeDriver()|new RealStripeDriver()|new DisabledStripeDriver()' over apps/packages/scripts — only stripe-driver.factory.ts and jobs/stripe-retry.job.ts:133 in src (plus a stale June apps/api/dist/, which is excluded by .dockerignore '**/dist' and unused: the prod image CMD is tsx apps/api/src/main.ts)."
+        ]
+      }
+    },
+    {
+      "area": "edge-trust",
+      "ids": [
+        "authn-authz-01",
+        "input-and-files-02",
+        "input-and-files-03",
+        "authn-authz-03"
+      ],
+      "result": {
+        "area": "edge-trust",
+        "verdicts": [
+          {
+            "id": "authn-authz-01",
+            "actually_fixed": true,
+            "confidence": "medium",
+            "bypass": "No app-layer bypass found. Two residuals I could not settle here: (a) the load-bearing claim that '0.0.0.0:443:443' suppresses the [::] listener — the layer that closes the IPv6/userland-proxy bypass that refuted the last attempt — can only be proved with `ss -lntu` on the real host (scripts/prod-bootstrap.sh --firewall-status prints exactly that check, and it has never been run); (b) the Caddy origin_guard still admits ANY Cloudflare peer, so any Cloudflare customer proxying to 195.201.13.95 is inside the trust boundary — the @no_origin_secret closure is present but commented out. Both are named honestly in the code comments.",
+            "reasoning": "EXECUTED against a NODE_ENV=production boot of the API on :3099 against the audit Postgres/Redis. With TRUSTED_PROXY_CIDRS=10.99.0.0/16 (so the loopback peer is untrusted, simulating direct-to-origin): 25 POSTs to /auth/login with rotating `X-Real-IP: 10.7.8.$i` returned 401x19 then 429x6 — all 25 collapsed into ONE bucket, versus 25x401/zero-429 in the original evidence. 6 further POSTs carrying `X-Forwarded-For: 192.0.2.$i, 10.0.0.1` returned 429x6, so the req.ip/trust-proxy spoof vector is closed too. 25 POSTs to /admin/auth/login with rotating X-Real-IP: 401x16 then 429x9. clientIp() returns the peer on its first line (`if (!isTrustedProxy(peer)) return peer;`) with no later path that consults a header, and there is no `req.ip` fallback at all; main.ts:43 replaces `trust proxy: true` with the same predicate. The complementary probe on the SAME code with the default trust set (loopback trusted, i.e. what Caddy sees) still gives 25 fresh buckets for 25 rotating headers — which is correct-by-design but confirms the whole fix rests on the edge, not on the app. Edge side, read-verified: all 6 `reverse_proxy` lines in infra/caddy/Caddyfile sit inside `route { import origin_guard <tag> ... }` (I re-implemented the vitest scanner and ran it: `total reverse_proxy: 6, UNGUARDED: []`); the guard 403s any peer that is neither Cloudflare nor private BEFORE any header rewrite, writes X-Real-IP from {remote_host} for private peers, deletes CF-Connecting-IP there, and drops the inbound X-Forwarded-For. `pnpm check:caddy` passes and .github/workflows/verify.yml:66-70 additionally runs a real `caddy validate --adapter caddyfile` in CI, so the 'config does not load' failure mode is gated. docs/deployment-hetzner.md no longer says `ufw allow 80/tcp`; the firewall is now scripts/prod-bootstrap.sh --firewall-only (INPUT *and* DOCKER-USER, iptables *and* ip6tables, public v6 dropped outright) — but it is deliberately NOT in the deploy path and has never executed on a live box."
+          },
+          {
+            "id": "input-and-files-02",
+            "actually_fixed": true,
+            "confidence": "medium",
+            "bypass": "Same two host-only residuals as authn-authz-01. Also: TRUSTED_PROXY_CIDRS is validated only for parseability, never for sanity — `TRUSTED_PROXY_CIDRS=0.0.0.0/0` restores the original bug in full and boots cleanly. It is absent from x-app-env in infra/compose/docker-compose.prod.yml, so it cannot actually be set in the shipped stack (which makes the code comment's 'narrow this to the Caddy container address alone' advice unreachable), but that is luck rather than a guard.",
+            "reasoning": "REPRODUCED THE INVERSE OF THE ORIGINAL EVIDENCE. Original: '25 logins with rotating X-Real-IP -> 25x401, zero 429' and '8 /apply-style submissions with rotating IPs -> all persisted'. Now, from an untrusted peer: 25 logins with rotating X-Real-IP -> 401x19 then 429x6. Signup, which the original probe drove to 8x201: 7 signups with rotating `X-Real-IP: 8.8.1.$i` returned 201x4 then 429x3 with `retryAfterSec: 402` — the per-IP cap fires on the attacker's real address. login.service.ts still keys FAIL_KEY/LOCK_KEY on (userId, ip) and auth.controller.ts:374 passes `ip` through, so the tenant lockout is intact. applications.service.ts:117 takes `string | undefined` and keys on it. The one place the ip is computed and then NOT threaded through is the admin login — reported separately as a new blocker."
+          },
+          {
+            "id": "input-and-files-03",
+            "actually_fixed": true,
+            "confidence": "medium",
+            "bypass": "The advisory-only global bucket is unchanged: auth.controller.ts alarmIfOverBudget still only logs. There is still no CAPTCHA and no defer-provisioning-until-email-verified, both of which the fix suggested. So a distributed attacker with N source addresses still gets 5*N tenant databases per 10 minutes; the new SIGNUP_MAX_CONCURRENT_PROVISIONING=16 ceiling bounds CONCURRENCY, not total count (200 IPs = ~1.7 DB/s, comfortably under 16 concurrent). What changed is that a SINGLE host can no longer do it, which is the finding as written.",
+            "reasoning": "EXECUTED. 7 POSTs to /auth/signup from an untrusted peer with rotating `X-Real-IP: 8.8.1.$i` -> 201, 201, 201, 201, then 429/429/429. The original evidence for this finding was 8 rotating-header signups -> 8x201 with 8 Postgres databases created; that is now 4 (the bucket had already been partly consumed) and then refusal. Read-verified the new backstop: auth.controller.ts adds enterProvisioningSlot() — a Redis sorted-set admission gate capped at 16 concurrent, held across CREATE DATABASE + the migration fork, released in `finally`, and documented to fail CLOSED on a Redis error. Note this is entirely conditional on the edge holding: from a TRUSTED peer, rotating X-Real-IP still yields a fresh signup bucket per request, exactly as before."
+          },
+          {
+            "id": "authn-authz-03",
+            "actually_fixed": false,
+            "confidence": "high",
+            "bypass": "The admin brute-force lockout does not exist any more. EXECUTED against the production-config boot: 8 wrong passwords for audit-admin@libriant.com with a FIXED `X-Real-IP: 203.0.113.55` -> 8x401, then the CORRECT password -> HTTP 200 with a session cookie. MAX_FAILED_LOGINS defaults to 5 (env.ts:330). `redis-cli -p 6390 --scan --pattern '*admin-login*'` after ~33 failed admin logins returned exactly ONE key — `lbr:rl:admin-login:ip:127.0.0.1`, the rate limiter — and zero `admin-login:fail:*` / `admin-login:lock:*` keys. The API logged the service's own alarm 8 times: 'Admin sign-in failure for <id> carried no usable client IP (\"unknown\") — the per-IP lockout is NOT being applied. The caller must pass clientIp(req).' Cause: admin-auth.controller.ts computes `const ip = clientIp(req) ?? 'unknown'` at line 71 and uses it ONLY for the rate-limit key; line 85 calls `this.authSvc.verify(email, password)` with no third argument, line 105 `recordFailure(admin.id)` and line 114 `recordSuccess(admin.id)` likewise, so `ip` defaults to the literal 'unknown', lockBucket() rejects it, and both isLockedOut() and the lock write become no-ops. Admin password guessing is now bounded only by 20 attempts / 5 min per source IP — trivially defeated by a botnet, and there is no second factor unless the admin has enabled TOTP. The MFA-invalid path (line 105) is equally unprotected, so TOTP brute force is also unbounded.",
+            "reasoning": "The DoS the finding names IS closed, and I proved it: I logged in as the admin, held the cookie, sent 6 unauthenticated wrong-password logins (threshold 5), and `GET /admin/auth/me` returned 200 both before and after; the DB row stayed `status=active` with `lockedUntil` NULL and `failedAttempts=6`; nothing on the unauthenticated path writes `status` or `lockedUntil` any more (grep confirms admin-auth.guard.ts is the only remaining reader). But it is closed as a side effect of the replacement control being dead on arrival, not because the replacement works. The service was rewritten exactly as the fix prescribed — Redis, keyed (adminId, clientIp), with a doc comment reading 'PASS IT' in capitals — and the controller never passes it. admin-auth.service.spec.ts calls svc.verify(email, pw, '198.51.100.9') directly at 18 sites, so all 567 unit tests and 49 integration tests pass while the only production call site is broken. Marking this fixed would report a control as restored when execution shows it is absent."
+          }
+        ],
+        "new_problems": [
+          {
+            "file": "apps/api/src/admin/admin-auth.controller.ts",
+            "line": 85,
+            "issue": "BLOCKER — the admin brute-force lockout is completely disabled in production. `const ip = clientIp(req) ?? 'unknown'` (line 71) is used only for the rate-limit key; `authSvc.verify(email, password)` (85), `recordFailure(admin.id)` (105) and `recordSuccess(admin.id)` (114) are all called WITHOUT it, so AdminAuthService falls back to its `ip = 'unknown'` default, lockBucket() returns undefined, and the 5-attempt lock is never written or read. admin.libriant.com password guessing (and TOTP guessing on the mfa_invalid path) is bounded only by 20 attempts / 5 min per source IP. Every failed admin sign-in also emits an ERROR-level log line, which will bury a real alert. Fix is three arguments: verify(..., ip), recordFailure(admin.id, ip), recordSuccess(admin.id, ip) — plus a controller-level test, since admin-auth.service.spec.ts passes the ip explicitly at all 18 call sites and therefore cannot catch this.",
+            "severity": "blocker",
+            "reproduction": "Boot the API with NODE_ENV=production against the audit DB/Redis on :3099, create an admin with scripts/bootstrap-admin.ts, then: `for i in $(seq 1 8); do curl -s -o /dev/null -w '%{http_code} ' -X POST http://127.0.0.1:3099/admin/auth/login -H 'Content-Type: application/json' -H 'X-Real-IP: 203.0.113.55' -d '{\"email\":\"audit-admin@libriant.com\",\"password\":\"wrong-'$i'\"}'; done` -> 401 x8 (MAX_FAILED_LOGINS is 5). Then the correct password -> HTTP 200 + cookie. `redis-cli -p 6390 --scan --pattern '*admin-login*'` shows only `lbr:rl:admin-login:ip:...` — no fail/lock keys. The API log contains 8x 'carried no usable client IP (\"unknown\") — the per-IP lockout is NOT being applied.'"
+          },
+          {
+            "file": "scripts/check-caddy.mjs",
+            "line": 45,
+            "issue": "The CI gate that the remediation cites as 'an unguarded route cannot ship again' has two holes, and neither changes the reassuring '6 backend route(s)' count it prints. (1) Line 44-45 skips any `reverse_proxy` found inside a snippet definition (`inSnippet`), so `(api_proxy) { reverse_proxy api:3001 }` imported into an unguarded `handle /webhooks/*` passes. (2) The INTERNAL regex at line 25 is `^\\s*reverse_proxy\\s+(api|web):\\d+`, so the equally valid URL form `reverse_proxy http://api:3001` is invisible to it. Mitigating: the vitest scanner in apps/api/src/platform/client-ip.spec.ts (proxyDirectives) matches `^reverse_proxy\\b` and does not special-case snippets, and it DOES catch both — so CI as a whole still fails. But the check named in the fix, and the one whose failure message a future engineer will read, does not.",
+            "severity": "low",
+            "reproduction": "cp infra/caddy/Caddyfile to a scratch tree, add `(api_proxy) { reverse_proxy api:3001 }` as a snippet, replace the guarded /webhooks/* route body with `import api_proxy`, and add a new vhost containing `handle /x/* { reverse_proxy http://api:3001 }`. Run `node scripts/check-caddy.mjs` from that tree: 'Caddyfile check passed: all 6 backend route(s) sit behind the origin guard', exit 0. Running the client-ip.spec.ts scanner over the same file reports 'UNGUARDED: [112: reverse_proxy api:3001, 458: reverse_proxy http://api:3001]'."
+          },
+          {
+            "file": "docs/deployment-hetzner.md",
+            "line": 50,
+            "issue": "The runbook section written to correct authn-authz-01 describes the previous iteration of the edge fix, not the shipped one. It says Caddy 'defines a (cloudflare_only) snippet' and that 'Non-Cloudflare peers get a 403 before `header_up X-Real-IP` runs'. The snippet is now called `origin_guard`, it takes a tag argument, and there is no `header_up X-Real-IP` anywhere in the Caddyfile — the whole point of the current version is that X-Real-IP is written by a peer-conditional `request_header`, not by header_up. An operator following this text to verify the control will grep for names that do not exist and conclude the fix is missing.",
+            "severity": "low",
+            "reproduction": "grep -n 'cloudflare_only\\|header_up' infra/caddy/Caddyfile -> no matches; grep -n 'cloudflare_only\\|header_up' docs/deployment-hetzner.md -> both present in the 'One correction that post-dates the rewrite' section."
+          },
+          {
+            "file": "scripts/prod-bootstrap.sh",
+            "line": 146,
+            "issue": "Layer 2 of the four-layer defence — the only layer that keeps a hostile packet away from Caddy at all, and the one the code comments call 'the PRIMARY control' — is opt-in, hand-run, and has never executed on a live box. It is not in scripts/deploy-on-host.sh and not in .github/workflows/deploy.yml; only --firewall-install-unit makes it survive a reboot, and that too is manual. On first deploy the shipped state is layers 1/3/4 only, which means the origin trust boundary reduces to 'the peer is inside some Cloudflare range' — and the Caddyfile itself documents that any Cloudflare customer can reach the origin IP. The @no_origin_secret closure for that is written but commented out. This is a deliberate, documented trade rather than a defect, but it means the finding's central control is unproven at go-live.",
+            "severity": "medium",
+            "reproduction": "grep -rn 'firewall-only' scripts/deploy-on-host.sh .github/workflows/ -> no matches; only docs/deployment-hetzner.md:63 and docs/RUNBOOK.md:483 mention it, both as a manual step. The script's own comment at scripts/prod-bootstrap.sh:141-147 states 'DELIBERATELY NOT run as part of a deploy ... this one has never executed on a live box.'"
+          }
+        ],
+        "what_i_executed": [
+          "python3 -c \"...INDEX.json...\" for authn-authz-01 / input-and-files-02 / input-and-files-03 / authn-authz-03 -> read the executed evidence + verification fields for all four",
+          "git log --oneline -15 ; git diff --stat 7c2e2b0..HEAD -- apps/api/src infra scripts -> 92 files, incl. client-ip.ts +208, client-ip.spec.ts +319, Caddyfile +188, docker-compose.prod.yml +66, prod-bootstrap.sh +327, check-caddy.mjs (new, 84)",
+          "cat apps/api/src/platform/client-ip.ts / infra/caddy/Caddyfile / scripts/check-caddy.mjs / scripts/prod-bootstrap.sh / infra/compose/docker-compose.prod.yml / apps/api/src/admin/admin-auth.{service,controller,guard}.ts / apps/api/src/auth/auth.controller.ts / apps/api/src/main.ts",
+          "source docs/audit/pre-release-2026-08-23/env/setup-audit-env.sh -> 'audit env ready — postgres :55440, redis :6390, control+tenant migrated and seeded'",
+          "pnpm --filter @libriant/api exec vitest run --project unit -> 62 files, 567 tests, ALL PASSED",
+          "pnpm --filter @libriant/api exec vitest run --project integration -> 11 files, 49 tests, ALL PASSED",
+          "pnpm check:caddy -> 'Caddyfile check passed: all 6 backend route(s) sit behind the origin guard'; pnpm check:translations -> passed (el, en); pnpm check:legal -> passed (2 locales)",
+          "(cd apps/web && npx tsc --noEmit) -> exit 0, no output",
+          "Booted the API under SHIPPED PRODUCTION CONFIG: NODE_ENV=production, PORT=3099, values taken from x-app-env in infra/compose/docker-compose.prod.yml + .env.prod.example (SESSION_COOKIE_SECURE=true, STRIPE_DRIVER=none, BILLING_ENABLED=false, EMAIL_DRIVER=console, PUBLIC_APP_URL=https://app.libriant.com) against the audit Postgres/Redis -> 'Nest application successfully started', GET /healthz -> 200",
+          "ADMIN_BOOTSTRAP_EMAIL=audit-admin@libriant.com npx tsx scripts/bootstrap-admin.ts -> 'Created admin audit-admin@libriant.com (role=owner)'",
+          "ADMIN LOCKOUT PROBE (fixed X-Real-IP 203.0.113.55, 8 wrong passwords) -> 401 x8; then the CORRECT password -> HTTP 200 + session cookie. MAX_FAILED_LOGINS default is 5. THE LOCKOUT NEVER FIRED.",
+          "grep -c 'carried no usable client IP' api log -> 8 ; sample: 'Admin sign-in failure for cmt7dqb... carried no usable client IP (\"unknown\")' and 'Failed admin sign-in for cmt7dqb... from an unidentified client.'",
+          "redis-cli -p 6390 --scan --pattern '*admin-login*' after ~33 failed admin logins -> exactly one key, 'lbr:rl:admin-login:ip:127.0.0.1' (the rate limiter). ZERO admin-login:fail:* and ZERO admin-login:lock:* keys.",
+          "authn-authz-03 DoS PROBE: admin login -> 200 (cookie saved); GET /admin/auth/me -> 200; 6 unauthenticated wrong-password logins from 'X-Real-IP: 45.9.9.9' -> 401 x6; GET /admin/auth/me with the SAME cookie -> 200 (was 403 before the fix). psql: audit-admin@libriant.com|active|6|<null> — status stays 'active', lockedUntil NULL. Correct password afterwards -> 200.",
+          "TRUSTED-PEER PROBE (default trust set, peer 127.0.0.1 trusted, i.e. what Caddy sees): 25 POST /auth/login with rotating 'X-Real-IP: 10.7.7.$i' -> 401 x25, zero 429 (fresh bucket per header, by design); the same 25 with a FIXED X-Real-IP -> 401 x20 then 429 x5. Confirms the entire fix rests on the edge, not the app.",
+          "UNTRUSTED-PEER PROBE (rebooted with TRUSTED_PROXY_CIDRS=10.99.0.0/16 so the loopback peer is untrusted = direct-to-origin): 25 POST /auth/login rotating X-Real-IP -> 401 x19 then 429 x6 (ONE bucket); 6 POSTs with 'X-Forwarded-For: 192.0.2.$i, 10.0.0.1' -> 429 x6 (req.ip vector closed); 25 POST /admin/auth/login rotating X-Real-IP -> 401 x16 then 429 x9.",
+          "SIGNUP PROBE (untrusted peer, rotating 'X-Real-IP: 8.8.1.$i', 7 valid signups) -> 201, 201, 201, 201, 429, 429, 429 with retryAfterSec 402. Original evidence for input-and-files-03 was 8 x 201 with 8 Postgres databases created.",
+          "check-caddy.mjs HOLE TEST: copied the Caddyfile to a scratch tree, added '(api_proxy) { reverse_proxy api:3001 }', replaced the guarded /webhooks/* body with 'import api_proxy', and added a vhost with 'reverse_proxy http://api:3001'. node scripts/check-caddy.mjs -> 'Caddyfile check passed: all 6 backend route(s) sit behind the origin guard', exit 0. Re-implemented the client-ip.spec.ts scanner and ran it on both files -> real Caddyfile: 'total reverse_proxy: 6, UNGUARDED: []'; tampered: 'UNGUARDED: [112: reverse_proxy api:3001, 458: reverse_proxy http://api:3001]'.",
+          "grep of CI: .github/workflows/verify.yml:62 'pnpm check:caddy' and :66-70 'docker run ... caddy:2-alpine caddy validate --adapter caddyfile' — the Caddyfile IS parser-validated in CI (I could not run docker here); deploy.yml:305 validates again before reload.",
+          "grep -rn 'EDGE_BIND' -> compose uses '${EDGE_BIND_IPV4:-0.0.0.0}:80:80|443:443|443:443/udp'; scripts/ensure-env.sh:184 'ensure_default EDGE_BIND_IPV4 0.0.0.0'. Unset/empty falls back to 0.0.0.0, which is still an explicit IPv4 bind, so an unset var does NOT silently reopen the [::] listener. client-ip.spec.ts:294-318 fails the build if the compose file reverts to the bare '443:443' form or adds enable_ipv6 without changing the bind.",
+          "grep -rn 'TRUSTED_PROXY_CIDRS' -> absent from x-app-env in docker-compose.prod.yml and from .env.prod.example, so it cannot be set in the shipped stack; only parseability is validated (no rejection of 0.0.0.0/0).",
+          "grep -rn \"'locked'\" apps/api/src -> only comments and admin-auth.guard.ts's reader remain; nothing on the unauthenticated path writes adminUser.status or lockedUntil.",
+          "lsof -ti :3099 | xargs kill -9 ; lsof -ti :3099 -> 'port 3099 free'; ps aux | grep -c '[t]sx src/main.ts' -> 0 (killed BY PORT, no orphaned listener)"
+        ]
+      }
+    },
+    {
+      "area": "retention-and-erasure",
+      "ids": [
+        "privacy-legal-03",
+        "privacy-legal-04",
+        "privacy-legal-05"
+      ],
+      "result": {
+        "area": "retention-and-erasure",
+        "verdicts": [
+          {
+            "id": "privacy-legal-03",
+            "actually_fixed": false,
+            "confidence": "high",
+            "bypass": "`DELETE /t/:slug/members/:id` still routes to `archive()` and the whole mutation is still `tx.member.update({ where:{id}, data:{ archivedAt: new Date(), status:'archived' } })` (members.service.ts:456-459). Repro: create a member with fullName/email/dateOfBirth/addressLine1, call DELETE, then `SELECT \"fullName\",email,\"dateOfBirth\",\"addressLine1\" FROM members WHERE id=…` — every value is still there. There is no route, no service method and no UI that would ever set the new `erasedAt` column.",
+            "reasoning": "NOT FIXED — only the database half landed. `git diff --stat 7c2e2b0..HEAD -- apps/api/src/members/` returns EMPTY: members.service.ts and members.controller.ts are byte-for-byte what the audit described. The commit claimed for this finding (369c4af) touched 43 files and none of them is under apps/api/src/members. What actually shipped is one nullable column (`ALTER TABLE members ADD COLUMN IF NOT EXISTS erasedAt`) plus a Prisma schema comment. Verified live: `\\d members` in libriant_demo shows `erasedAt timestamp` present; `grep -rn 'erasedAt|erase|Erase' apps/api/src apps/web packages --include=*.ts --include=*.tsx --include=*.prisma` returns exactly ONE hit, the schema comment itself. `grep -rn 'Art. 17|tombstone|right to be forgotten' apps/api/src packages --include=*.ts` → zero hits. No spec file anywhere mentions erase. dpa.md:91 still reads 'The Service gives you tools to access, correct, export, and delete Controller Personal Data' — the fallback remedy (amend the DPA to say erasure is manual, with an SLA) was not taken either; locales/*/legal has no commits since 22e1efa. This is arguably WORSE than the audited state: packages/db-tenant/prisma/schema.prisma:340-346 now documents 'Set by MembersService.erase() (GDPR Art. 17)… see the long comment on erase() for what deliberately survives and why', and both that method and that comment are fiction. Anyone auditing the schema — a library's DPO, a future engineer, a counsel review — is told an erasure capability exists. The audit's specific concerns are therefore all still open and untestable: nothing decides what happens to Loan/Reservation/Fine notes (independent legal basis), nothing redacts the tenant audit_log's beforeJson/afterJson, which memberSnapshot() (members.service.ts:72-85) still fills with {memberNumber, fullName, status, email, archivedAt} on every create/update/archive."
+          },
+          {
+            "id": "privacy-legal-04",
+            "actually_fixed": false,
+            "confidence": "high",
+            "bypass": "AdminOutboxController.detail() (apps/api/src/admin/admin-outbox.controller.ts:81-92) writes `recordAdminAudit(…, { tenantId: null, action:'email_outbox.body.read', after:{ kind, toEmail: message.toEmail, tenantSlug, linkState } })`. For kind member_due_soon / member_overdue / member_hold_ready, `toEmail` IS a library patron's e-mail address. The redaction trigger only fires `WHERE \"tenantId\" = OLD.\"id\"`, and the CASCADE only covers rows whose tenantId is set — so this row is untouched by both. AdminOutboxController.list():63-67 is the same hole with `after.q`, and AdminOutboxService.list():84-90 matches `q` against `toEmail`, so an operator searching for a patron writes that patron's address into a tenantId-NULL audit row too. EXECUTED on the audit control DB: inserted tenant 'vfy04', one member_overdue outbox row, one tenantId='vfy04' audit row, and the two tenantId=NULL rows exactly as the controller writes them; `DELETE FROM tenants WHERE id='vfy04'` → DELETE 1. Result: email_outbox 0 rows (cascade works), the tenant-scoped audit row redacted to {\"redacted\":\"tenant_deleted\",\"tenantSlug\":\"vfy04\"} with ip NULL (trigger works), and BOTH NULL-tenant rows survived verbatim — afterJson still {\"toEmail\":\"maria.papadopoulou@example.gr\",\"tenantSlug\":\"vfy04\"} and ip 203.0.113.9. That is the exact orphaned-PII condition privacy-legal-04 is about, and the route that produces it was added by the same commit that fixed 04.",
+            "reasoning": "The mechanism the orchestrator proved is real and I reproduced it independently: pg_constraint now shows email_outbox_tenantId_fkey confdeltype='c' (was 'n'), audit_log_tenantId_fkey stays 'n', and trigger tenants_redact_pii_before_delete exists and is enabled. I also confirmed there is no bulk/raw path around it — the only tenant deletion in the tree is `controlDb.tenant.delete()` at admin-tenants.controller.ts:202 (a row DELETE, so the trigger fires), no script does `DELETE FROM tenants` or TRUNCATE, and every other control table holding member/user PII reaches tenants through a CASCADE chain (support_action_log → support_sessions → tenants, all 'c'). But the finding is 'PII outlives tenant deletion, orphaned at tenantId NULL and invisible to any future sweep', and that is still reachable, via a route that did not exist when the audit ran. Separately, the migration's justification for keeping SET NULL instead of CASCADE is false: it says 'cascading here would delete the tenant.deleted audit row in the same statement that wrote it', but admin-tenants.controller.ts:219-229 writes that row AFTER `tenant.delete()` and explicitly sets `tenantId: null` ('the tenant row no longer exists'), so a CASCADE would never have touched it. The design premise that produced the trigger-instead-of-cascade split — and hence the tenantId-NULL blind spot — does not hold."
+          },
+          {
+            "id": "privacy-legal-05",
+            "actually_fixed": false,
+            "confidence": "high",
+            "bypass": "No retention job exists. Booted the worker under NODE_ENV=production against the audit DB and it printed: `[scheduled] started — 9 job(s): support-session-expiry@60s, reservation-pickup-expiry@60s, stripe-webhook-retry@300s, fine-accrual@3600s, export-file-cleanup@3600s, announcement-publish@60s, book-metadata-refresh@21600s, member-notifications@3600s, storage-temp-cleanup@3600s` — the identical nine the audit listed, none of which deletes personal data on age. Concrete residue, executed: inserted a delivered member_overdue outbox row dated 400 days ago (toEmail maria.papadopoulou@example.gr, subject «Εκπρόθεσμο: «Το Κιβώτιο»»), booted the prod worker, it logged `[email-worker] retention: cleared 1 outbox bodies older than 90d`, and the row afterwards reads toEmail=maria.papadopoulou@example.gr, subject=Εκπρόθεσμο: «Το Κιβώτιο», bodyMarkdown='[body removed after 90 days — outbox retention]'. The named patron plus the exact book they borrowed is kept forever in the shared control plane.",
+            "reasoning": "NOT FIXED. (a) Registration: `git diff 7c2e2b0..HEAD -- apps/api/src/jobs/registry.ts` changes exactly two handler signatures (ctx threading for rel-16) and adds no job; the runner's own boot log confirms nine jobs. (b) The plan feature is still not enforced: `grep -rni 'retention' apps/api/src packages --include=*.ts` finds audit_log_retention_days only in packages/shared/src/features.ts:113-116 and the six seed values — still zero readers — while packages/db-tenant/prisma/schema.prisma:616 continues to assert retention 'is enforced by a background job'. (c) The promised periods are unchanged: locales/en/legal/privacy.md §6 still says `[30]` days, `[14]`-day backups, `[up to 5–10]` years, `[a limited period, e.g. 90 days]`, and `pnpm check:legal` still lists `[a limited period, e.g. 90 days]` and `[up to 5–10]` as unresolved placeholders in 2 docs. So there is nothing to check the job against — the periods were never written down, and the one number that shipped (90d) corresponds to no published promise. (d) Coverage: of the six stores the finding named, five are untouched — tenant audit_log, control audit_log (ip + userAgent + payloads), support_redemption_attempts.ipAddress, support_sessions.ipAddress/userAgent, applications.contactName/contactEmail/phone, users.legalAcceptedIp (all confirmed present in the live control schema, none referenced by any delete/purge code). (e) What did land belongs to privacy-legal-06, not 05: email-worker.ts:185-217 nulls only `bodyMarkdown` on delivered/dead rows past 90 days, and it is not a scheduled job at all — it rides the email worker's 5-minute recovery timer, so it does not exist in any job registry a future operator would look at. Its own comment claims 'The ENVELOPE (to / subject / kind / status / timestamps) is kept forever… it is far less sensitive than the prose'; that is false for member notices, because member-notifications.job.ts:44/66/89 builds every subject from the book title and pairs it with the member's address, which is the single most sensitive record in the system and the exact thing privacy-legal-04 was raised about."
+          }
+        ],
+        "new_problems": [
+          {
+            "file": "apps/api/src/admin/admin-outbox.controller.ts",
+            "line": 81,
+            "issue": "New orphan-PII path introduced by the same commit that fixed privacy-legal-04. The admin outbox viewer writes control-plane audit rows with `tenantId: null` whose payload contains a library member's e-mail address (`after.toEmail` in detail(), `after.q` in list(), where `q` is matched against toEmail by AdminOutboxService.list():84-90). Because the new BEFORE DELETE trigger redacts only `WHERE \"tenantId\" = OLD.\"id\"` and the new CASCADE only covers rows with a tenantId, these rows survive tenant deletion completely un-redacted — patron e-mail, tenant slug, and the reading admin's IP and user-agent — orphaned and unfindable by any future erasure request or retention sweep. This re-opens privacy-legal-04 through a route that did not exist when the audit ran.",
+            "severity": "high",
+            "reproduction": "psql libriant_control: INSERT tenant 'vfy04'; INSERT audit_log(id,\"tenantId\",\"actorType\",\"actorId\",action,\"targetType\",\"targetId\",\"afterJson\",ip,\"userAgent\") VALUES ('al-outboxread',NULL,'admin','adm1','email_outbox.body.read','email_outbox','ob-vfy','{\"kind\":\"member_overdue\",\"toEmail\":\"maria.papadopoulou@example.gr\",\"tenantSlug\":\"vfy04\"}'::jsonb,'203.0.113.9','Mozilla/5.0'); DELETE FROM tenants WHERE id='vfy04'; SELECT \"afterJson\",ip FROM audit_log WHERE id='al-outboxread'; → row intact, e-mail and IP unredacted, while the tenantId-scoped row in the same test was redacted."
+          },
+          {
+            "file": "packages/db-tenant/prisma/schema.prisma",
+            "line": 340,
+            "issue": "The schema documents an erasure capability that does not exist. The `erasedAt` doc comment says 'Set by `MembersService.erase()` (GDPR Art. 17). When non-NULL every direct identifier above has been overwritten with a tombstone… see the long comment on `erase()` for what deliberately survives and why.' There is no `erase()` method, no such comment, and no code path that ever writes `erasedAt`. A DPO, counsel reviewer, or future engineer reading the schema is told the product honours Art. 17 when it does not — and the column's permanent NULL is indistinguishable from 'nobody has requested erasure yet'.",
+            "severity": "medium",
+            "reproduction": "grep -rn 'erase' apps/api/src apps/web packages --include='*.ts' --include='*.tsx' --include='*.prisma' → the only hits are this comment block and an unrelated settings.json string. git diff --stat 7c2e2b0..HEAD -- apps/api/src/members/ → empty."
+          },
+          {
+            "file": "packages/db-tenant/prisma/migrations/20260824120000_retention_erasure_and_scan_indexes/migration.sql",
+            "line": 48,
+            "issue": "Same half-landing in the performance half of this migration: it creates the `member_number_counters` table (and the Prisma model at schema.prisma:385) with a CHECK constraint and a documented minting protocol, but no code reads or writes it. `apps/api/src/members/member-numbers.ts` is unchanged and still does the max-scan (`findMany where memberNumber startsWith prefix`, then a JS max at :41-50). The migration takes a write lock on `members` and `loans` in a production maintenance window to ship a table nothing uses. Belongs to performance-04 rather than my area, but it is the same failure mode as privacy-legal-03 and worth flagging to whoever verifies that finding.",
+            "severity": "medium",
+            "reproduction": "grep -rn 'member_number_counters|memberNumberCounter' apps/api/src packages --include='*.ts' → zero hits outside the @@map in schema.prisma:385; grep -n 'startsWith' apps/api/src/members/member-numbers.ts:41 shows the old scan still in place."
+          },
+          {
+            "file": "packages/db-control/prisma/migrations/20260824120000_tenant_delete_pii/migration.sql",
+            "line": 23,
+            "issue": "The migration's stated reason for keeping audit_log at ON DELETE SET NULL — 'Cascading here would delete the `tenant.deleted` audit row in the same statement that wrote it, which destroys the proof that the deletion ever happened' — is contradicted by the shipped code. apps/api/src/admin/admin-tenants.controller.ts:219-229 writes that audit row AFTER `controlDb.tenant.delete()` and sets `tenantId: null` explicitly ('the tenant row no longer exists'), so a CASCADE could never have touched it. The SET-NULL-plus-trigger design chosen on that false premise is precisely what leaves tenantId-NULL rows unreachable by the redaction (see the high finding above).",
+            "severity": "low",
+            "reproduction": "Read admin-tenants.controller.ts:200-230 alongside the migration comment at lines 20-27; the audit insert is after the delete and hardcodes tenantId: null."
+          },
+          {
+            "file": "apps/api/src/zz-probe-mkadmins.ts",
+            "line": 1,
+            "issue": "Untracked file sitting inside the API source tree that creates two admin_users with hardcoded passwords ('probe-owner-pw-123456' / 'probe-support-pw-123456') at owner and support role. It is untracked so it does not ship today, but it is under apps/api/src where the Docker build copies from, and a `git add -A` during the remediation would commit it — the same class as commit 673c7d5, which had to remove an earlier leftover audit probe. Caveat: this appeared in the working tree during my session and I did not create it; it may be a concurrently-running verification agent's artifact rather than part of the fix under review.",
+            "severity": "low",
+            "reproduction": "git status --porcelain → '?? apps/api/src/zz-probe-mkadmins.ts'; cat the file — it calls controlDb.adminUser.create with bcrypt-hashed fixed passwords for probe-owner@test.local and probe-support@test.local."
+          }
+        ],
+        "what_i_executed": [
+          "python3 -c \"json.load(INDEX.json) … privacy-legal-03/04/05\" → read the three findings' evidence/verification blocks (03 DOWNGRADED, 04 DOWNGRADED, 05 CONFIRMED).",
+          "python3 … STATE.json → privacy-legal-03 status 'fixed' commit 369c4af note 'gates green but NO adversarial pass yet'; -04 'verified'; -05 'fixed' same commit/note.",
+          "git log --oneline 7c2e2b0..HEAD → 24 commits; git show --stat 369c4af → 43 files, and NONE under apps/api/src/members, apps/api/src/jobs/registry.ts adds no job, locales/*/legal untouched. Commit body itself admits 'LANDED BUT NOT YET VERIFIED … privacy-legal-03/-05'.",
+          "git diff --stat 7c2e2b0..HEAD -- apps/api/src/members/ → EMPTY. sed -n '425,470p' apps/api/src/members/members.service.ts → archive() unchanged, sole mutation still `tx.member.update({data:{archivedAt:new Date(),status:'archived'}})`. grep '@Delete' members.controller.ts:134 → still routes to svc.archive.",
+          "grep -rn 'erasedAt|erase|Erase' apps/api/src apps/web/app packages --include=*.ts --include=*.tsx --include=*.prisma → ONE hit: the schema.prisma:340-346 doc comment referencing a nonexistent MembersService.erase(). grep -rn 'Art. 17|tombstone|right to be forgotten' apps/api/src packages → 0 hits.",
+          "grep -n 'delete Controller Personal Data' locales/en/legal/dpa.md → line 91 still promises delete tools; git log -- locales/*/legal → last touched at 22e1efa, before the audit.",
+          "source docs/audit/pre-release-2026-08-23/env/setup-audit-env.sh → 'audit env ready — postgres :55440, redis :6390'. (Control DB was only partially migrated on first pass; re-ran `pnpm db:migrate:deploy` → 'All migrations have been successfully applied', 30 tables.)",
+          "psql libriant_demo: information_schema.columns members → both archivedAt and erasedAt present (column shipped, writer did not).",
+          "psql libriant_control: `select conname, confdeltype, relname from pg_constraint … confrelid='tenants'` → email_outbox_tenantId_fkey now 'c' (CASCADE), audit_log_tenantId_fkey still 'n' (SET NULL), all other tenant FKs 'c'. `select tgname from pg_trigger where tgrelid='tenants'` → tenants_redact_pii_before_delete, enabled 'O'.",
+          "psql libriant_control full FK map → support_action_log cascades via support_sessions; applications and support_redemption_attempts have no tenant FK at all. grep for 'DELETE FROM tenants|TRUNCATE' across scripts/apps/packages → the only tenant deletion is controlDb.tenant.delete() at admin-tenants.controller.ts:202, i.e. a row DELETE that fires the trigger. No bulk bypass found.",
+          "LIVE 04 BYPASS REPRO on libriant_control: inserted tenant 'vfy04' + email_outbox 'ob-vfy' (member_overdue → maria.papadopoulou@example.gr) + audit rows 'al-scoped' (tenantId=vfy04, beforeJson {fullName,email}, ip 203.0.113.9), 'al-outboxread' (tenantId NULL, afterJson {toEmail:maria…,tenantSlug:vfy04}, ip 203.0.113.9) and 'al-outboxlist' (tenantId NULL, afterJson {q:'maria.papadopoulou@example.gr'}). `DELETE FROM tenants WHERE id='vfy04'` → DELETE 1. AFTER: email_outbox 0 rows; al-scoped redacted to {\"redacted\":\"tenant_deleted\",\"tenantSlug\":\"vfy04\"} with ip NULL; al-outboxread and al-outboxlist SURVIVED with the patron e-mail and the reader's IP fully intact.",
+          "Read apps/api/src/admin/admin-outbox.controller.ts:63-92 (source of those rows: `tenantId: null` + `after.toEmail`) and admin-outbox.service.ts:84-90 (q matched against toEmail). Read admin-tenants.controller.ts:200-230 → the tenant.deleted audit row is written AFTER the delete with tenantId: null, refuting the migration's stated reason for not cascading audit_log.",
+          "grep -rni 'retention' apps/api/src packages --include=*.ts → audit_log_retention_days only at packages/shared/src/features.ts:113-116 plus six seed values; still ZERO readers, while packages/db-tenant/prisma/schema.prisma:616 claims retention 'is enforced by a background job'. sed registry.ts:23-88 → same nine jobs, no retention sweep.",
+          "Booted the worker under SHIPPED PROD CONFIG (NODE_ENV=production, STRIPE_DRIVER=none, BILLING_ENABLED=false, EMAIL_DRIVER=console per .env.prod.example, WORKER_PORT=3002 per docker-compose.prod.yml:308-321, against the audit DB). First attempt died with 'Env var HASH_PEPPER is too short — needs at least 32 characters' (my env, not a defect). Second attempt booted: '[worker] listening on :3002 (env=production)' and '[scheduled] started — 9 job(s): support-session-expiry@60s … storage-temp-cleanup@3600s' — nine, no retention job.",
+          "LIVE 05 RESIDUE PROOF: pre-seeded a delivered member_overdue outbox row dated 400 days old (toEmail maria.papadopoulou@example.gr, subject «Εκπρόθεσμο: «Το Κιβώτιο»»). The prod worker logged '[email-worker] retention: cleared 1 outbox bodies older than 90d'. SELECT afterwards → bodyMarkdown='[body removed after 90 days — outbox retention]' but toEmail and the book-title subject STILL PRESENT. Cross-checked member-notifications.job.ts:44/66/89 — every member subject is built from the book title, so the 'envelope is far less sensitive' premise in email-worker.ts:31-34 is false.",
+          "Killed the worker BY PORT: `lsof -ti tcp:3002 | xargs -r kill -9` → 'port 3002 clear' (re-verified at the end).",
+          "psql: enumerated control-plane PII columns with no purge — applications.contactName/contactEmail/phone, support_redemption_attempts.ipAddress, support_sessions.ipAddress/userAgent, audit_log.ip/userAgent, users.legalAcceptedIp, email_outbox.toEmail. None referenced by any delete/purge code.",
+          "pnpm --filter @libriant/api exec vitest run --project unit → 62 files / 567 tests passed. --project integration → 11 files / 49 tests passed. grep for 'erase|retention' across all spec files → 0 hits, i.e. neither fix has any test.",
+          "pnpm check:legal → passes the render check but still reports unresolved placeholders including '[a limited period, e.g. 90 days] 2 doc(s)' and '[up to 5–10] 2 doc(s)'; sed privacy.md §6 → '[30]', '[14]', '[up to 5–10]', '[a limited period…]' all unchanged. pnpm check:translations → passed (el, en). pnpm check:caddy → passed, 6 routes behind the origin guard.",
+          "Cleanup: deleted every row I inserted (tenants vfy04/vfy05, audit_log 'al-%', email_outbox 'ob-%') — verified 0/0/0 remaining. No repo file edited; git status shows only the pre-existing untracked apps/api/src/zz-probe-mkadmins.ts, which I did not create."
+        ]
+      }
+    }
+  ],
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Verify"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "verify:redis-and-jobs",
+      "phaseIndex": 1,
+      "phaseTitle": "Verify",
+      "agentId": "a5221bf60404ff437",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1787584334327,
+      "queuedAt": 1787584321499,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "redis-and-jobs",
+      "promptPreview": "You are adversarially verifying fixes to a pre-release audit of Libriant, a multi-tenant library\nSaaS. Repo: /Users/leontgmusic/Projects/libriant (pnpm+turbo monorepo, NestJS 11 API, Next 16 web,\nPrisma 7, Postgres 16 control-plane + per-tenant DBs, Redis 8, BullMQ 6, Caddy edge).\n\nYOUR JOB IS TO REFUTE, NOT TO CONFIRM. The track record on this audit is unambiguous: of the fixes\nthat reached a ver…",
+      "lastProgressAt": 1787585578808,
+      "tokens": 209981,
+      "toolCalls": 125,
+      "durationMs": 1244480,
+      "resultPreview": "{\"area\":\"redis-and-jobs\",\"verdicts\":[{\"id\":\"boot-and-config-01\",\"actually_fixed\":false,\"confidence\":\"high\",\"bypass\":\"With the API booted under NODE_ENV=production / BILLING_ENABLED=false / STRIPE_DRIVER=none and REDIS_URL=redis://127.0.0.1:6399 (nothing listening), five request paths still return HTTP 500 with the identical \\\"Stream isn't writeable and enableOfflineQueue options is false\\\" stack t…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "verify:email-escape-hatch",
+      "phaseIndex": 1,
+      "phaseTitle": "Verify",
+      "agentId": "a37c0e14476751d8e",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1787584332792,
+      "queuedAt": 1787584321499,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "email-escape-hatch",
+      "promptPreview": "You are adversarially verifying fixes to a pre-release audit of Libriant, a multi-tenant library\nSaaS. Repo: /Users/leontgmusic/Projects/libriant (pnpm+turbo monorepo, NestJS 11 API, Next 16 web,\nPrisma 7, Postgres 16 control-plane + per-tenant DBs, Redis 8, BullMQ 6, Caddy edge).\n\nYOUR JOB IS TO REFUTE, NOT TO CONFIRM. The track record on this audit is unambiguous: of the fixes\nthat reached a ver…",
+      "lastProgressAt": 1787585618622,
+      "tokens": 191478,
+      "toolCalls": 106,
+      "durationMs": 1285830,
+      "resultPreview": "{\"area\":\"email-escape-hatch\",\"verdicts\":[{\"id\":\"launch-readiness-01\",\"actually_fixed\":false,\"confidence\":\"high\",\"reasoning\":\"Two of the three dead-end flows are genuinely fixed and I proved both by execution against a production-configured API (NODE_ENV=production, EMAIL_DRIVER=console, SESSION_COOKIE_SECURE=true, STRIPE_DRIVER=none, values taken from x-app-env in infra/compose/docker-compose.prod…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "verify:export-and-scans",
+      "phaseIndex": 1,
+      "phaseTitle": "Verify",
+      "agentId": "ac071158983262c3c",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1787584326434,
+      "queuedAt": 1787584321499,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "export-and-scans",
+      "promptPreview": "You are adversarially verifying fixes to a pre-release audit of Libriant, a multi-tenant library\nSaaS. Repo: /Users/leontgmusic/Projects/libriant (pnpm+turbo monorepo, NestJS 11 API, Next 16 web,\nPrisma 7, Postgres 16 control-plane + per-tenant DBs, Redis 8, BullMQ 6, Caddy edge).\n\nYOUR JOB IS TO REFUTE, NOT TO CONFIRM. The track record on this audit is unambiguous: of the fixes\nthat reached a ver…",
+      "lastProgressAt": 1787585994924,
+      "tokens": 224807,
+      "toolCalls": 111,
+      "durationMs": 1668490,
+      "resultPreview": "{\"area\":\"export-and-scans\",\"verdicts\":[{\"id\":\"performance-01\",\"actually_fixed\":false,\"confidence\":\"high\",\"bypass\":\"TWO independent, executed bypasses put peak RSS back over the 1 GB worker mem_limit.\\n\\nBYPASS A — the byte budget is blind to jsonb. `approxRowBytes` (export-processors.ts:622-630) counts a string at 2 bytes/char and a Buffer at its length, but EVERYTHING ELSE — including the parsed …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "verify:billing",
+      "phaseIndex": 1,
+      "phaseTitle": "Verify",
+      "agentId": "af3e1dcc5023c0f28",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1787584329834,
+      "queuedAt": 1787584321499,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "billing",
+      "promptPreview": "You are adversarially verifying fixes to a pre-release audit of Libriant, a multi-tenant library\nSaaS. Repo: /Users/leontgmusic/Projects/libriant (pnpm+turbo monorepo, NestJS 11 API, Next 16 web,\nPrisma 7, Postgres 16 control-plane + per-tenant DBs, Redis 8, BullMQ 6, Caddy edge).\n\nYOUR JOB IS TO REFUTE, NOT TO CONFIRM. The track record on this audit is unambiguous: of the fixes\nthat reached a ver…",
+      "lastProgressAt": 1787585551986,
+      "tokens": 189531,
+      "toolCalls": 83,
+      "durationMs": 1222152,
+      "resultPreview": "{\"area\":\"billing\",\"verdicts\":[{\"id\":\"billing-01\",\"actually_fixed\":true,\"confidence\":\"high\",\"reasoning\":\"Re-ran the original probe against the shipped production web build and drove the real API code path. apps/api/src/billing/return-url.ts is now the single URL builder; startCheckout (billing.service.ts:393-410) and openCustomerPortal (:546-554) both go through it. EXECUTED: startCheckout for tena…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "verify:edge-trust",
+      "phaseIndex": 1,
+      "phaseTitle": "Verify",
+      "agentId": "a11b8b90780847c5d",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1787584331228,
+      "queuedAt": 1787584321499,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "edge-trust",
+      "promptPreview": "You are adversarially verifying fixes to a pre-release audit of Libriant, a multi-tenant library\nSaaS. Repo: /Users/leontgmusic/Projects/libriant (pnpm+turbo monorepo, NestJS 11 API, Next 16 web,\nPrisma 7, Postgres 16 control-plane + per-tenant DBs, Redis 8, BullMQ 6, Caddy edge).\n\nYOUR JOB IS TO REFUTE, NOT TO CONFIRM. The track record on this audit is unambiguous: of the fixes\nthat reached a ver…",
+      "lastProgressAt": 1787585279639,
+      "tokens": 174959,
+      "toolCalls": 76,
+      "durationMs": 948410,
+      "resultPreview": "{\"area\":\"edge-trust\",\"verdicts\":[{\"id\":\"authn-authz-01\",\"actually_fixed\":true,\"confidence\":\"medium\",\"bypass\":\"No app-layer bypass found. Two residuals I could not settle here: (a) the load-bearing claim that '0.0.0.0:443:443' suppresses the [::] listener — the layer that closes the IPv6/userland-proxy bypass that refuted the last attempt — can only be proved with `ss -lntu` on the real host (scrip…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "verify:retention-and-erasure",
+      "phaseIndex": 1,
+      "phaseTitle": "Verify",
+      "agentId": "af8e2dff7f644cbae",
+      "model": "claude-opus-5",
+      "state": "done",
+      "startedAt": 1787584328315,
+      "queuedAt": 1787584321500,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "retention-and-erasure",
+      "promptPreview": "You are adversarially verifying fixes to a pre-release audit of Libriant, a multi-tenant library\nSaaS. Repo: /Users/leontgmusic/Projects/libriant (pnpm+turbo monorepo, NestJS 11 API, Next 16 web,\nPrisma 7, Postgres 16 control-plane + per-tenant DBs, Redis 8, BullMQ 6, Caddy edge).\n\nYOUR JOB IS TO REFUTE, NOT TO CONFIRM. The track record on this audit is unambiguous: of the fixes\nthat reached a ver…",
+      "lastProgressAt": 1787585000213,
+      "tokens": 131608,
+      "toolCalls": 66,
+      "durationMs": 671898,
+      "resultPreview": "{\"area\":\"retention-and-erasure\",\"verdicts\":[{\"id\":\"privacy-legal-03\",\"actually_fixed\":false,\"confidence\":\"high\",\"bypass\":\"`DELETE /t/:slug/members/:id` still routes to `archive()` and the whole mutation is still `tx.member.update({ where:{id}, data:{ archivedAt: new Date(), status:'archived' } })` (members.service.ts:456-459). Repro: create a member with fullName/email/dateOfBirth/addressLine1, ca…"
+    }
+  ],
+  "totalTokens": 1122364,
+  "totalToolCalls": 567
+}

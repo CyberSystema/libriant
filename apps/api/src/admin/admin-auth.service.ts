@@ -80,7 +80,7 @@ export class AdminAuthService {
   async verify(
     email: string,
     password: string,
-    ip = 'unknown',
+    ip: string,
   ): Promise<{ id: string; role: 'owner' | 'support'; fullName: string; email: string }> {
     const admin = await controlDb.adminUser.findUnique({
       where: { email },
@@ -155,7 +155,7 @@ export class AdminAuthService {
    * writes `status` or `lockedUntil`: those are the columns the guard reads as
    * "this account is disabled", and unauthenticated input must never reach them.
    */
-  async recordFailure(adminId: string, ip = 'unknown'): Promise<void> {
+  async recordFailure(adminId: string, ip: string): Promise<void> {
     const bucket = lockBucket(ip);
 
     // The audit event, emitted FIRST and independently of the database. The DB
@@ -223,7 +223,7 @@ export class AdminAuthService {
    * clears it, and a clean sign-in is the safe moment. Nothing writes those
    * columns any more, so for every row created after that fix this is a no-op.
    */
-  async recordSuccess(adminId: string, ip = 'unknown'): Promise<void> {
+  async recordSuccess(adminId: string, ip: string): Promise<void> {
     await controlDb.adminUser.update({
       where: { id: adminId },
       data: { failedAttempts: 0, lockedUntil: null, status: 'active', lastLoginAt: new Date() },

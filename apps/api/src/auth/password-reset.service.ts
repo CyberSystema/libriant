@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import * as crypto from 'node:crypto';
 import { controlDb } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
@@ -42,6 +42,23 @@ export class PasswordResetService {
    * response is identical to prevent enumeration.
    */
   async request(input: { tenantSlug: string; email: string }): Promise<void> {
+    // FAILS CLOSED, and does so BEFORE the account lookup.
+    //
+    // Redis is not a cache here — it is where the single-use token lives. If
+    // the write fails, the link in the message points at a token that does not
+    // exist, so the reader follows it and is told their link is invalid. A
+    // silent success is the worst outcome available.
+    //
+    // The check is up here rather than around the write for a reason: this
+    // endpoint deliberately reveals nothing about whether an account exists, and
+    // a 503 that only ever appeared for real accounts would be exactly that
+    // oracle. Checking before the lookup means everyone gets the same answer.
+    if (!(await this.redis.ping())) {
+      throw new ServiceUnavailableException(
+        'We cannot issue that link right now. Nothing was sent — please try again in a moment.',
+      );
+    }
+
     const tenant = await controlDb.tenant.findUnique({
       where: { slug: input.tenantSlug },
       select: { id: true, slug: true, name: true, status: true, defaultLocale: true },

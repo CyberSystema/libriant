@@ -82,7 +82,14 @@ export class AdminAuthController {
     }
 
     const dto = await validateDto(AdminLoginDto, raw);
-    const admin = await this.authSvc.verify(dto.email.toLowerCase().trim(), dto.password);
+    // `ip` is REQUIRED, not optional: the lockout is keyed on (adminId, ip),
+    // and an earlier version of this call omitted it. The service defaulted to
+    // the literal 'unknown', lockBucket() rejected that, and the entire admin
+    // brute-force lockout became a no-op — eight wrong passwords followed by
+    // the right one signed in. Every unit test passed, because they call the
+    // service directly and pass an address. The parameter is mandatory now so
+    // the same omission is a compile error rather than a dead control.
+    const admin = await this.authSvc.verify(dto.email.toLowerCase().trim(), dto.password, ip);
 
     // MFA gate: a password alone must not yield the control plane.
     const mfa = await controlDb.adminUser.findUnique({
@@ -102,7 +109,7 @@ export class AdminAuthController {
       if (!(await this.mfa.verifyTokenOnce(admin.id, secret, dto.totp))) {
         // A wrong second factor is a failed attempt and can trip the lockout
         // (ADM-5) — otherwise a known password makes TOTP brute force free.
-        await this.authSvc.recordFailure(admin.id);
+        await this.authSvc.recordFailure(admin.id, ip);
         throw new UnauthorizedException({
           code: 'mfa_invalid',
           message: 'That authenticator code is wrong or has already been used.',
@@ -111,7 +118,7 @@ export class AdminAuthController {
     }
 
     // Full login succeeded (password AND, if enabled, TOTP) → clear counters.
-    await this.authSvc.recordSuccess(admin.id);
+    await this.authSvc.recordSuccess(admin.id, ip);
     const { token, expiresAt } = this.jwt.sign({ sub: admin.id, role: admin.role });
     this.cookies.setSession(res, token, expiresAt);
     return {

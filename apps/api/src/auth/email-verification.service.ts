@@ -1,5 +1,11 @@
 import { randomBytes } from 'node:crypto';
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { controlDb, Prisma } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
 import { EmailService } from '../email/email.service.js';
@@ -63,6 +69,22 @@ export class EmailVerificationService {
     libraryName: string;
     mode: 'signup' | 'change';
   }): Promise<void> {
+    // FAILS CLOSED, and does so BEFORE the account lookup.
+    //
+    // Redis is not a cache here — it is where the single-use token lives. If
+    // the write fails, the link in the message points at a token that does not
+    // exist, so the reader follows it and is told their link is invalid. A
+    // silent success is the worst outcome available.
+    //
+    // The check is up here rather than around the write for a reason: the
+    // caller must not learn anything from WHICH request failed, and a 503 that
+    // only ever appeared for real accounts would be exactly that oracle.
+    if (!(await this.redis.ping())) {
+      throw new ServiceUnavailableException(
+        'We cannot issue that link right now. Nothing was sent — please try again in a moment.',
+      );
+    }
+
     const within = await this.rateLimit.hit(
       `emailverify:acct:${input.tenantId}:${input.userId}`,
       EmailVerificationService.PER_TARGET_LIMIT,

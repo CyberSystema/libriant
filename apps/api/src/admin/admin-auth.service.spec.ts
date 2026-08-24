@@ -159,7 +159,7 @@ describe('AdminAuthService lockout keying (authn-authz-03)', () => {
     it('writes NO lock key — an anonymous stranger cannot lock a named admin', async () => {
       const { svc, store } = makeService();
       for (let i = 0; i < 10; i += 1) {
-        await expect(svc.verify(ADMIN.email, 'wrong')).rejects.toThrow();
+        await expect(svc.verify(ADMIN.email, 'wrong', 'unknown')).rejects.toThrow();
       }
       expect([...store.keys()]).toEqual([]);
     });
@@ -167,7 +167,7 @@ describe('AdminAuthService lockout keying (authn-authz-03)', () => {
     it('never blocks the real admin, who signs in normally', async () => {
       const { svc, passwords } = makeService();
       for (let i = 0; i < 10; i += 1) {
-        await expect(svc.verify(ADMIN.email, 'wrong')).rejects.toThrow();
+        await expect(svc.verify(ADMIN.email, 'wrong', 'unknown')).rejects.toThrow();
       }
       passwords.verify.mockResolvedValue(true);
       await expect(svc.verify(ADMIN.email, 'correct', '203.0.113.7')).resolves.toMatchObject({
@@ -177,7 +177,7 @@ describe('AdminAuthService lockout keying (authn-authz-03)', () => {
 
     it('says so at error level rather than degrading quietly', async () => {
       const { svc } = makeService();
-      await expect(svc.verify(ADMIN.email, 'wrong')).rejects.toThrow();
+      await expect(svc.verify(ADMIN.email, 'wrong', 'unknown')).rejects.toThrow();
       expect(logError).toHaveBeenCalledWith(expect.stringContaining('no usable client IP'));
     });
 

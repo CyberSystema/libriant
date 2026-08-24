@@ -68,7 +68,19 @@ export class AnnouncementDeliveryService {
     userEmail: string;
   }): Promise<ActiveAnnouncement[]> {
     const cacheKey = this.cacheKey(input.tenantId, input.userId);
-    const cached = await this.redis.client.get(cacheKey);
+    // FAILS OPEN. A cache we cannot read is a miss; the announcements
+    // themselves live in the tenant database and are still reachable. This was
+    // a bare `get`, so a Redis outage returned 500 from a banner endpoint the
+    // signed-in shell calls on every page — cosmetic content taking down the
+    // pages it decorates.
+    let cached: string | null = null;
+    try {
+      cached = await this.redis.client.get(cacheKey);
+    } catch (err) {
+      this.logger.warn(
+        `Redis unavailable for the announcement cache (${(err as Error).message}) — reading through.`,
+      );
+    }
     if (cached) {
       try {
         return JSON.parse(cached, reviveDates) as ActiveAnnouncement[];
@@ -133,7 +145,11 @@ export class AnnouncementDeliveryService {
       });
     }
 
-    await this.redis.client.set(cacheKey, JSON.stringify(out), 'EX', CACHE_TTL_SEC);
+    // Best effort: an answer we already computed must not be thrown away
+    // because we could not memoise it.
+    await this.redis.client
+      .set(cacheKey, JSON.stringify(out), 'EX', CACHE_TTL_SEC)
+      .catch(() => undefined);
     return out;
   }
 

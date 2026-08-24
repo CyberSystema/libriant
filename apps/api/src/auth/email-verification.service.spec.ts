@@ -20,7 +20,13 @@ vi.mock('../config/env.js', () => ({ loadEnv: () => ({ publicAppUrl: 'https://ap
 import { EmailVerificationService } from './email-verification.service.js';
 
 function makeService() {
-  const redis = { client: { set: vi.fn().mockResolvedValue('OK'), getdel: vi.fn() } };
+  // `ping` is real API surface now: the service checks Redis is reachable
+  // BEFORE the account lookup, so a 503 during an outage cannot become an
+  // account-enumeration oracle.
+  const redis = {
+    client: { set: vi.fn().mockResolvedValue('OK'), getdel: vi.fn() },
+    ping: vi.fn().mockResolvedValue(true),
+  };
   const rateLimit = { hit: vi.fn().mockResolvedValue({ allowed: true }) };
   const emails = { enqueue: vi.fn().mockResolvedValue({ outboxId: 'o1' }) };
   const svc = new EmailVerificationService(redis as never, rateLimit as never, emails as never);
@@ -145,5 +151,31 @@ describe('EmailVerificationService.verify', () => {
         data: { email: 'new@acme.test', emailVerifiedAt: expect.any(Date) },
       }),
     );
+  });
+});
+
+describe('EmailVerificationService.send when Redis is unreachable', () => {
+  it('refuses with a 503 rather than issuing a link that can never be redeemed', async () => {
+    // Redis is not a cache here — it is where the single-use token lives. A
+    // swallowed write would send someone a link that reports itself invalid,
+    // which is worse than an honest failure. The check runs BEFORE the account
+    // lookup so the 503 cannot reveal whether an address exists.
+    const { svc, redis, emails } = makeService();
+    redis.ping.mockResolvedValue(false);
+
+    await expect(
+      svc.send({
+        userId: 'u1',
+        tenantId: 't1',
+        email: 'someone@example.gr',
+        mode: 'signup',
+        locale: 'el',
+        tenant: TENANT as never,
+        fullName: 'Someone',
+      } as never),
+    ).rejects.toMatchObject({ status: 503 });
+
+    expect(emails.enqueue).not.toHaveBeenCalled();
+    expect(redis.client.set).not.toHaveBeenCalled();
   });
 });

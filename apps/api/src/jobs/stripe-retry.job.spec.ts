@@ -61,7 +61,11 @@ vi.mock('../billing/stripe-real.driver.js', () => ({
     return {};
   }),
 }));
-vi.mock('../platform/redis.service.js', () => ({
+vi.mock('../platform/redis.service.js', async (importOriginal) => ({
+  // Partial mock: only RedisService is stubbed. FailOpenMemo is real and is
+  // imported by other services this spec pulls in transitively — replacing the
+  // whole module made them fail with "No FailOpenMemo export is defined".
+  ...(await importOriginal<typeof import('../platform/redis.service.js')>()),
   RedisService: vi.fn(function () {
     // The sweep claims its OWN sweep-private `stripe:retry-sweep:<id>` lock
     // (short TTL) before dispatch — deliberately NOT the controller's 30-day

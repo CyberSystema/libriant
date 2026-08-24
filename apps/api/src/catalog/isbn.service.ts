@@ -48,18 +48,43 @@ export class IsbnLookupService {
 
   // --- internals ---------------------------------------------------------
 
+  /**
+   * FAILS OPEN. This is a cache in front of an upstream metadata lookup, and a
+   * cache we cannot read is a miss, not an error.
+   *
+   * It used to be a bare `get`, which meant a Redis outage returned HTTP 500
+   * from the ISBN endpoint — so a librarian at the desk could not scan a
+   * barcode to catalogue a book, and got an opaque support code instead of a
+   * slower answer. The upstream lookup is still perfectly reachable.
+   */
   private async readCache(key: string): Promise<CacheEntry | null> {
-    const raw = await this.redis.client.get(key);
+    let raw: string | null;
+    try {
+      raw = await this.redis.client.get(key);
+    } catch (err) {
+      this.logger.warn(
+        `Redis unavailable for the ISBN cache (${(err as Error).message}) — going upstream.`,
+      );
+      return null;
+    }
     if (!raw) return null;
     try {
       return JSON.parse(raw) as CacheEntry;
     } catch {
-      await this.redis.client.del(key);
+      // A corrupt entry is worth removing, but failing to remove it is not
+      // worth failing the request over.
+      await this.redis.client.del(key).catch(() => undefined);
       return null;
     }
   }
 
+  /** Best-effort: a lookup that succeeded must not fail because we cannot cache it. */
   private async writeCache(key: string, value: CacheEntry, ttlSec: number): Promise<void> {
-    await this.redis.client.set(key, JSON.stringify(value), 'EX', ttlSec);
+    try {
+      await this.redis.client.set(key, JSON.stringify(value), 'EX', ttlSec);
+    } catch {
+      // Intentionally silent at warn level — readCache already logged the
+      // outage, and this runs on every lookup while it lasts.
+    }
   }
 }

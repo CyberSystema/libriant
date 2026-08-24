@@ -1,6 +1,6 @@
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
-import { RedisService } from '../platform/redis.service.js';
+import { FailOpenMemo, RedisService } from '../platform/redis.service.js';
 import { isTrustedLocalNodeEnv, resolveStripeDriverKind } from '../billing/stripe-driver-kind.js';
 import { loadEnv } from '../config/env.js';
 
@@ -26,19 +26,50 @@ const CACHE_TTL_SEC = 30;
 @Injectable()
 export class PlatformSettingsService {
   private readonly logger = new Logger(PlatformSettingsService.name);
+  /** Populated only while Redis I/O is throwing — see FailOpenMemo. */
+  private readonly degraded = new FailOpenMemo<boolean>(5_000);
 
   constructor(@Inject(RedisService) private readonly redis: RedisService) {}
 
-  /** Master subscriptions switch. DB row wins; falls back to the env default. */
+  /**
+   * Master subscriptions switch. DB row wins; falls back to the env default.
+   *
+   * FAILS OPEN on Redis. Both calls used to be bare, and this method sits on
+   * the request path for the tenant home page and the whole /t/:slug/billing
+   * screen (BillingService calls it four times), so an unreachable Redis turned
+   * those into 500s long after the middleware and the tenant resolver had been
+   * made resilient. A cache we cannot read is a cache MISS, not an error — the
+   * control-plane row is the source of truth and is still reachable.
+   *
+   * The memo keeps an outage costing one control-plane read per TTL rather than
+   * one per request; it is populated only when Redis I/O throws.
+   */
   async billingEnabled(): Promise<boolean> {
-    const cached = await this.redis.client.get(CACHE_KEY);
-    if (cached === 'true') return true;
-    if (cached === 'false') return false;
+    try {
+      const cached = await this.redis.client.get(CACHE_KEY);
+      if (cached === 'true') return true;
+      if (cached === 'false') return false;
+    } catch (err) {
+      const memo = this.degraded.get(CACHE_KEY);
+      if (memo !== null) return memo;
+      this.logger.warn(
+        `Redis unavailable reading the subscriptions switch (${(err as Error).message}) — ` +
+          'falling back to the control-plane row.',
+      );
+    }
+
     const row = await controlDb.platformSetting.findUnique({
       where: { key: BILLING_ENABLED_KEY },
     });
     const value = row ? row.value === 'true' : loadEnv().billingEnabled;
-    await this.redis.client.set(CACHE_KEY, value ? 'true' : 'false', 'EX', CACHE_TTL_SEC);
+
+    try {
+      await this.redis.client.set(CACHE_KEY, value ? 'true' : 'false', 'EX', CACHE_TTL_SEC);
+    } catch {
+      // Writing the cache is an optimisation. Failing to write it must not fail
+      // the request that already has the right answer.
+      this.degraded.set(CACHE_KEY, value);
+    }
     return value;
   }
 
