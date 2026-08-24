@@ -135,10 +135,10 @@
         "apps/api/src/email/drivers/console-driver.ts",
         "docs/deploy-from-the-server.md"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "performance-01",
@@ -180,10 +180,10 @@
         "scripts/backup.sh",
         "scripts/dr-drill.sh"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "reliability-01",
@@ -252,10 +252,10 @@
       "paths": [
         "apps/api/src/billing/billing.service.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "billing-08",
@@ -265,10 +265,10 @@
       "paths": [
         "apps/api/src/billing/stripe-webhook.controller.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "billing-13",
@@ -291,10 +291,10 @@
       "paths": [
         "scripts/prod-bootstrap.sh"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "boot-and-config-06",
@@ -304,10 +304,10 @@
       "paths": [
         "scripts/ensure-env.sh"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "data-integrity-02",
@@ -392,10 +392,10 @@
         "apps/web/lib/offline-queue.ts",
         "packages/ui/src/Toast.tsx"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "input-and-files-03",
@@ -478,10 +478,10 @@
       "paths": [
         "apps/api/src/loans/loans.service.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "performance-04",
@@ -491,10 +491,10 @@
       "paths": [
         "apps/api/src/members/member-numbers.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "performance-06",
@@ -519,10 +519,10 @@
         "apps/api/src/members/members.service.ts",
         "locales/en/legal/dpa.md"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "privacy-legal-04",
@@ -535,10 +535,10 @@
         "locales/en/legal/privacy.md",
         "packages/db-control/prisma/schema.prisma"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "proved against real Postgres: outbox cascades, audit row survives redacted, slug kept, platform rows untouched",
+      "commit": "369c4af"
     },
     {
       "id": "privacy-legal-05",
@@ -551,10 +551,10 @@
         "packages/db-tenant/prisma/schema.prisma",
         "packages/shared/src/features.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "privacy-legal-06",
@@ -568,10 +568,10 @@
         "infra/caddy/Caddyfile",
         "scripts/backup.sh"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "reliability-02",
@@ -622,10 +622,10 @@
       "paths": [
         "scripts/restore.sh"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "reliability-07",
@@ -651,10 +651,10 @@
         "infra/cron/libriant-backup",
         "scripts/backup.sh"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "supply-chain-01",
@@ -1040,10 +1040,10 @@
       "paths": [
         "apps/web/public/sw.js"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "frontend-12",
@@ -1072,10 +1072,10 @@
         "packages/ui/src/Modal.tsx",
         "packages/ui/src/Toast.tsx"
       ],
-      "status": "in-progress",
-      "wave": 2,
-      "note": "REFUTED: machinery built in packages/ui but NEVER WIRED. UiStringsProvider mounted nowhere (grep returns 0), checkBrandColor uncalled by apps/api/src/branding, and apps/web/components/Combobox.tsx (the copy the app actually uses) untouched. Needs a cross-boundary wiring pass.",
-      "commit": null
+      "status": "verified",
+      "wave": 3,
+      "note": "wired and proved by a production web build; contrast maths moved to @libriant/shared and enforced at PATCH /t/:slug/branding with 6 unit tests",
+      "commit": "9e1f837"
     },
     {
       "id": "frontend-14",
@@ -1126,10 +1126,10 @@
         "apps/web/app/",
         "apps/web/app/manifest.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "frontend-22",
@@ -1856,10 +1856,10 @@
         "apps/api/src/branding/branding.controller.ts",
         "apps/web/app/"
       ],
-      "status": "in-progress",
-      "wave": 2,
-      "note": "REFUTED: machinery built in packages/ui but NEVER WIRED. UiStringsProvider mounted nowhere (grep returns 0), checkBrandColor uncalled by apps/api/src/branding, and apps/web/components/Combobox.tsx (the copy the app actually uses) untouched. Needs a cross-boundary wiring pass.",
-      "commit": null
+      "status": "verified",
+      "wave": 3,
+      "note": "wired and proved by a production web build; contrast maths moved to @libriant/shared and enforced at PATCH /t/:slug/branding with 6 unit tests",
+      "commit": "9e1f837"
     },
     {
       "id": "frontend-18",
@@ -1942,10 +1942,10 @@
       "paths": [
         "apps/web/components/Combobox.tsx"
       ],
-      "status": "in-progress",
-      "wave": 2,
-      "note": "REFUTED: machinery built in packages/ui but NEVER WIRED. UiStringsProvider mounted nowhere (grep returns 0), checkBrandColor uncalled by apps/api/src/branding, and apps/web/components/Combobox.tsx (the copy the app actually uses) untouched. Needs a cross-boundary wiring pass.",
-      "commit": null
+      "status": "verified",
+      "wave": 3,
+      "note": "wired and proved by a production web build; contrast maths moved to @libriant/shared and enforced at PATCH /t/:slug/branding with 6 unit tests",
+      "commit": "9e1f837"
     },
     {
       "id": "frontend-26",
@@ -1968,10 +1968,10 @@
       "paths": [
         "apps/web/public/sw.js"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "frontend-28",
@@ -1983,10 +1983,10 @@
         "apps/web/components/ServiceWorkerManager.tsx",
         "packages/ui/src/styles.css"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 3,
-      "note": null,
-      "commit": null
+      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "commit": "369c4af"
     },
     {
       "id": "input-and-files-04",
