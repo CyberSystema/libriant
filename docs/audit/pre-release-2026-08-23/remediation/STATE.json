@@ -180,10 +180,10 @@
         "scripts/backup.sh",
         "scripts/dr-drill.sh"
       ],
-      "status": "fixed",
+      "status": "verified",
       "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
-      "commit": "369c4af"
+      "note": "encryption proved end to end (gzip in, no plaintext in the artefact, exact bytes back) and the DR drill now asserts it in CI, verified in both directions. Off-site leg still needs RCLONE_REMOTE — owner action.",
+      "commit": "2b82204"
     },
     {
       "id": "reliability-01",
@@ -437,7 +437,7 @@
       ],
       "status": "in-progress",
       "wave": 3,
-      "note": null,
+      "note": "backup code is proven; the off-site DESTINATION does not exist yet (no Hetzner Storage Box, RCLONE_REMOTE empty), so 'daily backups with an off-server copy' is still not true as asserted in the offer terms",
       "commit": null
     },
     {
