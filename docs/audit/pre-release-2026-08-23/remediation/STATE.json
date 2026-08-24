@@ -48,10 +48,10 @@
       "paths": [
         "apps/api/src/billing/billing.service.ts"
       ],
-      "status": "in-progress",
-      "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
-      "commit": null
+      "status": "verified",
+      "wave": 5,
+      "note": "adversarially verified 2026-08-24; diff-vs-report confirmed for all four packages",
+      "commit": "341fcb4"
     },
     {
       "id": "billing-04",
@@ -135,10 +135,10 @@
         "apps/api/src/email/drivers/console-driver.ts",
         "docs/deploy-from-the-server.md"
       ],
-      "status": "in-progress",
-      "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
-      "commit": "369c4af"
+      "status": "verified",
+      "wave": 5,
+      "note": "refuted for reasons outside the owning package (runbook said no recovery path exists; Caddy logged live tokens into the backup; replyToEmail unredacted) — all three closed and drift is now gated by check:caddy",
+      "commit": "341fcb4"
     },
     {
       "id": "performance-01",
@@ -148,10 +148,10 @@
       "paths": [
         "apps/api/src/export/export-processors.ts"
       ],
-      "status": "in-progress",
-      "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
-      "commit": null
+      "status": "verified",
+      "wave": 5,
+      "note": "adversarially verified 2026-08-24; diff-vs-report confirmed for all four packages",
+      "commit": "341fcb4"
     },
     {
       "id": "privacy-legal-01",
@@ -451,10 +451,10 @@
         "infra/monitoring/docker-compose.monitoring.yml",
         "infra/monitoring/prometheus.yml"
       ],
-      "status": "in-progress",
-      "wave": 3,
-      "note": null,
-      "commit": null
+      "status": "verified",
+      "wave": 5,
+      "note": "Alertmanager wired, textfile collector enabled, Watchdog + backup alerts added, check:alerts gates metric names; DELIVERY still needs an owner-supplied receiver",
+      "commit": "4c8da49"
     },
     {
       "id": "launch-readiness-07",
@@ -478,10 +478,10 @@
       "paths": [
         "apps/api/src/loans/loans.service.ts"
       ],
-      "status": "in-progress",
-      "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
-      "commit": "369c4af"
+      "status": "verified",
+      "wave": 5,
+      "note": "adversarially verified 2026-08-24; diff-vs-report confirmed for all four packages",
+      "commit": "341fcb4"
     },
     {
       "id": "performance-04",
@@ -491,10 +491,10 @@
       "paths": [
         "apps/api/src/members/member-numbers.ts"
       ],
-      "status": "in-progress",
-      "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
-      "commit": "369c4af"
+      "status": "verified",
+      "wave": 5,
+      "note": "adversarially verified 2026-08-24; diff-vs-report confirmed for all four packages",
+      "commit": "341fcb4"
     },
     {
       "id": "performance-06",
@@ -504,10 +504,10 @@
       "paths": [
         "apps/api/src/jobs/fine-accrual.job.ts"
       ],
-      "status": "in-progress",
-      "wave": 3,
-      "note": null,
-      "commit": null
+      "status": "verified",
+      "wave": 5,
+      "note": "adversarially verified 2026-08-24; diff-vs-report confirmed for all four packages",
+      "commit": "341fcb4"
     },
     {
       "id": "privacy-legal-03",
@@ -519,10 +519,10 @@
         "apps/api/src/members/members.service.ts",
         "locales/en/legal/dpa.md"
       ],
-      "status": "in-progress",
-      "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
-      "commit": "369c4af"
+      "status": "verified",
+      "wave": 5,
+      "note": "adversarially verified 2026-08-24; diff-vs-report confirmed for all four packages",
+      "commit": "341fcb4"
     },
     {
       "id": "privacy-legal-04",
@@ -535,10 +535,10 @@
         "locales/en/legal/privacy.md",
         "packages/db-control/prisma/schema.prisma"
       ],
-      "status": "in-progress",
-      "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
-      "commit": "369c4af"
+      "status": "verified",
+      "wave": 5,
+      "note": "adversarially verified 2026-08-24; diff-vs-report confirmed for all four packages",
+      "commit": "341fcb4"
     },
     {
       "id": "privacy-legal-05",
@@ -552,8 +552,8 @@
         "packages/shared/src/features.ts"
       ],
       "status": "in-progress",
-      "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
+      "wave": 5,
+      "note": "PARTIAL and honest: enforces the 2 periods the product publishes; the other 5 stores have [PLACEHOLDER] periods in the Privacy Policy — counsel's to fill in, not an engineer's to guess",
       "commit": "369c4af"
     },
     {
@@ -568,10 +568,10 @@
         "infra/caddy/Caddyfile",
         "scripts/backup.sh"
       ],
-      "status": "in-progress",
-      "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
-      "commit": "369c4af"
+      "status": "verified",
+      "wave": 5,
+      "note": "refuted for reasons outside the owning package (runbook said no recovery path exists; Caddy logged live tokens into the backup; replyToEmail unredacted) — all three closed and drift is now gated by check:caddy",
+      "commit": "341fcb4"
     },
     {
       "id": "reliability-02",
@@ -609,10 +609,10 @@
         "infra/monitoring/alerts.yml",
         "infra/monitoring/prometheus.yml"
       ],
-      "status": "in-progress",
-      "wave": 3,
-      "note": null,
-      "commit": null
+      "status": "verified",
+      "wave": 5,
+      "note": "Alertmanager wired, textfile collector enabled, Watchdog + backup alerts added, check:alerts gates metric names; DELIVERY still needs an owner-supplied receiver",
+      "commit": "4c8da49"
     },
     {
       "id": "reliability-05",
@@ -651,10 +651,10 @@
         "infra/cron/libriant-backup",
         "scripts/backup.sh"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
-      "commit": "369c4af"
+      "status": "verified",
+      "wave": 5,
+      "note": "Alertmanager wired, textfile collector enabled, Watchdog + backup alerts added, check:alerts gates metric names; DELIVERY still needs an owner-supplied receiver",
+      "commit": "4c8da49"
     },
     {
       "id": "supply-chain-01",
@@ -1476,10 +1476,10 @@
         "apps/api/src",
         "apps/api/src/jobs/stripe-retry.job.ts"
       ],
-      "status": "in-progress",
-      "wave": 4,
-      "note": "REFUTED by execution 2026-08-24 — see rounds/verify-2026-08-24.json",
-      "commit": null
+      "status": "verified",
+      "wave": 5,
+      "note": "adversarially verified 2026-08-24; diff-vs-report confirmed for all four packages",
+      "commit": "341fcb4"
     },
     {
       "id": "reliability-17",
