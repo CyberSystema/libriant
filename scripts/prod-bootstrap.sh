@@ -8,10 +8,12 @@
 #
 #   1. control-plane migrations     (FATAL - api can't serve without the schema)
 #   2. seed cells/plans/feature-keys (FATAL - signup needs a cell + plans)
-#   3. help-centre ingest           (best-effort)
-#   4. existing-tenant migrations   (best-effort; new tenants self-migrate at
-#                                    signup, and a manual fan-out always exists)
-#   5. first admin                  (only if ADMIN_BOOTSTRAP_* are set)
+#   3. help-centre ingest           (best-effort - nothing serves 500s without it)
+#   4. existing-tenant migrations   (FATAL - boot-and-config-04; a swallowed
+#                                    failure green-lit a fleet where one
+#                                    library's schema lagged the code)
+#   5. first admin                  (FATAL when ADMIN_BOOTSTRAP_* are set;
+#                                    skipped entirely when they are not)
 #
 # Migrations + seed run against Postgres DIRECTLY (PG_SUPERUSER_URL), never
 # through pgbouncer: Prisma Migrate takes a session-level advisory lock that a
@@ -68,9 +70,16 @@ LOCAL_V6="::1/128 fc00::/7 fe80::/10"
 #   Even with the Cloudflare v6 ranges allowed and INPUT filtered, legitimate
 #   Cloudflare traffic arriving over v6 would still reach Caddy from the bridge
 #   gateway - collapsing every v6-carried visitor into ONE rate-limit bucket.
-#   That is a self-inflicted outage, not a defence. So: no public v6 to 80/443
-#   until the compose network has `enable_ipv6: true` (or the published ports
-#   are bound to 0.0.0.0 explicitly, which removes the v6 listener entirely).
+#   That is a self-inflicted outage, not a defence.
+#
+#   infra/compose/docker-compose.prod.yml now publishes 80/443 on
+#   ${EDGE_BIND_IPV4:-0.0.0.0} rather than the wildcard, which removes the [::]
+#   listener and therefore the userland-proxy path altogether. This DROP is the
+#   layer that still holds if that binding is reverted, if a second project
+#   publishes a v6 port on this box, or if someone runs the prod compose file
+#   without the .env that carries EDGE_BIND_IPV4 - i.e. it assumes the compose
+#   layer is wrong, which is the whole point of having it.
+#
 #   While this is in force the origin must NOT have proxied AAAA records - see
 #   docs/RUNBOOK.md 3.2c and 5.4. Visitors still reach Cloudflare over IPv6;
 #   only the Cloudflare-to-origin hop is v4.
@@ -181,6 +190,27 @@ origin_firewall_status() {
     { "$bin" -S INPUT 2>/dev/null; "$bin" -S DOCKER-USER 2>/dev/null; } | grep LIBRIANT-ORIGIN \
       || echo "  (no jump - the chain exists but nothing sends traffic to it)"
   done
+  # The compose layer, checked from the host rather than from the YAML. A
+  # `[::]` listener on 80 or 443 means the published ports went back to the
+  # wildcard form, which silently reintroduces the userland-proxy path: every
+  # IPv6 client then reaches Caddy from the bridge gateway and looks private to
+  # the edge guard. That is the bypass that defeated the first fix for
+  # authn-authz-01, and this is the one command that shows it is gone.
+  echo
+  echo "--- published listeners on 80/443 (the compose layer) ---"
+  if command -v ss >/dev/null 2>&1; then
+    ss -lntu 2>/dev/null | grep -E '[:.](80|443)[[:space:]]' || echo "  (nothing listening - is caddy up?)"
+    if ss -lntu 2>/dev/null | grep -qE '\[::\][:.](80|443)[[:space:]]'; then
+      echo "  ! A [::] listener is present on 80/443. The compose layer has REVERTED:"
+      echo "  ! infra/compose/docker-compose.prod.yml must publish"
+      echo "  !   '\${EDGE_BIND_IPV4:-0.0.0.0}:443:443', not '443:443'."
+      echo "  ! Until it does, every IPv6 client reaches Caddy from the bridge gateway."
+    else
+      echo "  ok: no [::] listener - IPv6 clients cannot reach the userland proxy."
+    fi
+  else
+    echo "  (ss not installed - check by hand: no [::]:80 or [::]:443 may be listening)"
+  fi
   echo
   echo "[bootstrap] A chain with jumps from BOTH INPUT and DOCKER-USER is what 'applied' means."
   echo "[bootstrap] On-box output proves nothing about the internet: confirm with an external"
@@ -281,12 +311,60 @@ fi
 echo "[bootstrap] ingesting help-centre articles (best-effort) ..."
 pnpm ingest:help || echo "[bootstrap] help ingest skipped (non-fatal)"
 
-echo "[bootstrap] migrating existing tenant databases (best-effort) ..."
-pnpm tenant:migrate || echo "[bootstrap] tenant migrate skipped (non-fatal)"
+# boot-and-config-04. This was `pnpm tenant:migrate || echo "... (non-fatal)"`.
+#
+# The one-shot then exited 0, compose's `condition: service_completed_successfully`
+# was satisfied, and api + worker started against tenant databases that never
+# received the migration. Ship a release that adds a column, have ONE library's
+# DB be locked or out of disk, and the deploy goes green while that library 500s
+# on every page - nobody finds out until the librarian rings.
+#
+# scripts/tenant-migrate.ts was never the sloppy part: it migrates every tenant
+# it can, prints a per-slug summary, and exits 2 if any failed. This line threw
+# that away. Now the deploy stops.
+#
+# WHAT THAT COSTS, deliberately: one unmigratable tenant blocks the whole
+# deploy. That is the safer direction - compose aborts before recreating api, so
+# the fleet keeps serving the OLD image, which matches the schema the fleet
+# actually has. (Control-plane migrations above have already applied; Prisma
+# migrations are additive, so old API code tolerates the newer control schema.)
+#
+# There is NO env-var escape hatch, on purpose. A skip flag set once during an
+# incident lives in .env.prod forever and silently restores exactly this bug -
+# and the correct action is cheap and is printed below: a tenant whose database
+# cannot be migrated is a tenant that cannot serve, so either fix it or archive
+# the row, which is what makes the fan-out skip it.
+echo "[bootstrap] migrating existing tenant databases ..."
+if ! pnpm tenant:migrate; then
+  echo "[bootstrap] FATAL: one or more tenant databases did not migrate (see the per-slug" >&2
+  echo "[bootstrap] summary above - the failing ones are marked with a cross)." >&2
+  echo "[bootstrap] api/worker will NOT start, so the fleet stays on the previous image." >&2
+  echo "[bootstrap] Two ways forward, both run against the CONTROL plane:" >&2
+  echo "[bootstrap]   1. Fix the tenant database (disk, credentials, a failed migration:" >&2
+  echo "[bootstrap]      'prisma migrate status' then 'prisma migrate resolve'), then redeploy." >&2
+  echo "[bootstrap]   2. If that library is being decommissioned, take it out of the fan-out:" >&2
+  echo "[bootstrap]      UPDATE tenants SET status = 'archived' WHERE slug = '<slug>';" >&2
+  echo "[bootstrap]      That library then serves nothing, which is honest - it already" >&2
+  echo "[bootstrap]      cannot serve. Do NOT do this to buy silence for a live customer." >&2
+  exit 1
+fi
 
 if [ -n "${ADMIN_BOOTSTRAP_EMAIL:-}" ] && [ -n "${ADMIN_BOOTSTRAP_PASSWORD:-}" ]; then
+  # Same finding, second half. `|| echo ... (non-fatal)` here produced a
+  # completely green FIRST deploy that nobody could log in to: deploy-on-host.sh
+  # warns only when ADMIN_BOOTSTRAP_EMAIL is EMPTY, never when the bootstrap
+  # itself failed. The script is idempotent - it exits 0 when the admin already
+  # exists - so a non-zero exit always means something is genuinely wrong
+  # (unreachable DB, MFA_MASTER_KEY missing or malformed, a password the policy
+  # rejects). None of those get better by being ignored.
   echo "[bootstrap] ensuring first admin (${ADMIN_BOOTSTRAP_EMAIL}) ..."
-  pnpm admin:bootstrap || echo "[bootstrap] admin bootstrap failed (non-fatal)"
+  if ! pnpm admin:bootstrap; then
+    echo "[bootstrap] FATAL: could not create/verify the first admin (${ADMIN_BOOTSTRAP_EMAIL})." >&2
+    echo "[bootstrap] Refusing to finish: a deploy that reports success but has no admin" >&2
+    echo "[bootstrap] account is a control plane nobody can sign in to. Check the error above," >&2
+    echo "[bootstrap] then re-run the deploy - this step is idempotent." >&2
+    exit 1
+  fi
 else
   echo "[bootstrap] ADMIN_BOOTSTRAP_* not set - skipping admin creation"
 fi

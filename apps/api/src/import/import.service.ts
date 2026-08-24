@@ -335,10 +335,22 @@ export class ImportService {
       throw new BadRequestException('Set a column mapping before running the import.');
     }
     // IMP-07 / IMP-02: a 'failed' batch (a hard error, or one reset by the
-    // crash-recovery sweep) is re-runnable. The engine commits each row
-    // independently and matches on the natural key, so re-running with
-    // skip/update is idempotent over rows a half-done commit already wrote —
-    // this is the "just re-run" recovery the queue producer documents.
+    // crash-recovery sweep) is re-runnable, because the engine commits each row
+    // independently and matches on a natural key.
+    //
+    // data-integrity-02: that claim was FALSE when it was written, and this
+    // comment is why the hole survived review. Four of the seven entity kinds
+    // had no natural key at all — a fine was a bare `create` — so re-running a
+    // half-done commit duplicated every keyless row it had already written,
+    // including patrons' outstanding debts. The claim is now backed by
+    // `IMPORT_NATURAL_KEYS` in engine/import-engine.ts, which names the key for
+    // every kind and fails to compile if one is added without an answer; the
+    // integration spec re-imports the same file twice and asserts the row
+    // counts do not move.
+    //
+    // NOTE what re-running still is NOT: an undo. Rows the failed run wrote
+    // stay written — a re-run skips them rather than replacing them. Recovering
+    // from a run that wrote the WRONG rows is a delete, not a re-import.
     if (!['uploaded', 'validated', 'failed'].includes(batch.status)) {
       throw new ConflictException(`An import in "${batch.status}" can't be (re)started.`);
     }

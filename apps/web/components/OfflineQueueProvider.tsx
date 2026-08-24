@@ -7,17 +7,16 @@ import { createTranslator, formatDateTime } from '@libriant/i18n';
 import { api } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
 import {
-  classifyReplayError,
   dismissFailed,
   enqueueAction,
-  failQueued,
   isExpired,
   listFailed,
   listQueued,
-  MAX_REPLAY_ATTEMPTS,
+  planReplayFailure,
+  planReplaySend,
   removeQueued,
   requeueFailed,
-  updateQueued,
+  settleQueued,
   type CirculationKind,
   type FailedAction,
   type QueuedAction,
@@ -99,6 +98,14 @@ export function OfflineQueueProvider({
   const [panelOpen, setPanelOpen] = React.useState(false);
   const [syncing, setSyncing] = React.useState(false);
   const flushing = React.useRef(false);
+  /**
+   * Entries whose failed record could not be written, and whose sticky toast is
+   * therefore the only trace. If BOTH stores refuse a write the entry also
+   * cannot leave the pending queue, so the 30-second pass would meet it again
+   * and stack another sticky toast on the last one, forever. Announce each at
+   * most once per page session.
+   */
+  const announcedUnrecorded = React.useRef(new Set<string>());
 
   // Keep the latest helpers reachable from the flush loop without making it a
   // dependency churn — flush is created once and reads current values.
@@ -120,6 +127,11 @@ export function OfflineQueueProvider({
     flushing.current = true;
     setSyncing(true);
     let synced = 0;
+    // Retired entries are counted, not announced one by one — see the summary
+    // below. `unrecorded` are the ones IndexedDB refused to keep, which are the
+    // only ones a toast is still the sole record of.
+    let retired = 0;
+    let unrecorded = 0;
     try {
       const queue = (await listQueued().catch(() => [])).filter(
         (a) => a.tenantSlug === ctx.current.slug,
@@ -128,12 +140,20 @@ export function OfflineQueueProvider({
         // A7-02: never replay an entry older than the server's idempotency
         // window — a stale replay would no longer dedupe and could double-apply.
         // Retire it to the failed list so the librarian can redo it.
-        if (isExpired(action)) {
-          await retire(action, 'expired');
-          ctx.current.toast.show({
-            severity: 'critical',
-            title: ctx.current.t('loans.queue.expired', { label: action.label }),
-          });
+        const preflight = planReplaySend(action);
+        if (preflight.kind === 'retire') {
+          const place = await settleQueued(action, preflight);
+          retired += 1;
+          if (place === 'gone') {
+            unrecorded += 1;
+            if (!announcedUnrecorded.current.has(action.id)) {
+              announcedUnrecorded.current.add(action.id);
+              ctx.current.toast.show({
+                severity: 'critical',
+                title: ctx.current.t('loans.queue.expired', { label: action.label }),
+              });
+            }
+          }
           continue;
         }
         try {
@@ -149,34 +169,40 @@ export function OfflineQueueProvider({
             title: ctx.current.t('loans.queue.synced', { label: action.label }),
           });
         } catch (err) {
-          const verdict = classifyReplayError(err);
-          if (verdict === 'offline') {
+          const plan = planReplayFailure(action, err);
+          if (plan.kind === 'wait') {
             // Connectivity gone mid-pass — stop, keep the entry untouched, retry
             // on the next online event or tick. No penalty for being offline.
             break;
           }
-          if (verdict === 'retry') {
-            const attempts = (action.attempts ?? 0) + 1;
-            if (attempts < MAX_REPLAY_ATTEMPTS) {
-              await updateQueued({ ...action, attempts });
-              break; // transient server fault — back off, try the pass again later
-            }
-            // else: exhausted — fall through and retire so it can't wedge the queue.
+          if (plan.kind === 'retry') {
+            await settleQueued(action, plan);
+            break; // transient server fault — back off, try the pass again later
           }
           // Settled server-side (4xx conflict / invalid / quota) or out of
           // retries. The API's rejection text is hardcoded English; the
-          // librarian reading "we couldn't sync X" needs the why in their own
-          // language, both in the toast and later in the failed list.
-          const reason = translateApiError(
+          // librarian reading *why* it was refused needs it in their own
+          // language, and the failed list is where they will read it.
+          const detail = translateApiError(
             err,
             ctx.current.t,
             ctx.current.t('common.states.error'),
           );
-          await retire(action, verdict === 'retry' ? 'exhausted' : 'rejected', reason);
-          ctx.current.toast.show({
-            severity: 'critical',
-            title: ctx.current.t('loans.queue.syncFailed', { label: action.label, reason }),
-          });
+          const place = await settleQueued(action, plan, detail);
+          retired += 1;
+          if (place === 'gone') {
+            unrecorded += 1;
+            if (!announcedUnrecorded.current.has(action.id)) {
+              announcedUnrecorded.current.add(action.id);
+              ctx.current.toast.show({
+                severity: 'critical',
+                title: ctx.current.t('loans.queue.syncFailed', {
+                  label: action.label,
+                  reason: detail,
+                }),
+              });
+            }
+          }
         }
       }
     } finally {
@@ -184,6 +210,28 @@ export function OfflineQueueProvider({
       setSyncing(false);
       await refresh();
       if (synced > 0) ctx.current.router.refresh();
+      // ONE summary toast, not one per entry.
+      //
+      // frontend-06 wanted these failures to stop vanishing, and frontend-22
+      // made `critical` toasts sticky to that end — but the two together turned
+      // the Monday-morning case into ten stacked toasts that must each be
+      // dismissed by hand, painted (frontend-28) directly over the dock badge
+      // that is the actual durable record. The per-entry detail belongs in the
+      // panel, which keeps it until a human says otherwise; the toast's whole
+      // job is to get the librarian to open that panel now rather than later.
+      // Entries we could not record are the exception — for those the toast IS
+      // the record, so they are still announced individually above.
+      const announceable = retired - unrecorded;
+      if (announceable > 0) {
+        ctx.current.toast.show({
+          severity: 'critical',
+          title: ctx.current.t('loans.queue.failed.badge', { count: announceable }),
+          action: {
+            label: ctx.current.t('loans.queue.failed.review'),
+            onClick: () => setPanelOpen(true),
+          },
+        });
+      }
     }
   }, [refresh]);
 
@@ -376,20 +424,4 @@ export function OfflineQueueProvider({
       </Modal>
     </OfflineQueueContext.Provider>
   );
-}
-
-/**
- * Take an action off the pending queue and put it on the failed list. If the
- * failed record can't be written (private-browsing IndexedDB, quota), the entry
- * still has to leave the queue — an expired one would otherwise be re-dropped
- * and re-announced every thirty seconds — and the sticky critical toast becomes
- * the only record.
- */
-async function retire(
-  action: QueuedAction,
-  reason: 'expired' | 'rejected' | 'exhausted',
-  detail?: string,
-): Promise<void> {
-  const recorded = await failQueued(action, reason, detail);
-  if (!recorded) await removeQueued(action.id);
 }

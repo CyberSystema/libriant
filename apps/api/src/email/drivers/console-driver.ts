@@ -13,6 +13,15 @@ import type { EmailDriver, SendInput, SendResult } from './email-driver.js';
  * we log ONLY the envelope metadata (to/subject/kind), never the body. If this
  * driver is left on in production (no real mail provider configured yet) it no
  * longer leaks reset tokens into the logs.
+ *
+ * launch-readiness-01: withholding the body was right, but for a year it was
+ * the whole answer, and "nothing is delivered AND nothing is readable" is a
+ * dead end for the person on the phone. The body stays out of the log; what
+ * changed is that there is now somewhere else to read it — the admin outbox
+ * viewer (`/admin/emails`), which re-hydrates the one-time link from Redis for
+ * an owner-level admin and writes an audit row for the read. The per-send line
+ * below names it, because that line is what an operator greps when a librarian
+ * says the mail never came.
  */
 @Injectable()
 export class ConsoleEmailDriver implements EmailDriver {
@@ -30,8 +39,10 @@ export class ConsoleEmailDriver implements EmailDriver {
     } else {
       // Body withheld on purpose (may contain reset tokens / verify links).
       this.logger.warn(
-        `[email] ${providerId} — console driver in a non-dev environment: NOT delivering ` +
-          `"${input.subject}" to ${input.to} (body withheld). Configure EMAIL_DRIVER=resend|smtp to actually send.`,
+        `[email] ${providerId} — NOT DELIVERED (EMAIL_DRIVER=console): ` +
+          `"${input.subject}" to ${input.to}. The body is withheld from this log because it ` +
+          `may carry a one-time link; read it at /admin/emails (owner admin, audited). ` +
+          `Set EMAIL_DRIVER=resend|smtp to actually send.`,
       );
     }
     return { providerId };

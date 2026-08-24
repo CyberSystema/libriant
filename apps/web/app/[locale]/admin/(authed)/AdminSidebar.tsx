@@ -38,6 +38,12 @@ export function AdminSidebar({ admin }: Props) {
     { href: `${base}/system-mode`, label: 'System mode' },
     { href: `${base}/maintenance`, label: 'Maintenance' },
     { href: `${base}/export`, label: 'Export' },
+    // launch-readiness-01: with EMAIL_DRIVER=console nothing Libriant composes
+    // is delivered, so "read the mail" and "get someone back in without the
+    // emailed link" are day-one operator tasks, not obscure ones. They sit in
+    // the main nav for that reason.
+    { href: `${base}/emails`, label: 'Emails' },
+    { href: `${base}/account-recovery`, label: 'Account recovery' },
     { href: `${base}/support`, label: 'Support access' },
     { href: `${base}/mfa`, label: 'Authenticator' },
   ];

@@ -20,6 +20,28 @@
  * A failing row never aborts the batch: it yields an `error` outcome with
  * precise issues and the engine moves on, so 9,900 clean rows import even when
  * 100 are dirty.
+ *
+ * THE RE-IMPORT CONTRACT (data-integrity-02).
+ * "Idempotently" above used to be an aspiration, not a property. The engine
+ * deduplicated only rows that HAD a natural key it looked up, and four kinds
+ * had none: `commitFine` was a bare `fine.create`, `commitLoan` blocked only a
+ * duplicate ACTIVE loan, `commitReservation` relied on a partial unique index
+ * covering only `queued`/`ready`, `commitBook` matched on `isbn13` alone and
+ * `commitMember` on memberNumber/email alone. Nothing recorded per-row
+ * progress, so any second pass over the file re-committed everything.
+ *
+ * The auditor ran this engine twice over the same one-row payload with the
+ * SAFEST setting, duplicateMode='skip', and got FINES rows = 2, total = 1000c
+ * for a file that said 500c. A librarian whose 20,000-row import dies at row
+ * 12,000 has one obvious action — send the file again — and doing so doubled
+ * every patron's outstanding debt, with no marker distinguishing the
+ * duplicate, no de-duplication tool and no undo. Bulk import is the onboarding
+ * path for every new library.
+ *
+ * So EVERY kind now has a natural key; `IMPORT_NATURAL_KEYS` below names them
+ * and the spec asserts none is missing. See the "re-import safety" section for
+ * the weak-key trade and why the `createdAt < runStartedAt` boundary is what
+ * keeps a first-time import behaving exactly as it did.
  */
 import type { ImportEntityKind } from '@libriant/db-control';
 import type { FieldEntityKind, Prisma, TenantPrismaClient } from '@libriant/db-tenant';
@@ -66,6 +88,32 @@ const FIELD_ENTITY_KINDS = new Set<FieldEntityKind>([
 ]);
 
 /**
+ * What makes re-committing the same row a no-op, stated per entity kind.
+ *
+ * Not documentation for its own sake: `import.service.ts` lets a `failed`
+ * batch be re-run on the strength of this claim, and for four of the seven
+ * kinds the claim was simply false (data-integrity-02). Writing it down where
+ * the compiler can see it means an eighth entity kind cannot be added without
+ * its author answering the question — `Record<ImportEntityKind, …>` fails to
+ * compile with a key missing, and the spec cross-checks the wording against
+ * what the committers actually query.
+ *
+ * "Strong" = a key the library itself uses to identify the record.
+ * "Weak" = a tuple that makes two rows indistinguishable to a librarian; only
+ * consulted when the strong key is absent, and only against records that
+ * predate this run.
+ */
+export const IMPORT_NATURAL_KEYS: Record<ImportEntityKind, string> = {
+  author: 'strong: sortName (normalized full name)',
+  book: 'strong: isbn13 — weak: sortTitle + publicationYear',
+  book_copy: 'strong: barcode (required on every row)',
+  member: 'strong: memberNumber, then email — weak: sortName + dateOfBirth',
+  loan: 'weak: copyId + memberId + loanedAt',
+  reservation: 'weak: bookId + memberId + placedAt',
+  fine: 'weak: memberId + amountCents + currency + reason + status',
+};
+
+/**
  * A Prisma client capable of author find/create — either the engine's own
  * client or a `$transaction` tx (IMP-04: authors are resolved inside the book
  * transaction so they roll back with a failed book write).
@@ -107,6 +155,14 @@ export class ImportEngine {
   private quotaUsed = 0;
   private quotaLimit = Number.POSITIVE_INFINITY;
 
+  /**
+   * The instant this run began, read from the DATABASE clock (see
+   * `readDbClock`). Weak natural keys only match records created BEFORE it —
+   * that boundary is what separates "this file already ran once" from "this
+   * file legitimately contains two identical rows".
+   */
+  private runStartedAt = new Date();
+
   private readonly authorCache = new Map<string, string>();
   private readonly bookByIsbn = new Map<string, string | null>();
   private readonly bookByTitle = new Map<string, string | null>();
@@ -124,6 +180,11 @@ export class ImportEngine {
   ) {}
 
   async init(): Promise<void> {
+    // data-integrity-02: fix the boundary FIRST, before a single row is
+    // committed. Everything the weak natural keys do depends on being able to
+    // tell a row this run wrote from a row that was already in the library.
+    this.runStartedAt = await this.readDbClock();
+
     if (FIELD_ENTITY_KINDS.has(this.kind as FieldEntityKind)) {
       const rows = await this.ctx.client.fieldDefinition.findMany({
         where: { entityKind: this.kind as FieldEntityKind, archivedAt: null },
@@ -266,7 +327,17 @@ export class ImportEngine {
   private async commitBook(row: MappedRow, issues: RowIssue[]): Promise<EngineRowResult> {
     const v = row.values;
     const isbn13 = (v.isbn13 as string | undefined) ?? null;
-    const existingId = isbn13 ? await this.findBookByIsbn(isbn13) : null;
+    // data-integrity-02: an ISBN-less book had NO duplicate check at all — the
+    // lookup was simply skipped — so re-importing a catalogue grew a second
+    // copy of every such title (and burned a second `max_books` slot). Greek
+    // library exports are full of pre-ISBN and locally-catalogued items, so
+    // this is the common row, not the exotic one.
+    const existingId = isbn13
+      ? await this.findBookByIsbn(isbn13)
+      : await this.findPriorBookByTitle(
+          v.title as string,
+          (v.publicationYear as number | undefined) ?? null,
+        );
 
     if (existingId) {
       if (this.ctx.duplicateMode === 'error') {
@@ -421,7 +492,12 @@ export class ImportEngine {
       ? await this.findMemberByNumber(number)
       : email
         ? await this.findMemberByEmail(email)
-        : null;
+        : // data-integrity-02: a member row carrying neither a number nor an
+          // email had no duplicate check, and `generateMemberNumber()` mints a
+          // FRESH number on every pass — so the same patron came back as a
+          // different person on a retry. A doubled membership roll also eats
+          // the `max_members` quota twice.
+          await this.findPriorMemberByName(row);
 
     if (existing) {
       if (this.ctx.duplicateMode === 'error') {
@@ -531,6 +607,36 @@ export class ImportEngine {
       return this.result(row, 'error', issues);
     }
 
+    // data-integrity-02: a CLOSED loan (returned/lost) had no duplicate check
+    // whatsoever — the one-active-loan-per-copy guard below covers `active`
+    // only — so re-importing a circulation history doubled every past loan,
+    // and with it every statistic built on loan counts. Same copy, same
+    // member, same checkout instant is the same loan.
+    const priorLoan = await this.findPriorLoan(copyId, memberId, loanedAt);
+    if (priorLoan) {
+      if (this.ctx.duplicateMode === 'error') {
+        issues.push(issue('copyBarcode', 'duplicate', 'This loan was already imported.'));
+        return this.result(row, 'error', issues);
+      }
+      if (this.ctx.duplicateMode === 'update') {
+        // `update` degrades to `skip` here on purpose. Rewriting a historical
+        // loan means replaying its side effects — flipping the copy's status,
+        // and for a status change the fines hanging off it. That is a data
+        // migration, not an import, and doing it silently from a spreadsheet
+        // is worse than not doing it. Say so on the row rather than pretending
+        // an update happened.
+        issues.push(
+          issue(
+            null,
+            'duplicate_not_updated',
+            'This loan already exists; existing loans are not rewritten on re-import.',
+            'warning',
+          ),
+        );
+      }
+      return this.result(row, 'skipped', issues, priorLoan);
+    }
+
     // IMP-05: enforce the one-active-loan-per-copy invariant the rest of the app
     // assumes. A copy may have at most one open loan, so refuse to open a second
     // active loan against a copy that already has one — whether the existing
@@ -614,6 +720,33 @@ export class ImportEngine {
     }
     const placedAt = v.placedAt ? new Date(v.placedAt as string) : new Date();
     const now = new Date();
+
+    // data-integrity-02: `reservations_one_active_per_book_member` is a PARTIAL
+    // unique index — `WHERE status IN ('queued','ready')` — so every resolved,
+    // expired or cancelled hold re-imported cleanly and silently doubled. Same
+    // book, same member, same instant it was placed is the same hold.
+    const priorHold = await this.findPriorReservation(bookId, memberId, placedAt);
+    if (priorHold) {
+      if (this.ctx.duplicateMode === 'error') {
+        issues.push(issue('bookIsbn13', 'duplicate', 'This hold was already imported.'));
+        return this.result(row, 'error', issues);
+      }
+      if (this.ctx.duplicateMode === 'update') {
+        // Same reasoning as loans: re-writing a hold means re-deriving its
+        // queue position against the live queue, which is a circulation
+        // operation and not something a re-uploaded file should trigger.
+        issues.push(
+          issue(
+            null,
+            'duplicate_not_updated',
+            'This hold already exists; existing holds are not rewritten on re-import.',
+            'warning',
+          ),
+        );
+      }
+      return this.result(row, 'skipped', issues, priorHold);
+    }
+
     if (this.ctx.dryRun) return this.result(row, 'imported', issues);
 
     const baseData = {
@@ -679,22 +812,212 @@ export class ImportEngine {
       issues.push(issue('paidAt', 'defaulted', 'Paid fine had no paid date; used now.', 'warning'));
     }
     if (status === 'outstanding') paidAt = null;
+
+    const data = {
+      memberId,
+      amountCents: v.amountCents as number,
+      currency: (v.currency as string | undefined) ?? this.currency,
+      reason: v.reason as string,
+      status,
+      paidAt,
+      notes: (v.notes as string | undefined) ?? null,
+      customFields: row.customFields as Prisma.InputJsonValue,
+    };
+
+    // data-integrity-02. THE ROW THAT COSTS REAL PEOPLE MONEY.
+    //
+    // This was a bare `fine.create` with no dedupe and `loanId` left NULL, so
+    // the `fines_one_outstanding_per_loan` partial unique index — which is
+    // `WHERE status = 'outstanding' AND "loanId" IS NOT NULL` — never applied
+    // to an imported fine. Re-uploading the file after a failure doubled every
+    // patron's debt, and nothing in the row said which of the two was the
+    // duplicate. The auditor reproduced it: one 500c row imported twice became
+    // 2 rows totalling 1000c, both reported as 'imported' with zero issues.
+    const priorFine = await this.findPriorFine(data);
+    if (priorFine) {
+      if (this.ctx.duplicateMode === 'error') {
+        issues.push(issue('amountCents', 'duplicate', 'This fine was already imported.'));
+        return this.result(row, 'error', issues);
+      }
+      if (this.ctx.duplicateMode === 'skip') return this.result(row, 'skipped', issues, priorFine);
+      // `update` IS meaningful for a fine — it is a plain scalar rewrite, no
+      // side effects to replay — so a librarian correcting a paid date or a
+      // reason by re-uploading gets what they asked for.
+      if (!this.ctx.dryRun) {
+        await this.ctx.client.fine.update({ where: { id: priorFine }, data });
+      }
+      return this.result(row, 'updated', issues, priorFine);
+    }
+
     if (this.ctx.dryRun) return this.result(row, 'imported', issues);
 
-    const created = await this.ctx.client.fine.create({
-      data: {
-        memberId,
-        amountCents: v.amountCents as number,
-        currency: (v.currency as string | undefined) ?? this.currency,
-        reason: v.reason as string,
-        status,
-        paidAt,
-        notes: (v.notes as string | undefined) ?? null,
-        customFields: row.customFields as Prisma.InputJsonValue,
+    const created = await this.ctx.client.fine.create({ data, select: { id: true } });
+    return this.result(row, 'imported', issues, created.id);
+  }
+
+  // ---- re-import safety (data-integrity-02) ------------------------------
+  //
+  // Every committer above answers ONE question before it creates anything:
+  // "is this row already in the library from an EARLIER run?"
+  //
+  // For author / book_copy / most books / most members the answer comes from a
+  // STRONG natural key the library itself uses to identify the record. The
+  // four kinds that had no such key — fines, closed loans, resolved holds, and
+  // any book or member whose row is missing its strong key — use a WEAK key:
+  // the tuple of fields that make two rows indistinguishable to a librarian.
+  //
+  // THE TRADE, EXPLICITLY, because it is a judgement call:
+  //
+  //   - Two genuinely distinct records identical in every one of those fields
+  //     (a patron who really was fined €2.00 twice for "late return", across
+  //     two separate uploads) now collapse into one, reported as `skipped` in
+  //     the batch counts where the librarian can see it.
+  //   - What shipped instead was silent duplication of a patron's debt, with
+  //     no marker, no de-dup tool and no undo.
+  //
+  // Under-importing a counted, visible row beats over-billing a real person
+  // invisibly. `duplicateMode` stays the librarian's dial: `error` turns every
+  // weak match into a row error they must look at; `update` rewrites the
+  // existing record wherever that is meaningful.
+  //
+  // THE BOUNDARY. A weak key only ever matches records created BEFORE this run
+  // started. Two identical rows INSIDE one file are two real records — the
+  // source system had two, or the librarian meant two — and collapsing those
+  // would change what a first-time import does, which is not what this fix is
+  // for. Only a match against an earlier run is the re-import case.
+  //
+  // Cost: one indexed lookup per row for the kinds that previously had none.
+  // The engine already runs one to three queries per row, and the alternative
+  // is a `(batchId, rowNumber)` provenance column in the tenant schema, which
+  // is the right long-term answer and a migration (see the package report).
+
+  /**
+   * The DATABASE's clock, not this process's.
+   *
+   * `createdAt` defaults to `now()` evaluated by Postgres. A boundary taken
+   * from the Node clock would be off by whatever the two have drifted, and a
+   * boundary even slightly LATE would classify rows this very run just wrote
+   * as pre-existing and skip the remainder of the file. Falls back to the
+   * local clock rather than failing the import: at worst that mis-scopes the
+   * within-file case, which is strictly better than refusing to import.
+   */
+  private async readDbClock(): Promise<Date> {
+    try {
+      const rows = await this.ctx.client.$queryRaw<Array<{ now: Date }>>`SELECT NOW() AS now`;
+      const now = rows?.[0]?.now;
+      return now instanceof Date ? now : new Date();
+    } catch {
+      return new Date();
+    }
+  }
+
+  /**
+   * Weak key for a book with no ISBN-13: normalized title + publication year.
+   * `publicationYear: null` deliberately means IS NULL — a row with no year
+   * matches only books with no year, which keeps the match conservative.
+   * Index-assisted by `@@index([sortTitle])`.
+   */
+  private async findPriorBookByTitle(
+    title: string,
+    publicationYear: number | null,
+  ): Promise<string | null> {
+    const sortTitle = normalizeText(title);
+    if (!sortTitle) return null;
+    const hit = await this.ctx.client.book.findFirst({
+      where: {
+        sortTitle,
+        publicationYear,
+        isbn13: null,
+        archivedAt: null,
+        createdAt: { lt: this.runStartedAt },
       },
       select: { id: true },
     });
-    return this.result(row, 'imported', issues, created.id);
+    return hit?.id ?? null;
+  }
+
+  /**
+   * Weak key for a member with neither a number nor an email: normalized name,
+   * narrowed by date of birth when the row carries one.
+   *
+   * The DOB clause is added only when present. Sending `dateOfBirth: null` for
+   * a file with no DOB column would restrict the match to members whose DOB is
+   * unknown, which is a different question and would miss the duplicate.
+   * Index-assisted by `@@index([sortName])`.
+   */
+  private async findPriorMemberByName(row: MappedRow): Promise<string | null> {
+    const v = row.values;
+    const sortName = normalizeText(v.fullName as string);
+    if (!sortName) return null;
+    const dateOfBirth = v.dateOfBirth ? new Date(`${v.dateOfBirth as string}T00:00:00Z`) : null;
+    const hit = await this.ctx.client.member.findFirst({
+      where: {
+        sortName,
+        ...(dateOfBirth ? { dateOfBirth } : {}),
+        archivedAt: null,
+        createdAt: { lt: this.runStartedAt },
+      },
+      select: { id: true },
+    });
+    return hit?.id ?? null;
+  }
+
+  /** Weak key for a loan. Index-assisted by `@@index([copyId])`. */
+  private async findPriorLoan(
+    copyId: string,
+    memberId: string,
+    loanedAt: Date,
+  ): Promise<string | null> {
+    const hit = await this.ctx.client.loan.findFirst({
+      where: { copyId, memberId, loanedAt, createdAt: { lt: this.runStartedAt } },
+      select: { id: true },
+    });
+    return hit?.id ?? null;
+  }
+
+  /** Weak key for a hold. Index-assisted by `@@index([memberId, status])`. */
+  private async findPriorReservation(
+    bookId: string,
+    memberId: string,
+    placedAt: Date,
+  ): Promise<string | null> {
+    const hit = await this.ctx.client.reservation.findFirst({
+      where: { bookId, memberId, placedAt, createdAt: { lt: this.runStartedAt } },
+      select: { id: true },
+    });
+    return hit?.id ?? null;
+  }
+
+  /**
+   * Weak key for a fine: the same member owing the same amount in the same
+   * currency for the same reason in the same state.
+   *
+   * `paidAt` is deliberately NOT part of the key. `commitFine` defaults a
+   * missing paid date to `new Date()`, so an identical row would carry a
+   * different `paidAt` on every pass and the key would never match — which is
+   * exactly the failure this exists to stop.
+   * Index-assisted by `@@index([memberId, status])`.
+   */
+  private async findPriorFine(data: {
+    memberId: string;
+    amountCents: number;
+    currency: string;
+    reason: string;
+    status: 'outstanding' | 'paid' | 'waived';
+  }): Promise<string | null> {
+    const hit = await this.ctx.client.fine.findFirst({
+      where: {
+        memberId: data.memberId,
+        amountCents: data.amountCents,
+        currency: data.currency,
+        reason: data.reason,
+        status: data.status,
+        archivedAt: null,
+        createdAt: { lt: this.runStartedAt },
+      },
+      select: { id: true },
+    });
+    return hit?.id ?? null;
   }
 
   // ---- resolvers (cached) ------------------------------------------------

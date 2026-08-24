@@ -3,6 +3,7 @@ import { Queue } from 'bullmq';
 import { controlDb, type EmailMessageKind, type Prisma } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
 import { RedisService } from '../platform/redis.service.js';
+import { OUTBOX_SECRET_TTL_SEC, outboxSecretKey, sealBodySecrets } from './outbox-secrets.js';
 
 /**
  * Producer-side public API. Callers do `EmailService.enqueue({...})`
@@ -24,6 +25,14 @@ import { RedisService } from '../platform/redis.service.js';
  * Scheduling: omit `scheduledFor` to send ASAP. Provide it for
  * pre-window 18c "Notify libraries 24h before maintenance" mail or any
  * future "delay" delivery.
+ *
+ * Secrets: `bodyMarkdown` is SEALED on the way in — any bearer-credential
+ * query parameter (`?token=`, `?code=`, …) is replaced by a placeholder and
+ * the value is parked in Redis with a TTL, so the column that ends up in
+ * `pg_dumpall` carries no redeemable credential (privacy-legal-06). The
+ * worker re-hydrates immediately before the driver call, so producers pass
+ * the real link and recipients receive the real link — nothing about the
+ * producer contract changes. See `outbox-secrets.ts`.
  */
 
 export const EMAIL_QUEUE_NAME = 'email-outbox';
@@ -89,6 +98,28 @@ export class EmailService implements OnModuleDestroy {
     const maxAttempts = input.maxAttempts ?? this.defaultMaxAttempts;
     const metadata = (input.metadata ?? {}) as Prisma.InputJsonValue;
 
+    // privacy-legal-06: lift bearer credentials out of the body before ANY of
+    // it reaches Postgres. This is the single chokepoint every producer already
+    // goes through, so a future one inherits the protection without opting in —
+    // which is the point: the original defect was per-producer string building
+    // (`?token=${token}`) landing in a column nothing ever redacts or purges.
+    // See outbox-secrets.ts for why Redis, and not encryption, is the other
+    // side of this line.
+    const sealed = sealBodySecrets(input.bodyMarkdown);
+    if (sealed.ref) {
+      // Write the secrets FIRST. If this throws, we never persist a body whose
+      // placeholders can't be resolved — the caller sees the failure and (like
+      // every producer today) logs it and moves on. The alternative ordering
+      // could store an undeliverable body on a crash. An orphaned Redis key
+      // from a later failure is harmless: it expires on its own.
+      await this.redis.client.set(
+        outboxSecretKey(sealed.ref),
+        JSON.stringify(sealed.secrets),
+        'EX',
+        OUTBOX_SECRET_TTL_SEC,
+      );
+    }
+
     // Use the unique constraint on idempotencyKey as the dedup lever.
     // We try the cheap insert path first; on conflict we re-fetch the
     // existing row so the caller still gets the outbox id.
@@ -103,7 +134,7 @@ export class EmailService implements OnModuleDestroy {
           fromEmail: input.fromEmail ?? null,
           replyToEmail: input.replyToEmail ?? null,
           subject: input.subject,
-          bodyMarkdown: input.bodyMarkdown,
+          bodyMarkdown: sealed.storedBody,
           tenantId: input.tenantId ?? null,
           metadataJson: metadata,
           maxAttempts,

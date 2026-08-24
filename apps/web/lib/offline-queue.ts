@@ -193,13 +193,16 @@ export async function listQueued(): Promise<QueuedAction[]> {
   return (all ?? []).slice().sort((a, b) => a.createdAt - b.createdAt);
 }
 
+/** Take a SUCCEEDED entry off the queue. For anything else use
+ *  {@link settleQueued}, which records why. */
 export async function removeQueued(id: string): Promise<void> {
   if (!hasIndexedDb()) return;
   await runStore(STORE, 'readwrite', (store) => store.delete(id));
 }
 
-/** Persist an updated entry (e.g. a bumped attempt count). Best-effort. */
-export async function updateQueued(action: QueuedAction): Promise<void> {
+/** Persist an updated entry (e.g. a bumped attempt count). Best-effort.
+ *  Module-private: the replay loop reaches it through {@link settleQueued}. */
+async function updateQueued(action: QueuedAction): Promise<void> {
   if (!hasIndexedDb()) return;
   try {
     await runStore(STORE, 'readwrite', (store) => store.put(action));
@@ -218,6 +221,12 @@ export async function clearQueue(): Promise<void> {
  * starts being *listed*. One transaction, so the entry is never in neither
  * store.
  *
+ * Module-private on purpose. The queue now offers exactly two ways for an
+ * entry to end — {@link removeQueued} (it succeeded) and {@link settleQueued}
+ * (it did not, and here is the reason) — so "stop replaying it" cannot be
+ * spelled as "delete it" from outside this file. That conflation is what
+ * frontend-06 was.
+ *
  * Returns false when the record could not be written — private-browsing IDB,
  * a quota refusal. The caller still has to get the entry out of the pending
  * queue in that case (an `expired` entry would otherwise be re-dropped, and
@@ -225,7 +234,7 @@ export async function clearQueue(): Promise<void> {
  * only record left. That is the old behaviour, and it is why this returns a
  * boolean rather than swallowing the failure.
  */
-export async function failQueued(
+async function failQueued(
   action: QueuedAction,
   reason: FailureReason,
   detail?: string,
@@ -323,4 +332,85 @@ export function classifyReplayError(err: unknown): 'offline' | 'retry' | 'drop' 
   if (!(err instanceof ApiError)) return 'offline';
   if (err.status >= 500 || err.status === 408 || err.status === 429) return 'retry';
   return 'drop';
+}
+
+/**
+ * What the replay loop should do with one entry.
+ *
+ *   - `send`   — go ahead and replay it.
+ *   - `wait`   — no server contact; leave the entry exactly as it is and stop
+ *                the pass. Being offline is not the entry's fault.
+ *   - `retry`  — a transient server fault; bump the counter and back off.
+ *   - `retire` — this entry will never be replayed again. It ALWAYS carries a
+ *                reason, and a reason is what makes it recordable.
+ *
+ * frontend-06 was, at bottom, that "will never be replayed again" and "delete
+ * it" were the same line of code in three different places in the provider.
+ * The decision now lives here as a pure function and the storage effect lives
+ * in {@link settleQueued}, so there is exactly one place that can end an entry
+ * and it cannot end one without a reason to show the librarian.
+ */
+export type ReplayPlan =
+  | { kind: 'send' }
+  | { kind: 'wait' }
+  | { kind: 'retry'; attempts: number }
+  | { kind: 'retire'; reason: FailureReason };
+
+/**
+ * Decide before sending. The only pre-flight rejection is age: past
+ * {@link MAX_QUEUE_AGE_MS} the server has forgotten the idempotency key, so a
+ * replay could apply the loan a second time (see the constant's note).
+ */
+export function planReplaySend(action: QueuedAction, now: number = Date.now()): ReplayPlan {
+  if (isExpired(action, now)) return { kind: 'retire', reason: 'expired' };
+  return { kind: 'send' };
+}
+
+/**
+ * Decide after a send failed. `attempts` counts only transient SERVER faults —
+ * a device that is offline gets no penalty, or a library with a bad Friday
+ * would arrive on Monday with its queue burned through.
+ */
+export function planReplayFailure(action: QueuedAction, err: unknown): ReplayPlan {
+  const verdict = classifyReplayError(err);
+  if (verdict === 'offline') return { kind: 'wait' };
+  if (verdict === 'retry') {
+    const attempts = (action.attempts ?? 0) + 1;
+    if (attempts < MAX_REPLAY_ATTEMPTS) return { kind: 'retry', attempts };
+    return { kind: 'retire', reason: 'exhausted' };
+  }
+  return { kind: 'retire', reason: 'rejected' };
+}
+
+/** Where an entry ended up after {@link settleQueued}. `gone` is the failure
+ *  case — nothing on disk remembers the action any more. */
+export type SettledPlace = 'pending' | 'failed' | 'gone';
+
+/**
+ * Apply a {@link ReplayPlan}'s storage effect. This is the ONLY way an entry
+ * leaves the pending queue other than succeeding, which is what makes
+ * "terminal ⇒ recorded" checkable rather than a convention: the tests drive
+ * every plan through here and assert the entry is still findable afterwards.
+ *
+ * `gone` is returned only when the failed record could not be written at all
+ * (private-browsing IndexedDB, a quota refusal). The entry still has to leave
+ * the queue in that case — an expired one would otherwise be re-retired, and
+ * re-announced, every thirty seconds — so the caller's sticky critical toast
+ * becomes the only record, and the caller is told so it can say something
+ * different.
+ */
+export async function settleQueued(
+  action: QueuedAction,
+  plan: ReplayPlan,
+  detail?: string,
+): Promise<SettledPlace> {
+  if (plan.kind === 'send' || plan.kind === 'wait') return 'pending';
+  if (plan.kind === 'retry') {
+    await updateQueued({ ...action, attempts: plan.attempts });
+    return 'pending';
+  }
+  const recorded = await failQueued(action, plan.reason, detail);
+  if (recorded) return 'failed';
+  await removeQueued(action.id).catch(() => undefined);
+  return 'gone';
 }

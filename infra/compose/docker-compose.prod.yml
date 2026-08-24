@@ -139,10 +139,45 @@ services:
         condition: service_started
       api:
         condition: service_started
+    # PUBLISHED WITH AN EXPLICIT BIND ADDRESS — never the bare `80:80` form.
+    #
+    # authn-authz-01 / input-and-files-02. `80:80` binds BOTH `0.0.0.0` and
+    # `[::]`. The host has a public IPv6 address (2a01:4f8:13b:ac8::2) but no
+    # compose network below sets `enable_ipv6`, so the caddy container holds no
+    # v6 address and a v6 connection CANNOT be DNATed to it. Docker carries it
+    # instead through the USERLAND PROXY (`docker-proxy`, a host process), which
+    # accepts the v6 connection and opens a brand-new IPv4 connection to the
+    # container FROM THE BRIDGE GATEWAY. Two things follow, and a verifier used
+    # both:
+    #   1. Caddy's `remote_ip` sees a private address for every v6 client, so the
+    #      edge guard's private-peer arm admitted them — 25 logins with rotating
+    #      CF-Connecting-IP headers landed in 25 separate rate-limit buckets.
+    #   2. The connection never traverses FORWARD, so DOCKER-USER never sees it
+    #      and a firewall rule that lives only there is invisible to it.
+    #
+    # Binding v4 explicitly removes the `[::]` listener entirely: a v6 SYN to
+    # 80/443 is refused by the kernel, there is no userland-proxy path left, and
+    # every connection that reaches Caddy arrives by DNAT with its true source
+    # address intact. What this layer guarantees ON ITS OWN: Caddy's view of the
+    # peer is the truth for all internet traffic, whatever the firewall and the
+    # Caddyfile are doing. What it does NOT do: it admits every IPv4 source —
+    # scripts/prod-bootstrap.sh --firewall-only is the layer that narrows that.
+    #
+    # CONSEQUENCE FOR DNS, and it is not optional: while this is v4-only the
+    # origin must have NO AAAA records, or Cloudflare will try the v6 origin and
+    # get a 522. Visitors still reach Cloudflare over IPv6; only the
+    # Cloudflare→origin hop is v4. See docs/RUNBOOK.md §5.4.
+    #
+    # TO GO DUAL-STACK PROPERLY (the alternative to this line, not an addition):
+    # set `enable_ipv6: true` on the `edge` network below AND `"ip6tables": true`
+    # in the daemon's /etc/docker/daemon.json, so v6 is DNATed like v4 and Caddy
+    # sees the real v6 peer; then set EDGE_BIND_IPV4 back to a dual-stack publish
+    # by hand, re-run `--firewall-only --allow-ipv6`, and only then add the AAAA
+    # records. Doing any one of those four without the others reopens this.
     ports:
-      - '80:80'
-      - '443:443'
-      - '443:443/udp' # HTTP/3
+      - '${EDGE_BIND_IPV4:-0.0.0.0}:80:80'
+      - '${EDGE_BIND_IPV4:-0.0.0.0}:443:443'
+      - '${EDGE_BIND_IPV4:-0.0.0.0}:443:443/udp' # HTTP/3
     environment:
       SITE_HOST: ${SITE_HOST:-libriant.com}
       PUBLIC_HOST: ${PUBLIC_HOST:-app.libriant.com}
@@ -396,6 +431,14 @@ services:
 #           the internet, so a future service that mistakenly declares `ports:`
 #           — or a `docker run --network libriant_data -p` — CANNOT publish the
 #           data tier (whose only auth is POSTGRES_PASSWORD/scram).
+#
+# None of the three sets `enable_ipv6`. That is a decision, not an oversight:
+# a bridge network without IPv6 means Docker cannot DNAT a v6 connection, and
+# without an explicit v4 bind on caddy's published ports it silently falls back
+# to the userland proxy, which re-originates every v6 client from the bridge
+# gateway — the bypass that defeated the first fix for authn-authz-01. The
+# published ports above are therefore bound to IPv4 only; turning IPv6 on here
+# is one of four changes that must be made together, listed in that comment.
 networks:
   edge:
     driver: bridge

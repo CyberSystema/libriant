@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { loadEnv } from '../../config/env.js';
 import { ConsoleEmailDriver } from './console-driver.js';
 import type { EmailDriver } from './email-driver.js';
@@ -12,12 +13,56 @@ import { SmtpEmailDriver } from './smtp-driver.js';
  * open their respective transports and fail fast on missing config.
  */
 export function createEmailDriver(): EmailDriver {
-  switch (loadEnv().emailDriver) {
+  const env = loadEnv();
+  switch (env.emailDriver) {
     case 'smtp':
       return new SmtpEmailDriver();
     case 'resend':
       return new ResendEmailDriver();
     default:
+      announceUndeliveredMail(env.nodeEnv);
       return new ConsoleEmailDriver();
   }
+}
+
+/**
+ * launch-readiness-01: say it at boot, in the log the operator actually reads.
+ *
+ * The console driver used to announce itself only per-send, at `warn`, in the
+ * middle of ordinary traffic — so an operator could bring the platform up,
+ * watch it come up clean, and not learn that no mail leaves the box until a
+ * librarian phoned to say the reset link never arrived. This banner is the
+ * thing a deploy is supposed to trip over.
+ *
+ * `error` level outside development on purpose: this IS an error in a
+ * production deployment. It is a deliberate, documented one for the launch
+ * (there is no Resend key), which is exactly why the message names the
+ * supported way to work around it rather than only complaining.
+ */
+function announceUndeliveredMail(nodeEnv: string): void {
+  const logger = new Logger('EmailDriver');
+  if (nodeEnv === 'development') {
+    logger.log('EMAIL_DRIVER=console — mail is logged, not sent (development default).');
+    return;
+  }
+  logger.error(
+    [
+      '',
+      '  ┌───────────────────────────────────────────────────────────────────────┐',
+      '  │  EMAIL IS NOT BEING DELIVERED.                                        │',
+      '  └───────────────────────────────────────────────────────────────────────┘',
+      `  EMAIL_DRIVER=console under NODE_ENV=${nodeEnv}. Every message is written to`,
+      '  the email_outbox table and marked delivered with a fabricated provider id.',
+      '  NOTHING leaves this machine. No password reset, no e-mail verification,',
+      '  no overdue notice, no support-access notification reaches anyone.',
+      '',
+      '  Bodies are NOT printed here — they carry one-time links. Read them in the',
+      '  admin panel instead:  https://<ADMIN_HOST>/en/admin/emails',
+      '  Recover an account without the link:  .../en/admin/account-recovery',
+      '',
+      '  To actually deliver mail, set EMAIL_DRIVER=resend + RESEND_API_KEY (or',
+      '  EMAIL_DRIVER=smtp + SMTP_URL) and restart the api and worker services.',
+      '',
+    ].join('\n'),
+  );
 }

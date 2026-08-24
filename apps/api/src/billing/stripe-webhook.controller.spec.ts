@@ -241,6 +241,87 @@ describe('StripeWebhookController.handle', () => {
     expect(billing.syncStripeSubscription).not.toHaveBeenCalled();
   });
 
+  /**
+   * billing-08. The event that could be lost forever.
+   *
+   * The refusal above used to require BOTH stores to be down. With Postgres
+   * down and Redis healthy the handler warned, took the Redis lock, dispatched
+   * against the same dead Postgres, failed to write the error row, and
+   * returned 200 — which Stripe treats as final. The retry sweep selects only
+   * FROM stripe_webhook_events, so the row that was never inserted was
+   * invisible to it forever. A cancellation, a payment failure or a paid
+   * upgrade simply vanished, with no error row and no alert.
+   *
+   * These four tests exist to make the invariant unfakeable: NO 200 WITHOUT A
+   * DURABLE ROW.
+   */
+  describe('a 200 means the event is durably ours', () => {
+    it('refuses with 503 when the durable insert fails, even though Redis is fine', async () => {
+      const redis = makeRedis();
+      redis.set.mockResolvedValue('OK'); // Redis perfectly healthy.
+      stripeCreate.mockRejectedValue(new Error('could not connect to server'));
+      const billing = makeBilling();
+      const c = new StripeWebhookController(makeStripeDriver(sampleEvent), billing, redis.service);
+
+      await expect(c.handle({ rawBody: Buffer.from('{}') } as never, 'sig')).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+    });
+
+    it('does not dispatch, and does not take the lock, when it cannot take custody', async () => {
+      const redis = makeRedis();
+      redis.set.mockResolvedValue('OK');
+      stripeCreate.mockRejectedValue(new Error('could not connect to server'));
+      const billing = makeBilling();
+      const c = new StripeWebhookController(makeStripeDriver(sampleEvent), billing, redis.service);
+
+      await expect(c.handle({ rawBody: Buffer.from('{}') } as never, 'sig')).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      // Dispatching a half-applied change we cannot record is how state
+      // diverges silently — refuse before touching billing at all.
+      expect(billing.syncStripeSubscription).not.toHaveBeenCalled();
+      // And no 30-day lock left behind to block the redelivery we just asked for.
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the row exists but its processedAt cannot be read', async () => {
+      const redis = makeRedis();
+      redis.set.mockResolvedValue('OK');
+      stripeCreate.mockRejectedValue(uniqueViolation());
+      stripeFindUnique.mockRejectedValue(new Error('connection terminated'));
+      const billing = makeBilling();
+      const c = new StripeWebhookController(makeStripeDriver(sampleEvent), billing, redis.service);
+
+      // A row we cannot read is not a replay guard. Re-dispatching might
+      // re-apply something already applied; skipping might drop something
+      // never applied. Asking Stripe to come back is the only safe answer.
+      await expect(c.handle({ rawBody: Buffer.from('{}') } as never, 'sig')).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      expect(billing.syncStripeSubscription).not.toHaveBeenCalled();
+    });
+
+    it('still returns 200 when dispatch fails AFTER the row is on disk', async () => {
+      const redis = makeRedis();
+      redis.set.mockResolvedValue('OK');
+      const billing = makeBilling();
+      (billing.syncStripeSubscription as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error('billing exploded'),
+      );
+      // Even the error-row write fails — the sweep's stale-window clause
+      // (receivedAt older than 5 min) still finds a row with error IS NULL, so
+      // the event is not lost and a redelivery is not needed.
+      stripeUpdate.mockRejectedValue(new Error('connection terminated'));
+      const c = new StripeWebhookController(makeStripeDriver(sampleEvent), billing, redis.service);
+
+      await expect(c.handle({ rawBody: Buffer.from('{}') } as never, 'sig')).resolves.toEqual({
+        received: true,
+      });
+      expect(stripeCreate).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('routes each event type to its billing handler', async () => {
     const cases: Array<{ type: StripeWebhookEvent['type']; method: keyof BillingService }> = [
       { type: 'customer.subscription.created', method: 'syncStripeSubscription' },

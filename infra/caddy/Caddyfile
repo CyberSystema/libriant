@@ -163,6 +163,16 @@
 	# (the gateway) with every other such caller — a bounded, self-inflicted
 	# limit, not an unbounded supply of fresh buckets.
 	#
+	# Since then the userland-proxy path has been closed at its source:
+	# infra/compose/docker-compose.prod.yml publishes 80/443 on an explicit IPv4
+	# address, so there is no `[::]` listener and no v6 client can reach it. The
+	# `private_ranges` arm therefore now means what it always claimed to mean —
+	# an ON-HOST caller (the deploy's `curl --resolve …:127.0.0.1` checks, another
+	# container) — rather than "an on-host caller OR every IPv6 visitor". It stays
+	# because this file must keep working when that binding is wrong: a private
+	# peer that shares one bucket is a survivable degradation, a private peer that
+	# gets to name itself is the finding.
+	#
 	# X-Forwarded-For is dropped on the way in for the same reason: whatever the
 	# client wrote there is not evidence. reverse_proxy re-adds it with the true
 	# peer, so the upstream sees exactly one entry, one we vouch for.
@@ -456,20 +466,34 @@ www.{$SITE_HOST:libriant.com} {
 # TenantMiddleware already supports subdomain resolution.
 # ---------------------------------------------------------------------------
 
+# Written out WITH the origin guard already in place, because the version that
+# used to sit here was a bare `handle_path { reverse_proxy api:3001 }` — the same
+# shape as the /webhooks/* route that shipped unguarded. Uncommenting it would
+# have re-opened the finding on a brand-new vhost, and the person doing it would
+# have had no reason to suspect that. Every reverse_proxy in this file lives
+# inside a `route` that imports origin_guard first; a unit test
+# (apps/api/src/platform/client-ip.spec.ts) reads this file and fails if one does
+# not, including if this block is uncommented as-is with the imports removed.
+#
 # *.{$PUBLIC_APEX_DOMAIN:libriant.com} {
 # 	import security_headers
 # 	import maintenance_check
 # 	import maintenance_takeover
 # 	import static_assets
-#
-# 	tls {
-# 		dns hetzner {env.HETZNER_DNS_TOKEN}
-# 	}
+# 	import cloudflare_origin
 #
 # 	handle_path /lbr-api/* {
-# 		reverse_proxy api:3001
+# 		route {
+# 			import origin_guard wildapi
+# 			@internal path /metrics /metrics/* /healthz /readyz
+# 			respond @internal 404
+# 			reverse_proxy api:3001
+# 		}
 # 	}
 # 	handle {
-# 		reverse_proxy web:3000
+# 		route {
+# 			import origin_guard wildweb
+# 			reverse_proxy web:3000
+# 		}
 # 	}
 # }

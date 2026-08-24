@@ -52,24 +52,52 @@ let parsed: { spec: string; list: BlockList } | null = null;
  * It guarantees: nobody who reaches the API directly can name themselves. It
  * CANNOT guarantee that a header arriving from our own proxy is true, because
  * from here Caddy is Caddy no matter what Caddy believed. That is why the value
- * has to be made trustworthy before it gets here, in two layers:
+ * has to be made trustworthy before it gets here. FOUR layers do it, and each
+ * one is written to be worth something with all the others switched off —
+ * because the first attempt at this was a single layer, and a verifier walked
+ * through it in an afternoon.
  *
- *   1. scripts/prod-bootstrap.sh --firewall-only — the packet never arrives
- *      unless its source is Cloudflare. Hooked into INPUT *and* DOCKER-USER,
- *      v4 *and* v6, because of (2).
- *   2. infra/caddy/Caddyfile (origin_guard) — X-Real-IP is written from the TCP
+ *   1. infra/compose/docker-compose.prod.yml — 80/443 are published on an
+ *      EXPLICIT IPv4 address, so there is no `[::]` listener. ALONE this
+ *      guarantees that every connection reaching Caddy did so by DNAT with its
+ *      true source address; it admits any IPv4 source. It exists because of the
+ *      bypass in (4).
+ *   2. scripts/prod-bootstrap.sh --firewall-only — a DROP chain hooked into
+ *      INPUT *and* DOCKER-USER, iptables *and* ip6tables. ALONE this guarantees
+ *      the packet never arrives at all unless its source is Cloudflare (public
+ *      v6 to 80/443 is dropped outright, not narrowed). It is the primary
+ *      control and the only one that also protects the web app itself; it is
+ *      also hand-run and can be flushed by a reboot or a `docker network`
+ *      change, which is why it is not the only one.
+ *   3. infra/caddy/Caddyfile (origin_guard) — X-Real-IP is written from the TCP
  *      PEER: `CF-Connecting-IP` is copied only when the peer really is a
  *      Cloudflare address, and for any other admitted peer the peer address
  *      itself becomes X-Real-IP. Client-supplied X-Forwarded-For is dropped.
+ *      ALONE this guarantees a forged CF-Connecting-IP is never honoured from a
+ *      non-Cloudflare peer, with the firewall flushed and the ports wide open.
+ *      It does NOT distinguish our Cloudflare zone from any other customer's.
+ *   4. this file. ALONE it guarantees a direct hit on api:3001 — a
+ *      misconfiguration, a container on the app network — cannot pick its own
+ *      rate-limit bucket.
  *
- * Layer 2 was added because layer 2's first version (a bare Cloudflare-or-
- * private matcher) was walked straight through over IPv6: the host has a public
- * v6 address, Docker publishes 443 on [::], and with no `enable_ipv6` on the
+ * Layer 1 exists because layer 3's first version (a bare Cloudflare-or-private
+ * matcher) was walked straight through over IPv6: the host has a public v6
+ * address, Docker publishes 443 on [::], and with no `enable_ipv6` on the
  * compose network the connection is relayed by Docker's userland proxy, which
  * re-originates it from the BRIDGE GATEWAY — a private address the matcher
  * admitted, after which the forged `CF-Connecting-IP` was stamped in as before.
- * The lesson that shaped all three layers: never infer "trusted" from an
- * address family or a range that our own plumbing can synthesise.
+ * The lesson that shaped all four layers: never infer "trusted" from an address
+ * family or a range that our own plumbing can synthesise.
+ *
+ * The residual risk we accept, named so nobody rediscovers it as a surprise: an
+ * on-host caller (a `curl 127.0.0.1` health check, another container) still
+ * reaches Caddy through docker-proxy and is identified as the bridge gateway,
+ * so all such callers share ONE bucket. That is bounded and self-inflicted — a
+ * fixed number of buckets rather than an unbounded supply — and after layer 1
+ * no internet client can get onto that path at all.
+ *
+ * client-ip.spec.ts asserts layers 1 and 3 by reading the actual infra files,
+ * because neither defect was visible from any TypeScript.
  */
 export function clientIp(req: Request): string | undefined {
   const peer = normalizeIp(req.socket?.remoteAddress);

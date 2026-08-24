@@ -30,6 +30,7 @@ import {
   type StripeSubscriptionShape,
   type StripeSubscriptionState,
 } from './stripe-driver.js';
+import { buildWebReturnUrl, resolveWebLocale } from './return-url.js';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -385,12 +386,20 @@ export class BillingService {
       throw new BadRequestException(`You're already on the ${plan.name} plan.`);
     }
 
-    const base = env.billingReturnUrl.replace(/\/$/, '');
-    const returnPath = input.returnPath?.startsWith('/')
-      ? input.returnPath
-      : '/t/' + sub.tenant.slug + '/billing';
-    const successUrl = `${base}${returnPath}?checkout=success`;
-    const cancelUrl = `${base}${returnPath}?checkout=cancelled`;
+    // billing-01: every one of these three used to be built by hand as
+    // `${base}/t/<slug>/billing`, which is a 404 — the web app's only billing
+    // route carries a mandatory locale segment. `buildWebReturnUrl` is now the
+    // single place that knows the route shape; see return-url.ts.
+    const urlFor = (query?: string): string =>
+      buildWebReturnUrl({
+        base: env.billingReturnUrl,
+        locale: resolveWebLocale(sub.tenant.defaultLocale),
+        slug: sub.tenant.slug,
+        returnPath: input.returnPath,
+        query,
+      });
+    const successUrl = urlFor('checkout=success');
+    const cancelUrl = urlFor('checkout=cancelled');
     // The re-price branch below returns the BARE billing path, not
     // `?checkout=success`. Nothing in apps/web reads that parameter — no page,
     // no layout — so it was a confirmation we promised the browser and never
@@ -398,7 +407,7 @@ export class BillingService {
     // appends the query to `successUrl`), so the day apps/web grows a handler
     // both branches light up together. See the package report for what the web
     // side would need to show "your plan was changed".
-    const planChangedUrl = `${base}${returnPath}`;
+    const planChangedUrl = urlFor();
 
     // Picking a paid plan counts as making a choice — stamp it now so the
     // library isn't bounced back to the chooser in the window between the
@@ -531,13 +540,17 @@ export class BillingService {
       );
     }
     const customerId = await this.ensureStripeCustomer(tenantId);
-    const base = env.billingReturnUrl.replace(/\/$/, '');
-    const returnPath = input.returnPath?.startsWith('/')
-      ? input.returnPath
-      : '/t/' + sub.tenant.slug + '/billing';
+    // billing-01: the Portal's return_url had the identical missing-locale
+    // defect as Checkout's success/cancel URLs — a library that opened the
+    // portal to update a card was dropped on a 404 on the way back.
     return this.stripe.createBillingPortalSession({
       customerId,
-      returnUrl: `${base}${returnPath}`,
+      returnUrl: buildWebReturnUrl({
+        base: env.billingReturnUrl,
+        locale: resolveWebLocale(sub.tenant.defaultLocale),
+        slug: sub.tenant.slug,
+        returnPath: input.returnPath,
+      }),
     });
   }
 

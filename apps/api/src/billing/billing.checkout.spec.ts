@@ -130,3 +130,103 @@ describe('BillingService.startCheckout — billing cadence', () => {
     expect(createCheckoutSession).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * billing-01. The URLs Stripe redirects to after a successful payment used to
+ * be `${BILLING_RETURN_URL}/t/<slug>/billing`, which is a 404 — the web app's
+ * only billing route is `/[locale]/t/[slug]/billing` and the locale segment is
+ * mandatory. The auditor booted the production build and confirmed it:
+ * `/t/demo/billing?checkout=success` -> 404, `/el/t/demo/billing` -> 307.
+ *
+ * The route SHAPE is pinned against the file tree in return-url.spec.ts. What
+ * is pinned here is that startCheckout actually routes through that builder —
+ * the defect was two call sites hand-assembling the path, and a builder nobody
+ * calls fixes nothing.
+ */
+describe('BillingService.startCheckout — where Stripe sends the browser back', () => {
+  /** Mirrors apps/web/app/[locale]/t/[slug]/billing/page.tsx. */
+  const REAL_BILLING_ROUTE = /^https:\/\/app\.libriant\.test\/(el|en)\/t\/acme\/billing(\?|$)/;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    accountFindUnique.mockResolvedValue({ stripeCustomerId: 'cus_1' });
+    createCheckoutSession.mockResolvedValue({ url: 'https://stripe.test/s', sessionId: 's1' });
+    getSubscription.mockResolvedValue(null);
+    subFindUnique.mockResolvedValue({
+      planId: 'p-starter',
+      status: 'active',
+      stripeSubscriptionId: null,
+      planSelectedAt: new Date(),
+      // Deliberately no defaultLocale: an older tenant row, or a select that
+      // forgot the column, must still produce a route that exists.
+      tenant: { slug: 'acme' },
+    });
+    planFindUnique.mockResolvedValue(MUNICIPAL);
+  });
+
+  it('sends a success URL that is a real Next route, not a 404', async () => {
+    await makeService().startCheckout('t1', { planSlug: 'municipal' });
+    const { successUrl } = createCheckoutSession.mock.calls[0]![0] as { successUrl: string };
+    expect(successUrl).toMatch(REAL_BILLING_ROUTE);
+    expect(successUrl).toContain('checkout=success');
+  });
+
+  it('sends a cancel URL that is a real Next route too', async () => {
+    await makeService().startCheckout('t1', { planSlug: 'municipal' });
+    const { cancelUrl } = createCheckoutSession.mock.calls[0]![0] as { cancelUrl: string };
+    expect(cancelUrl).toMatch(REAL_BILLING_ROUTE);
+    expect(cancelUrl).toContain('checkout=cancelled');
+  });
+
+  it("uses the tenant's own locale when the row has one", async () => {
+    subFindUnique.mockResolvedValue({
+      planId: 'p-starter',
+      status: 'active',
+      stripeSubscriptionId: null,
+      planSelectedAt: new Date(),
+      tenant: { slug: 'acme', defaultLocale: 'en' },
+    });
+    await makeService().startCheckout('t1', { planSlug: 'municipal' });
+    const { successUrl } = createCheckoutSession.mock.calls[0]![0] as { successUrl: string };
+    expect(successUrl).toBe('https://app.libriant.test/en/t/acme/billing?checkout=success');
+  });
+
+  it('rescues a client that sends the old locale-less returnPath', async () => {
+    // PlanGrid.tsx / ChoosePlanScreen.tsx send no returnPath today, but a
+    // desktop build or an older bundle may still send the short form. It must
+    // not reintroduce the 404.
+    await makeService().startCheckout('t1', {
+      planSlug: 'municipal',
+      returnPath: '/t/acme/billing',
+    });
+    const { successUrl } = createCheckoutSession.mock.calls[0]![0] as { successUrl: string };
+    expect(successUrl).toMatch(REAL_BILLING_ROUTE);
+  });
+
+  it('returns a real route from the in-place re-price branch as well', async () => {
+    // The re-price branch never touches Checkout, so its URL is built
+    // separately — and had the same defect.
+    subFindUnique.mockResolvedValue({
+      planId: 'p-starter',
+      status: 'active',
+      stripeSubscriptionId: 'sub_live',
+      planSelectedAt: new Date(),
+      tenant: { slug: 'acme', defaultLocale: 'el' },
+    });
+    getSubscription.mockResolvedValue({ id: 'sub_live', status: 'active' });
+    const stripe = {
+      createCheckoutSession,
+      getSubscription,
+      changeSubscriptionPrice: vi.fn().mockResolvedValue(undefined),
+    };
+    const svc = new BillingService(
+      { invalidate: vi.fn() } as never,
+      stripe as never,
+      { billingEnabled: vi.fn().mockResolvedValue(true) } as never,
+      makeRedis() as never,
+    );
+    const res = await svc.startCheckout('t1', { planSlug: 'municipal' });
+    expect(res.outcome).toBe('plan_changed');
+    expect(res.url).toMatch(REAL_BILLING_ROUTE);
+  });
+});

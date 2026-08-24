@@ -2,9 +2,11 @@ import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { controlDb } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
+import { RedisService } from '../platform/redis.service.js';
 import { createEmailDriver } from './drivers/create-email-driver.js';
 import type { EmailDriver } from './drivers/email-driver.js';
 import { EMAIL_JOB_NAME, EMAIL_QUEUE_NAME } from './email.service.js';
+import { outboxSecretKey, parseSecretPayload, sealedRef, unsealBody } from './outbox-secrets.js';
 
 type JobData = { outboxId: string };
 
@@ -15,6 +17,29 @@ const RECOVERY_INTERVAL_MS = 5 * 60 * 1000;
 const SENDING_STUCK_MS = 5 * 60 * 1000;
 /** Cap rows re-enqueued per scan pass so a huge backlog can't stall the loop. */
 const RECOVERY_BATCH = 1000;
+
+/**
+ * privacy-legal-06, second half. Sealing (outbox-secrets.ts) takes the bearer
+ * credentials out of `bodyMarkdown`; it does not make the column harmless.
+ * What is left is still a permanent archive of every transactional message
+ * Libriant has ever composed — member names, borrowed titles, contact details —
+ * inside `pg_dumpall`, inside every nightly backup, and inside any admin
+ * control export, with nothing that ever deletes a row.
+ *
+ * So terminal rows lose their body after this window. 90 days is chosen to
+ * outlast the questions the body actually answers ("what did we send that
+ * member in March?", "did the overdue notice go out?") while keeping the
+ * archive from growing without limit. The ENVELOPE (to / subject / kind /
+ * status / timestamps) is kept forever: it is what the outbox stats and the
+ * admin viewer are for, and it is far less sensitive than the prose.
+ *
+ * Only `delivered` and `dead` rows are swept. A `pending`/`sending` row still
+ * owes someone an email and its body is the message.
+ */
+const BODY_RETENTION_DAYS = 90;
+const BODY_REDACTED_MARKER = `[body removed after ${BODY_RETENTION_DAYS} days — outbox retention]`;
+/** Cap per pass so the first sweep on a long-lived install can't stall the loop. */
+const RETENTION_BATCH = 5000;
 
 /**
  * Appended to every outgoing email so recipients always see the parent brand.
@@ -71,6 +96,18 @@ export async function startEmailWorker(): Promise<EmailWorkerHandle> {
 
   const driver: EmailDriver = createEmailDriver();
 
+  // privacy-legal-06: the sealed halves of each body live in Redis under the
+  // app-level `lbr:` key prefix that RedisService applies. Constructing the
+  // real RedisService (rather than another bare ioredis like `connection`
+  // above) is what guarantees the prefix can never drift apart from the one
+  // EmailService writes with — a mismatch would silently turn every reset link
+  // into "[link expired]". It is a plain class with a no-arg constructor, so it
+  // works outside Nest DI, which is why this worker runs as its own process.
+  const secretsRedis = new RedisService();
+  await secretsRedis.ready().catch((err: Error) => {
+    console.error(`[email-worker] secret store not ready: ${err.message}`);
+  });
+
   let inFlight = 0;
 
   const worker = new Worker<JobData>(
@@ -79,7 +116,7 @@ export async function startEmailWorker(): Promise<EmailWorkerHandle> {
       inFlight++;
       try {
         if (job.name !== EMAIL_JOB_NAME) return; // future-proof against new job names
-        await processOne(driver, job.data.outboxId);
+        await processOne(driver, job.data.outboxId, secretsRedis);
       } finally {
         inFlight--;
       }
@@ -140,6 +177,45 @@ export async function startEmailWorker(): Promise<EmailWorkerHandle> {
     } catch (err) {
       console.error(`[email-worker] recovery scan failed: ${(err as Error).message}`);
     }
+    await sweepExpiredBodies();
+  }
+
+  /**
+   * privacy-legal-06: drop the body of terminal rows past
+   * {@link BODY_RETENTION_DAYS}. It rides on the recovery timer because that is
+   * the only periodic loop this process already owns — a `jobs/` cron would put
+   * the retention of email content in a different module from the code that
+   * writes it, which is how the outbox ended up with no purge job in the first
+   * place.
+   */
+  async function sweepExpiredBodies(): Promise<void> {
+    try {
+      const cutoff = new Date(Date.now() - BODY_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+      // Two steps rather than a bare updateMany: Prisma has no LIMIT on
+      // updateMany, and the FIRST sweep on an install that has been running for
+      // a year would otherwise be one unbounded UPDATE.
+      const stale = await controlDb.emailOutbox.findMany({
+        where: {
+          status: { in: ['delivered', 'dead'] },
+          createdAt: { lt: cutoff },
+          NOT: { bodyMarkdown: BODY_REDACTED_MARKER },
+        },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' },
+        take: RETENTION_BATCH,
+      });
+      if (stale.length === 0) return;
+      const cleared = await controlDb.emailOutbox.updateMany({
+        where: { id: { in: stale.map((r) => r.id) } },
+        data: { bodyMarkdown: BODY_REDACTED_MARKER },
+      });
+      // eslint-disable-next-line no-console
+      console.log(
+        `[email-worker] retention: cleared ${cleared.count} outbox bodies older than ${BODY_RETENTION_DAYS}d`,
+      );
+    } catch (err) {
+      console.error(`[email-worker] retention sweep failed: ${(err as Error).message}`);
+    }
   }
 
   // Kick off a boot scan (don't block startup on it) + a periodic timer.
@@ -159,11 +235,16 @@ export async function startEmailWorker(): Promise<EmailWorkerHandle> {
       await recoveryQueue.close();
       await connection.quit();
       await recoveryConnection.quit();
+      await secretsRedis.onModuleDestroy();
     },
   };
 }
 
-async function processOne(driver: EmailDriver, outboxId: string): Promise<void> {
+async function processOne(
+  driver: EmailDriver,
+  outboxId: string,
+  secretsRedis: RedisService,
+): Promise<void> {
   const env = loadEnv();
   const row = await controlDb.emailOutbox.findUnique({ where: { id: outboxId } });
   if (!row) {
@@ -173,6 +254,30 @@ async function processOne(driver: EmailDriver, outboxId: string): Promise<void> 
   // Idempotency: don't re-send already-delivered rows. BullMQ retries
   // can revive a job after the worker already finished it.
   if (row.status === 'delivered' || row.status === 'dead') {
+    return;
+  }
+
+  // privacy-legal-06: put the bearer credentials back, from Redis, in memory,
+  // for the duration of this send only.
+  const sendable = await rehydrate(row.bodyMarkdown, secretsRedis);
+  if (sendable === null) {
+    // The sealed value outlived its TTL while this row was still owed. The
+    // underlying reset/verify token is expired too (its TTL is shorter), so
+    // retrying cannot help and sending a URL with a dead token in it is worse
+    // than sending nothing: the recipient gets a link that fails, and support
+    // gets a ticket. Abandon loudly instead.
+    await controlDb.emailOutbox.update({
+      where: { id: outboxId },
+      data: {
+        status: 'dead',
+        failedAt: new Date(),
+        abandonedAt: new Date(),
+        lastError:
+          'the one-time link in this message expired before it could be delivered — ' +
+          'ask the recipient to request a new one',
+      },
+    });
+    console.warn(`[email-worker] outbox row ${outboxId} abandoned: sealed link expired`);
     return;
   }
 
@@ -187,7 +292,7 @@ async function processOne(driver: EmailDriver, outboxId: string): Promise<void> 
       from: row.fromEmail ?? env.emailFrom,
       replyTo: row.replyToEmail ?? env.emailReplyTo,
       subject: row.subject,
-      bodyMarkdown: row.bodyMarkdown + BRAND_EMAIL_FOOTER,
+      bodyMarkdown: sendable + BRAND_EMAIL_FOOTER,
       // A9-03: stable key so a provider that supports it (Resend) dedups a
       // retry whose prior send reached the provider before the crash.
       idempotencyKey: row.id,
@@ -218,4 +323,25 @@ async function processOne(driver: EmailDriver, outboxId: string): Promise<void> 
     // Re-throw so BullMQ records the failure and applies backoff.
     throw err;
   }
+}
+
+/**
+ * Re-hydrate a stored body for delivery. Returns the sendable body, or `null`
+ * when the message carried a sealed credential whose value is gone — the
+ * caller abandons the row rather than deliver a broken link.
+ *
+ * A body with no sealed credential (the overwhelming majority: announcements,
+ * overdue notices, welcome mail) short-circuits without touching Redis, so a
+ * Redis outage cannot stop ordinary mail. A Redis outage DOES stop a reset
+ * link — correctly, since the token it points at lives in the same Redis.
+ */
+async function rehydrate(storedBody: string, secretsRedis: RedisService): Promise<string | null> {
+  const ref = sealedRef(storedBody);
+  if (!ref) return storedBody;
+  const raw = await secretsRedis.client.get(outboxSecretKey(ref)).catch((err: Error) => {
+    console.error(`[email-worker] secret fetch failed for ref=${ref}: ${err.message}`);
+    return null;
+  });
+  const { body, missing } = unsealBody(storedBody, parseSecretPayload(raw));
+  return missing > 0 ? null : body;
 }

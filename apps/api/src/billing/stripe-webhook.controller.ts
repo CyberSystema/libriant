@@ -33,11 +33,30 @@ const PRISMA_UNIQUE_VIOLATION = 'P2002';
  *
  *   POST /webhooks/stripe   — signature-verified, idempotent, returns 200
  *
- * The endpoint always returns 200 to Stripe as long as we *received* the
- * event (even if processing failed) — Stripe interprets non-2xx as a
- * delivery failure and retries. We log + insert a failed processing row
- * so a human can replay later. The only 4xx we ever return is for a
- * signature/format problem, which is genuinely unrecoverable.
+ * WHAT A 200 FROM THIS ENDPOINT MEANS (billing-08).
+ * Stripe treats 2xx as final and never redelivers, so a 200 is a promise: we
+ * hold this event durably and will finish it, now or on the retry sweep. It is
+ * NOT "the HTTP request reached us". The rule that keeps the promise honest:
+ *
+ *     200 only after the `stripe_webhook_events` row is on disk.
+ *
+ * The old code returned 200 unconditionally — the durable insert was
+ * best-effort (`.catch()` → warn → carry on) and dispatch failure fell through
+ * to `return { received: true }`. During a Postgres blip the insert and the
+ * dispatch failed together, so there was no row for the retry sweep
+ * (stripe-retry.job.ts selects exclusively FROM stripe_webhook_events) and no
+ * Stripe redelivery either. A cancellation never applied, a payment failure
+ * never recorded, a paid upgrade never provisioned — with no error row and no
+ * alert. Both recovery mechanisms were unavailable in precisely the failure
+ * they were built for.
+ *
+ * So there are now two non-2xx answers, and they mean different things:
+ *   400 — signature/format. Genuinely unrecoverable; a retry cannot help.
+ *   503 — we could not take durable custody. Retry, please.
+ * A dispatch that fails AFTER the row is on disk still returns 200, because
+ * the sweep can see that row and will re-run it (it picks up rows with
+ * `error` set, and also rows merely older than the stale window, so a failed
+ * error-write does not hide it either).
  */
 @Controller('webhooks/stripe')
 export class StripeWebhookController {
@@ -101,16 +120,36 @@ export class StripeWebhookController {
     // finished this event before?" better than Redis does. So Redis becomes
     // what it always really was, a concurrency lock, and losing it costs us
     // only protection against two SIMULTANEOUS deliveries of an event that has
-    // never completed — a window every handler here is idempotent across. If
-    // BOTH stores are unreachable we have no replay protection at all, and
-    // that is the one case where we refuse and let Stripe retry.
+    // never completed — a window every handler here is idempotent across.
     const persisted = await this.persistEvent(event);
     if (persisted.alreadyProcessed) {
       return { received: true, deduped: true };
     }
 
+    if (!persisted.durable) {
+      // billing-08. THE ONE PLACE A WEBHOOK COULD BE LOST FOREVER.
+      //
+      // This used to be a warn-and-continue, and the refusal below it was
+      // guarded on `!lockAvailable && !persisted.durable` — both stores. But
+      // Redis being HEALTHY is not a reason to accept custody of an event we
+      // cannot write down. With Postgres unavailable the sequence was: insert
+      // fails (warn), Redis lock succeeds, dispatch fails against the same
+      // dead Postgres, the error-row update fails too (swallowed), and the
+      // handler returned 200. Stripe considers a 200 final, so it never
+      // redelivered; the retry sweep selects only FROM stripe_webhook_events,
+      // so a row that was never inserted is invisible to it forever. The event
+      // was gone, silently, with no error row and no alert.
+      //
+      // Note the trigger is narrower than "Postgres is down": ONE transient
+      // failure on this single insert is enough, because the dispatch that
+      // follows would fail the same way and the 200 was unconditional.
+      //
+      // Refusing costs a redelivery. Stripe retries for about three days,
+      // which outlasts any Postgres outage this product survives anyway.
+      throw new ServiceUnavailableException('Webhook storage unavailable — please redeliver.');
+    }
+
     let lockHeld = false;
-    let lockAvailable = true;
     try {
       const setRes = await this.redis.client.set(
         EVENT_KEY(event.id),
@@ -124,20 +163,16 @@ export class StripeWebhookController {
       }
       lockHeld = true;
     } catch (err) {
-      lockAvailable = false;
+      // Redis is only the concurrency lock now — the durable row above already
+      // answered "have we finished this one before?", and we would not have
+      // got here without it. Losing Redis costs protection against two
+      // SIMULTANEOUS deliveries of an event that never completed, a window
+      // every handler is idempotent across. Carrying on is correct; turning
+      // every webhook into a 500 during a Redis blip is not.
       this.logger.error(
         `Redis unavailable for webhook dedupe (${event.id}): ${(err as Error).message}. ` +
           'Falling back to the durable stripe_webhook_events row.',
       );
-    }
-
-    if (!lockAvailable && !persisted.durable) {
-      // Neither store is answering: we cannot tell a first delivery from the
-      // fifth retry of one we already applied, and we would not be able to
-      // record the outcome either. Refuse — Stripe redelivers for up to three
-      // days, which is far longer than any Redis/Postgres outage we would
-      // survive as a product anyway.
-      throw new ServiceUnavailableException('Webhook storage unavailable — please redeliver.');
     }
 
     try {
@@ -151,19 +186,30 @@ export class StripeWebhookController {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Webhook ${event.type} (${event.id}) failed: ${message}`);
+      // Best-effort, and it is allowed to be: the row itself is already on
+      // disk (we refused above otherwise), and the retry sweep picks a row up
+      // on EITHER `error IS NOT NULL` or `receivedAt` older than its stale
+      // window (stripe-retry.job.ts). So an unwritten error message costs five
+      // minutes of latency, not the event.
       await controlDb.stripeWebhookEvent
         .update({
           where: { id: event.id },
           data: { error: message.slice(0, 1000) },
         })
         .catch(() => undefined);
-      // Drop the Redis lock so a Stripe retry can re-attempt — otherwise
-      // we'd be stuck on the failed event for 30 days.
+      // Drop the 30-day lock. The comment here used to promise "so a Stripe
+      // retry can re-attempt", which was never true — we return 200 below and
+      // Stripe treats that as final (billing-08 flagged exactly this line).
+      // What the drop actually buys is that the automatic sweep and an
+      // operator's manual "Resend" from the Stripe Dashboard are not blocked
+      // by a lock left over from the failed attempt.
       if (lockHeld) {
         await this.redis.client.del(EVENT_KEY(event.id)).catch(() => undefined);
       }
     }
 
+    // 200 = "durably ours". The row is on disk and the sweep owns it from
+    // here; see the class comment for why that is the whole contract.
     return { received: true };
   }
 
@@ -171,7 +217,14 @@ export class StripeWebhookController {
    * Record the event durably, and report what we learned.
    *
    *   `durable`          — the row is definitely on disk (we wrote it, or it
-   *                        was already there). False only if Postgres refused.
+   *                        was already there). False only if Postgres refused,
+   *                        which the caller answers with a 503: `durable` is
+   *                        the precondition for returning 200 at all, because
+   *                        the retry sweep can rescue nothing else (billing-08).
+   *                        Note a P2002 whose follow-up read then fails also
+   *                        reports false — the row exists, but we cannot tell
+   *                        whether the earlier delivery completed, and guessing
+   *                        either way is worse than asking Stripe to redeliver.
    *   `alreadyProcessed` — a previous delivery of this exact event completed.
    *                        This is the replay guard that survives a Redis
    *                        outage, which is why it reads `processedAt` rather

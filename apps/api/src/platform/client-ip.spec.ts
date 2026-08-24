@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Request } from 'express';
 import { clientIp, describeTrustedProxies, isTrustedProxy } from './client-ip.js';
@@ -164,5 +167,154 @@ describe('isTrustedProxy', () => {
     expect(isTrustedProxy(undefined)).toBe(false);
     expect(isTrustedProxy('')).toBe(false);
     expect(isTrustedProxy('localhost')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The edge contract this file depends on.
+//
+// clientIp() can only ever answer "the peer is our proxy, so believe its
+// header". Whether that header is WORTH believing is decided in two files that
+// live outside this package, and both have already been wrong in production
+// shape at least once:
+//
+//   • infra/caddy/Caddyfile — the /webhooks/* route reached api:3001 with no
+//     origin guard, so the client's own X-Real-IP was forwarded verbatim and
+//     this function trusted it, because the peer genuinely was Caddy. The rule
+//     ("every route that proxies imports the guard first") was stated in a
+//     comment and broken by the very next route somebody added.
+//   • infra/compose/docker-compose.prod.yml — `443:443` also binds [::], and
+//     with no enable_ipv6 on the network Docker relays v6 through the userland
+//     proxy from the bridge gateway. A verifier drove 25 logins with rotating
+//     CF-Connecting-IP headers into 25 buckets through that path.
+//
+// Neither defect is visible from any TypeScript. These tests read the actual
+// infra files, so the next omission fails the unit suite instead of an audit.
+// ---------------------------------------------------------------------------
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const CADDYFILE = readFileSync(resolve(REPO_ROOT, 'infra/caddy/Caddyfile'), 'utf8');
+/**
+ * The compose file with its comments removed. These assertions are about what
+ * the file DOES, and the comment above `ports:` necessarily quotes the settings
+ * it is warning about — matching those would make the prose fail the test.
+ */
+const COMPOSE_PROD = readFileSync(
+  resolve(REPO_ROOT, 'infra/compose/docker-compose.prod.yml'),
+  'utf8',
+)
+  .split('\n')
+  .filter((l) => !/^\s*#/.test(l))
+  .map((l) => l.replace(/\s+#.*$/, ''))
+  .join('\n');
+
+/**
+ * Strip a Caddyfile line down to its directives.
+ *
+ * Comments run to end of line. Placeholders — `{$PUBLIC_HOST:app.libriant.com}`,
+ * `{args[0]}`, `{err.status_code}` — are braces that do NOT open a block, so
+ * they are removed before any brace counting: a placeholder is a `{...}` with
+ * no whitespace inside, a block opener is a lone `{` at the end of a line.
+ */
+function caddyDirective(line: string): string {
+  const hash = line.indexOf('#');
+  const code = hash === -1 ? line : line.slice(0, hash);
+  return code.replace(/\{[^{}\s]*\}/g, ' ').trim();
+}
+
+type Frame = { opener: string; guardTags: string[] };
+
+/** Every `reverse_proxy` in the file, with the block chain that encloses it. */
+function proxyDirectives(): Array<{ line: number; target: string; stack: Frame[] }> {
+  const found: Array<{ line: number; target: string; stack: Frame[] }> = [];
+  const stack: Frame[] = [];
+  CADDYFILE.split('\n').forEach((raw, i) => {
+    const line = caddyDirective(raw);
+    if (!line) return;
+    const guard = /^import\s+origin_guard\s+(\S+)/.exec(line);
+    if (guard?.[1] && stack.length > 0) stack[stack.length - 1]?.guardTags.push(guard[1]);
+    if (/^reverse_proxy\b/.test(line)) {
+      found.push({ line: i + 1, target: line, stack: stack.map((f) => ({ ...f })) });
+    }
+    for (const ch of line) {
+      if (ch === '{') stack.push({ opener: line.split(/\s+/)[0] ?? '', guardTags: [] });
+      else if (ch === '}') stack.pop();
+    }
+  });
+  return found;
+}
+
+describe('infra/caddy/Caddyfile — the origin guard', () => {
+  it('finds every reverse_proxy in the file (the parser itself works)', () => {
+    // Six today: /lbr-api and /webhooks and the catch-all on the app host, the
+    // admin host's /lbr-api and its catch-all, and the marketing /apply. If this
+    // number moves, a route was added or removed — check the next test, which is
+    // the one that matters.
+    expect(proxyDirectives().length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('guards EVERY proxied route — this is what /webhooks/* failed', () => {
+    const unguarded = proxyDirectives()
+      .filter((p) => !p.stack.some((f) => f.opener === 'route' && f.guardTags.length > 0))
+      .map((p) => `Caddyfile:${p.line} — ${p.target}`);
+    expect(
+      unguarded,
+      'Every reverse_proxy must sit inside a `route { import origin_guard <tag> ... }`. ' +
+        'Only `route` honours source order, so a guard outside one does not run first. ' +
+        "Without it the upstream receives the CLIENT's X-Real-IP and believes it.",
+    ).toEqual([]);
+  });
+
+  it('gives each import a tag unique within its site block', () => {
+    // origin_guard defines named matchers, and named matchers are scoped to the
+    // whole site block — importing it twice with the same tag silently redefines
+    // them, which is a config that loads and guards the wrong thing.
+    const tags = [...CADDYFILE.matchAll(/^\s*import\s+origin_guard\s+(\S+)/gm)].map((m) => m[1]);
+    expect(new Set(tags).size).toBe(tags.length);
+  });
+
+  it('never writes X-Real-IP from a client header outside the Cloudflare-peer matcher', () => {
+    const lines = CADDYFILE.split('\n')
+      .map((l, i) => ({ n: i + 1, d: caddyDirective(l) }))
+      .filter(({ d }) => /X-Real-IP/i.test(d) && /CF-Connecting-IP/i.test(d))
+      .filter(({ d }) => !/^request_header\s+@cf_peer_/.test(d));
+    expect(
+      lines.map(({ n, d }) => `Caddyfile:${n} — ${d}`),
+      'CF-Connecting-IP may only become X-Real-IP for a peer already matched as ' +
+        'Cloudflare. A `header_up X-Real-IP {http.request.header.CF-Connecting-IP}` ' +
+        'runs for EVERY peer — that is the original defect, verbatim.',
+    ).toEqual([]);
+  });
+
+  it('drops the client X-Forwarded-For rather than passing it through', () => {
+    expect(CADDYFILE).toMatch(/^\s*request_header\s+-X-Forwarded-For\s*$/m);
+  });
+});
+
+describe('infra/compose/docker-compose.prod.yml — the published ports', () => {
+  const ports = [...COMPOSE_PROD.matchAll(/^\s*-\s*'([^']*:(?:80|443)(?:\/udp)?)'/gm)].map(
+    (m) => m[1] as string,
+  );
+
+  it('publishes 80/443 with an explicit bind address, never the bare form', () => {
+    expect(ports.length).toBeGreaterThanOrEqual(3);
+    const wildcard = ports.filter((p) => p.split(':').length < 3);
+    expect(
+      wildcard,
+      "'443:443' binds [::] as well as 0.0.0.0. With no enable_ipv6 on the network " +
+        'Docker cannot DNAT the v6 connection, so docker-proxy re-originates it from ' +
+        'the bridge gateway and every IPv6 client looks private to the edge guard.',
+    ).toEqual([]);
+  });
+
+  it('keeps the bind and the network IPv6 setting in step', () => {
+    const v4Only = ports.every((p) => p.startsWith('${EDGE_BIND_IPV4:-0.0.0.0}'));
+    const networkHasV6 = /enable_ipv6:\s*true/.test(COMPOSE_PROD);
+    expect(
+      v4Only && !networkHasV6,
+      'These change together or not at all: an IPv6-enabled network with a v4-only ' +
+        'publish is pointless, and a dual-stack publish without one is the userland-proxy ' +
+        'bypass. See the comment above `ports:` for the full four-step switch.',
+    ).toBe(true);
   });
 });

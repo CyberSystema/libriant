@@ -61,14 +61,54 @@ set_quoted() {
 ensure_rand()    { local k="$1" b="$2"; [ -n "$(getv "${k}")" ] || { setv "${k}" "$(openssl rand -hex "${b}")"; echo "  generated ${k}"; }; }
 ensure_default() { local k="$1" d="$2"; [ -n "$(getv "${k}")" ] || { setv "${k}" "${d}"; echo "  set ${k}=${d}"; }; }
 
-# True if the Postgres data volume already holds an initialized cluster.
+# True if a Postgres cluster already exists on this host's data directory.
 # Used to refuse minting a fresh POSTGRES_PASSWORD over a surviving DB (which
 # would lock the app out of its own database — see the guard below).
+#
+# boot-and-config-06: this used to ask DOCKER where pg_data lives —
+# `docker volume inspect --format '{{.Mountpoint}}' libriant_pg_data` — and it
+# could not answer correctly in either of the two topologies we actually run:
+#
+#   1. The scenario the guard EXISTS for is a Hetzner "Rebuild": the boot disk
+#      is wiped, the attached data volume survives. That wipe takes
+#      /var/lib/docker with it, so the named volume's metadata is gone (docker
+#      itself is usually not even installed yet). `docker volume inspect` fails,
+#      the function returned 1, and the guard did not fire — in precisely the
+#      disaster it was written for.
+#   2. Every deploy chains infra/compose/docker-compose.volume.yml, which
+#      redefines pg_data as a `local` driver bind onto $LIBRIANT_DATA_ROOT/postgres.
+#      A local-driver bind volume STILL reports .Mountpoint as
+#      /var/lib/docker/volumes/<name>/_data, which holds no PG_VERSION — so even
+#      on a healthy box the check looked in the wrong directory.
+#
+# So look at the filesystem first, with no Docker involved. The docker-volume
+# probe is kept only as a fallback for a host running the prod file WITHOUT the
+# volume overlay, where the cluster really does live inside /var/lib/docker.
+# Where persistent data lives. $LIBRIANT_DATA_ROOT may come from the
+# environment, from a .env.prod written by an earlier run, or from this script's
+# own default — in that order. One helper so the guard below and the on-volume
+# copy at the end can never disagree about which directory they mean.
+# (`ensure_default LIBRIANT_DATA_ROOT` runs AFTER the guard, so on a first run
+# the getv is empty and the literal default is what answers.)
+data_root() {
+  local root
+  root="${LIBRIANT_DATA_ROOT:-$(getv LIBRIANT_DATA_ROOT)}"
+  [ -n "${root}" ] || root=/mnt/libriant
+  printf '%s' "${root}"
+}
+
 pg_data_initialized() {
+  local root vol mp
+  root="$(data_root)"
+  if [ -f "${root}/postgres/PG_VERSION" ]; then
+    echo "  (found an initialized Postgres cluster at ${root}/postgres)" >&2
+    return 0
+  fi
+
   command -v docker >/dev/null 2>&1 || return 1
-  local vol mp
-  vol="${COMPOSE_PROJECT_NAME:-libriant}_pg_data"
-  mp="$(docker volume inspect --format '{{.Mountpoint}}' "${vol}" 2>/dev/null)" || return 1
+  vol="${COMPOSE_PROJECT_NAME:-$(getv COMPOSE_PROJECT_NAME)}"
+  [ -n "${vol}" ] || vol=libriant
+  mp="$(docker volume inspect --format '{{.Mountpoint}}' "${vol}_pg_data" 2>/dev/null)" || return 1
   [ -n "${mp}" ] && [ -f "${mp}/PG_VERSION" ]
 }
 
@@ -78,9 +118,15 @@ pg_data_initialized() {
 # existing cluster and locks the app out. Fail loud so the operator restores
 # the real value from their .env.prod backup first.
 if [ -z "$(getv POSTGRES_PASSWORD)" ] && pg_data_initialized; then
-  echo "  ! POSTGRES_PASSWORD is missing but an initialized Postgres data volume exists." >&2
+  echo "  ! POSTGRES_PASSWORD is missing but an initialized Postgres cluster exists." >&2
   echo "  ! Refusing to mint a new password (it would lock the app out of the surviving DB)." >&2
-  echo "  ! Restore POSTGRES_PASSWORD from your .env.prod backup, then re-run." >&2
+  echo "  ! Recover it, in this order:" >&2
+  echo "  !   1. \${LIBRIANT_DATA_ROOT:-/mnt/libriant}/env/.env.prod  (written by this script," >&2
+  echo "  !      on the volume that survives a boot-disk rebuild — see save_env_copy below)" >&2
+  echo "  !   2. your own off-host backup of /srv/libriant/.env.prod" >&2
+  echo "  !   3. last resort: stop the stack, start postgres alone with" >&2
+  echo "  !      POSTGRES_HOST_AUTH_METHOD=trust, and ALTER USER libriant PASSWORD '<new>';" >&2
+  echo "  ! Then put the value in ${ENV_FILE} and re-run. Do not delete the data directory." >&2
   exit 3
 fi
 
@@ -128,6 +174,14 @@ ensure_default IMAGE_TAG latest
 ensure_default COMPOSE_PROJECT_NAME libriant
 ensure_default LIBRIANT_DATA_ROOT /mnt/libriant
 ensure_default BACKUP_KEEP_DAYS 14
+# Which host address caddy's 80/443 are published on. IPv4-only ON PURPOSE:
+# a wildcard publish also binds [::], and because no compose network sets
+# enable_ipv6 a v6 connection is then relayed by Docker's userland proxy from
+# the bridge gateway — which made every v6 client look private to the edge and
+# handed them a fresh rate-limit bucket per forged header (authn-authz-01).
+# Read the long note above `ports:` in infra/compose/docker-compose.prod.yml
+# before changing this; it is one of four changes that must be made together.
+ensure_default EDGE_BIND_IPV4 0.0.0.0
 
 # Operator-supplied values with no safe default. In --auto we leave them blank
 # (admin creation is then skipped until you set them); interactively we ask.
@@ -177,5 +231,38 @@ if [ -f "${TEMPLATE}" ]; then
     fi
   done < "${TEMPLATE}"
 fi
+
+# Keep a copy where the DATA lives, not only where the OS lives.
+#
+# boot-and-config-06's second half: the guard above can only tell the operator
+# "restore POSTGRES_PASSWORD from your backup" if a backup exists, and the
+# failure mode it guards against — a Hetzner Rebuild — is precisely the event
+# that destroys /srv/libriant/.env.prod while keeping the Postgres cluster. The
+# password and the cluster it belongs to now travel together: whoever still has
+# the data volume still has the credentials for it.
+#
+# This is not a downgrade in exposure. $LIBRIANT_DATA_ROOT already holds every
+# byte of every library's database; a 600 file beside it changes nothing about
+# who can read what. It is deliberately NOT a substitute for an off-host backup
+# (a lost volume loses both) — see docs/RUNBOOK.md §8.
+save_env_copy() {
+  local root dest
+  root="$(data_root)"
+  # Only when the data root is actually a mounted directory. On a laptop, in CI,
+  # or before the volume is mounted it will not be, and creating it would put a
+  # secret on the boot disk under a path the operator believes is the volume.
+  [ -d "${root}" ] || { echo "  (no ${root} - skipping the on-volume copy of ${ENV_FILE})"; return 0; }
+  dest="${root}/env"
+  mkdir -p "${dest}" 2>/dev/null || { echo "  ! could not create ${dest} - no on-volume copy made" >&2; return 0; }
+  chmod 700 "${dest}" 2>/dev/null || true
+  cp "${ENV_FILE}" "${dest}/.env.prod.new" 2>/dev/null || {
+    echo "  ! could not write ${dest}/.env.prod - no on-volume copy made" >&2; return 0; }
+  chmod 600 "${dest}/.env.prod.new"
+  # Rename last: a reader never sees a half-written file, and a crash mid-copy
+  # leaves the previous good copy in place rather than a truncated one.
+  mv -f "${dest}/.env.prod.new" "${dest}/.env.prod"
+  echo "  copied ${ENV_FILE} -> ${dest}/.env.prod (survives a boot-disk rebuild)"
+}
+save_env_copy
 
 echo "Done - ${ENV_FILE} is ready."

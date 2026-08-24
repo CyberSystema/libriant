@@ -786,7 +786,23 @@ model EmailOutbox {
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
-  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  /// privacy-legal-04: CASCADE, not SetNull.
+  ///
+  /// `bodyMarkdown` and `toEmail` on a member notice are a named patron's
+  /// e-mail address and the title of the book they borrowed — the highest-
+  /// sensitivity item in the system, sitting in the SHARED control plane. With
+  /// `SetNull` those rows survived an admin hard-delete of the library with
+  /// `tenantId = NULL`, which is worse than keeping them: nothing linked them
+  /// to a tenant any more, so no future erasure or retention sweep could even
+  /// find them, and under Art. 28(10) we would have become the controller for
+  /// data we were never instructed to keep.
+  ///
+  /// Nothing references an outbox row, and once the library is gone its
+  /// delivery history has no operational reader — so the row goes with it.
+  /// (The control-plane audit_log deliberately does NOT cascade; it is
+  /// redacted instead, so the record that the deletion happened survives.
+  /// See the `tenants_redact_pii_before_delete` trigger.)
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   // Worker polls `WHERE status='pending' AND scheduledFor <= now()`;
   // BullMQ does the actual reservation, this index is the cold-start
@@ -959,6 +975,18 @@ model AuditEvent {
   userAgent  String?
   occurredAt DateTime       @default(now())
 
+  /// privacy-legal-04: stays SetNull ON PURPOSE, unlike `email_outbox`.
+  ///
+  /// Cascading here would delete the `tenant.deleted` audit row in the same
+  /// statement that recorded it — destroying the evidence that a library was
+  /// hard-deleted, which is the one event you most need to be able to prove.
+  /// Instead a `BEFORE DELETE ON tenants` trigger
+  /// (`tenants_redact_pii_before_delete`, added in migration
+  /// 20260824120000_tenant_delete_pii) overwrites `beforeJson` / `afterJson` /
+  /// `ip` / `userAgent` on this tenant's rows first, keeping `action` +
+  /// `occurredAt` + the library's slug and dropping the payload. The trigger,
+  /// not the delete endpoint, is where this lives — it then holds for every
+  /// path that can delete a tenant, including a DBA at a psql prompt.
   tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, occurredAt])

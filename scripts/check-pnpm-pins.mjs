@@ -20,7 +20,9 @@ const DOCKERFILES = ['apps/api/Dockerfile', 'apps/web/Dockerfile', 'infra/caddy/
 const declared = JSON.parse(readFileSync('package.json', 'utf8')).packageManager;
 const m = /^pnpm@(\d+\.\d+\.\d+)/.exec(declared ?? '');
 if (!m) {
-  console.error(`✗ package.json packageManager is missing or not a pinned pnpm version: ${declared}`);
+  console.error(
+    `✗ package.json packageManager is missing or not a pinned pnpm version: ${declared}`,
+  );
   process.exit(1);
 }
 const want = m[1];
@@ -54,7 +56,11 @@ for (const f of ['apps/api/Dockerfile', 'apps/web/Dockerfile']) {
 }
 
 if (bad) {
-  console.error(`\n${bad} problem(s). The stack will not start with a mismatched pin — fix before deploying.`);
+  console.error(
+    `\n${bad} problem(s). The stack will not start with a mismatched pin — fix before deploying.`,
+  );
   process.exit(1);
 }
-console.log(`pnpm pin check passed: package.json and ${DOCKERFILES.length} Dockerfiles all on pnpm@${want}`);
+console.log(
+  `pnpm pin check passed: package.json and ${DOCKERFILES.length} Dockerfiles all on pnpm@${want}`,
+);

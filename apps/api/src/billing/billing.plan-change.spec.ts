@@ -132,7 +132,13 @@ describe('BillingService.startCheckout — an existing subscription is CHANGED, 
     // No `?checkout=success` — nothing in apps/web reads that param, and the
     // SSR snapshot still shows the OLD plan until the webhook lands, so the
     // banner it was meant to trigger would have been a lie anyway.
-    expect(res.url).toBe('https://app.libriant.test/t/acme/billing');
+    //
+    // The locale segment is billing-01: this assertion used to pin
+    // `/t/acme/billing`, a path the web app has never served (its one billing
+    // route is `/[locale]/t/[slug]/billing`). The test agreed with the bug, so
+    // it protected it. `el` is the fallback — this fixture's tenant has no
+    // defaultLocale, and Greek is the launch market.
+    expect(res.url).toBe('https://app.libriant.test/el/t/acme/billing');
   });
 
   it('carries the requested cadence into the re-price, not just the plan', async () => {
