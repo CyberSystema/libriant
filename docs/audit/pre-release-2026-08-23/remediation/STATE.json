@@ -23,8 +23,8 @@
         "infra/caddy/Caddyfile"
       ],
       "status": "in-progress",
-      "wave": 1,
-      "note": null,
+      "wave": 3,
+      "note": "REFUTED: host has public IPv6, compose network does not, so Docker's userland proxy presents the bridge gateway as peer and cloudflare_only allows it. Also /webhooks/* Caddy route unguarded; admin unknown-IP lockout bucket still shared.",
       "commit": null
     },
     {
@@ -35,9 +35,9 @@
       "paths": [
         "apps/api/src/billing/stripe-fake.driver.ts"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 1,
-      "note": null,
+      "note": "proved by execution: API boots under the shipped prod templates in all 3 stripe postures; upload integration test runs with subscriptions OFF",
       "commit": null
     },
     {
@@ -48,7 +48,7 @@
       "paths": [
         "apps/api/src/billing/billing.service.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 1,
       "note": null,
       "commit": null
@@ -77,9 +77,9 @@
         "apps/api/src/system-mode/system-mode.middleware.ts",
         "apps/api/src/system-mode/system-mode.service.ts"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 1,
-      "note": null,
+      "note": "proved by execution: API boots under the shipped prod templates in all 3 stripe postures; upload integration test runs with subscriptions OFF",
       "commit": null
     },
     {
@@ -92,9 +92,9 @@
         "apps/api/src/storage/storage.service.ts",
         "apps/api/test/integration/setup.ts"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 1,
-      "note": null,
+      "note": "proved by execution: API boots under the shipped prod templates in all 3 stripe postures; upload integration test runs with subscriptions OFF",
       "commit": null
     },
     {
@@ -106,9 +106,9 @@
         "apps/api/src/plans/effective-plan.service.ts",
         "apps/api/src/storage/storage.service.ts"
       ],
-      "status": "in-progress",
+      "status": "verified",
       "wave": 1,
-      "note": null,
+      "note": "proved by execution: API boots under the shipped prod templates in all 3 stripe postures; upload integration test runs with subscriptions OFF",
       "commit": null
     },
     {
@@ -122,8 +122,8 @@
         "scripts/prod-bootstrap.sh"
       ],
       "status": "in-progress",
-      "wave": 1,
-      "note": null,
+      "wave": 3,
+      "note": "REFUTED: host has public IPv6, compose network does not, so Docker's userland proxy presents the bridge gateway as peer and cloudflare_only allows it. Also /webhooks/* Caddy route unguarded; admin unknown-IP lockout bucket still shared.",
       "commit": null
     },
     {
@@ -135,8 +135,8 @@
         "apps/api/src/email/drivers/console-driver.ts",
         "docs/deploy-from-the-server.md"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -148,7 +148,7 @@
       "paths": [
         "apps/api/src/export/export-processors.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 1,
       "note": null,
       "commit": null
@@ -180,8 +180,8 @@
         "scripts/backup.sh",
         "scripts/dr-drill.sh"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -193,7 +193,7 @@
       "paths": [
         "apps/api/src/jobs/member-notifications.job.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 1,
       "note": null,
       "commit": null
@@ -225,8 +225,8 @@
         "apps/api/src/admin/admin-auth.service.ts"
       ],
       "status": "in-progress",
-      "wave": 1,
-      "note": null,
+      "wave": 3,
+      "note": "REFUTED: host has public IPv6, compose network does not, so Docker's userland proxy presents the bridge gateway as peer and cloudflare_only allows it. Also /webhooks/* Caddy route unguarded; admin unknown-IP lockout bucket still shared.",
       "commit": null
     },
     {
@@ -239,8 +239,8 @@
         "apps/api/src/support/support-audit.interceptor.ts",
         "apps/api/src/tenancy/roles.guard.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -252,8 +252,8 @@
       "paths": [
         "apps/api/src/billing/billing.service.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -265,8 +265,8 @@
       "paths": [
         "apps/api/src/billing/stripe-webhook.controller.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -278,8 +278,8 @@
       "paths": [
         "docs/billing-go-live.md"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -291,8 +291,8 @@
       "paths": [
         "scripts/prod-bootstrap.sh"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -304,8 +304,8 @@
       "paths": [
         "scripts/ensure-env.sh"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -318,8 +318,8 @@
         "apps/api/src/import/engine/import-engine.ts",
         "apps/api/src/import/import.service.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -393,7 +393,7 @@
         "packages/ui/src/Toast.tsx"
       ],
       "status": "in-progress",
-      "wave": 2,
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -406,8 +406,8 @@
         "apps/api/src/auth/auth.controller.ts"
       ],
       "status": "in-progress",
-      "wave": 1,
-      "note": null,
+      "wave": 3,
+      "note": "REFUTED: host has public IPv6, compose network does not, so Docker's userland proxy presents the bridge gateway as peer and cloudflare_only allows it. Also /webhooks/* Caddy route unguarded; admin unknown-IP lockout bucket still shared.",
       "commit": null
     },
     {
@@ -435,8 +435,8 @@
         "scripts/backup.sh",
         "scripts/deploy-on-host.sh"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -451,8 +451,8 @@
         "infra/monitoring/docker-compose.monitoring.yml",
         "infra/monitoring/prometheus.yml"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -478,8 +478,8 @@
       "paths": [
         "apps/api/src/loans/loans.service.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -491,8 +491,8 @@
       "paths": [
         "apps/api/src/members/member-numbers.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -504,8 +504,8 @@
       "paths": [
         "apps/api/src/jobs/fine-accrual.job.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -519,8 +519,8 @@
         "apps/api/src/members/members.service.ts",
         "locales/en/legal/dpa.md"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -535,8 +535,8 @@
         "locales/en/legal/privacy.md",
         "packages/db-control/prisma/schema.prisma"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -551,8 +551,8 @@
         "packages/db-tenant/prisma/schema.prisma",
         "packages/shared/src/features.ts"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -568,8 +568,8 @@
         "infra/caddy/Caddyfile",
         "scripts/backup.sh"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -582,7 +582,7 @@
         "apps/api/src/system-mode/system-mode.middleware.ts",
         "apps/api/src/system-mode/system-mode.service.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 1,
       "note": null,
       "commit": null
@@ -595,7 +595,7 @@
       "paths": [
         "apps/api/src/app.module.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 1,
       "note": null,
       "commit": null
@@ -609,8 +609,8 @@
         "infra/monitoring/alerts.yml",
         "infra/monitoring/prometheus.yml"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -622,8 +622,8 @@
       "paths": [
         "scripts/restore.sh"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -637,7 +637,7 @@
         "apps/api/src/jobs/member-notifications.job.ts",
         "apps/api/src/jobs/scheduled-jobs.runner.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 1,
       "note": null,
       "commit": null
@@ -651,8 +651,8 @@
         "infra/cron/libriant-backup",
         "scripts/backup.sh"
       ],
-      "status": "pending",
-      "wave": null,
+      "status": "in-progress",
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -678,7 +678,7 @@
         "apps/api/src/admin/admin-tenants.controller.ts",
         "apps/web/app/"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 1,
       "note": null,
       "commit": null
@@ -1041,7 +1041,7 @@
         "apps/web/public/sw.js"
       ],
       "status": "in-progress",
-      "wave": 2,
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -1127,7 +1127,7 @@
         "apps/web/app/manifest.ts"
       ],
       "status": "in-progress",
-      "wave": 2,
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -1476,7 +1476,7 @@
         "apps/api/src",
         "apps/api/src/jobs/stripe-retry.job.ts"
       ],
-      "status": "in-progress",
+      "status": "fixed",
       "wave": 1,
       "note": null,
       "commit": null
@@ -1969,7 +1969,7 @@
         "apps/web/public/sw.js"
       ],
       "status": "in-progress",
-      "wave": 2,
+      "wave": 3,
       "note": null,
       "commit": null
     },
@@ -1984,7 +1984,7 @@
         "packages/ui/src/styles.css"
       ],
       "status": "in-progress",
-      "wave": 2,
+      "wave": 3,
       "note": null,
       "commit": null
     },
