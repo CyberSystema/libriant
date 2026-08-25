@@ -47,6 +47,19 @@ function makeClient(opts: {
       ),
     },
     fine: {
+      // What each loan has already paid/waived — the sweep nets this off the
+      // running total so a settled fine can't be resurrected the next night.
+      groupBy: vi.fn(async () => {
+        const byLoan = new Map<string, number>();
+        for (const f of fines) {
+          if (f.status !== 'paid' && f.status !== 'waived') continue;
+          byLoan.set(f.loanId, (byLoan.get(f.loanId) ?? 0) + f.amountCents);
+        }
+        return [...byLoan].map(([loanId, sum]) => ({
+          loanId,
+          _sum: { amountCents: sum },
+        }));
+      }),
       findFirst: vi.fn(
         async (args: { where: { loanId: string; status: string } }) =>
           fines.find((f) => f.loanId === args.where.loanId && f.status === args.where.status) ??
@@ -157,6 +170,50 @@ describe('sweepFineAccrual', () => {
     await sweepFineAccrual();
     expect(created).toHaveLength(0);
     expect(updated).toEqual([{ id: 'fine-1', amountCents: 50 }]);
+  });
+
+  it('does not resurrect a fine that was written off while the book is still out', async () => {
+    // The gap this closes: a librarian voids a fine raised in error on an
+    // ACTIVE loan. There is no outstanding row left, so the old sweep saw a
+    // bare overdue loan, recomputed the whole running total and re-billed it —
+    // the write-off lasted until the next 03:00 run.
+    const { client, created } = makeClient({
+      settings: {
+        overdueFinesEnabled: true,
+        finePerDayCents: 10,
+        fineCapCents: 0,
+        currency: 'EUR',
+      },
+      loans: [{ id: 'loan-1', memberId: 'm1', dueAt: daysAgo(5) }],
+      fines: [
+        { id: 'fine-1', loanId: 'loan-1', amountCents: 50, status: 'waived', reason: 'error' },
+      ],
+    });
+    tenantGetClient.mockReturnValue(client);
+    await sweepFineAccrual();
+    expect(created).toHaveLength(0);
+  });
+
+  it('bills only the days accrued since a payment, never the ones already paid', async () => {
+    // Paid €0.30 for three days overdue on Monday; the book is still out and by
+    // Thursday five days have accrued. The member owes the two NEW days, not
+    // five days all over again.
+    const { client, created } = makeClient({
+      settings: {
+        overdueFinesEnabled: true,
+        finePerDayCents: 10,
+        fineCapCents: 0,
+        currency: 'EUR',
+      },
+      loans: [{ id: 'loan-1', memberId: 'm1', dueAt: daysAgo(5) }],
+      fines: [
+        { id: 'fine-1', loanId: 'loan-1', amountCents: 30, status: 'paid', reason: '3 day(s)' },
+      ],
+    });
+    tenantGetClient.mockReturnValue(client);
+    await sweepFineAccrual();
+    expect(created).toHaveLength(1);
+    expect(created[0]!.amountCents).toBe(20); // 50 accrued − 30 already paid
   });
 
   it('skips libraries that do not charge overdue fines', async () => {

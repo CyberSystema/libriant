@@ -3,9 +3,11 @@ import { notFound } from 'next/navigation';
 import { Banner, Card, CardBody, CardHeader, PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
-import { requestCookieHeader } from '@/lib/session';
+import { currentSession, requestCookieHeader } from '@/lib/session';
 import { ApiError, api } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
+import { FinesPanel, type FinesListResponse } from '@/components/FinesPanel';
+import { formatMoney } from '@/components/money';
 import { LoanActions } from './LoanActions';
 
 type LoanDetail = {
@@ -67,8 +69,40 @@ export default async function LoanDetailPage(props: {
     );
   }
 
+  // Bound once: `isLocale()` narrows `params.locale`, but that narrowing is lost
+  // inside a callback (a `.map()` over the fines), where TypeScript sees a plain
+  // string again.
+  const locale = params.locale;
   const overdue = loan.status === 'active' && new Date(loan.dueAt) < new Date();
   const dueDays = daysFromNow(loan.dueAt);
+
+  // The loan payload carries enough of each fine to *show* one (amount, reason,
+  // status) but not enough to settle it, so the full rows come from the fines
+  // endpoint — and only when this loan actually has fines, which most do not.
+  // A failure here degrades to the loan's own thinner list rather than dropping
+  // the fines off the page: "no fines" and "we could not load the fines" must
+  // never look the same on a screen about money.
+  let fines: FinesListResponse | null = null;
+  let finesError: string | null = null;
+  if (loan.fines.length > 0) {
+    try {
+      fines = await api<FinesListResponse>(
+        `/t/${params.slug}/fines?loanId=${encodeURIComponent(loan.id)}&limit=50`,
+        { cookie },
+      );
+    } catch (err) {
+      finesError = translateApiError(err, t, t('loans.fines.loadFailed'));
+    }
+  }
+
+  // Role only decides which buttons are drawn; the API enforces it (StaffWrite
+  // to record a payment, owner/admin to write one off). An impersonating
+  // Libriant admin holds no tenant session and is treated as owner, the same
+  // way the tenant layout resolved them to let them in here.
+  const session = await currentSession().catch(() => null);
+  const role = session?.user.role ?? 'owner';
+  const canSettleFines = role === 'owner' || role === 'admin' || role === 'librarian';
+  const canWriteOffFines = role === 'owner' || role === 'admin';
 
   return (
     <>
@@ -165,30 +199,43 @@ export default async function LoanDetailPage(props: {
         </CardBody>
       </Card>
 
-      {loan.fines.length > 0 ? (
+      {fines ? (
+        <FinesPanel
+          slug={params.slug}
+          locale={params.locale}
+          catalog={catalog}
+          scope={{ kind: 'loan', loanId: loan.id }}
+          initial={fines}
+          canSettle={canSettleFines}
+          canWriteOff={canWriteOffFines}
+        />
+      ) : loan.fines.length > 0 ? (
+        // Fallback for a failed fines fetch: the loan's own list, read-only.
+        // The status column used to be headed by `common.actions.search`
+        // ("Search"), and the status itself printed as the raw API enum.
         <Card>
-          <CardHeader title={t('loans.detail.fines')} />
+          <CardHeader title={t('loans.fines.title')} />
           <CardBody>
+            {finesError ? (
+              <Banner severity="critical" style={{ marginBottom: 'var(--sp-4)' }}>
+                {finesError}
+              </Banner>
+            ) : null}
             <div className="lbr-table-wrap">
               <table className="lbr-table">
                 <thead>
                   <tr>
-                    <th>{t('loans.detail.reason')}</th>
-                    <th>{t('loans.detail.amount')}</th>
-                    <th>{t('common.actions.search')}</th>
+                    <th>{t('loans.fines.columns.reason')}</th>
+                    <th>{t('loans.fines.columns.amount')}</th>
+                    <th>{t('loans.fines.columns.status')}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {loan.fines.map((f) => (
                     <tr key={f.id}>
                       <td>{f.reason}</td>
-                      <td>
-                        {new Intl.NumberFormat(params.locale, {
-                          style: 'currency',
-                          currency: f.currency,
-                        }).format(f.amountCents / 100)}
-                      </td>
-                      <td>{f.status}</td>
+                      <td>{formatMoney(f.amountCents, f.currency, locale)}</td>
+                      <td>{t(`loans.fines.status.${f.status}`)}</td>
                     </tr>
                   ))}
                 </tbody>

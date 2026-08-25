@@ -252,12 +252,12 @@ export class EffectivePlanService {
          -- graceUntil passes, the join falls off and resolution drops to
          -- the conservative plan_features default row (effectively Starter)
          -- until payment recovers.
-         OR (s.status = 'past_due' AND s."graceUntil" IS NOT NULL AND s."graceUntil" > NOW())
+         OR (s.status = 'past_due' AND s."graceUntil" IS NOT NULL AND s."graceUntil" > NOW() AT TIME ZONE 'UTC')
        )
        -- Manual subscriptions are active only while paidUntil has not
        -- expired. If a manual library has not paid the next invoice yet,
        -- they fall through to defaults the moment paidUntil < NOW().
-       AND (s."billingMode" <> 'manual' OR s."paidUntil" IS NULL OR s."paidUntil" > NOW())
+       AND (s."billingMode" <> 'manual' OR s."paidUntil" IS NULL OR s."paidUntil" > NOW() AT TIME ZONE 'UTC')
       LEFT JOIN plans p ON p.id = s."planId"
       LEFT JOIN plan_feature_values pfv
         ON pfv."planId" = s."planId"
@@ -265,7 +265,7 @@ export class EffectivePlanService {
       LEFT JOIN tenant_plan_overrides tpo
         ON tpo."tenantId" = $1
        AND tpo."featureKey" = pf.key
-       AND (tpo."expiresAt" IS NULL OR tpo."expiresAt" > NOW())
+       AND (tpo."expiresAt" IS NULL OR tpo."expiresAt" > NOW() AT TIME ZONE 'UTC')
       ORDER BY pf."sortOrder", pf.key;
       `,
       tenantId,

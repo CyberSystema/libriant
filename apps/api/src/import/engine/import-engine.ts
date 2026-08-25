@@ -903,6 +903,11 @@ export class ImportEngine {
    */
   private async readDbClock(): Promise<Date> {
     try {
+      // Bare NOW() is CORRECT here and must stay. It returns a `timestamptz`,
+      // which the driver turns into a real instant; the `AT TIME ZONE 'UTC'`
+      // form used for column WRITES elsewhere would hand back a naive timestamp
+      // that the driver then reads as local time — introducing the very skew
+      // that form exists to remove.
       const rows = await this.ctx.client.$queryRaw<Array<{ now: Date }>>`SELECT NOW() AS now`;
       const now = rows?.[0]?.now;
       return now instanceof Date ? now : new Date();

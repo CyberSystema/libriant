@@ -51,6 +51,16 @@ export type MemberWithCirculationDto = MemberDto & {
     activeLoans: number;
     activeReservations: number;
     outstandingFinesCents: number;
+    /**
+     * How many separate outstanding fines make up that total.
+     *
+     * The amount alone cannot answer "is there anything to settle?" — €0.00
+     * across two fines and no fines at all are the same number — and the desk
+     * needs to know whether to offer a settle action at all. Both move the
+     * moment a fine is paid or waived through `/t/:slug/fines/:id/*`; they are
+     * aggregated live, never cached.
+     */
+    outstandingFinesCount: number;
   };
 };
 
@@ -228,6 +238,7 @@ export class MembersService {
       client.fine.aggregate({
         where: { memberId: id, status: 'outstanding' },
         _sum: { amountCents: true },
+        _count: true,
       }),
     ]);
     return {
@@ -236,6 +247,7 @@ export class MembersService {
         activeLoans,
         activeReservations,
         outstandingFinesCents: outstanding._sum.amountCents ?? 0,
+        outstandingFinesCount: outstanding._count,
       },
     };
   }
@@ -778,11 +790,16 @@ export class MembersService {
     client: Pick<Prisma.TransactionClient, 'loan' | 'reservation' | 'fine'>,
     id: string,
   ): Promise<void> {
-    const [activeLoans, activeReservations, outstandingFines] = await Promise.all([
+    const [activeLoans, activeReservations, fines] = await Promise.all([
       client.loan.count({ where: { memberId: id, status: 'active' } }),
       client.reservation.count({ where: { memberId: id, status: { in: ['queued', 'ready'] } } }),
-      client.fine.count({ where: { memberId: id, status: 'outstanding' } }),
+      client.fine.aggregate({
+        where: { memberId: id, status: 'outstanding' },
+        _sum: { amountCents: true },
+        _count: true,
+      }),
     ]);
+    const outstandingFines = fines._count;
     if (activeLoans > 0 || activeReservations > 0 || outstandingFines > 0) {
       throw new BadRequestException({
         statusCode: 400,
@@ -792,6 +809,12 @@ export class MembersService {
         activeLoans,
         activeReservations,
         outstandingFines,
+        // The amount, not just the count: "1 outstanding fine" is the same
+        // sentence for €0.20 and €200, and the two call for very different
+        // conversations with the person asking to be forgotten. Whoever has to
+        // decide between chasing the debt and writing it off needs the figure
+        // in front of them, and the refusal is the only place it appears.
+        outstandingFinesCents: fines._sum.amountCents ?? 0,
       });
     }
   }
@@ -801,15 +824,29 @@ export class MembersService {
    * keeping the rows themselves (who did what, when) so the library's audit
    * history stays continuous.
    *
-   * Two passes, and the second is why this is raw SQL: the member-targeted rows
-   * are found by (targetType, targetId), but any row whose JSON happens to
+   * Three passes, and the second is why this is raw SQL: the member-targeted
+   * rows are found by (targetType, targetId), but any row whose JSON happens to
    * contain the e-mail address is also about this person, and Prisma cannot
    * express a substring match against a JSONB column's text form. The e-mail
    * needle is only ever applied when there IS one — `position('' in x)` returns
    * 1, so an empty needle would match and redact the ENTIRE audit log.
    *
-   * `member.erased` is excluded from both passes: it is the record that the
+   * The third pass is the member's FINES. `fine.paid` / `fine.waived` /
+   * `fine.voided` rows are targeted at the fine, not at the member, so neither
+   * of the first two passes reaches them — and a waiver carries the librarian's
+   * own sentence about why ("her card was stolen in March"). That is free text
+   * about a named individual sitting in a table erasure has just swept, and it
+   * is precisely the kind of residue Art. 17 is about. The financial facts are
+   * untouched: the fine rows keep amount, currency, status and dates, which is
+   * what the Art. 17(3)(b) accounting basis actually covers.
+   *
+   * `member.erased` is excluded from every pass: it is the record that the
    * erasure happened, and a second call to `erase()` must not wipe it.
+   *
+   * Every pass skips rows that are ALREADY redacted. Not an optimisation: the
+   * returned count feeds `clearedSomething` in `erase()`, so counting a re-swept
+   * row would make every repeat call look like it did work and grow a fresh
+   * `member.erased` audit row each time it ran.
    */
   private async redactAuditTrail(
     tx: Prisma.TransactionClient,
@@ -834,6 +871,14 @@ export class MembersService {
            AND (position(lower(${email}) in lower(COALESCE("beforeJson"::text, ''))) > 0
              OR position(lower(${email}) in lower(COALESCE("afterJson"::text, ''))) > 0)`;
     }
+    redacted += await tx.$executeRaw`
+      UPDATE "audit_log"
+         SET "beforeJson" = CASE WHEN "beforeJson" IS NULL THEN NULL ELSE ${AUDIT_REDACTION}::jsonb END,
+             "afterJson"  = CASE WHEN "afterJson"  IS NULL THEN NULL ELSE ${AUDIT_REDACTION}::jsonb END
+       WHERE "targetType" = 'fine'
+         AND "targetId" IN (SELECT "id" FROM "fines" WHERE "memberId" = ${id})
+         AND (("beforeJson" IS NOT NULL AND "beforeJson" <> ${AUDIT_REDACTION}::jsonb)
+           OR ("afterJson"  IS NOT NULL AND "afterJson"  <> ${AUDIT_REDACTION}::jsonb))`;
     return redacted;
   }
 

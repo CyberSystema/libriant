@@ -8,6 +8,8 @@ import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
 import type { FieldDef } from '@/components/DynamicFields';
+import { FinesPanel, type FinesListResponse } from '@/components/FinesPanel';
+import { formatMoney } from '@/components/money';
 import { MemberForm, type MemberInitial } from '../new/MemberForm';
 import { PhotoUploader } from './PhotoUploader';
 
@@ -23,6 +25,7 @@ export type DetailMember = MemberInitial & {
     activeLoans: number;
     activeReservations: number;
     outstandingFinesCents: number;
+    outstandingFinesCount: number;
   };
 };
 
@@ -32,6 +35,13 @@ type Props = {
   locale: Locale;
   initial: DetailMember;
   customFields: FieldDef[];
+  /** This member's outstanding fines, server-rendered. Null when the fetch failed. */
+  fines: FinesListResponse | null;
+  finesError: string | null;
+  /** owner | admin | librarian — may record a payment. */
+  canSettleFines: boolean;
+  /** owner | admin — may write a fine off. */
+  canWriteOffFines: boolean;
 };
 
 /**
@@ -45,7 +55,17 @@ type Props = {
  * State changes (suspend / reactivate / archive / restore) call dedicated
  * endpoints; refresh-via-router keeps server-rendered counts current.
  */
-export function MemberDetail({ slug, catalog, locale, initial, customFields }: Props) {
+export function MemberDetail({
+  slug,
+  catalog,
+  locale,
+  initial,
+  customFields,
+  fines,
+  finesError,
+  canSettleFines,
+  canWriteOffFines,
+}: Props) {
   const t = createTranslator(catalog, locale);
   const router = useRouter();
   const toast = useToast();
@@ -152,8 +172,13 @@ export function MemberDetail({ slug, catalog, locale, initial, customFields }: P
     );
   }
 
-  const fmtCurrency = (cents: number) =>
-    new Intl.NumberFormat(locale, { style: 'currency', currency: 'EUR' }).format(cents / 100);
+  // The library's own currency, which this endpoint does not send: the member
+  // payload has `outstandingFinesCents` and no currency at all, so this page
+  // used to label every library's debts in euros. The fines list carries the
+  // configured one on both its summaries; EUR is only the fallback for the case
+  // where that request failed and there is no fines card to read it from.
+  const currency = fines?.summary?.currency ?? fines?.tenantSummary.currency ?? 'EUR';
+  const fmtCurrency = (cents: number) => formatMoney(cents, currency, locale);
 
   return (
     <>
@@ -220,6 +245,41 @@ export function MemberDetail({ slug, catalog, locale, initial, customFields }: P
               </dl>
             </CardBody>
           </Card>
+
+          {/* Money before custom fields: a person is standing at the counter. */}
+          <div style={{ marginBottom: 'var(--sp-4)' }}>
+            {finesError ? (
+              <Card>
+                <CardHeader title={t('loans.fines.title')} />
+                <CardBody>
+                  <Banner severity="critical">{finesError}</Banner>
+                </CardBody>
+              </Card>
+            ) : fines ? (
+              <FinesPanel
+                slug={slug}
+                locale={locale}
+                catalog={catalog}
+                scope={{ kind: 'member', memberId: member.id }}
+                initial={fines}
+                canSettle={canSettleFines}
+                canWriteOff={canWriteOffFines}
+                // Settling a fine moves the circulation card above without a
+                // reload — the API returns the member's recomputed totals with
+                // the resolution for exactly this.
+                onSummaryChange={(summary) =>
+                  setMember((prev) => ({
+                    ...prev,
+                    circulation: {
+                      ...prev.circulation,
+                      outstandingFinesCents: summary.outstandingCents,
+                      outstandingFinesCount: summary.outstandingCount,
+                    },
+                  }))
+                }
+              />
+            ) : null}
+          </div>
 
           {customFields.length > 0 ? (
             <Card style={{ marginBottom: 'var(--sp-4)' }}>
@@ -290,7 +350,20 @@ export function MemberDetail({ slug, catalog, locale, initial, customFields }: P
                   </Link>
                 </dd>
                 <dt>{t('members.detail.outstandingFines')}</dt>
-                <dd>{fmtCurrency(member.circulation.outstandingFinesCents)}</dd>
+                <dd>
+                  {fmtCurrency(member.circulation.outstandingFinesCents)}
+                  {member.circulation.outstandingFinesCount > 0 ? (
+                    // The count, not just the total: two fines adding up to
+                    // €0.00 and no fines at all are the same amount, and only
+                    // one of them has anything to settle.
+                    <span style={{ color: 'var(--color-text-muted)' }}>
+                      {' · '}
+                      {t('loans.fines.summary.count', {
+                        count: member.circulation.outstandingFinesCount,
+                      })}
+                    </span>
+                  ) : null}
+                </dd>
               </dl>
             </CardBody>
           </Card>

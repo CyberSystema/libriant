@@ -218,7 +218,7 @@ async function expireOneTenant(
         // contiguous and 1-based. Without it a cron-driven expiry leaves a gap.
         await tx.$executeRaw`
           UPDATE reservations
-          SET "queuePosition" = "queuePosition" - 1, "updatedAt" = NOW()
+          SET "queuePosition" = "queuePosition" - 1, "updatedAt" = NOW() AT TIME ZONE 'UTC'
           WHERE "bookId" = ${r.bookId}
             AND status = 'queued'
             AND "queuePosition" > 0

@@ -392,6 +392,24 @@ export class LoansService {
 
     type ReturnTxResult = {
       fineId: string | null;
+      /**
+       * A previously-outstanding fine this return closed automatically, if any.
+       * Carried out of the transaction so it can be AUDITED: closing it writes
+       * off money the library was owed, and a financial write-off that leaves no
+       * record is not one an auditor — or a librarian asked "why is this gone?" —
+       * can ever account for. `resolvedByUserId` stays null on the row itself
+       * (see closeStaleOutstandingFine) so an automatic adjustment is still
+       * distinguishable from a deliberate waiver; the audit row is what supplies
+       * the actor and the reason.
+       */
+      closedFine: { id: string; amountCents: number; why: string } | null;
+      /**
+       * What the member is actually being billed on THIS return — the accrued
+       * total less anything already settled for this loan. Computed inside the
+       * transaction because it reads the fines table; see the netting comment
+       * at the charge site.
+       */
+      chargedCents: number;
       promotedHold: {
         reservationId: string;
         memberId: string;
@@ -445,7 +463,7 @@ export class LoansService {
               // Everyone behind the head bumps up a slot.
               await tx.$executeRaw`
                 UPDATE reservations
-                SET "queuePosition" = "queuePosition" - 1, "updatedAt" = NOW()
+                SET "queuePosition" = "queuePosition" - 1, "updatedAt" = NOW() AT TIME ZONE 'UTC'
                 WHERE "bookId" = ${loan.copy.bookId}
                   AND status = 'queued'
                   AND "queuePosition" > 0
@@ -496,35 +514,59 @@ export class LoansService {
         // finalise that one instead of creating a duplicate (DATA-1: done as a
         // single atomic upsert so a sweep racing this return doesn't abort the tx).
         let fineId: string | null = null;
+        let chargedCents = 0;
+        let closedFine: ReturnTxResult['closedFine'] = null;
         if (shouldCreateFine) {
-          fineId = await this.upsertOutstandingFine(tx, {
-            memberId: loan.memberId,
-            loanId,
-            amountCents: fineAmountCents,
-            currency: settings.currency,
-            reason: `${daysOverdue} day(s) overdue`,
+          // NET OFF WHAT THE LOAN HAS ALREADY SETTLED.
+          //
+          // The overdue charge for a loan is a RUNNING TOTAL (daysOverdue ×
+          // rate, capped) that the nightly sweep keeps growing, and since the
+          // fines module shipped a member can pay or a librarian can write off
+          // part of it while the book is still out. `fineAmountCents` is that
+          // whole running total, so billing it again at return would charge the
+          // member a second time for days they have already paid for: pay €2.00
+          // on Monday for four days overdue, bring the book back on Tuesday, and
+          // the return would open a fresh €2.50 fine covering the same four days
+          // plus one. The ON CONFLICT upsert below cannot see it, because a paid
+          // fine is not the outstanding row it targets.
+          //
+          // The invariant the fines module and the accrual sweep both hold to:
+          //   outstanding for a loan  =  total accrued − already settled.
+          const settled = await tx.fine.aggregate({
+            where: { loanId, status: { in: ['paid', 'waived'] } },
+            _sum: { amountCents: true },
           });
+          chargedCents = Math.max(0, fineAmountCents - (settled._sum.amountCents ?? 0));
+          if (chargedCents > 0) {
+            fineId = await this.upsertOutstandingFine(tx, {
+              memberId: loan.memberId,
+              loanId,
+              amountCents: chargedCents,
+              currency: settings.currency,
+              reason: `${daysOverdue} day(s) overdue`,
+            });
+          } else {
+            // Everything this loan ever accrued has already been settled. Don't
+            // open a €0 fine, and close any outstanding remainder the sweep left
+            // behind before the settlement landed.
+            closedFine = await this.closeStaleOutstandingFine(
+              tx,
+              loanId,
+              'closed on return — already settled in full',
+            );
+          }
         } else {
           // circ-3: overdue fines are off (or there's nothing to bill) at return
           // time, but the accrual sweep may have opened an outstanding fine while
           // the loan was overdue and fines were still on. Reconcile it instead of
           // leaving the member owing a charge the library has since switched off.
-          // Status-guarded so we never touch a fine someone else just resolved.
-          const stale = await tx.fine.findFirst({
-            where: { loanId, status: 'outstanding' },
-            select: { id: true },
-          });
-          if (stale) {
-            await tx.fine.updateMany({
-              where: { id: stale.id, status: 'outstanding' },
-              data: {
-                status: 'waived',
-                reason: 'Overdue fine waived — overdue fines disabled at return',
-              },
-            });
-          }
+          closedFine = await this.closeStaleOutstandingFine(
+            tx,
+            loanId,
+            'closed on return — overdue fines are switched off for this library',
+          );
         }
-        return { fineId, promotedHold: promoted };
+        return { fineId, chargedCents, closedFine, promotedHold: promoted };
       });
     } catch (err) {
       throw this.translate(err);
@@ -541,8 +583,37 @@ export class LoansService {
         condition,
         fineId: txResult.fineId,
         daysOverdue,
+        // Both numbers, because they differ whenever part of this loan's
+        // overdue total was paid or written off before the book came back, and
+        // an audit row that only carried the accrued figure would look like the
+        // member was billed money they were not billed.
+        accruedCents: fineAmountCents,
+        chargedCents: txResult.chargedCents,
       },
     });
+
+    // A write-off has to be attributable, even when nothing chose it.
+    //
+    // Returning a book can close an outstanding fine automatically — the days
+    // were already settled, or the library switched overdue fines off while the
+    // book was out. That is money the library was owed and no longer is, and it
+    // used to happen with no record at all: the row flipped to 'waived' with a
+    // null resolver and the `loan.returned` audit row said nothing about it. A
+    // librarian asked "why did this charge disappear?" had nowhere to look.
+    //
+    // Deliberately its OWN action rather than a field on `loan.returned`, so it
+    // is findable by fine; and deliberately NOT `fine.waived`, so an automatic
+    // adjustment can never be mistaken for the deliberate write-off a person
+    // signed for.
+    if (txResult.closedFine) {
+      await this.audit.record(tenant, actor, {
+        action: 'fine.closed_on_return',
+        targetType: 'fine',
+        targetId: txResult.closedFine.id,
+        before: { status: 'outstanding', amountCents: txResult.closedFine.amountCents },
+        after: { status: 'waived', reason: txResult.closedFine.why, loanId },
+      });
+    }
 
     const fullLoan = await this.getInternal(client, loanId);
     return {
@@ -551,7 +622,8 @@ export class LoansService {
         txResult.fineId !== null
           ? {
               id: txResult.fineId,
-              amountCents: fineAmountCents,
+              // What the member owes NOW, not what the loan accrued in total.
+              amountCents: txResult.chargedCents,
               currency: settings.currency,
               daysOverdue,
             }
@@ -913,6 +985,21 @@ export class LoansService {
    * (pgcrypto is enabled tenant-wide) and `updatedAt` is set explicitly since
    * neither column carries a DB-side default.
    */
+  /**
+   * TIMESTAMPS ARE WRITTEN IN UTC, EXPLICITLY.
+   *
+   * `createdAt` / `updatedAt` are `timestamp WITHOUT time zone`, and Prisma
+   * writes UTC into them for every other row in this database. Bare `NOW()` and
+   * the column's own `DEFAULT CURRENT_TIMESTAMP` are `timestamptz`, so assigning
+   * them converts using the SESSION timezone — which on the production host is
+   * Europe/Berlin. Measured: 2026-08-25 19:39 stored where every neighbouring
+   * row would hold 17:39, a two-hour skew that grows to three in winter.
+   *
+   * `createdAt` was omitted entirely and fell to that default, and `resolvedAt`
+   * in the fines API is derived from `updatedAt` — so a fine appeared to be
+   * raised, and settled, two hours in the future relative to the loan that
+   * caused it.
+   */
   private async upsertOutstandingFine(
     tx: Pick<TenantPrismaClient, '$queryRaw'>,
     input: {
@@ -924,7 +1011,7 @@ export class LoansService {
     },
   ): Promise<string> {
     const rows = await tx.$queryRaw<Array<{ id: string }>>`
-      INSERT INTO "fines" ("id", "memberId", "loanId", "amountCents", "currency", "reason", "status", "updatedAt")
+      INSERT INTO "fines" ("id", "memberId", "loanId", "amountCents", "currency", "reason", "status", "createdAt", "updatedAt")
       VALUES (
         gen_random_uuid()::text,
         ${input.memberId},
@@ -933,16 +1020,62 @@ export class LoansService {
         ${input.currency},
         ${input.reason},
         'outstanding',
-        NOW()
+        NOW() AT TIME ZONE 'UTC',
+        NOW() AT TIME ZONE 'UTC'
       )
       ON CONFLICT ("loanId") WHERE "status" = 'outstanding' AND "loanId" IS NOT NULL
       DO UPDATE SET
         "amountCents" = EXCLUDED."amountCents",
         "reason" = EXCLUDED."reason",
-        "updatedAt" = NOW()
+        "updatedAt" = NOW() AT TIME ZONE 'UTC'
       RETURNING "id"
     `;
     return rows[0]!.id;
+  }
+
+  /**
+   * Close an outstanding fine the accrual sweep opened for a loan that, at
+   * return time, turns out not to owe anything after all — either the library
+   * has switched overdue fines off (circ-3) or the whole accrued total has
+   * already been paid/waived.
+   *
+   * Two deliberate choices, both changed from the first version of this code:
+   *
+   *   - `reason` is PRESERVED and the disposition goes in `notes`. The old code
+   *     overwrote `reason` with the explanation, which destroyed the only field
+   *     that says why the money was ever owed — the exact thing a member asks
+   *     about when they see a waived charge on their record. Same convention the
+   *     fines module follows for a librarian's own waiver.
+   *   - `resolvedByUserId` is left NULL. This is the system reconciling itself
+   *     during someone's return, not a person deciding to write off a debt;
+   *     stamping the returning librarian's id here would make an automatic
+   *     adjustment indistinguishable from their deliberate waiver in the very
+   *     record used to tell those apart.
+   *
+   * Status-guarded so we never touch a fine someone else just resolved.
+   */
+  private async closeStaleOutstandingFine(
+    tx: Pick<Prisma.TransactionClient, 'fine'>,
+    loanId: string,
+    why: string,
+  ): Promise<{ id: string; amountCents: number; why: string } | null> {
+    const stale = await tx.fine.findFirst({
+      where: { loanId, status: 'outstanding' },
+      select: { id: true, notes: true, amountCents: true },
+    });
+    if (!stale) return null;
+    const closed = await tx.fine.updateMany({
+      where: { id: stale.id, status: 'outstanding' },
+      data: {
+        status: 'waived',
+        notes: this.appendNote(stale.notes, why),
+      },
+    });
+    // updateMany is the CAS: another request may have settled it between the
+    // read and the write, in which case this return did not close anything and
+    // must not claim an audit row for it.
+    if (closed.count === 0) return null;
+    return { id: stale.id, amountCents: stale.amountCents, why };
   }
 
   private appendNote(existing: string | null, addition?: string | null): string | null {

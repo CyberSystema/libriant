@@ -352,7 +352,7 @@ export class ReservationsService {
         if (existing.status === 'queued' && existing.queuePosition !== null) {
           await tx.$executeRaw`
             UPDATE reservations
-            SET "queuePosition" = "queuePosition" - 1, "updatedAt" = NOW()
+            SET "queuePosition" = "queuePosition" - 1, "updatedAt" = NOW() AT TIME ZONE 'UTC'
             WHERE "bookId" = ${existing.bookId}
               AND status = 'queued'
               AND "queuePosition" > ${existing.queuePosition}
@@ -530,7 +530,7 @@ export class ReservationsService {
     // bumps up one slot so the next promotion targets the right person.
     await tx.$executeRaw`
       UPDATE reservations
-      SET "queuePosition" = "queuePosition" - 1, "updatedAt" = NOW()
+      SET "queuePosition" = "queuePosition" - 1, "updatedAt" = NOW() AT TIME ZONE 'UTC'
       WHERE "bookId" = ${bookId}
         AND status = 'queued'
         AND "queuePosition" > 0

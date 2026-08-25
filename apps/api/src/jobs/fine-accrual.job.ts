@@ -96,12 +96,41 @@ async function accrueOneTenant(
     select: { id: true, memberId: true, dueAt: true },
   });
 
+  // What each loan has ALREADY settled — paid at the desk or written off.
+  //
+  // Without this the sweep silently undoes the fines module. A librarian voids
+  // a fine that was raised in error on a book still out on loan; tonight this
+  // job finds no outstanding fine for that loan, recomputes the full running
+  // total from scratch, and opens the same charge again. The member's write-off
+  // lasts until 03:00. Same for a payment taken while the book is still out:
+  // the sweep would re-bill the days that were just paid for.
+  //
+  // The invariant, shared with LoansService.returnLoan:
+  //   outstanding for a loan  =  total accrued − already settled.
+  //
+  // One grouped query for the whole tenant rather than an IN-list keyed on the
+  // overdue loans: `fines` is small (only overdue/lost loans ever produce a
+  // row), and a big library can carry six figures of overdue loans, which is
+  // well past what belongs in a bind-parameter list.
+  const settledByLoan = new Map<string, number>();
+  const settledRows = await client.fine.groupBy({
+    by: ['loanId'],
+    where: { status: { in: ['paid', 'waived'] }, loanId: { not: null } },
+    _sum: { amountCents: true },
+  });
+  for (const row of settledRows) {
+    if (row.loanId) settledByLoan.set(row.loanId, row._sum.amountCents ?? 0);
+  }
+
   let touched = 0;
   for (const loan of overdue) {
     const daysOverdue = Math.floor((now.getTime() - loan.dueAt.getTime()) / MS_PER_DAY);
     if (daysOverdue <= 0) continue;
     const raw = daysOverdue * perDay;
-    const amount = cap > 0 ? Math.min(raw, cap) : raw;
+    const accrued = cap > 0 ? Math.min(raw, cap) : raw;
+    const amount = Math.max(0, accrued - (settledByLoan.get(loan.id) ?? 0));
+    // Nothing left to bill — either nothing accrued, or the member has already
+    // settled everything this loan has run up so far.
     if (amount <= 0) continue;
     const reason = `${daysOverdue} day(s) overdue`;
 
