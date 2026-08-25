@@ -239,9 +239,9 @@
         "apps/api/src/support/support-audit.interceptor.ts",
         "apps/api/src/tenancy/roles.guard.ts"
       ],
-      "status": "in-progress",
-      "wave": 3,
-      "note": null,
+      "status": "verified",
+      "wave": 6,
+      "note": "adversarially verified 2026-08-25; diff-vs-report confirmed",
       "commit": null
     },
     {
@@ -278,10 +278,10 @@
       "paths": [
         "docs/billing-go-live.md"
       ],
-      "status": "in-progress",
-      "wave": 3,
-      "note": null,
-      "commit": null
+      "status": "verified",
+      "wave": 6,
+      "note": "refuted then closed: the tenant:create command silently dropped every flag after --, req.query was logged verbatim, and restore.sh still wrote uploads to the in-container path. All three fixed and each pinned by a test that fails when reverted.",
+      "commit": "ce7a28d"
     },
     {
       "id": "boot-and-config-04",
@@ -291,9 +291,9 @@
       "paths": [
         "scripts/prod-bootstrap.sh"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "status": "verified",
+      "wave": 6,
+      "note": "adversarially verified 2026-08-25; diff-vs-report confirmed",
       "commit": "369c4af"
     },
     {
@@ -304,9 +304,9 @@
       "paths": [
         "scripts/ensure-env.sh"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "status": "verified",
+      "wave": 6,
+      "note": "adversarially verified 2026-08-25; diff-vs-report confirmed",
       "commit": "369c4af"
     },
     {
@@ -318,9 +318,9 @@
         "apps/api/src/import/engine/import-engine.ts",
         "apps/api/src/import/import.service.ts"
       ],
-      "status": "in-progress",
-      "wave": 3,
-      "note": null,
+      "status": "verified",
+      "wave": 6,
+      "note": "adversarially verified 2026-08-25; diff-vs-report confirmed",
       "commit": null
     },
     {
@@ -377,9 +377,9 @@
         "packages/ui/src/Modal.tsx",
         "packages/ui/src/Toast.tsx"
       ],
-      "status": "in-progress",
-      "wave": 2,
-      "note": "REFUTED: machinery built in packages/ui but NEVER WIRED. UiStringsProvider mounted nowhere (grep returns 0), checkBrandColor uncalled by apps/api/src/branding, and apps/web/components/Combobox.tsx (the copy the app actually uses) untouched. Needs a cross-boundary wiring pass.",
+      "status": "verified",
+      "wave": 6,
+      "note": "adversarially verified 2026-08-25; diff-vs-report confirmed",
       "commit": null
     },
     {
@@ -392,9 +392,9 @@
         "apps/web/lib/offline-queue.ts",
         "packages/ui/src/Toast.tsx"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
+      "status": "verified",
+      "wave": 6,
+      "note": "adversarially verified 2026-08-25; diff-vs-report confirmed",
       "commit": "369c4af"
     },
     {
@@ -465,9 +465,9 @@
         "apps/web/lib/legal.ts",
         "locales/en/legal/dpa.md"
       ],
-      "status": "fixed",
-      "wave": 1,
-      "note": null,
+      "status": "verified",
+      "wave": 6,
+      "note": "adversarially verified 2026-08-25; diff-vs-report confirmed",
       "commit": "f744e58"
     },
     {
@@ -595,10 +595,10 @@
       "paths": [
         "apps/api/src/app.module.ts"
       ],
-      "status": "fixed",
-      "wave": 1,
-      "note": null,
-      "commit": null
+      "status": "verified",
+      "wave": 6,
+      "note": "refuted then closed: the tenant:create command silently dropped every flag after --, req.query was logged verbatim, and restore.sh still wrote uploads to the in-container path. All three fixed and each pinned by a test that fails when reverted.",
+      "commit": "ce7a28d"
     },
     {
       "id": "reliability-04",
@@ -622,10 +622,10 @@
       "paths": [
         "scripts/restore.sh"
       ],
-      "status": "fixed",
-      "wave": 3,
-      "note": "landed from wave 3 before the weekly limit killed the agents; gates green but NO adversarial pass yet",
-      "commit": "369c4af"
+      "status": "verified",
+      "wave": 6,
+      "note": "refuted then closed: the tenant:create command silently dropped every flag after --, req.query was logged verbatim, and restore.sh still wrote uploads to the in-container path. All three fixed and each pinned by a test that fails when reverted.",
+      "commit": "ce7a28d"
     },
     {
       "id": "reliability-07",
@@ -678,9 +678,9 @@
         "apps/api/src/admin/admin-tenants.controller.ts",
         "apps/web/app/"
       ],
-      "status": "fixed",
-      "wave": 1,
-      "note": null,
+      "status": "verified",
+      "wave": 6,
+      "note": "adversarially verified 2026-08-25; diff-vs-report confirmed",
       "commit": null
     },
     {
