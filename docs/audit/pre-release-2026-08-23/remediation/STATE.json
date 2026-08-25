@@ -62,9 +62,9 @@
         "apps/api/src/billing/stripe-real.driver.ts",
         "docs/billing-go-live.md"
       ],
-      "status": "pending",
+      "status": "blocked-on-owner",
       "wave": null,
-      "note": null,
+      "note": "needs the AFM, then Stripe Tax enabled on the account. Tax-id and address collection can be built the day that exists.",
       "commit": null
     },
     {
@@ -164,9 +164,9 @@
         "locales/en/legal/privacy.md",
         "locales/en/legal/terms.md"
       ],
-      "status": "pending",
+      "status": "blocked-on-owner",
       "wave": null,
-      "note": null,
+      "note": "needs a registered legal entity with AFM and Greek/EU DP counsel review. Code side is ready: check:legal reports the 28 unfilled provider values and the app refuses to publish an author-facing note.",
       "commit": null
     },
     {
@@ -419,9 +419,9 @@
         "apps/api/src/config/env.ts",
         "apps/site/site.config.json"
       ],
-      "status": "pending",
+      "status": "blocked-on-owner",
       "wave": null,
-      "note": null,
+      "note": "needs SPF include, DKIM CNAMEs and _dmarc published at Cloudflare, plus a Resend key. No code can substitute.",
       "commit": null
     },
     {
@@ -435,9 +435,9 @@
         "scripts/backup.sh",
         "scripts/deploy-on-host.sh"
       ],
-      "status": "in-progress",
+      "status": "blocked-on-owner",
       "wave": 3,
-      "note": "backup code is proven; the off-site DESTINATION does not exist yet (no Hetzner Storage Box, RCLONE_REMOTE empty), so 'daily backups with an off-server copy' is still not true as asserted in the offer terms",
+      "note": "code complete and proven (encryption round-trips, drill asserts it, alerts fire on staleness). Needs a Hetzner Storage Box and RCLONE_REMOTE set — until then the off-server copy does not exist.",
       "commit": null
     },
     {
@@ -451,9 +451,9 @@
         "infra/monitoring/docker-compose.monitoring.yml",
         "infra/monitoring/prometheus.yml"
       ],
-      "status": "verified",
+      "status": "blocked-on-owner",
       "wave": 5,
-      "note": "Alertmanager wired, textfile collector enabled, Watchdog + backup alerts added, check:alerts gates metric names; DELIVERY still needs an owner-supplied receiver",
+      "note": "Alertmanager wired and gated by check:alerts; DELIVERY needs an owner-supplied receiver (who gets woken, and how). check:alerts prints NOT DELIVERING YET until then.",
       "commit": "4c8da49"
     },
     {
@@ -520,9 +520,9 @@
         "locales/en/legal/dpa.md"
       ],
       "status": "verified",
-      "wave": 5,
-      "note": "adversarially verified 2026-08-24; diff-vs-report confirmed for all four packages",
-      "commit": "341fcb4"
+      "wave": 6,
+      "note": "erasure now reachable end to end: the fines lifecycle it depended on exists and the chain was executed over HTTP",
+      "commit": "4ae8e08"
     },
     {
       "id": "privacy-legal-04",
@@ -551,9 +551,9 @@
         "packages/db-tenant/prisma/schema.prisma",
         "packages/shared/src/features.ts"
       ],
-      "status": "in-progress",
+      "status": "blocked-on-owner",
       "wave": 5,
-      "note": "PARTIAL and honest: enforces the 2 periods the product publishes; the other 5 stores have [PLACEHOLDER] periods in the Privacy Policy — counsel's to fill in, not an engineer's to guess",
+      "note": "enforces the 2 periods the product publishes; the other 5 need Privacy Policy section 6 filled in by counsel — four [PLACEHOLDER] periods. Inventing them would put a deletion schedule nobody agreed to into production.",
       "commit": "369c4af"
     },
     {
@@ -609,9 +609,9 @@
         "infra/monitoring/alerts.yml",
         "infra/monitoring/prometheus.yml"
       ],
-      "status": "verified",
+      "status": "blocked-on-owner",
       "wave": 5,
-      "note": "Alertmanager wired, textfile collector enabled, Watchdog + backup alerts added, check:alerts gates metric names; DELIVERY still needs an owner-supplied receiver",
+      "note": "Alertmanager wired and gated by check:alerts; DELIVERY needs an owner-supplied receiver (who gets woken, and how). check:alerts prints NOT DELIVERING YET until then.",
       "commit": "4c8da49"
     },
     {
@@ -2529,9 +2529,9 @@
         "apps/api/src/support/",
         "apps/api/test/integration/"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2542,9 +2542,9 @@
       "paths": [
         "apps/api/src/config/env.ts"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2555,9 +2555,9 @@
       "paths": [
         "apps/api/src/jobs/reservation-expiry.job.ts"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2568,9 +2568,9 @@
       "paths": [
         "apps/api/src/customization/quota.service.ts"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2585,9 +2585,9 @@
         "packages/ui",
         "packages/ui/"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2598,9 +2598,9 @@
       "paths": [
         "apps/api/src/storage/storage-demo.controller.ts"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2611,9 +2611,9 @@
       "paths": [
         "apps/api/src/help/help.service.ts"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2626,9 +2626,9 @@
         "apps/api/src/export/export-processors.ts",
         "apps/api/src/import/parsers/zip-guard.ts"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2639,9 +2639,9 @@
       "paths": [
         "docs/audit/pre-release-2026-08-23/findings/launch-readiness.json"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2652,9 +2652,9 @@
       "paths": [
         "infra/compose/docker-compose.prod.yml"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2665,9 +2665,9 @@
       "paths": [
         "infra/compose/docker-compose.prod.yml"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2682,9 +2682,9 @@
         "infra/caddy/Caddyfile",
         "packages/db-control/prisma/schema.prisma"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2696,9 +2696,9 @@
         "apps/api/src/platform/health.controller.ts",
         "apps/api/src/tenancy/tenant-prisma.service.ts"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2709,9 +2709,9 @@
       "paths": [
         ".github/workflows/desktop-release.yml"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2723,9 +2723,9 @@
         ".github/workflows/ci.yml",
         ".github/workflows/verify.yml"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     },
     {
@@ -2737,9 +2737,9 @@
         "apps/api/src/tenancy/tenant-resolver.service.ts",
         "apps/api/src/tenancy/tenant.middleware.ts"
       ],
-      "status": "pending",
+      "status": "wont-fix",
       "wave": null,
-      "note": null,
+      "note": "info-rated: context, not a defect. Closed without change per PLAN.md. Re-open if a later wave turns one into a real defect.",
       "commit": null
     }
   ]
