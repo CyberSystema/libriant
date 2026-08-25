@@ -105,7 +105,9 @@ Personal reply within 1 working day
    ↓
 20-minute call
    ↓
-Provision: Municipal plan, manual billing, paidUntil +12 months
+Provision from the operator shell: `pnpm tenant:create --plan=municipal
+--billing-mode=manual --paid-until=<+12mo>` — the ONLY place billing mode
+can be set (see `reply-playbook.md`, "Provisioning an accepted library")
    ↓
 We run their import
 ```

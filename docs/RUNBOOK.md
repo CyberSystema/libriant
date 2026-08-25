@@ -1434,7 +1434,12 @@ the end. Good looks like: exit 0 and every tenant reported migrated.
 ### 6.6 Adding a tenant
 
 ```bash
-dc run --rm --no-deps migrate sh -lc "cd /app && pnpm tenant:create -- \
+# NOTE: no `--` before the flags. pnpm forwards it to the script, node's
+# parseArgs treats it as the positional terminator, and EVERY flag after it
+# is discarded — the run exits 1 with "missing required flag(s)". Since this
+# is the only way to set billingMode, the `--` form stops the founding-offer
+# procedure at step 1. Verified on pnpm 9.15.4 and on 11.22.0, the pinned one.
+dc run --rm --no-deps migrate sh -lc "cd /app && pnpm tenant:create \
   --slug=acme \
   --name='Acme Public Library' \
   --owner-email=ops@acme.gr \

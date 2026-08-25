@@ -64,6 +64,22 @@ export function BookDetail({ slug, catalog, locale, initial, customFields }: Pro
   const [editing, setEditing] = React.useState(false);
   const [archiveBusy, setArchiveBusy] = React.useState(false);
   const [archiveOpen, setArchiveOpen] = React.useState(false);
+  /**
+   * Why the archive was refused, rendered INSIDE the confirmation dialog
+   * (frontend-05). A critical toast cannot serve here: `Modal` opens a native
+   * `<dialog>` with `showModal()`, which sits in the browser top layer and
+   * makes the rest of the page inert, so the toast was painted under the
+   * backdrop — unreadable and unclickable. The dialog just sat there.
+   */
+  const [archiveError, setArchiveError] = React.useState<string | null>(null);
+  const openArchive = () => {
+    setArchiveError(null);
+    setArchiveOpen(true);
+  };
+  const closeArchive = () => {
+    setArchiveError(null);
+    setArchiveOpen(false);
+  };
   const [addCopyOpen, setAddCopyOpen] = React.useState(false);
   const [printingCopyId, setPrintingCopyId] = React.useState<string | null>(null);
 
@@ -89,19 +105,19 @@ export function BookDetail({ slug, catalog, locale, initial, customFields }: Pro
 
   async function archive() {
     setArchiveBusy(true);
+    setArchiveError(null);
     try {
       const updated = await api<DetailBook>(`/t/${slug}/catalog/books/${book.id}`, {
         method: 'DELETE',
       });
       setBook({ ...book, ...updated });
       toast.show({ severity: 'success', title: t('catalog.book.archived') });
-      setArchiveOpen(false);
+      closeArchive();
       router.refresh();
     } catch (err) {
-      toast.show({
-        severity: 'critical',
-        title: translateApiError(err, t, t('common.states.error')),
-      });
+      // Refusals here are the interesting ones — "this book still has copies
+      // on loan". Say it in the dialog; the confirm button is right there.
+      setArchiveError(translateApiError(err, t, t('common.states.error')));
     } finally {
       setArchiveBusy(false);
     }
@@ -359,7 +375,7 @@ export function BookDetail({ slug, catalog, locale, initial, customFields }: Pro
                     {t('catalog.book.restore')}
                   </Button>
                 ) : (
-                  <Button variant="ghost" onClick={() => setArchiveOpen(true)}>
+                  <Button variant="ghost" onClick={openArchive}>
                     {t('catalog.book.archive')}
                   </Button>
                 )}
@@ -371,12 +387,13 @@ export function BookDetail({ slug, catalog, locale, initial, customFields }: Pro
 
       <Modal
         open={archiveOpen}
-        onClose={() => setArchiveOpen(false)}
+        onClose={closeArchive}
         title={t('catalog.book.archiveConfirmTitle', { title: book.title })}
         role="alertdialog"
+        error={archiveError}
         actions={
           <>
-            <Button variant="ghost" onClick={() => setArchiveOpen(false)}>
+            <Button variant="ghost" onClick={closeArchive}>
               {t('common.actions.cancel')}
             </Button>
             <Button variant="danger" loading={archiveBusy} onClick={archive}>
@@ -473,6 +490,11 @@ function AddCopyModal({
       open={open}
       onClose={onClose}
       title={t('catalog.book.addCopy')}
+      // frontend-05: the slot, not a hand-rolled Banner in the body. Same
+      // critical banner, plus the focus move and the `aria-describedby` link
+      // that make a duplicate-barcode refusal announce itself to a screen
+      // reader and scroll into view in a body long enough to hide it.
+      error={error}
       actions={
         <>
           <Button variant="ghost" onClick={onClose}>
@@ -484,11 +506,6 @@ function AddCopyModal({
         </>
       }
     >
-      {error ? (
-        <Banner severity="critical" style={{ marginBottom: 'var(--sp-3)' }}>
-          {error}
-        </Banner>
-      ) : null}
       <FormField
         id="copy-barcode"
         label={t('catalog.book.copyBarcode')}

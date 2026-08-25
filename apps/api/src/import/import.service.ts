@@ -344,9 +344,10 @@ export class ImportService {
     // half-done commit duplicated every keyless row it had already written,
     // including patrons' outstanding debts. The claim is now backed by
     // `IMPORT_NATURAL_KEYS` in engine/import-engine.ts, which names the key for
-    // every kind and fails to compile if one is added without an answer; the
-    // integration spec re-imports the same file twice and asserts the row
-    // counts do not move.
+    // every kind and fails to compile if one is added without an answer, and by
+    // test/integration/import-reimport.spec.ts, which drives THIS route: it
+    // marks a batch `failed`, POSTs /commit again, and asserts the tenant's fine
+    // rows and their total in cents do not move.
     //
     // NOTE what re-running still is NOT: an undo. Rows the failed run wrote
     // stay written — a re-run skips them rather than replacing them. Recovering

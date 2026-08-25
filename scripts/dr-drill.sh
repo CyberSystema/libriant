@@ -28,8 +28,17 @@
 # nobody expects until it happens. Needs TARGET_PGPORT (and TARGET_PGPASSWORD,
 # TARGET_PGHOST, TARGET_SOCKET_DIR).
 #
-# DESTRUCTIVE: drops and recreates its own fixture databases (lbrdrill_*) on the
-# target cluster. Never point it at production.
+# DESTRUCTIVE, AND MORE BROADLY THAN IT LOOKS.
+#
+# This does not only touch its own `lbrdrill_*` fixtures. Step 2 runs
+# `pg_dumpall --clean --if-exists` over the WHOLE CLUSTER and replays it, so the
+# restore carries `DROP DATABASE IF EXISTS` for EVERY database present — and if
+# the replay fails partway (a missing extension function is enough) the drop has
+# already happened and the restore has not. That is not theoretical: it
+# destroyed this repository's own audit control database during development, and
+# the header used to claim only the fixtures were at risk.
+#
+# So there is now a guard rather than a sentence. See `assert_disposable_cluster`.
 set -euo pipefail
 
 PGHOST="${PGHOST:-127.0.0.1}"; PGPORT="${PGPORT:-5432}"
@@ -46,6 +55,33 @@ restore_password() {
 }
 trap 'restore_password; rm -rf "$WORK"' EXIT
 DRIFT_PW='drifted-not-the-real-one'
+# --- the guard the comment used to be -------------------------------------
+#
+# Refuses to run against anything that is not obviously disposable. A drill that
+# can wipe a cluster must not be one keystroke away from wiping the wrong one,
+# and `PGHOST=<prod> pnpm dr:drill` is exactly one keystroke.
+#
+# Local-only by default. `--i-know-this-destroys-the-cluster` is the explicit
+# override, spelled long on purpose: nobody types that by accident, and anybody
+# who does has read what it says.
+assert_disposable_cluster() {
+  case "${1:-}" in
+    ''|localhost|127.0.0.1|::1|/*) return 0 ;;
+  esac
+  printf '\n\033[31mREFUSING TO RUN.\033[0m PGHOST=%s is not local.\n\n' "$1" >&2
+  printf '  This drill runs `pg_dumpall --clean` over the ENTIRE cluster and replays it,\n' >&2
+  printf '  so every database on that host is dropped and only then restored. A partial\n' >&2
+  printf '  restore leaves them dropped. On a production host that is total data loss.\n\n' >&2
+  printf '  If the host really is disposable, pass --i-know-this-destroys-the-cluster.\n\n' >&2
+  exit 1
+}
+
+FORCE_DESTROY=0
+for a in "$@"; do
+  case "$a" in --i-know-this-destroys-the-cluster) FORCE_DESTROY=1 ;; esac
+done
+[ "$FORCE_DESTROY" = "1" ] || assert_disposable_cluster "$PGHOST"
+
 CROSS=0
 for a in "$@"; do
   case "$a" in
@@ -383,6 +419,108 @@ if [ "$CROSS" = "1" ]; then
   printf "      POSTGRES_PASSWORD in the rebuilt host's .env.prod is now wrong; take it\n"
   printf '      from the password manager entry for the SOURCE host. See RUNBOOK.md §8.\n'
 fi
+
+say "The REAL control-plane schema survives a dump/restore"
+# This leg exists because the drill was green while the product could not be
+# restored.
+#
+# Everything above builds hand-written fixture databases — a couple of tables,
+# an extension, a role. The control plane has thirty tables, a generated tsvector
+# column, and an IMMUTABLE SQL function behind it. `immutable_unaccent` called
+# `unaccent(...)` UNQUALIFIED, and pg_dump restores with an empty `search_path`
+# on purpose; an IMMUTABLE SQL function is inlined, inlining resolved the name
+# against that empty path, and the restore aborted after 10 of 30 tables. Every
+# tenant row, plan, subscription and admin user was in the 20 that never
+# arrived — and the fixtures did not contain the function, so 34 checks passed
+# over a schema the product does not have.
+#
+# So: apply the REAL migrations, dump, restore, and count. No Prisma needed —
+# the migrations are plain SQL and psql can replay them in order.
+REAL_SRC=lbrdrill_real; REAL_DST=lbrdrill_real_restored
+psql -qtAX -d postgres >/dev/null 2>&1 <<SQL || true
+DROP DATABASE IF EXISTS $REAL_SRC; DROP DATABASE IF EXISTS $REAL_DST;
+CREATE DATABASE $REAL_SRC; CREATE DATABASE $REAL_DST;
+SQL
+for e in unaccent pg_trgm pgcrypto citext; do
+  psql -qtAX -d "$REAL_SRC" -c "CREATE EXTENSION IF NOT EXISTS $e" >/dev/null 2>&1 || true
+done
+
+real_migrate_rc=0
+for m in "$(dirname "$0")"/../packages/db-control/prisma/migrations/*/migration.sql; do
+  psql -qtAX -v ON_ERROR_STOP=1 -d "$REAL_SRC" -f "$m" >/dev/null 2>"$WORK/real.err" || { real_migrate_rc=1; break; }
+done
+if [ "$real_migrate_rc" != "0" ]; then
+  bad "could not build the real control schema — $(tail -1 "$WORK/real.err" 2>/dev/null)"
+else
+  real_src_tables="$(q "$REAL_SRC" "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")"
+  # A schema this leg cannot build is not one it can test; refuse to pass on a
+  # near-empty database, which is what the 10-of-30 failure looked like.
+  if [ "${real_src_tables:-0}" -lt 20 ]; then
+    bad "real control schema built only ${real_src_tables} table(s) — the migrations did not apply"
+  else
+    pass "real control schema built ($real_src_tables tables)"
+    set +e
+    pg_dump -d "$REAL_SRC" 2>/dev/null \
+      | psql -qtAX -v ON_ERROR_STOP=1 -d "$REAL_DST" >/dev/null 2>"$WORK/real-restore.err"
+    real_rc=$?
+    set -e
+    chk "real control schema restore exit code" "$real_rc" "0"
+    if [ "$real_rc" != "0" ]; then
+      printf '  --- restore stderr ---\n'; sed 's/^/    /' "$WORK/real-restore.err" | head -6
+    fi
+    chk "no SQLSTATE errors restoring the real schema" \
+        "$(sqlstate_errors "$WORK/real-restore.err" || true)" "0"
+    chk "every table came back" \
+        "$(q "$REAL_DST" "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")" \
+        "$real_src_tables"
+  fi
+fi
+psql -qtAX -d postgres >/dev/null 2>&1 <<SQL || true
+DROP DATABASE IF EXISTS $REAL_SRC; DROP DATABASE IF EXISTS $REAL_DST;
+SQL
+
+say "Storage restore — the uploads, not just the databases"
+# reliability-05: restore.sh untarred the uploads into `/srv/libriant/storage`,
+# which is the IN-CONTAINER mount target. On the host that is a path nothing
+# serves, so a restore recovered ZERO files, logged "storage restored", and
+# exited 0. It was marked fixed TWICE without the fix reaching the file, and
+# nothing caught it because this drill only ever exercised Postgres — the
+# databases came back perfectly while every cover image, member photo and
+# uploaded MARC file stayed lost.
+#
+# The assertion is a COUNT, both directions. "It ran without error" is precisely
+# the signal that was already there and already wrong.
+# shellcheck source=_lib/storage-archive.sh
+. "$(dirname "$0")/_lib/storage-archive.sh"
+st_src="$(mktemp -d "${TMPDIR:-/tmp}/lbr-drill-stsrc.XXXXXX")"
+st_dst="$(mktemp -d "${TMPDIR:-/tmp}/lbr-drill-stdst.XXXXXX")"
+st_arc="$(mktemp "${TMPDIR:-/tmp}/lbr-drill-st.XXXXXX")"
+mkdir -p "$st_src/tenants/drill/covers"
+printf 'cover-bytes'  > "$st_src/tenants/drill/covers/a.jpg"
+printf 'photo-bytes'  > "$st_src/tenants/drill/covers/b.jpg"
+printf 'logo-bytes'   > "$st_src/tenants/drill/logo.png"
+storage_tar_stream "$st_src" > "$st_arc" 2>/dev/null
+
+st_want="$(tar -tzf "$st_arc" | storage_archive_file_count)"
+chk "archive counts the files it holds" "$st_want" "3"
+
+if storage_untar_into "$st_dst" "$st_want" < "$st_arc" >/dev/null 2>&1; then
+  chk "uploads restored" "$(storage_dir_file_count "$st_dst")" "3"
+  chk "file contents survive the round trip" "$(cat "$st_dst/tenants/drill/logo.png" 2>/dev/null)" "logo-bytes"
+else
+  bad "uploads restore FAILED outright"
+fi
+
+# The negative half, and the reason this section exists: a restore that lands
+# NOTHING must be an error, not a success. Feed the destination an archive whose
+# files cannot arrive and confirm the helper refuses rather than reporting done.
+st_empty="$(mktemp -d "${TMPDIR:-/tmp}/lbr-drill-stempty.XXXXXX")"
+if printf '' | storage_untar_into "$st_empty" "3" >/dev/null 2>&1; then
+  bad "a restore that recovered NOTHING reported success — this is reliability-05 exactly"
+else
+  pass "a restore that recovers nothing fails loudly instead of reporting success"
+fi
+rm -rf "$st_src" "$st_dst" "$st_empty" "$st_arc"
 
 say "Backup encryption round-trip"
 # The offer terms a municipal committee files say "encrypted backups", and the

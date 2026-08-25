@@ -39,7 +39,9 @@ function fakeRes() {
   };
 }
 
-function fakeReq(over: { url?: string; headers?: Record<string, unknown> } = {}) {
+function fakeReq(
+  over: { url?: string; headers?: Record<string, unknown>; query?: Record<string, unknown> } = {},
+) {
   return {
     id: 1,
     method: 'POST',
@@ -50,6 +52,13 @@ function fakeReq(over: { url?: string; headers?: Record<string, unknown> } = {})
       authorization: `Bearer ${TOKEN}`,
       ...over.headers,
     },
+    // `query` is a SEPARATE serialized field from `url`, and this fixture did
+    // not have it at all — so the test that was supposed to prove the
+    // signed-download token never reaches stdout was asserting against an
+    // object where the token simply did not exist. It passed for two rounds
+    // while `req.query.token` was logged verbatim on every cover image the UI
+    // rendered. A fixture missing the field under test is not a test.
+    query: over.query ?? {},
     socket: { remoteAddress: '203.0.113.7', remotePort: 44321 },
   };
 }
@@ -199,5 +208,42 @@ describe('scrubUrl (query values are credentials)', () => {
     const line = logOneRequest(appSerializers, fakeReq({ url: `/_files/signed?token=${TOKEN}` }));
     expect(line).not.toContain(TOKEN);
     expect(JSON.parse(line).req.url).toBe(`/_files/signed?token=${LOG_REDACT_TEXT}`);
+  });
+});
+
+describe('query parameters (the half that was still leaking)', () => {
+  it('never prints a signed-download token, which every cover image carries', async () => {
+    const line = logOneRequest(
+      appSerializers,
+      fakeReq({ url: `/_files/signed?token=${TOKEN}`, query: { token: TOKEN } }),
+    );
+
+    expect(line).not.toContain(TOKEN);
+    // The KEY survives — an operator debugging a 403 still sees that a token was
+    // supplied, which is the whole difference between redaction and deletion.
+    expect(line).toContain('token');
+  });
+
+  it('redacts an unrecognised parameter by default rather than on a denylist', async () => {
+    // The default is silence. A parameter nobody has argued into the allowlist
+    // does not get to print its value just because nobody thought of it — that
+    // is exactly how `token` got out.
+    const line = logOneRequest(
+      appSerializers,
+      fakeReq({ query: { inviteCode: 'SECRET-VALUE-9', q: 'Παπαδοπούλου' } }),
+    );
+
+    expect(line).not.toContain('SECRET-VALUE-9');
+    expect(line).not.toContain('Παπαδοπούλου');
+  });
+
+  it('keeps the operational parameters that make a log line useful', async () => {
+    const line = logOneRequest(
+      appSerializers,
+      fakeReq({ query: { limit: '25', status: 'outstanding' } }),
+    );
+
+    expect(line).toContain('25');
+    expect(line).toContain('outstanding');
   });
 });

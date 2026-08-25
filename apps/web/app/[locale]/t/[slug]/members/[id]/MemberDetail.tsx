@@ -72,6 +72,23 @@ export function MemberDetail({
   const [member, setMember] = React.useState<DetailMember>(initial);
   const [editing, setEditing] = React.useState(false);
   const [archiveOpen, setArchiveOpen] = React.useState(false);
+  /**
+   * Why the archive was refused, rendered INSIDE the confirmation dialog
+   * (frontend-05). It used to be a critical toast, and `Modal` opens a native
+   * `<dialog>` via `showModal()` — top layer, everything outside inert — so
+   * the toast was painted under the backdrop and could be neither read nor
+   * dismissed. "This member still has 2 open loans" is precisely the message
+   * that must reach the librarian, and it never did.
+   */
+  const [archiveError, setArchiveError] = React.useState<React.ReactNode>(null);
+  const openArchive = () => {
+    setArchiveError(null);
+    setArchiveOpen(true);
+  };
+  const closeArchive = () => {
+    setArchiveError(null);
+    setArchiveOpen(false);
+  };
   const [statusBusy, setStatusBusy] = React.useState(false);
   const [archiveBusy, setArchiveBusy] = React.useState(false);
 
@@ -104,26 +121,35 @@ export function MemberDetail({
 
   async function archive() {
     setArchiveBusy(true);
+    setArchiveError(null);
     try {
       const updated = await api<DetailMember>(`/t/${slug}/members/${member.id}`, {
         method: 'DELETE',
       });
       setMember({ ...member, ...updated });
       toast.show({ severity: 'success', title: t('members.actions.archived') });
-      setArchiveOpen(false);
+      closeArchive();
       router.refresh();
     } catch (err) {
       const message = translateApiError(err, t, t('common.states.error'));
       // The API may include a structured body with active loan / reservation
-      // counts when archive is refused. Surface that directly.
+      // counts when archive is refused. Surface that directly — in the dialog
+      // the librarian is standing in, not in a toast behind it.
       if (err instanceof ApiError && err.body.activeLoans !== undefined) {
-        toast.show({
-          severity: 'critical',
-          title: t('members.actions.archiveBlocked'),
-          body: `${err.body.activeLoans} loan(s), ${err.body.activeReservations} reservation(s).`,
-        });
+        // Composed from EXISTING catalogue keys rather than a new sentence, so
+        // the counts are bilingual today. `${n} loan(s), ${n} reservation(s)`
+        // was hardcoded English in a product that ships Greek first.
+        setArchiveError(
+          <>
+            <strong>{t('members.actions.archiveBlocked')}</strong>
+            <div>
+              {t('members.detail.activeLoans')}: {String(err.body.activeLoans)} ·{' '}
+              {t('members.detail.activeReservations')}: {String(err.body.activeReservations ?? 0)}
+            </div>
+          </>,
+        );
       } else {
-        toast.show({ severity: 'critical', title: message });
+        setArchiveError(message);
       }
     } finally {
       setArchiveBusy(false);
@@ -395,7 +421,7 @@ export function MemberDetail({
                         {t('members.actions.reactivate')}
                       </Button>
                     )}
-                    <Button variant="ghost" onClick={() => setArchiveOpen(true)}>
+                    <Button variant="ghost" onClick={openArchive}>
                       {t('members.actions.archive')}
                     </Button>
                   </>
@@ -408,12 +434,13 @@ export function MemberDetail({
 
       <Modal
         open={archiveOpen}
-        onClose={() => setArchiveOpen(false)}
+        onClose={closeArchive}
         title={t('members.actions.archiveConfirmTitle', { name: member.fullName })}
         role="alertdialog"
+        error={archiveError}
         actions={
           <>
-            <Button variant="ghost" onClick={() => setArchiveOpen(false)}>
+            <Button variant="ghost" onClick={closeArchive}>
               {t('common.actions.cancel')}
             </Button>
             <Button variant="danger" loading={archiveBusy} onClick={archive}>

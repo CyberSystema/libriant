@@ -38,10 +38,19 @@
  * duplicate, no de-duplication tool and no undo. Bulk import is the onboarding
  * path for every new library.
  *
- * So EVERY kind now has a natural key; `IMPORT_NATURAL_KEYS` below names them
- * and the spec asserts none is missing. See the "re-import safety" section for
- * the weak-key trade and why the `createdAt < runStartedAt` boundary is what
- * keeps a first-time import behaving exactly as it did.
+ * So EVERY kind now has a natural key; `IMPORT_NATURAL_KEYS` below names them,
+ * and test/integration/import-reimport.spec.ts uploads the same file twice
+ * through the real routes and asserts the tenant's row counts — and the total
+ * cents on its fines — do not move. See the "re-import safety" section for the
+ * weak-key trade and why the `createdAt < runStartedAt` boundary is what keeps
+ * a first-time import behaving exactly as it did.
+ *
+ * Two ways that contract was still broken when this comment was first written,
+ * both now covered by that spec: the boundary was read with a bare `SELECT
+ * NOW()`, which comes back a whole UTC offset away from the `createdAt` values
+ * it is compared with (see `readDbClock`); and the loan/hold keys were built
+ * from a timestamp the committer had just invented for the row, so any file
+ * without a checkout-date or placed-date column duplicated anyway.
  */
 import type { ImportEntityKind } from '@libriant/db-control';
 import type { FieldEntityKind, Prisma, TenantPrismaClient } from '@libriant/db-tenant';
@@ -95,8 +104,9 @@ const FIELD_ENTITY_KINDS = new Set<FieldEntityKind>([
  * kinds the claim was simply false (data-integrity-02). Writing it down where
  * the compiler can see it means an eighth entity kind cannot be added without
  * its author answering the question — `Record<ImportEntityKind, …>` fails to
- * compile with a key missing, and the spec cross-checks the wording against
- * what the committers actually query.
+ * compile with a key missing. What the committers do with those keys is proved
+ * by execution over the real upload/commit routes in
+ * test/integration/import-reimport.spec.ts, not by this table.
  *
  * "Strong" = a key the library itself uses to identify the record.
  * "Weak" = a tuple that makes two rows indistinguishable to a librarian; only
@@ -108,8 +118,8 @@ export const IMPORT_NATURAL_KEYS: Record<ImportEntityKind, string> = {
   book: 'strong: isbn13 — weak: sortTitle + publicationYear',
   book_copy: 'strong: barcode (required on every row)',
   member: 'strong: memberNumber, then email — weak: sortName + dateOfBirth',
-  loan: 'weak: copyId + memberId + loanedAt',
-  reservation: 'weak: bookId + memberId + placedAt',
+  loan: 'weak: copyId + memberId + loanedAt — no checkout date: copyId + memberId + dueAt + status',
+  reservation: 'weak: bookId + memberId + placedAt — no placed date: bookId + memberId + status',
   fine: 'weak: memberId + amountCents + currency + reason + status',
 };
 
@@ -341,7 +351,19 @@ export class ImportEngine {
 
     if (existingId) {
       if (this.ctx.duplicateMode === 'error') {
-        issues.push(issue('isbn13', 'duplicate', `A book with ISBN ${isbn13} already exists.`));
+        // Name the key that actually matched. Since the ISBN-less weak key was
+        // added this branch is reachable with `isbn13 === null`, and the old
+        // message then read "A book with ISBN null already exists." — which
+        // sends the librarian looking for an ISBN column that isn't there.
+        issues.push(
+          isbn13
+            ? issue('isbn13', 'duplicate', `A book with ISBN ${isbn13} already exists.`)
+            : issue(
+                'title',
+                'duplicate',
+                `A book titled "${v.title as string}" from the same year already exists.`,
+              ),
+        );
         return this.result(row, 'error', issues);
       }
       if (this.ctx.duplicateMode === 'skip') return this.result(row, 'skipped', issues, existingId);
@@ -589,7 +611,11 @@ export class ImportEngine {
     }
     const v = row.values;
     const status = (v.status as 'active' | 'returned' | 'lost' | undefined) ?? 'active';
-    const loanedAt = v.loanedAt ? new Date(v.loanedAt as string) : new Date();
+    // Keep "what the FILE said" and "what we are about to write" apart. The
+    // second is a per-run invention when the column is absent, and feeding an
+    // invention to the duplicate check is what let closed loans double.
+    const fileLoanedAt = v.loanedAt ? new Date(v.loanedAt as string) : null;
+    const loanedAt = fileLoanedAt ?? new Date();
     const dueAt = new Date(v.dueAt as string);
     if (dueAt.getTime() <= loanedAt.getTime()) {
       issues.push(issue('dueAt', 'invalid_value', 'Due date must be after the checkout date.'));
@@ -612,7 +638,7 @@ export class ImportEngine {
     // only — so re-importing a circulation history doubled every past loan,
     // and with it every statistic built on loan counts. Same copy, same
     // member, same checkout instant is the same loan.
-    const priorLoan = await this.findPriorLoan(copyId, memberId, loanedAt);
+    const priorLoan = await this.findPriorLoan(copyId, memberId, fileLoanedAt, dueAt, status);
     if (priorLoan) {
       if (this.ctx.duplicateMode === 'error') {
         issues.push(issue('copyBarcode', 'duplicate', 'This loan was already imported.'));
@@ -718,14 +744,17 @@ export class ImportEngine {
       issues.push(issue('status', 'unsupported', 'Fulfilled holds can’t be imported as history.'));
       return this.result(row, 'error', issues);
     }
-    const placedAt = v.placedAt ? new Date(v.placedAt as string) : new Date();
+    // Same split as the loan above: the placed date the FILE supplied (null
+    // when it has no such column) is the only one the duplicate check may use.
+    const filePlacedAt = v.placedAt ? new Date(v.placedAt as string) : null;
+    const placedAt = filePlacedAt ?? new Date();
     const now = new Date();
 
     // data-integrity-02: `reservations_one_active_per_book_member` is a PARTIAL
     // unique index — `WHERE status IN ('queued','ready')` — so every resolved,
     // expired or cancelled hold re-imported cleanly and silently doubled. Same
     // book, same member, same instant it was placed is the same hold.
-    const priorHold = await this.findPriorReservation(bookId, memberId, placedAt);
+    const priorHold = await this.findPriorReservation(bookId, memberId, filePlacedAt, status);
     if (priorHold) {
       if (this.ctx.duplicateMode === 'error') {
         issues.push(issue('bookIsbn13', 'duplicate', 'This hold was already imported.'));
@@ -892,23 +921,44 @@ export class ImportEngine {
   // is the right long-term answer and a migration (see the package report).
 
   /**
-   * The DATABASE's clock, not this process's.
+   * The DATABASE's clock, read the same way `createdAt` is read.
    *
-   * `createdAt` defaults to `now()` evaluated by Postgres. A boundary taken
-   * from the Node clock would be off by whatever the two have drifted, and a
-   * boundary even slightly LATE would classify rows this very run just wrote
-   * as pre-existing and skip the remainder of the file. Falls back to the
-   * local clock rather than failing the import: at worst that mis-scopes the
-   * within-file case, which is strictly better than refusing to import.
+   * The boundary is only meaningful if it is comparable with the `createdAt`
+   * values it is compared against, and those are `timestamp(3) WITHOUT time
+   * zone` columns into which Prisma writes UTC wall time and out of which it
+   * reads UTC wall time. So the boundary must be UTC wall time too.
+   *
+   * `SELECT NOW()` is NOT that, and the earlier comment here asserting it was
+   * ("the driver turns it into a real instant") is wrong for this stack.
+   * MEASURED against the audit Postgres, whose session TimeZone is
+   * Europe/Athens:
+   *
+   *     node Date.now()                 = 2026-08-25T17:51:07.098Z
+   *     SELECT NOW()                    = 2026-08-25T20:51:07.071Z   ← +3h
+   *     SELECT NOW() AT TIME ZONE 'UTC' = 2026-08-25T17:51:07.073Z
+   *     prisma-written createdAt        = 2026-08-25T17:51:07.094Z
+   *
+   * Bare `NOW()` came back a full UTC offset ahead of every `createdAt` in the
+   * database, and the sign of that offset decides which way the re-import
+   * defence breaks:
+   *
+   *   - east of UTC (every Greek deployment) the boundary lands in the FUTURE,
+   *     so rows this very run just wrote count as pre-existing and the second
+   *     of two identical rows in one file is silently skipped — the library
+   *     under-imports its own money;
+   *   - west of UTC the boundary lands in the PAST, so nothing written in the
+   *     last few hours matches and re-importing a file duplicates every
+   *     keyless row again — data-integrity-02, unfixed.
+   *
+   * `AT TIME ZONE 'UTC'` yields the naive UTC timestamp Prisma round-trips,
+   * which is exactly what `createdAt: { lt: … }` needs. Falls back to the Node
+   * clock, which is also a true UTC instant and therefore comparable.
    */
   private async readDbClock(): Promise<Date> {
     try {
-      // Bare NOW() is CORRECT here and must stay. It returns a `timestamptz`,
-      // which the driver turns into a real instant; the `AT TIME ZONE 'UTC'`
-      // form used for column WRITES elsewhere would hand back a naive timestamp
-      // that the driver then reads as local time — introducing the very skew
-      // that form exists to remove.
-      const rows = await this.ctx.client.$queryRaw<Array<{ now: Date }>>`SELECT NOW() AS now`;
+      const rows = await this.ctx.client.$queryRaw<
+        Array<{ now: Date }>
+      >`SELECT NOW() AT TIME ZONE 'UTC' AS now`;
       const now = rows?.[0]?.now;
       return now instanceof Date ? now : new Date();
     } catch {
@@ -967,27 +1017,59 @@ export class ImportEngine {
     return hit?.id ?? null;
   }
 
-  /** Weak key for a loan. Index-assisted by `@@index([copyId])`. */
+  /**
+   * Weak key for a loan. Index-assisted by `@@index([copyId])`.
+   *
+   * `fileLoanedAt` is null when the file carried no checkout-date column, and
+   * that case MUST NOT fall back to the `loanedAt` the committer defaulted to
+   * `new Date()`: an invented timestamp differs on every pass, so the key
+   * would never match and the row would duplicate on re-import — the exact
+   * trap `findPriorFine` documents for `paidAt`, measured here as an expired
+   * hold and a closed loan doubling in import-reimport.spec.ts. With no
+   * checkout date the only stable identity the file offers is the item, the
+   * borrower, the due date and the state.
+   */
   private async findPriorLoan(
     copyId: string,
     memberId: string,
-    loanedAt: Date,
+    fileLoanedAt: Date | null,
+    dueAt: Date,
+    status: 'active' | 'returned' | 'lost',
   ): Promise<string | null> {
     const hit = await this.ctx.client.loan.findFirst({
-      where: { copyId, memberId, loanedAt, createdAt: { lt: this.runStartedAt } },
+      where: {
+        copyId,
+        memberId,
+        ...(fileLoanedAt ? { loanedAt: fileLoanedAt } : { dueAt, status }),
+        createdAt: { lt: this.runStartedAt },
+      },
       select: { id: true },
     });
     return hit?.id ?? null;
   }
 
-  /** Weak key for a hold. Index-assisted by `@@index([memberId, status])`. */
+  /**
+   * Weak key for a hold. Index-assisted by `@@index([memberId, status])`.
+   *
+   * Same trap as the loan above: `filePlacedAt` is null when the file has no
+   * placed-date column, and the committer's `new Date()` default would make
+   * the key unmatchable. Falls back to book + member + state, which is what
+   * `reservations_one_active_per_book_member` already enforces for the
+   * queued/ready half and nothing enforced for the resolved half.
+   */
   private async findPriorReservation(
     bookId: string,
     memberId: string,
-    placedAt: Date,
+    filePlacedAt: Date | null,
+    status: 'queued' | 'ready' | 'expired' | 'canceled',
   ): Promise<string | null> {
     const hit = await this.ctx.client.reservation.findFirst({
-      where: { bookId, memberId, placedAt, createdAt: { lt: this.runStartedAt } },
+      where: {
+        bookId,
+        memberId,
+        ...(filePlacedAt ? { placedAt: filePlacedAt } : { status }),
+        createdAt: { lt: this.runStartedAt },
+      },
       select: { id: true },
     });
     return hit?.id ?? null;

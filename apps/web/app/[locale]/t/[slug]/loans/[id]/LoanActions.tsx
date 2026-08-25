@@ -45,6 +45,31 @@ export function LoanActions({ slug, loan, catalog, locale }: Props) {
   const router = useRouter();
   const toast = useToast();
   const [openModal, setOpenModal] = React.useState<'return' | 'renew' | 'lost' | null>(null);
+  /**
+   * The server's refusal, shown INSIDE the open dialog (frontend-05).
+   *
+   * This used to be a `severity:'critical'` toast and nothing else. `Modal`
+   * opens a native `<dialog>` with `showModal()`, which puts it in the
+   * browser's top layer and makes the rest of the document inert — the toast
+   * stack is a sibling of the page, so the toast was painted under the
+   * backdrop and was not even hit-testable. Measured: `elementFromPoint` at
+   * the toast's centre returned the modal's own confirm button.
+   *
+   * The result was the worst possible feedback for the most common
+   * circulation failure — a 409 on an already-returned copy, a 403, the
+   * renewal cap, a hold blocking a renewal: the dialog just sat there. The
+   * librarian pressed the button again. Report the failure where the
+   * librarian still is.
+   */
+  const [actionError, setActionError] = React.useState<string | null>(null);
+  const openAction = (which: 'return' | 'renew' | 'lost') => {
+    setActionError(null);
+    setOpenModal(which);
+  };
+  const closeAction = () => {
+    setActionError(null);
+    setOpenModal(null);
+  };
   // One key per action attempt: a double-click / retry replays instead of
   // acting twice (server dedupes per route+key). Rotated after each success so
   // a deliberate repeat (e.g. renewing again) is a new operation.
@@ -96,6 +121,9 @@ export function LoanActions({ slug, loan, catalog, locale }: Props) {
   }
 
   async function call(path: string, body: Record<string, unknown>) {
+    // Clear last attempt's refusal, so a retry that fails again visibly
+    // re-announces (the banner takes focus on each new message).
+    setActionError(null);
     try {
       const res = (await api<{
         loan: { id: string; status: string };
@@ -109,7 +137,7 @@ export function LoanActions({ slug, loan, catalog, locale }: Props) {
           }
         | { id: string; status: string };
       rotate(); // succeeded — next action gets a fresh key
-      setOpenModal(null);
+      closeAction();
       if ('loan' in res && res.loan) {
         const fineMsg = res.fine
           ? ` · ${t('loans.actions.fineCreated', {
@@ -142,32 +170,40 @@ export function LoanActions({ slug, loan, catalog, locale }: Props) {
           kind: path as CirculationKind,
           label: loan.copy.book.title,
         });
+        if (!queued) {
+          // Neither sent nor queued: the action is still undone and the
+          // librarian is still mid-task, so keep the dialog open and say so
+          // there rather than closing it under an invisible toast.
+          //
+          // Deliberately NOT rotating the key here. A network error does not
+          // prove the server never saw the request, and the dialog now invites
+          // an immediate retry — under the SAME key that retry replays instead
+          // of returning the copy twice.
+          setActionError(t('loans.queue.saveFailed'));
+          return;
+        }
         rotate();
-        setOpenModal(null);
-        toast.show(
-          queued
-            ? { severity: 'info', title: t('loans.queue.queued') }
-            : { severity: 'critical', title: t('loans.queue.saveFailed') },
-        );
+        closeAction();
+        toast.show({ severity: 'info', title: t('loans.queue.queued') });
         return;
       }
-      toast.show({
-        severity: 'critical',
-        title: translateApiError(err, t, t('common.states.error')),
-      });
+      // The server refused. The dialog stays open on purpose — the librarian
+      // can read why and correct or cancel — and the idempotency key is NOT
+      // rotated, so pressing the button again replays rather than acts twice.
+      setActionError(translateApiError(err, t, t('common.states.error')));
     }
   }
 
   return (
     <>
       <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
-        <Button variant="primary" onClick={() => setOpenModal('return')}>
+        <Button variant="primary" onClick={() => openAction('return')}>
           {t('loans.actions.return')}
         </Button>
-        <Button variant="secondary" onClick={() => setOpenModal('renew')}>
+        <Button variant="secondary" onClick={() => openAction('renew')}>
           {t('loans.actions.renew')}
         </Button>
-        <Button variant="ghost" onClick={() => setOpenModal('lost')}>
+        <Button variant="ghost" onClick={() => openAction('lost')}>
           {t('loans.actions.markLost')}
         </Button>
         <Button variant="secondary" loading={printing} onClick={printReceipt}>
@@ -177,27 +213,30 @@ export function LoanActions({ slug, loan, catalog, locale }: Props) {
 
       <ReturnModal
         open={openModal === 'return'}
-        onClose={() => setOpenModal(null)}
+        onClose={closeAction}
         onSubmit={(condition, notes) => call('return', { condition, notes })}
         catalog={catalog}
         locale={locale}
         title={t('loans.actions.returnTitle', { book: loan.copy.book.title })}
+        error={actionError}
       />
       <RenewModal
         open={openModal === 'renew'}
-        onClose={() => setOpenModal(null)}
+        onClose={closeAction}
         onSubmit={(periods) => call('renew', { periods })}
         catalog={catalog}
         locale={locale}
         title={t('loans.actions.renewTitle', { book: loan.copy.book.title })}
+        error={actionError}
       />
       <MarkLostModal
         open={openModal === 'lost'}
-        onClose={() => setOpenModal(null)}
+        onClose={closeAction}
         onSubmit={(cents, notes) => call('mark-lost', { replacementCostCents: cents, notes })}
         catalog={catalog}
         locale={locale}
         title={t('loans.actions.markLostTitle', { book: loan.copy.book.title })}
+        error={actionError}
       />
     </>
   );
@@ -210,6 +249,7 @@ function ReturnModal({
   catalog,
   locale,
   title,
+  error,
 }: {
   open: boolean;
   onClose: () => void;
@@ -217,6 +257,8 @@ function ReturnModal({
   catalog: Catalog;
   locale: Locale;
   title: string;
+  /** Server refusal for this action — rendered inside the dialog (frontend-05). */
+  error: string | null;
 }) {
   const t = createTranslator(catalog, locale);
   const [condition, setCondition] = React.useState<'ok' | 'damaged'>('ok');
@@ -227,6 +269,7 @@ function ReturnModal({
       open={open}
       onClose={onClose}
       title={title}
+      error={error}
       actions={
         <>
           <Button variant="ghost" onClick={onClose}>
@@ -279,6 +322,7 @@ function RenewModal({
   catalog,
   locale,
   title,
+  error,
 }: {
   open: boolean;
   onClose: () => void;
@@ -286,6 +330,8 @@ function RenewModal({
   catalog: Catalog;
   locale: Locale;
   title: string;
+  /** Server refusal for this action — rendered inside the dialog (frontend-05). */
+  error: string | null;
 }) {
   const t = createTranslator(catalog, locale);
   const [periods, setPeriods] = React.useState(1);
@@ -295,6 +341,7 @@ function RenewModal({
       open={open}
       onClose={onClose}
       title={title}
+      error={error}
       actions={
         <>
           <Button variant="ghost" onClick={onClose}>
@@ -342,6 +389,7 @@ function MarkLostModal({
   catalog,
   locale,
   title,
+  error,
 }: {
   open: boolean;
   onClose: () => void;
@@ -349,6 +397,8 @@ function MarkLostModal({
   catalog: Catalog;
   locale: Locale;
   title: string;
+  /** Server refusal for this action — rendered inside the dialog (frontend-05). */
+  error: string | null;
 }) {
   const t = createTranslator(catalog, locale);
   const [amount, setAmount] = React.useState('0.00');
@@ -360,6 +410,7 @@ function MarkLostModal({
       onClose={onClose}
       title={title}
       role="alertdialog"
+      error={error}
       actions={
         <>
           <Button variant="ghost" onClick={onClose}>

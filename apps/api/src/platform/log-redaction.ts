@@ -69,6 +69,30 @@ const ALLOWED_REQUEST_HEADERS: ReadonlySet<string> = new Set([
 const URL_VALUED_REQUEST_HEADERS: ReadonlySet<string> = new Set(['referer', 'referrer']);
 
 /**
+ * Query parameters whose VALUES are safe in a log line.
+ *
+ * Deliberately tiny, and deliberately an allowlist rather than a denylist of
+ * the secret-bearing names. A denylist has to be updated the day someone adds a
+ * new parameter carrying something private, and the failure is silent — which
+ * is how `?token=` reached stdout on every signed-download request in the first
+ * place. Here the default is silence, and a parameter has to be argued into
+ * this set before its value can be printed.
+ *
+ * `q` is NOT here on purpose: a catalogue search is usually a book title, and
+ * sometimes a patron's name.
+ */
+const ALLOWED_QUERY_PARAMS: ReadonlySet<string> = new Set([
+  'limit',
+  'page',
+  'after',
+  'before',
+  'status',
+  'format',
+  'scope',
+  'locale',
+]);
+
+/**
  * Keep a URL's shape, drop its secrets.
  *
  * The path stays (that is the whole point of an access log) and the query
@@ -115,7 +139,18 @@ export function scrubUrl(url: unknown): string {
 // Mutable `string[]` on purpose: pino's `redact.paths` is typed as `string[]`,
 // and a `readonly` tuple here would fail to typecheck at the call site in
 // app.module.ts — a file this module is not allowed to change.
-export const logRedactPaths: string[] = ['req.headers[*]', 'req.url', 'res.headers["set-cookie"]'];
+export const logRedactPaths: string[] = [
+  'req.headers[*]',
+  'req.url',
+  // `req.query` is serialized by pino-http as its OWN field, separate from
+  // `req.url`. Scrubbing the url alone therefore closed half the hole: every
+  // cover image the UI renders goes through `/_files/signed?token=<jwt>`, and
+  // the token came straight back out in `req.query.token` on every one of those
+  // requests. The value is replaced, the KEY survives — an operator still sees
+  // that a token was present, exactly as the Caddy access log now behaves.
+  'req.query[*]',
+  'res.headers["set-cookie"]',
+];
 
 /**
  * pino's `censor`, as a FUNCTION rather than a constant string.
@@ -134,6 +169,9 @@ export const logRedactCensor = (value: unknown, path: readonly string[]): unknow
   if (path[0] === 'req' && path[1] === 'headers') {
     if (ALLOWED_REQUEST_HEADERS.has(key)) return value;
     if (URL_VALUED_REQUEST_HEADERS.has(key)) return scrubUrl(value);
+  }
+  if (path[0] === 'req' && path[1] === 'query') {
+    if (ALLOWED_QUERY_PARAMS.has(key)) return value;
   }
   return LOG_REDACT_TEXT;
 };

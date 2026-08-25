@@ -27,12 +27,28 @@ COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-libriant}"
 # /srv/libriant/deploy/compose/... does not exist on the host).
 LIBRIANT_APP_DIR="${LIBRIANT_APP_DIR:-/srv/libriant/app}"
 COMPOSE_FILE="${COMPOSE_FILE:-${LIBRIANT_APP_DIR}/infra/compose/docker-compose.prod.yml}"
-STORAGE_DIR="${STORAGE_DIR:-/srv/libriant/storage}"
+# NOT a literal path any more.
+#
+# `/srv/libriant/storage` is the IN-CONTAINER mount target. Restoring there put
+# every recovered upload on the host at a path nothing serves, and the script
+# then logged "storage restored" and exited 0 — a restore that recovered ZERO
+# files and reported success (reliability-05). Same shape as the pg_dumpall bug
+# that invalidated the June certification, and it survived being marked fixed
+# twice because nothing ever counted the files.
+#
+# storage_resolve_dir() asks Docker where the volume's bind DEVICE is, which is
+# correct whether or not a container currently has it mounted — during a restore
+# the app containers are stopped, so the volume's `_data` directory is empty and
+# unmounted, and writing there is the same total loss one layer deeper. An
+# explicit STORAGE_DIR= still wins, for the operator who knows better.
+STORAGE_DIR="$(storage_resolve_dir "${COMPOSE_PROJECT_NAME:-libriant}" "${STORAGE_DIR:-}")"
 # The superuser the dump was taken as and is restored as.
 PG_ROLE="${PG_ROLE:-libriant}"
 
 # shellcheck source=_lib/pg-restore-filter.sh
 . "$(dirname "$0")/_lib/pg-restore-filter.sh"
+# shellcheck source=_lib/storage-archive.sh
+. "$(dirname "$0")/_lib/storage-archive.sh"
 
 log() { printf '[%s] %s\n' "$(date +'%Y-%m-%d %H:%M:%S')" "$*"; }
 die() { printf 'restore: %s\n' "$*" >&2; exit 1; }
@@ -144,20 +160,23 @@ log "  postgres restored"
 if [ -f "$dir/storage.tar.gz" ]; then
   log "restoring storage → $STORAGE_DIR"
   mkdir -p "$STORAGE_DIR"
-  if [ -n "$(ls -A "$STORAGE_DIR" 2>/dev/null)" ]; then
-    # Move the EXISTING CONTENTS (not the directory itself — $STORAGE_DIR is
-    # often a bind-mount root that can't be renamed) into a timestamped sibling
-    # under the same dir, so the target is clean for the untar but the old tree
-    # is kept for recovery. `.pre-restore.*` is excluded from the move so a
-    # re-run doesn't nest snapshots.
-    aside="$STORAGE_DIR/.pre-restore.$(date +%Y%m%d%H%M%S)"
-    log "  existing storage is non-empty — moving aside to $aside (delete it once the restore is verified)"
-    mkdir -p "$aside"
-    find "$STORAGE_DIR" -mindepth 1 -maxdepth 1 ! -name '.pre-restore.*' \
-      -exec mv -t "$aside" {} +
-  fi
-  tar -C "$STORAGE_DIR" -xzf "$dir/storage.tar.gz"
-  log "  storage restored"
+  storage_assert_visible_to_containers "$STORAGE_DIR" ||
+    die "refusing to restore uploads to a path the app containers cannot see: $STORAGE_DIR"
+
+  # COUNT WHAT THE ARCHIVE HOLDS BEFORE UNPACKING, and refuse if fewer files
+  # land. "storage restored" used to be printed unconditionally, which is how a
+  # restore that recovered nothing looked identical to one that worked. The
+  # number is the only thing that tells them apart.
+  # storage_archive_file_count reads tar's LISTING on stdin, and
+  # storage_untar_into wants the GZIPPED stream (it runs `tar -xzf -`). Getting
+  # either of those backwards produces a confident count of zero or an untar of
+  # nothing — both of which look exactly like the bug being fixed.
+  want="$(tar -tzf "$dir/storage.tar.gz" | storage_archive_file_count)"
+  log "  archive holds ${want} file(s)"
+  storage_untar_into "$STORAGE_DIR" "$want" < "$dir/storage.tar.gz" ||
+    die "upload restore did not complete — do NOT return this cluster to service."
+  storage_warn_ownership "$STORAGE_DIR"
+  log "  storage restored: $(storage_dir_file_count "$STORAGE_DIR") file(s) under $STORAGE_DIR"
 fi
 
 # ---------- 3. Sanity checks ----------------------------------------------
