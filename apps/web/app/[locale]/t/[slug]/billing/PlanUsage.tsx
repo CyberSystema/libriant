@@ -36,7 +36,10 @@ function barColor(ratio: number): string {
  * the API change is an endpoint nobody calls.
  *
  * Rendered on the plan page because that is where someone sent away by a cap
- * arrives ("Upgrade your plan to add more") and where the upgrade lives.
+ * arrives ("Upgrade your plan to add more") and where the upgrade lives. That
+ * page redirects to the library home while subscriptions are switched off, so
+ * the card is only ever reached once there are real caps to show — which is
+ * also the moment the numbers start to matter.
  *
  * The row labels come from `errors.feature.*` — the same strings the 402 is
  * worded with, in both languages — so the line a librarian reads here and the
@@ -55,7 +58,14 @@ export function PlanUsage({
   const fmt = (n: number) => n.toLocaleString(locale);
   // Nothing measurable (no counters resolved, or the plan carries no int
   // limits) — render nothing rather than an empty card that reads as "zero".
-  const rows = usage.filter((r) => r.used !== null);
+  //
+  // A limit of 0 with nothing used is dropped for the same reason: Starter's
+  // `max_custom_collections` is 0, and rendered it read «προσαρμοσμένες
+  // συλλογές 0 / 0» — a line that looks like a broken counter and tells a
+  // librarian nothing about a feature their plan simply does not include. A
+  // library that DOES hold three collections on such a plan still gets its
+  // line, in red, because that one is the whole point of the card.
+  const rows = usage.filter((r) => r.used !== null && !(r.limit <= 0 && r.used === 0));
   if (!rows.length) return null;
 
   return (

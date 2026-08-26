@@ -1,0 +1,47 @@
+-- performance-10: give the holds screen's default list an index it can walk.
+--
+-- ReservationsService.list orders by
+--   status ASC, "queuePosition" ASC NULLS LAST, "placedAt" DESC, id ASC
+-- and, unlike loans, its most-used shape carries no other filter at all — the
+-- holds screen asks for "every live hold in this library". The only index on
+-- `reservations` that could have helped led with `bookId`, which is unusable
+-- without a bookId, so Postgres read the whole table and top-N sorted it to
+-- return 26 rows. Page latency scaled with the size of the hold queue instead
+-- of the size of the page.
+--
+-- Directions match the ORDER BY column for column. `placedAt` is DESC; the rest
+-- are ASC, and Postgres's default ASC is NULLS LAST, which is exactly what
+-- `queuePosition ASC NULLS LAST` asks for. Getting one direction wrong here
+-- costs nothing visible — the query still returns the right rows — it just
+-- silently reintroduces the sort node this exists to remove.
+--
+-- Measured on 160,000 reservations of which 40,000 are live (35,000 queued +
+-- 5,000 ready), on the literal SQL Prisma emits:
+--   BEFORE  Seq Scan on reservations, Sort Method: top-N heapsort
+--           Buffers: shared hit=591          Execution Time: 9.3 ms   (30.6 ms
+--                                            through Prisma, page 1)
+--   AFTER   Index Only Scan using "reservations_status_queuePosition_placedAt_id_idx"
+--           Index Cond: (status = ANY ('{queued,ready}'::"ReservationStatus"[]))
+--           Heap Fetches: 0
+--           Buffers: shared hit=1 read=3     Execution Time: 0.038 ms (0.72 ms
+--                                            through Prisma, page 1)
+--
+-- A leading `status` key needs no predicate proving, which is why this is a
+-- plain composite and not a partial index on the live statuses — see the long
+-- note in 20260824170000 about Prisma's `CAST($1::text AS "…Status")` and the
+-- planner's inability to fold a STABLE `enum_in` to a constant. The same
+-- reasoning applies verbatim here, and a `WHERE status IN ('queued','ready')`
+-- partial index would have been unusable for the same reason.
+--
+-- Cost: 8904 kB against a 19 MB heap on the fixture above, and one extra index
+-- write per hold placed, promoted, fulfilled, expired or cancelled. Holds move
+-- a few times a day in a real library; the list is read on every visit to the
+-- holds screen.
+--
+-- Idempotent per repo convention. LOCK NOTE: plain CREATE INDEX takes a SHARE
+-- lock on `reservations`, so holds cannot be placed or promoted while it
+-- builds (~1 s on the fixture above). Not CONCURRENTLY, because
+-- `prisma migrate deploy` wraps each migration file in a transaction.
+
+CREATE INDEX IF NOT EXISTS "reservations_status_queuePosition_placedAt_id_idx"
+  ON "reservations" ("status", "queuePosition", "placedAt" DESC, "id");

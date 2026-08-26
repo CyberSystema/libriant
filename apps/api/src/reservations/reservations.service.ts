@@ -17,6 +17,7 @@ import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { FieldDefinitionsService } from '../customization/field-definitions.service.js';
 import { validateRecordOrThrow } from '../customization/dynamic-validator.js';
+import { decodeCursor, encodeCursor } from '../platform/query.js';
 
 const MS_PER_HOUR = 3_600_000;
 
@@ -26,6 +27,32 @@ const MS_PER_HOUR = 3_600_000;
  * rebalancing logic below.
  */
 const LIVE_STATUSES = ['queued', 'ready'] as const;
+
+/**
+ * Where each status sits under `ORDER BY status ASC` — i.e. the order the enum
+ * is DECLARED in packages/db-tenant/prisma/schema.prisma, which is what
+ * Postgres actually sorts by.
+ *
+ * Spelled out here because {@link ReservationsService.list} has to answer "which
+ * statuses come after this one?" to build its keyset predicate (performance-10),
+ * and Prisma's enum filters offer only equals/in/notIn — there is no `gt`.
+ * It is also the only place the ordering is written where a reader can see it:
+ * the list's own comment used to claim "ready first", and `queued` sorts first.
+ *
+ * `Record<ReservationStatus, number>` is load-bearing — a status added to the
+ * schema and not to this map is a compile error here, rather than a silently
+ * missing tier that drops rows off the end of a page. If the enum is ever
+ * REORDERED, these numbers must move with it.
+ */
+const STATUS_RANK: Record<ReservationStatus, number> = {
+  queued: 0,
+  ready: 1,
+  fulfilled: 2,
+  expired: 3,
+  canceled: 4,
+};
+
+const ALL_STATUSES = Object.keys(STATUS_RANK) as ReservationStatus[];
 
 export type ReservationDto = {
   id: string;
@@ -455,29 +482,137 @@ export class ReservationsService {
     const where: Prisma.ReservationWhereInput = {};
     if (opts.bookId) where.bookId = opts.bookId;
     if (opts.memberId) where.memberId = opts.memberId;
-    if (opts.status) {
-      where.status = opts.status;
-    } else if (!opts.includeResolved) {
-      where.status = { in: [...LIVE_STATUSES] };
+    // Always an explicit `IN`, even for "everything": `status` leads
+    // `reservations_status_queuePosition_placedAt_id_idx`, and an index cond on
+    // the leading column is what lets the planner walk the index already in
+    // sort order instead of reading the table and top-N sorting it.
+    let statuses: ReservationStatus[] = ALL_STATUSES;
+    if (opts.status) statuses = [opts.status];
+    else if (!opts.includeResolved) statuses = [...LIVE_STATUSES];
+
+    const cursor = await this.decodeListCursor(client, opts.after);
+    if (cursor) {
+      // performance-10. This used to be `cursor: { id: after }, skip: 1`, and
+      // Prisma cannot render an exact cursor predicate over a NULLABLE sort key
+      // (`queuePosition`): it emits an over-broad OR of correlated subselects,
+      // EMITS NO LIMIT AT ALL, and then trims the page down in the client. So
+      // every "Load more" on the holds screen pulled the whole remaining
+      // live-hold set across the wire to render 25 rows. Measured on a library
+      // with 40,000 live holds: `count(*)` over the literal SQL Prisma emitted
+      // for page 2 came back with 39,976 rows, `Parallel Seq Scan on
+      // reservations`, 85.7 ms.
+      //
+      // Written out by hand instead, over the values carried in the cursor
+      // token, so there is a LIMIT and a start key. Same page, 0.89 ms.
+      const rank = STATUS_RANK[cursor.status];
+      const laterStatuses = statuses.filter((s) => STATUS_RANK[s] > rank);
+      // Nothing before the cursor's status can be on a later page, so drop
+      // those from the `IN` too — it moves the index seek forward.
+      statuses = statuses.filter((s) => STATUS_RANK[s] >= rank);
+      // `queuePosition ASC NULLS LAST`: from a positioned hold the tail is
+      // "a higher position, or an unpositioned one"; from an unpositioned hold
+      // there is no further queuePosition tier at all.
+      const samePosition =
+        cursor.queuePosition === null
+          ? { queuePosition: null }
+          : { queuePosition: cursor.queuePosition };
+      const laterPosition =
+        cursor.queuePosition === null
+          ? []
+          : [
+              {
+                status: cursor.status,
+                OR: [{ queuePosition: { gt: cursor.queuePosition } }, { queuePosition: null }],
+              },
+            ];
+      where.AND = [
+        {
+          OR: [
+            ...(laterStatuses.length ? [{ status: { in: laterStatuses } }] : []),
+            ...laterPosition,
+            // `placedAt DESC` — later in the page means EARLIER in time.
+            { status: cursor.status, ...samePosition, placedAt: { lt: cursor.placedAt } },
+            {
+              status: cursor.status,
+              ...samePosition,
+              placedAt: cursor.placedAt,
+              id: { gt: cursor.id },
+            },
+          ],
+        },
+      ];
     }
+    where.status = { in: statuses };
+
     const rows = await client.reservation.findMany({
       where,
       orderBy: [
-        // Outstanding holds sorted by queue position (ready first, then
-        // queued in line order). Resolved holds fall back to placedAt desc
-        // so the most recent ones show up first.
+        // Outstanding holds first (`queued` sorts before `ready`; see
+        // STATUS_RANK), each block in queue-position order with the
+        // unpositioned holds last, then most recently placed first.
         { status: 'asc' },
         { queuePosition: { sort: 'asc', nulls: 'last' } },
         { placedAt: 'desc' },
         { id: 'asc' },
       ],
       take: limit + 1,
-      ...(opts.after ? { cursor: { id: opts.after }, skip: 1 } : {}),
       include: this.fullInclude,
     });
     const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map((r) => this.toJoinsDto(r));
-    return { items, nextCursor: hasMore ? items[items.length - 1]!.id : null };
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const items = page.map((r) => this.toJoinsDto(r));
+    const last = page[page.length - 1];
+    return {
+      items,
+      nextCursor:
+        hasMore && last
+          ? encodeCursor([last.status, last.queuePosition, last.placedAt.toISOString(), last.id])
+          : null,
+    };
+  }
+
+  /**
+   * Turn an `?after=` token back into the four sort values {@link list} pages on.
+   *
+   * Two shapes are accepted. Ours is the opaque tuple {@link encodeCursor}
+   * mints. The other is a bare reservation id — what `after` used to be, what
+   * the controller's URL comment still invites, and what a client mid-scroll
+   * across a deploy will hand back. That one costs one primary-key lookup, and
+   * a row that has since been deleted resolves to `null`, which restarts the
+   * caller at page 1 rather than 400-ing them out of a list they were reading.
+   */
+  private async decodeListCursor(
+    client: TenantPrismaClient,
+    after: string | undefined,
+  ): Promise<{
+    status: ReservationStatus;
+    queuePosition: number | null;
+    placedAt: Date;
+    id: string;
+  } | null> {
+    if (!after) return null;
+    const parts = decodeCursor(after, 4);
+    if (parts) {
+      const [status, queuePosition, placedAt, id] = parts;
+      if (
+        typeof status === 'string' &&
+        status in STATUS_RANK &&
+        (queuePosition === null || typeof queuePosition === 'number') &&
+        typeof placedAt === 'string' &&
+        typeof id === 'string'
+      ) {
+        const at = new Date(placedAt);
+        if (!Number.isNaN(at.getTime())) {
+          return { status: status as ReservationStatus, queuePosition, placedAt: at, id };
+        }
+      }
+      return null;
+    }
+    const row = await client.reservation.findUnique({
+      where: { id: after },
+      select: { id: true, status: true, queuePosition: true, placedAt: true },
+    });
+    return row ?? null;
   }
 
   async get(tenant: TenantContext, id: string): Promise<ReservationWithJoinsDto> {

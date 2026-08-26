@@ -21,8 +21,14 @@
   "fallbackNotice": "Το έγγραφο δεν είναι ακόμη διαθέσιμο στη γλώσσα σας — εμφανίζεται η αγγλική έκδοση.",
   "backToIndex": "Όλα τα νομικά έγγραφα",
   "footer.heading": "Νομικά",
-  "consent.pre": "Έχω διαβάσει και αποδέχομαι τους",
-  "consent.and": "και την",
+  "consent.pre": "Έχω διαβάσει και αποδέχομαι",
+  "consent.and": "και",
   "consent.post": ".",
-  "consent.required": "Παρακαλούμε αποδεχθείτε τους Όρους Χρήσης και την Πολιτική Απορρήτου για να συνεχίσετε."
+  "consent.article.terms": "τους",
+  "consent.article.privacy": "την",
+  "consent.article.dpa": "τη",
+  "consent.doc.terms": "Όρους Χρήσης",
+  "consent.doc.privacy": "Πολιτική Απορρήτου",
+  "consent.doc.dpa": "Σύμβαση Επεξεργασίας Δεδομένων",
+  "consent.required": "Παρακαλούμε αποδεχθείτε τα έγγραφα που αναφέρονται παραπάνω για να συνεχίσετε."
 }

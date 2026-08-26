@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { Client as PgClient } from 'pg';
 import { controlDb } from '@libriant/db-control';
-import { LEGAL_DOCUMENTS, LEGAL_VERSION } from '@libriant/shared';
+import { LEGAL_DOCUMENTS, LEGAL_VERSION, SIGNUP_CONSENT_DOCS } from '@libriant/shared';
 import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { RedisService } from '../../src/platform/redis.service.js';
@@ -175,10 +175,14 @@ describe('signup evidences WHICH text the library agreed to', () => {
       expect(() => readFileSync(path.join(REPO, doc.archivePath), 'utf8')).not.toThrow();
     }
 
-    // Only the two behind the checkbox are claimed as presented; the DPA is
-    // fingerprinted but honestly marked as incorporated by reference.
-    expect(docs.filter((d) => d.presented).map((d) => d.slug)).toEqual(['terms', 'privacy']);
-    expect(docs.find((d) => d.slug === 'dpa')!.presented).toBe(false);
+    // Exactly the documents behind the checkbox are claimed as presented —
+    // read from the constant the signup label is built from, never hard-coded
+    // here, because a hard-coded list is how the record and the screen drift
+    // apart (privacy-legal-13). Everything else in the corpus is fingerprinted
+    // and archived but honestly marked as incorporated by reference.
+    expect(docs.filter((d) => d.presented).map((d) => d.slug)).toEqual([...SIGNUP_CONSENT_DOCS]);
+    expect(docs.find((d) => d.slug === 'dpa')!.presented).toBe(true);
+    expect(docs.find((d) => d.slug === 'acceptable-use')!.presented).toBe(false);
   }, 90_000);
 
   it('records the English corpus when the owner signed up in English', async () => {

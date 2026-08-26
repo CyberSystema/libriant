@@ -211,7 +211,15 @@ jobs:
           POSTGRES_USER: libriant
           POSTGRES_PASSWORD: libriant
           POSTGRES_DB: libriant_control
-          LANG: el_GR.UTF-8
+          # boot-and-config-14. This was `LANG: el_GR.UTF-8`, which is the exact
+          # no-op that finding is about: postgres:16-alpine is musl and has no
+          # such locale, so the NAME was recorded and the BEHAVIOUR was byte
+          # order. Compose was corrected to ICU in the same wave and this file
+          # was not, which left CI clusters sorting Greek differently from the
+          # production cluster they are supposed to be gating — the one skew a
+          # test suite can never tell you about, because it is the thing doing
+          # the telling.
+          POSTGRES_INITDB_ARGS: --locale-provider=icu --icu-locale=el-GR --locale=C.UTF-8 --encoding=UTF8
         ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U libriant -d libriant_control"
@@ -326,7 +334,15 @@ jobs:
           POSTGRES_USER: libriant
           POSTGRES_PASSWORD: libriant
           POSTGRES_DB: libriant_control
-          LANG: el_GR.UTF-8
+          # boot-and-config-14. This was `LANG: el_GR.UTF-8`, which is the exact
+          # no-op that finding is about: postgres:16-alpine is musl and has no
+          # such locale, so the NAME was recorded and the BEHAVIOUR was byte
+          # order. Compose was corrected to ICU in the same wave and this file
+          # was not, which left CI clusters sorting Greek differently from the
+          # production cluster they are supposed to be gating — the one skew a
+          # test suite can never tell you about, because it is the thing doing
+          # the telling.
+          POSTGRES_INITDB_ARGS: --locale-provider=icu --icu-locale=el-GR --locale=C.UTF-8 --encoding=UTF8
         ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U libriant -d libriant_control"

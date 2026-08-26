@@ -1,8 +1,9 @@
 import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import type { Prisma } from '@libriant/db-tenant';
+import type { Prisma, TenantPrismaClient } from '@libriant/db-tenant';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { classifySearchTerm, normalizeText } from './normalize.js';
+import { decodeCursor, encodeCursor } from '../platform/query.js';
 
 /** Prisma's unique-constraint violation. */
 const PRISMA_UNIQUE_VIOLATION = 'P2002';
@@ -74,15 +75,50 @@ export class AuthorsService {
       return { items: [], nextCursor: null, minQueryChars: term.minChars };
     }
     if (term.kind === 'term') where.sortName = { contains: term.value };
+    // performance-03, the same keyset predicate BooksService.list carries and
+    // for the same reason: Prisma's `cursor` becomes an OR of correlated
+    // subselects that `authors_sortName_idx` cannot be seeked with, so page N
+    // costs O(N x pageSize). The `gte` is the start key; the OR is the exact
+    // boundary for authors who tie on `sortName`.
+    const after = await this.decodeListCursor(client, opts.after);
+    if (after) {
+      where.AND = [
+        { sortName: { gte: after.sortName } },
+        {
+          OR: [
+            { sortName: { gt: after.sortName } },
+            { sortName: after.sortName, id: { gt: after.id } },
+          ],
+        },
+      ];
+    }
     const rows = await client.author.findMany({
       where,
       orderBy: [{ sortName: 'asc' }, { id: 'asc' }],
       take: limit + 1,
-      ...(opts.after ? { cursor: { id: opts.after }, skip: 1 } : {}),
     });
     const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map((r) => this.toDto(r));
-    return { items, nextCursor: hasMore ? items[items.length - 1]!.id : null };
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const items = page.map((r) => this.toDto(r));
+    const last = page[page.length - 1];
+    return {
+      items,
+      nextCursor: hasMore && last ? encodeCursor([last.sortName, last.id]) : null,
+    };
+  }
+
+  /** As `BooksService.decodeListCursor`, over `(sortName, id)`. */
+  private async decodeListCursor(
+    client: TenantPrismaClient,
+    after: string | undefined,
+  ): Promise<{ sortName: string; id: string } | null> {
+    if (!after) return null;
+    const parts = decodeCursor(after, 2);
+    if (parts) {
+      const [sortName, id] = parts;
+      return typeof sortName === 'string' && typeof id === 'string' ? { sortName, id } : null;
+    }
+    return client.author.findUnique({ where: { id: after }, select: { sortName: true, id: true } });
   }
 
   async get(tenant: TenantContext, id: string): Promise<AuthorDto> {

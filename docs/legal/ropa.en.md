@@ -1,6 +1,6 @@
 # Record of processing activities — processor (GDPR Article 30(2))
 
-**Last updated: 2026-08-26** · **Document version: 1** ·
+**Last updated: 2026-08-27** · **Document version: 2** ·
 Greek version: [`ropa.el.md`](./ropa.el.md)
 
 This is the record Libriant maintains **as a processor** under Article 30(2)
@@ -150,7 +150,10 @@ column, so processing children's data is expected rather than incidental.
   default, which limits — but does not remove — the exposure.
 - This gap is recorded (finding privacy-legal-12) and **must be disclosed to
   every school and municipal library before signature**, so they can weigh it in
-  their own impact assessment.
+  their own impact assessment. It is now disclosed in two places they will
+  actually read: [`dpia-school-libraries.en.md`](./dpia-school-libraries.en.md)
+  §4, the Article 35 material we hand a school, and DPA §7.3, which is part of
+  the agreement they sign.
 
 ## 6. Recipients and sub-processors
 
@@ -187,14 +190,16 @@ no record.
 
 ### 7.1 Enforced today, automatically
 
-| Data                        | Period                                            | Enforced by                                |
-| --------------------------- | ------------------------------------------------- | ------------------------------------------ |
-| Marketing-site applications | 12 months (except those that became partnerships) | `retention-sweep` job, daily               |
-| Library `audit_log`         | The plan's period (7/90/365/1095/3650 days)       | `retention-sweep` job, daily               |
-| Export artifacts            | 24 hours (2 hours for a platform-wide export)     | `export-file-cleanup` job, hourly          |
-| Upload temp files           | 30 minutes of staleness                           | `storage-temp-cleanup` job, hourly         |
-| Backups                     | 14 days, rolling                                  | `scripts/backup.sh` (`BACKUP_KEEP_DAYS`)   |
-| Support sessions            | Expire after 4 hours; keys after 60 minutes       | `support-session-expiry` job, every minute |
+| Data                           | Period                                            | Enforced by                                |
+| ------------------------------ | ------------------------------------------------- | ------------------------------------------ |
+| Marketing-site applications    | 12 months (except those that became partnerships) | `retention-sweep` job, daily               |
+| Library `audit_log`            | The plan's period (7/90/365/1095/3650 days)       | `retention-sweep` job, daily               |
+| Export artifacts               | 24 hours (2 hours for a platform-wide export)     | `export-file-cleanup` job, hourly          |
+| Upload temp files              | 30 minutes of staleness                           | `storage-temp-cleanup` job, hourly         |
+| Backups                        | 14 days, rolling                                  | `scripts/backup.sh` (`BACKUP_KEEP_DAYS`)   |
+| Support sessions               | Expire after 4 hours; keys after 60 minutes       | `support-session-expiry` job, every minute |
+| Application admin notification | Deleted with the application it describes         | `retention-sweep` job, daily               |
+| E-mail message BODIES          | 90 days after the row reaches a terminal status   | e-mail worker, on its recovery timer       |
 
 **Note the configuration actually shipped:** with subscriptions **disabled** —
 the configuration the product ships with — the per-plan `audit_log` retention
@@ -210,7 +215,11 @@ into production that nobody agreed to:
 - `[RETENTION PERIOD — CONTROL-PLANE AUDIT LOG]`
 - `[RETENTION PERIOD — SUPPORT LOGS]` (`support_action_log`, sessions,
   redemption attempts — these hold IP addresses and record snapshots)
-- `[RETENTION PERIOD — EMAIL OUTBOX]` (envelope and message body)
+- `[RETENTION PERIOD — EMAIL OUTBOX]` — the ENVELOPE only (`toEmail`, subject,
+  kind, status, timestamps). The message body is already cleared at 90 days
+  (Section 7.1), and an application's notification is deleted outright with the
+  application (privacy-legal-14); what has no agreed period is the permanent
+  envelope of every other message the platform has ever composed
 - `[RETENTION PERIOD — SECURITY LOGS]` (Privacy Policy §6: "a limited period,
   e.g. 90 days")
 - `[RETENTION PERIOD — legalAcceptedIp]` (the IP recorded at legal acceptance)
@@ -268,14 +277,18 @@ Separate from the record above, kept here for completeness. Full description:
    until then `[DPO EMAIL]` must not be published as a DPO contact.
 3. **Fill in the five retention periods** in Section 7.2 and implement them in
    the `retention-sweep` job.
-4. **Article 35 impact assessment.** DPA §4(e) promises assistance. Given
-   children's data and the scale, a public-body library will ask for material
-   that does not exist yet.
+4. **Article 35 impact assessment.** Delivered as
+   [`dpia-school-libraries.en.md`](./dpia-school-libraries.en.md) and referenced
+   from DPA §7.3 (privacy-legal-12). What remains is counsel confirming the
+   Hellenic DPA list reference in its Section 1, and a decision on whether the
+   product should gain age-aware behaviour at all — the pack currently discloses
+   the absence rather than closing it.
 5. **Disclose the minors gap** (Section 5) to every school and municipal library
    before signature.
 
 ## Revision history
 
-| Version | Date       | Change                                                            |
-| ------- | ---------- | ----------------------------------------------------------------- |
-| 1       | 2026-08-26 | First draft — finding privacy-legal-08 (the record did not exist) |
+| Version | Date       | Change                                                                                 |
+| ------- | ---------- | -------------------------------------------------------------------------------------- |
+| 1       | 2026-08-26 | First draft — finding privacy-legal-08 (the record did not exist)                      |
+| 2       | 2026-08-27 | Retention corrected to what the code enforces; Article 35 material delivered (§5, §10) |

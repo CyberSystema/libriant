@@ -77,7 +77,8 @@ export class ApplicationsController {
     // Throttle AFTER validation, exactly where the Worker had it: an honest
     // typo should not burn someone's hourly budget. The per-visitor bucket
     // still fails open — a Redis outage must never eat a lead — with a
-    // platform-wide ceiling behind it that fails closed (input-and-files-10).
+    // platform-wide ceiling behind it (input-and-files-10) that an unreachable
+    // Redis hands to a per-instance counter rather than to the visitor.
     const verdict = await this.svc.throttle(clientIp(req));
     if (verdict !== 'ok') {
       // A 'global' refusal is not this visitor's doing, so don't answer them

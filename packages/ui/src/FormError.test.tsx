@@ -16,7 +16,7 @@ import { FormError } from './FormError';
 test('the live region is in the markup before there is an error', () => {
   assert.equal(
     renderToStaticMarkup(<FormError>{null}</FormError>),
-    '<div role="alert" aria-live="assertive"></div>',
+    '<div role="alert" aria-live="assertive" style="position:absolute"></div>',
   );
 });
 
@@ -28,9 +28,22 @@ test('the wrapper is the same element with and without a message', () => {
   assert.match(filled, /Wrong password\./);
 });
 
-test('an empty region carries no layout style, so it leaves no gap', () => {
-  // Every call site passes a marginBottom. Applied unconditionally it reserved
-  // a permanent blank strip above the first field of every guarded form.
+test("an empty region drops the caller's margin and leaves the flow", () => {
+  // Two separate claims, and the old version of this test only made the first
+  // one while its NAME promised the second ("so it leaves no gap").
+  //
+  // 1. The caller's margin/class must not be worn by an empty div — every call
+  //    site passes a marginBottom, and applied unconditionally it reserved a
+  //    permanent blank strip above the first field of every guarded form.
+  // 2. The empty div must not be laid out AT ALL, because four call sites make
+  //    it the child of a `display: grid; gap: var(--sp-4)`, where a
+  //    zero-height item still takes a track and the track still takes a gap.
+  //    Dropping the margin cannot reach a gap that belongs to the parent.
+  //    Measured in a browser on that shape: 32px of dead space above the first
+  //    field, gone once the empty state is out of flow.
+  //
+  // This asserts the mechanism (the markup), not the pixels — this suite has no
+  // layout engine, and a test that could not see the gap is what let it stand.
   const empty = renderToStaticMarkup(
     <FormError style={{ marginBottom: '1rem' }} className="x">
       {null}
@@ -38,6 +51,7 @@ test('an empty region carries no layout style, so it leaves no gap', () => {
   );
   assert.ok(!empty.includes('margin-bottom'), empty);
   assert.ok(!empty.includes('class='), empty);
+  assert.match(empty, /style="position:absolute"/);
 
   const filled = renderToStaticMarkup(
     <FormError style={{ marginBottom: '1rem' }} className="x">
@@ -46,6 +60,9 @@ test('an empty region carries no layout style, so it leaves no gap', () => {
   );
   assert.match(filled, /margin-bottom:1rem/);
   assert.match(filled, /class="x"/);
+  // And the error state is laid out normally — out-of-flow there would take
+  // the message off the page.
+  assert.ok(!filled.includes('position:absolute'), filled);
 });
 
 test('the inner banner does not become a second live region', () => {

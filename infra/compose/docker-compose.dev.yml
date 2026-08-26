@@ -13,8 +13,22 @@ services:
       POSTGRES_USER: libriant
       POSTGRES_PASSWORD: libriant
       POSTGRES_DB: libriant_control
-      # Greek collation so user-facing sorts behave correctly for Greek titles.
-      LANG: el_GR.UTF-8
+      # boot-and-config-14. This said `LANG: el_GR.UTF-8` under a comment
+      # claiming it gave Greek collation. It did not: musl (this is an Alpine
+      # image) ships no locale definitions, accepts any name from setlocale()
+      # and behaves as C, so the cluster recorded a Greek collation and sorted
+      # in byte order. Dev matched prod only in being wrong the same way — which
+      # is worse than not matching, because a sort bug reproduced locally looks
+      # like an application bug.
+      #
+      # ICU carries the collation in the catalogue instead of in the host's C
+      # library, so it means the same thing here, in the prod image, and on
+      # whatever restores a backup later. Same args as
+      # docker-compose.prod.yml; postgres-init.sql asserts the result.
+      # Applies on FIRST init only: an existing libriant_pg_data volume keeps
+      # the collation it was built with (`docker volume rm libriant_pg_data`
+      # to rebuild, which drops your local data).
+      POSTGRES_INITDB_ARGS: --locale-provider=icu --icu-locale=el-GR --locale=C.UTF-8 --encoding=UTF8
     command:
       - postgres
       - -c

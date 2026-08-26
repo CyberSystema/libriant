@@ -89,6 +89,33 @@ groups:
           summary: 'Postgres connections > 95% of max'
           description: 'New connections will start failing. Tune pools now.'
 
+      # reliability-18. The gauge existed and nothing watched it, which is how
+      # Redis got to a 512 MB cgroup ceiling with no internal limit and no
+      # signal between "fine" and the kernel OOM-killer. It now has a limit
+      # (docker-compose.prod.yml, `--maxmemory 320mb --maxmemory-policy
+      # noeviction`), and hitting THAT is not silent either — writes start
+      # failing — but by then queued jobs are already being refused. These two
+      # are the warning before that.
+      #
+      # Absolute bytes rather than a ratio because nothing exports Redis's own
+      # maxmemory: 234881024 is 70% of 320 MiB, 301989888 is 90%. If
+      # REDIS_MAXMEMORY moves in compose, both move here.
+      - alert: LibriantRedisMemoryHigh
+        expr: libriant_redis_used_memory_bytes > 234881024
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Redis using > 70% of its configured maxmemory'
+          description: 'BullMQ queues or cached sessions are growing. At 100% Redis refuses writes (noeviction) and job enqueues start failing. Check queue backlogs; raise REDIS_MAXMEMORY *and* REDIS_MEM_LIMIT together if this is real growth.'
+
+      - alert: LibriantRedisMemoryCritical
+        expr: libriant_redis_used_memory_bytes > 301989888
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Redis using > 90% of its configured maxmemory'
+          description: 'Writes will start being refused with OOM at the ceiling — every queued job, every session write. Act now.'
+
       - alert: LibriantPgCacheHitLow
         expr: libriant_pg_cache_hit_ratio < 0.95
         for: 15m

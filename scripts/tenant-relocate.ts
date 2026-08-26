@@ -36,7 +36,7 @@
  *     REDIS_URL             — to bust the per-tenant resolver cache
  *
  *   USAGE:
- *     pnpm tenant:relocate -- \
+ *     pnpm tenant:relocate \
  *       --tenant=acme \
  *       --to-db-url='postgresql://lib:pw@cell-02.lan:5432/' \
  *       --to-cell=cell-02 \
@@ -44,7 +44,7 @@
  *       --dry-run
  *
  *     # After verifying the new home is healthy, optionally:
- *     pnpm tenant:relocate -- --tenant=acme --drop-source --allow-remote --yes
+ *     pnpm tenant:relocate --tenant=acme --drop-source --allow-remote --yes
  */
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';

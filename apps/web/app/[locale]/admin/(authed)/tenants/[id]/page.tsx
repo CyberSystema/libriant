@@ -3,11 +3,12 @@ import { notFound } from 'next/navigation';
 import { Banner, Card, CardBody, CardHeader, PageHeader } from '@libriant/ui';
 import { isLocale } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
-import { requestCookieHeader } from '@/lib/admin-session';
+import { currentAdminSession, requestCookieHeader } from '@/lib/admin-session';
 import { OverridesEditor } from './OverridesEditor';
 import { AdminBillingActions } from './AdminBillingActions';
 import { TenantTagsEditor } from './TenantTagsEditor';
 import { TenantSystemModePanel } from './TenantSystemModePanel';
+import { LibraryStatusControl } from './LibraryStatusControl';
 import { DeleteTenantButton } from './DeleteTenantButton';
 
 export const dynamic = 'force-dynamic';
@@ -82,6 +83,10 @@ export default async function AdminTenantDetailPage(props: {
   const params = await props.params;
   if (!isLocale(params.locale)) notFound();
   const cookie = await requestCookieHeader();
+  // Pause/resume is owner-only at the endpoint (`@AdminRoles('owner')`). A
+  // support admin gets the state and the reason they cannot change it, rather
+  // than a button that 403s.
+  const admin = await currentAdminSession();
 
   let tenant: TenantDetail | null = null;
   let fetchError: string | null = null;
@@ -271,6 +276,22 @@ export default async function AdminTenantDetailPage(props: {
                 <dt>Created</dt>
                 <dd>{new Date(tenant.createdAt).toLocaleDateString(params.locale)}</dd>
               </dl>
+            </CardBody>
+          </Card>
+
+          <Card style={{ marginBottom: 'var(--sp-4)' }}>
+            <CardHeader
+              title="Access"
+              subtitle="Pause this library for abuse, non-payment, or because the library asked us to stop processing. Reversible; nothing is deleted."
+            />
+            <CardBody>
+              <LibraryStatusControl
+                tenantId={tenant.id}
+                slug={tenant.slug}
+                name={tenant.name}
+                status={tenant.status}
+                canPause={admin?.role === 'owner'}
+              />
             </CardBody>
           </Card>
 

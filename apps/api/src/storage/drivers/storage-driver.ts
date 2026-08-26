@@ -59,11 +59,16 @@ export interface StorageDriver {
   totalBytes(): Promise<number>;
   /**
    * Delete orphaned partial-upload artifacts older than `maxAgeMs`. `put()`
-   * writes to a `<target>.tmp-<hex>` file then atomic-renames it into place; a
-   * crash between the two leaves the temp behind. It's already excluded from
-   * `totalBytes()`, but without a sweep it lingers on disk forever. Returns the
-   * number of files removed. Backends that don't write temp files (object
-   * stores upload atomically) return 0.
+   * stages each upload in a per-tenant `_tmp/` directory and atomic-renames it
+   * into place; a crash between the two leaves the temp behind. It's already
+   * excluded from `totalBytes()`, but without a sweep it lingers on disk
+   * forever. Returns the number of files removed. Backends that don't write
+   * temp files (object stores upload atomically) return 0.
+   *
+   * performance-16: a driver implementing this MUST be able to answer it
+   * without enumerating the tenant's files. It runs hourly for every active
+   * tenant, and the working set is normally empty — a sweep whose cost scales
+   * with the size of the library is paying that price to find nothing.
    */
   sweepStaleTemps(maxAgeMs: number): Promise<number>;
 }

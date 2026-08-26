@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { Client as PgClient } from 'pg';
 import { controlDb } from '@libriant/db-control';
-import { LEGAL_DOCUMENTS, LEGAL_VERSION } from '@libriant/shared';
+import { LEGAL_DOCUMENTS, LEGAL_VERSION, SIGNUP_CONSENT_DOCS } from '@libriant/shared';
 import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { RedisService } from '../../src/platform/redis.service.js';
@@ -205,9 +205,12 @@ describe('the acceptance record can produce the text that was on screen', () => 
       expect(doc.digestMatchesAcceptance, `digest drift on ${doc.slug}`).toBe(true);
     }
 
-    // Only the two behind the checkbox are claimed as shown; the DPA is
-    // fingerprinted and archived but honestly marked incorporated-by-reference.
-    expect(docs.filter((d) => d.presented).map((d) => d.slug)).toEqual(['terms', 'privacy']);
+    // Exactly the documents behind the checkbox are claimed as shown, taken
+    // from the constant the signup label renders from rather than repeated
+    // here (privacy-legal-13). The rest of the corpus is fingerprinted and
+    // archived but honestly marked incorporated-by-reference.
+    expect(docs.filter((d) => d.presented).map((d) => d.slug)).toEqual([...SIGNUP_CONSENT_DOCS]);
+    expect(docs.find((d) => d.slug === 'dpa')!.presented).toBe(true);
 
     // The English and Greek corpora are genuinely different documents, so a
     // record that names one is actually distinguishing them.

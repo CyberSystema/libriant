@@ -4,6 +4,7 @@ import { controlDb } from '@libriant/db-control';
 import type { LibraryType } from '@libriant/db-control';
 import { EmailService } from '../email/email.service.js';
 import { RateLimitService } from '../platform/rate-limit.service.js';
+import { RedisService } from '../platform/redis.service.js';
 import { loadEnv } from '../config/env.js';
 import { LIBRARY_TYPE_OPTIONS } from '@libriant/site';
 
@@ -53,18 +54,81 @@ const RATE_WINDOW_SEC = 3600;
  * — 277 libraries on the campaign list, five free spots — so a real applicant
  * will never meet it. A script meets it inside the first minute.
  *
- * The `apply-all:` prefix is what makes this bucket fail CLOSED; see
+ * The `apply-all:` prefix is what makes this bucket fail CLOSED in Redis; see
  * FAIL_CLOSED_PREFIXES in RateLimitService for why this one and not the other.
+ * What that refusal MEANS when Redis is the thing that broke is decided here,
+ * by {@link ProcessWideCeiling} — not by letting the refusal reach the visitor.
  */
 const GLOBAL_RATE_LIMIT = 60;
 const GLOBAL_RATE_WINDOW_SEC = 3600;
 const GLOBAL_RATE_KEY = 'apply-all:hour';
 
 /**
+ * The same ceiling, counted in THIS process, for the minutes when Redis cannot
+ * count it for us.
+ *
+ * Closing input-and-files-10 by making the shared bucket fail closed traded one
+ * silent failure for a louder one: a Redis blip now REFUSED library
+ * applications outright, on the single unauthenticated write in the product,
+ * days before a campaign to 277 Greek libraries whose entire purpose is
+ * capturing five leads. Both of the obvious answers are wrong — allowing
+ * everything re-opens the finding, refusing everything eats the leads the
+ * bucket was added to protect — and neither is a decision this file gets to
+ * make on the business's behalf.
+ *
+ * So neither. A Redis refusal is re-decided against a counter that lives in
+ * this process, on the same 60/hour budget. There is one API instance today, so
+ * that is very nearly the same ceiling; with N instances it degrades to 60/hour
+ * EACH, which is still a ceiling and still far above any honest burst.
+ *
+ * It is spent on every accepted submission, not only during an outage: a
+ * counter that starts at zero the moment Redis drops hands an attacker a fresh
+ * 60 slots for free, which is the whole ceiling back again at the worst
+ * possible moment.
+ */
+class ProcessWideCeiling {
+  private windowStartedAt = 0;
+  private count = 0;
+
+  constructor(
+    private readonly limit: number,
+    private readonly windowMs: number,
+  ) {}
+
+  /** Claim one slot. False once this window is spent. */
+  claim(now: number = Date.now()): boolean {
+    if (now - this.windowStartedAt >= this.windowMs) {
+      this.windowStartedAt = now;
+      this.count = 0;
+    }
+    if (this.count >= this.limit) return false;
+    this.count++;
+    return true;
+  }
+}
+
+/**
+ * How long the visitor's browser will wait for the operator's notification.
+ *
+ * The notification is documented as best-effort ("the application is already
+ * committed"), and it was — except for the waiting. `EmailService.enqueue`
+ * finishes with `queue.add`, and BullMQ's connection queues commands rather
+ * than rejecting them, so with Redis down that call does not fail: it waits.
+ * Making the throttle survive a Redis outage is what exposed it — before, the
+ * ceiling refused the submission long before it could reach here — and the
+ * result was a librarian watching a spinner for a form whose row was already
+ * safely in the control plane.
+ *
+ * The outbox row and the `applications` row are both committed to Postgres by
+ * then; only the BullMQ nudge is lost, and a timed-out enqueue is recorded on
+ * `notifyError` for exactly that reason.
+ */
+const NOTIFY_TIMEOUT_MS = 3_000;
+
+/**
  * `ip` — this visitor is over their own hourly budget.
- * `global` — the platform-wide ceiling tripped, or Redis is unreachable and
- * that bucket fails closed. Either way it is not the visitor's doing, and the
- * answer they get must not say it was.
+ * `global` — the platform-wide ceiling tripped. Not the visitor's doing, and
+ * the answer they get must not say it was.
  */
 export type ThrottleVerdict = 'ok' | 'ip' | 'global';
 
@@ -72,15 +136,35 @@ export type ApplyResult =
   | { ok: true; id: string }
   | { ok: false; kind: 'invalid' | 'rate-limited' | 'save-failed'; parsed: Parsed };
 
+/**
+ * The outbox idempotency key of an application's admin notification.
+ *
+ * Exported because the retention sweep deletes that row together with the
+ * application it describes (privacy-legal-14): the notification body restates
+ * the applicant's name, e-mail and phone, and its envelope keeps their address
+ * in `replyToEmail`, so deleting only the `applications` row left a second copy
+ * of a person we had promised to forget. Both sides must agree on the key, and
+ * a format retyped in `jobs/retention.job.ts` would agree only until somebody
+ * edited one of them.
+ */
+export function applicationNotifyKey(applicationId: string): string {
+  return `application.submitted:${applicationId}`;
+}
+
 @Injectable()
 export class ApplicationsService {
   private readonly logger = new Logger(ApplicationsService.name);
   private readonly pepper: string;
   private readonly notifyTo: string;
+  private readonly localCeiling = new ProcessWideCeiling(
+    GLOBAL_RATE_LIMIT,
+    GLOBAL_RATE_WINDOW_SEC * 1000,
+  );
 
   constructor(
     @Inject(EmailService) private readonly email: EmailService,
     @Inject(RateLimitService) private readonly rateLimit: RateLimitService,
+    @Inject(RedisService) private readonly redis: RedisService,
   ) {
     const env = loadEnv();
     this.pepper = env.applyHashPepper;
@@ -152,8 +236,17 @@ export class ApplicationsService {
    * The per-visitor bucket still fails OPEN: a Redis outage must not eat leads,
    * and it is checked first so a flood from one address never reaches (or
    * spends) the shared ceiling. The platform-wide ceiling behind it fails
-   * CLOSED, which is the entire point of adding it — it is what is left
-   * standing when Redis is the thing that broke.
+   * CLOSED in Redis, which is the entire point of adding it — but a bucket that
+   * fails closed refuses the honest applicant just as flatly as the script, so
+   * the refusal is re-decided here against {@link ProcessWideCeiling} when Redis
+   * is the thing that broke rather than the thing that counted.
+   *
+   * `client.status` is the discriminator because `hit()` cannot be one: a
+   * genuine 61st submission and a Redis error both come back as
+   * `{ allowed: false, count: limit + 1 }`. ioredis reports `ready` only while
+   * the socket can carry a command (`enableOfflineQueue: false`, see
+   * RedisService), so anything else means the count we were just refused by was
+   * never taken.
    */
   async throttle(ip: string | undefined): Promise<ThrottleVerdict> {
     const perVisitor = await this.rateLimit.hit(this.ipKey(ip), RATE_LIMIT, RATE_WINDOW_SEC);
@@ -163,7 +256,21 @@ export class ApplicationsService {
       GLOBAL_RATE_LIMIT,
       GLOBAL_RATE_WINDOW_SEC,
     );
-    return platformWide.allowed ? 'ok' : 'global';
+    // Spent on every accepted submission, not only during an outage — see the
+    // class comment for why a cold counter is the ceiling handed back.
+    const localSlot = this.localCeiling.claim();
+    if (platformWide.allowed) return 'ok';
+    if (this.redis.client.status === 'ready') return 'global';
+    if (!localSlot) return 'global';
+    // Once per accepted-under-degradation submission: at 60/hour this cannot
+    // become a storm, and an operator reading the outage needs to know the
+    // ceiling is still being counted, by whom, and that leads are still landing.
+    this.logger.warn(
+      `Redis is ${this.redis.client.status} — the platform-wide /apply ceiling is being counted ` +
+        `in-process for this instance (${GLOBAL_RATE_LIMIT}/${GLOBAL_RATE_WINDOW_SEC}s). ` +
+        'The application was accepted.',
+    );
+    return 'ok';
   }
 
   /**
@@ -219,15 +326,18 @@ export class ApplicationsService {
     ].join('\n');
 
     try {
-      await this.email.enqueue({
-        kind: 'application_submitted',
-        toEmail: this.notifyTo,
-        replyToEmail: v.contactEmail || undefined,
-        subject: `Νέα αίτηση: ${v.libraryName || '—'} (${v.city || '—'})`,
-        bodyMarkdown: body,
-        idempotencyKey: `application.submitted:${id}`,
-        maxAttempts: 3,
-      });
+      await withTimeout(
+        this.email.enqueue({
+          kind: 'application_submitted',
+          toEmail: this.notifyTo,
+          replyToEmail: v.contactEmail || undefined,
+          subject: `Νέα αίτηση: ${v.libraryName || '—'} (${v.city || '—'})`,
+          bodyMarkdown: body,
+          idempotencyKey: applicationNotifyKey(id),
+          maxAttempts: 3,
+        }),
+        NOTIFY_TIMEOUT_MS,
+      );
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       this.logger.error(`application ${id}: notification enqueue failed: ${reason}`);
@@ -235,6 +345,25 @@ export class ApplicationsService {
         .update({ where: { id }, data: { notifyError: reason.slice(0, 500) } })
         .catch(() => undefined);
     }
+  }
+}
+
+/**
+ * Reject after `ms` if `work` has not settled. The work is NOT cancelled —
+ * nothing here can cancel a BullMQ command — it is simply no longer something
+ * the visitor's request waits on.
+ */
+async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

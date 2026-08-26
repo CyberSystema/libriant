@@ -22,14 +22,22 @@ const E = ERRORS.el;
 
 function makeService(
   hit = vi.fn().mockResolvedValue({ allowed: true, count: 1, retryAfterSec: 0 }),
+  redisStatus = 'ready',
 ) {
   const email = { enqueue: vi.fn().mockResolvedValue(undefined) };
   const rateLimit = { hit };
+  // ioredis exposes the socket state as `client.status`; the service reads it
+  // to tell "the ceiling counted 61" from "nothing counted anything".
+  const redis = { client: { status: redisStatus } };
   // The constructor reads env; the loadEnv mock above supplies the pepper.
   // Nothing sets HASH_PEPPER in the unit environment — the integration suite
   // has to set it itself, in test/integration/setup.ts.
-  const svc = new ApplicationsService(email as never, rateLimit as never);
-  return { svc, email, rateLimit };
+  const svc = new ApplicationsService(email as never, rateLimit as never, redis as never);
+  // The degraded-ceiling path logs one warn per accepted submission; captured
+  // rather than printed so a 60-submission test does not bury the run, and so
+  // the tests below can assert the operator actually gets that signal.
+  const warn = vi.spyOn(svc['logger'], 'warn').mockImplementation(() => undefined);
+  return { svc, email, rateLimit, redis, warn };
 }
 
 const complete = {
@@ -199,6 +207,73 @@ describe('ApplicationsService.throttle', () => {
       .mockResolvedValueOnce({ allowed: false, count: 61, retryAfterSec: 3600 });
     const { svc } = makeService(hit);
     await expect(svc.throttle('203.0.113.7')).resolves.toBe('global');
+  });
+
+  /**
+   * The other half of input-and-files-10, and the reason the fail-closed prefix
+   * is not the whole answer.
+   *
+   * `RateLimitService.hit` cannot tell these two apart — a genuine 61st
+   * submission and a dead socket both return `{ allowed: false, count: 61 }` —
+   * so a Redis blip refused every application on the one unauthenticated write
+   * in the product, during a campaign whose entire purpose is capturing five
+   * leads. The verdict below is what a librarian's application depends on.
+   */
+  /**
+   * What `RateLimitService` returns for both buckets when Redis is gone: the
+   * per-visitor bucket fails open (`allowed`, nothing counted), the `apply-all:`
+   * ceiling fails closed. Keyed by bucket rather than by call order, because
+   * every test below makes more than one submission.
+   */
+  const outage = () =>
+    vi.fn(async (key: string) =>
+      key.startsWith('apply-all:')
+        ? { allowed: false, count: 61, retryAfterSec: 3600 }
+        : { allowed: true, count: 0, retryAfterSec: 0 },
+    );
+
+  it('accepts the application when the ceiling was refused by an unreachable Redis', async () => {
+    const { svc, warn } = makeService(outage(), 'reconnecting');
+    await expect(svc.throttle('203.0.113.7')).resolves.toBe('ok');
+    // Accepting quietly would leave an operator with no way to know the shared
+    // ceiling is no longer shared.
+    expect(warn.mock.calls.map(String).join('\n')).toContain('reconnecting');
+  });
+
+  it('still refuses the 61st, so the outage does not remove the ceiling', async () => {
+    const { svc } = makeService(outage(), 'end');
+    for (let i = 0; i < 60; i++) {
+      await expect(svc.throttle(`203.0.113.${i}`), `submission ${i + 1}`).resolves.toBe('ok');
+    }
+    await expect(svc.throttle('203.0.113.61')).resolves.toBe('global');
+  });
+
+  it('keeps refusing a genuine 61st while Redis is healthy enough to have counted it', async () => {
+    // Same refusal, reachable socket: this one really is the ceiling, and the
+    // in-process counter must not second-guess it.
+    const { svc } = makeService(outage(), 'ready');
+    await expect(svc.throttle('203.0.113.7')).resolves.toBe('global');
+  });
+
+  it('spends the in-process ceiling while Redis is healthy, so an outage inherits it', async () => {
+    // A counter that only starts on the first error hands an attacker a fresh
+    // 60 slots the moment Redis drops — the whole ceiling back, at the worst
+    // possible moment.
+    let redisUp = true;
+    const hit = vi.fn(async (key: string) =>
+      !redisUp && key.startsWith('apply-all:')
+        ? { allowed: false, count: 61, retryAfterSec: 3600 }
+        : { allowed: true, count: 1, retryAfterSec: 0 },
+    );
+    const { svc, redis } = makeService(hit, 'ready');
+    for (let i = 0; i < 60; i++) {
+      await expect(svc.throttle(`198.51.100.${i}`), `healthy submission ${i + 1}`).resolves.toBe(
+        'ok',
+      );
+    }
+    redisUp = false;
+    redis.client.status = 'end';
+    await expect(svc.throttle('198.51.100.200')).resolves.toBe('global');
   });
 
   it('does not spend the shared ceiling on a visitor already over their own budget', async () => {

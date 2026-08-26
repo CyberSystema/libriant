@@ -15,6 +15,7 @@ import { PlatformSettingsService } from '../../src/platform-settings/platform-se
 import { EffectivePlanService } from '../../src/plans/effective-plan.service.js';
 import { SCHEDULED_JOBS } from '../../src/jobs/registry.js';
 import { erasedMemberNumber } from '../../src/members/members.service.js';
+import { applicationNotifyKey } from '../../src/applications/applications.service.js';
 import type { JobContext } from '../../src/jobs/jobs.types.js';
 import { listenOnce } from './listen-once.js';
 import { declareBillingPosture } from './billing-posture.js';
@@ -474,6 +475,57 @@ describe('privacy-legal-05 — retention sweep', () => {
     // Re-running deletes nothing more — the sweep is safe on every tick.
     const second = await runRetentionSweep();
     expect(second.counts?.applicationsPurged).toBe(0);
+  });
+
+  it("takes the applicant's admin notification with them, submitted through the real form", async () => {
+    // privacy-legal-14. The row is created by POSTing the public application
+    // form — the same urlencoded submission a librarian on libriant.com makes —
+    // so the outbox notification, its idempotency key and the applicant's
+    // address in `replyToEmail` are all produced by the real code path rather
+    // than seeded to match the sweep's expectations.
+    const email = `retention.notify.${tag}@example.test`;
+    const res = await request(app.getHttpServer())
+      .post('/apply')
+      .set('X-Real-IP', `203.0.113.${Math.floor(Math.random() * 200) + 1}`)
+      .type('form')
+      .send({
+        libraryName: `Notify ${tag}`,
+        libraryType: 'school',
+        city: 'Καρδίτσα',
+        contactName: 'Ελένη Παππά',
+        contactEmail: email,
+        phone: '2441000000',
+        message: 'Ενδιαφερόμαστε για τη σχολική μας βιβλιοθήκη.',
+        consent: 'yes',
+      });
+    expect([200, 303]).toContain(res.status);
+
+    const application = await controlDb.application.findFirst({
+      where: { contactEmail: email },
+      select: { id: true },
+    });
+    expect(application, 'the form did not store an application').not.toBeNull();
+
+    const key = applicationNotifyKey(application!.id);
+    const before = await controlDb.emailOutbox.findUnique({ where: { idempotencyKey: key } });
+    expect(before, 'the form did not enqueue the admin notification').not.toBeNull();
+    // The second copy the finding is about: the applicant is in the body, and
+    // their address is in the envelope even after the 90-day body sweep.
+    expect(before!.bodyMarkdown).toContain(email);
+    expect(before!.replyToEmail).toBe(email);
+
+    // Age the application past the published promise, exactly as time would.
+    await controlDb.application.update({
+      where: { id: application!.id },
+      data: { createdAt: daysAgo(400), status: 'new', reviewedAt: null },
+    });
+
+    await runRetentionSweep();
+
+    expect(await controlDb.application.findUnique({ where: { id: application!.id } })).toBeNull();
+    expect(await controlDb.emailOutbox.findUnique({ where: { idempotencyKey: key } })).toBeNull();
+    // Nothing of that person is left anywhere in the control plane.
+    expect(await controlDb.emailOutbox.count({ where: { replyToEmail: email } })).toBe(0);
   });
 
   it('leaves a tenant audit log alone while the plan grants unlimited retention', async () => {

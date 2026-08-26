@@ -18,6 +18,15 @@ import { HttpExceptionFilter } from './http-exception.filter.js';
  * those into "something went wrong on our end" deletes the answer AND mints a
  * support code for an incident that never happened, which teaches everyone to
  * treat real support codes as noise.
+ *
+ * SCOPE, because it was once claimed as more than it is: the exceptions below
+ * are hand-built, so these tests prove what the filter DOES with an exception
+ * of a given shape, and nothing about which shapes actually arrive. That second
+ * question is the whole of reliability-13's surviving half — a malformed JSON
+ * body does not arrive as the body-parser error built here — and it is answered
+ * by driving real bytes through a booted app in
+ * test/integration/unreadable-request-logging.spec.ts. Neither file replaces
+ * the other; a claim about REACHING a branch belongs in that one.
  */
 function makeHost(url = '/webhooks/stripe') {
   const json = vi.fn();
@@ -117,7 +126,9 @@ describe('HttpExceptionFilter', () => {
     const warn = vi.spyOn(filter['logger'], 'warn').mockImplementation(() => undefined);
 
     // The shape body-parser throws: an http-errors instance with `type`,
-    // `expose` and a 4xx `status`.
+    // `expose` and a 4xx `status`. That this shape really is what a 300 KB
+    // upload produces is proved over HTTP in the integration spec named above;
+    // here it is a fixture.
     const tooLarge = Object.assign(new Error('request entity too large'), {
       status: 413,
       expose: true,

@@ -132,12 +132,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
   }
 
   /**
-   * The answer to "your request was unreadable": one log line, one plain
-   * sentence. Shared by the two branches that produce it so a request that
-   * failed in the body parser reads the same whether NestJS relabelled it on
-   * the way (Path 1) or not (Path 1.5).
+   * One warn line for a client error, in the shape an operator greps.
    *
-   * reliability-13: both branches used to return without a single log call.
+   * reliability-13: both 4xx branches used to return without a single log call.
    * Combined with a `clientErrorStatus` that accepted ANY object carrying a
    * numeric 4xx — the shape of a Stripe SDK error and of most HTTP client
    * wrappers — a Stripe 402/429, or the GitHub desktop-release proxy 404ing,
@@ -148,13 +145,12 @@ export class HttpExceptionFilter implements ExceptionFilter {
    * Warn rather than error, because an oversized upload or a truncated body is
    * an ordinary event and must not read as an incident; one JSON line, matching
    * the 5xx record so both grep alike.
-   */
-  /**
-   * One warn line for a client error, in the shape an operator greps.
    *
-   * Separate from `reportClientError` because the two callers need different
-   * halves: Path 1.5 logs AND replaces the body, Path 1 logs and keeps the
-   * body it was given.
+   * Separate from {@link reportClientError} because the two branches need
+   * different halves: Path 1.5 logs AND replaces the body, Path 1 logs and
+   * keeps the body it was given. So the two do NOT read alike, deliberately —
+   * a malformed body relabelled by NestJS keeps NestJS's message, because that
+   * message is the `code` string the web app translates.
    */
   private logClientError(req: Request, status: number, exception: unknown): void {
     this.logger.warn(
@@ -221,6 +217,16 @@ export class HttpExceptionFilter implements ExceptionFilter {
 /**
  * The `type` values body-parser / raw-body stamp on the errors they throw.
  * These are the errors this branch was written for.
+ *
+ * `entity.parse.failed` is in the list but never arrives here, and that is
+ * worth stating rather than quietly leaving a dead entry: body-parser raises it
+ * by decorating the SyntaxError from `JSON.parse`, and NestJS maps a SyntaxError
+ * to a `BadRequestException` before any filter runs, so it is answered up in
+ * Path 1. Kept because the list is "what body-parser can throw", not "what
+ * reaches this line" — the day Nest stops relabelling it, it lands here already
+ * handled instead of falling through to a 500 with a support code.
+ * Verified against a running API: `POST /auth/login` with `{oops` logs
+ * `"kind":"BadRequestException"`, not a body-parser error.
  */
 const BODY_PARSER_ERROR_TYPES = new Set([
   'charset.unsupported',

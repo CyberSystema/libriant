@@ -37,9 +37,9 @@ describe('sweepStaleStorageTemps', () => {
     const a = await makeTenantRoot();
     const b = await makeTenantRoot();
     roots.push(a, b);
-    const staleA = await writeAged(a, 'covers/x.jpg.tmp-aa11', HOUR);
+    const staleA = await writeAged(a, '_tmp/x.jpg.tmp-aa11', HOUR);
     await writeAged(a, 'covers/x.jpg', HOUR); // committed — kept
-    await writeAged(b, 'covers/y.jpg.tmp-bb22', 0); // fresh in-flight — kept
+    await writeAged(b, '_tmp/y.jpg.tmp-bb22', 0); // fresh in-flight — kept
 
     tenantFindMany.mockResolvedValue([
       { id: 't-a', slug: 'acme', storageUrl: pathToFileURL(a).href },
@@ -55,7 +55,7 @@ describe('sweepStaleStorageTemps', () => {
   it('skips a tenant with an unsupported storage URL without aborting the rest', async () => {
     const good = await makeTenantRoot();
     roots.push(good);
-    const stale = await writeAged(good, 'attachments/z.pdf.tmp-cc33', HOUR);
+    const stale = await writeAged(good, '_tmp/z.pdf.tmp-cc33', HOUR);
 
     tenantFindMany.mockResolvedValue([
       { id: 't-bad', slug: 'broken', storageUrl: 'ftp://nope/not-a-backend' },

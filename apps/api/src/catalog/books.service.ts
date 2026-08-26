@@ -6,7 +6,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import type { BookCopyStatus, Prisma } from '@libriant/db-tenant';
+import type { BookCopyStatus, Prisma, TenantPrismaClient } from '@libriant/db-tenant';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { FieldDefinitionsService } from '../customization/field-definitions.service.js';
@@ -15,6 +15,7 @@ import { EffectivePlanService, isUnlimitedInt } from '../plans/effective-plan.se
 import { validateRecordOrThrow } from '../customization/dynamic-validator.js';
 import { AuthorsService } from './authors.service.js';
 import { buildSearchText, classifySearchTerm, digitsOnly, normalizeText } from './normalize.js';
+import { decodeCursor, encodeCursor } from '../platform/query.js';
 
 export type BookAuthorLink = { authorId: string; order: number; role: string | null };
 
@@ -145,16 +146,69 @@ export class BooksService {
     if (opts.yearTo !== undefined)
       where.publicationYear = { ...(where.publicationYear as object), lte: opts.yearTo };
 
+    // performance-03. This used to be `cursor: { id: opts.after }, skip: 1`,
+    // which Prisma renders as an OR of correlated subselects — Postgres cannot
+    // use that as a btree start key, so it walked `books_sortTitle_idx` from
+    // the beginning of the range and discarded every row before the cursor.
+    // On a 400,000-title catalogue, page 1 is 0.87 ms and the page at depth
+    // 200,000 is 106.90 ms with `Rows Removed by Filter: 200001`.
+    //
+    // The `gte` is the whole fix: it is the start key the planner can seek to,
+    // and it is only expressible because the cursor token carries the last
+    // row's `sortTitle` and not just its id. The OR beside it is the exact
+    // boundary — `gte` alone would repeat the rows that tie on `sortTitle`.
+    // Same page, 0.87 ms, `Rows Removed by Filter: 1`.
+    const after = await this.decodeListCursor(client, opts.after);
+    if (after) {
+      where.AND = [
+        { sortTitle: { gte: after.sortTitle } },
+        {
+          OR: [
+            { sortTitle: { gt: after.sortTitle } },
+            { sortTitle: after.sortTitle, id: { gt: after.id } },
+          ],
+        },
+      ];
+    }
     const rows = await client.book.findMany({
       where,
       orderBy: [{ sortTitle: 'asc' }, { id: 'asc' }],
       take: limit + 1,
-      ...(opts.after ? { cursor: { id: opts.after }, skip: 1 } : {}),
       include: this.includeAuthors(),
     });
     const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map((r) => this.toDto(r));
-    return { items, nextCursor: hasMore ? items[items.length - 1]!.id : null };
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const items = page.map((r) => this.toDto(r));
+    const last = page[page.length - 1];
+    return {
+      items,
+      nextCursor: hasMore && last ? encodeCursor([last.sortTitle, last.id]) : null,
+    };
+  }
+
+  /**
+   * Turn an `?after=` token back into the two sort values {@link list} pages on.
+   *
+   * Accepts a bare book id as well as our own token, for the reason spelled out
+   * on `decodeCursor`: `after` used to BE an id, the controller documents it as
+   * one, and a librarian scrolling the catalogue through a deploy should not be
+   * thrown a 400. A cursor row that has since been deleted resolves to `null`,
+   * which restarts them at page 1.
+   */
+  private async decodeListCursor(
+    client: TenantPrismaClient,
+    after: string | undefined,
+  ): Promise<{ sortTitle: string; id: string } | null> {
+    if (!after) return null;
+    const parts = decodeCursor(after, 2);
+    if (parts) {
+      const [sortTitle, id] = parts;
+      return typeof sortTitle === 'string' && typeof id === 'string' ? { sortTitle, id } : null;
+    }
+    return client.book.findUnique({
+      where: { id: after },
+      select: { sortTitle: true, id: true },
+    });
   }
 
   async get(tenant: TenantContext, id: string): Promise<BookWithCopiesDto> {

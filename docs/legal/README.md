@@ -1,9 +1,10 @@
 # `docs/legal/` — the documents that are not published
 
 The seven documents a visitor can read live in `locales/<locale>/legal/` and are
-rendered at `/<locale>/legal/<slug>`. This directory holds the two legal
-artefacts that are **not** web pages: the record we owe a regulator, and the
-frozen evidence of what each published version actually said.
+rendered at `/<locale>/legal/<slug>`. This directory holds the legal artefacts
+that are **not** web pages: the record we owe a regulator, the material we owe a
+school library assessing its own risk, and the frozen evidence of what each
+published version actually said.
 
 ## `ropa.el.md` / `ropa.en.md` — record of processing activities
 
@@ -27,6 +28,23 @@ Two things about it that are easy to get wrong:
   `locales/*/legal/` only. Section 0 of the record therefore lists its own
   unfilled `[PLACEHOLDER]` values by hand. If you fill placeholders in the
   published documents, check Section 0 too.
+
+## `dpia-school-libraries.el.md` / `.en.md` — the Article 35 material
+
+The processor's half of a data-protection impact assessment, for the customer
+segment that needs one: school libraries, whose members are children. It states
+what the system does, what it does **not** do (there is no guardian field and no
+age logic anywhere in the product), the risks that follow, and the measures that
+answer them.
+
+It exists because [DPA](../../locales/el/legal/dpa.md) §4(e) promises assistance
+with Articles 32–36 to a segment it names in Annex I, and shipped none (finding
+privacy-legal-12). DPA §7.3 now points at it, which is the only reason it counts
+as delivered: a document nobody is told about is not assistance.
+
+It is **not** a DPIA. The assessment belongs to the school as controller, and
+the pack says so in its first paragraph — an aid a processor writes and a
+controller signs is exactly the confusion Article 35 does not tolerate.
 
 ## `accepted/<LEGAL_VERSION>/` — what each version actually said
 
@@ -80,8 +98,11 @@ the exact defect this scheme exists to prevent.
 
 ### Still missing
 
-Existing libraries are not yet prompted to re-accept when `LEGAL_VERSION` moves:
-nothing reads `user.legalAcceptedVersion` at sign-in, and there is no
-re-acceptance screen. That is a UI feature (`apps/web`), tracked separately.
-Until it exists, a version bump must be followed by asking the launch libraries
-to re-accept explicitly.
+Existing libraries are not yet **prompted** to re-accept when `LEGAL_VERSION`
+moves. Half of this has since been built: `ConsentService.stateFor()` reads
+`tenants.legalAcceptedVersion`, `GET /t/:slug/legal/consent` answers with
+`reacceptanceRequired`, and `POST /t/:slug/legal/consent/accept` records a fresh
+acceptance (privacy-legal-09). What is missing is a caller — no page in
+`apps/web` requests either route, so nothing surfaces the prompt. Until that UI
+exists, a version bump must be followed by asking the launch libraries to
+re-accept explicitly.

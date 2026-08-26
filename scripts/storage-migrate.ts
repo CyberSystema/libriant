@@ -22,7 +22,7 @@
  *     REDIS_URL             — to bust the per-tenant resolver cache
  *
  *   USAGE:
- *     pnpm storage:migrate -- \
+ *     pnpm storage:migrate \
  *       --tenant=acme \
  *       --to-storage-url='file:///srv/libriant-2/storage/acme'
  *       --dry-run

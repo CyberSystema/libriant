@@ -349,6 +349,33 @@ describe('TenantResolverService.updateTenant', () => {
     expect(redis.store.has('tenant:slug:acme')).toBe(true);
   });
 
+  it('drops the OLD keys too when the write renames the slug or subdomain', async () => {
+    const redis = makeFakeRedis();
+    const service = new TenantResolverService({ client: redis.client } as never);
+    findUnique.mockResolvedValue(tenantRow({ customSubdomain: 'acme-lib' }));
+    await service.resolveBySlug('acme');
+    await service.resolveBySubdomain('acme-lib');
+    expect(redis.store.has('tenant:slug:acme')).toBe(true);
+    expect(redis.store.has('tenant:sub:acme-lib')).toBe(true);
+
+    // The rename itself: `findUnique` is now the pre-update read, `update`
+    // returns the post-update row.
+    findUnique.mockResolvedValue({ slug: 'acme', customSubdomain: 'acme-lib' });
+    update.mockResolvedValue({
+      id: 'tnt-1',
+      slug: 'acme-public',
+      name: 'Acme Public Library',
+      status: 'active',
+      customSubdomain: 'acme-public',
+    });
+    await service.updateTenant('tnt-1', { slug: 'acme-public', customSubdomain: 'acme-public' });
+
+    // Invalidating only the post-update values leaves the address a librarian
+    // still has bookmarked serving the pre-rename context for a full TTL.
+    expect(redis.store.has('tenant:slug:acme')).toBe(false);
+    expect(redis.store.has('tenant:sub:acme-lib')).toBe(false);
+  });
+
   it('never selects the tenant addresses back out of the row it writes', async () => {
     const redis = makeFakeRedis();
     const service = new TenantResolverService({ client: redis.client } as never);

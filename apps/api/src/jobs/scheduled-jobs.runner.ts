@@ -323,7 +323,10 @@ export async function startScheduledJobs(
     // Name the attempt. With retries on (reliability-20) this line fires once
     // per attempt, and "3/3" versus "1/3" is the difference between a sweep
     // that is down and one that rode out a blip.
-    const attempt = `${job?.attemptsMade ?? 1}/${job?.opts.attempts ?? 1}`;
+    // `|| 1`, not `?? 1`: BullMQ stores an absent retry budget as `attempts: 0`,
+    // so `??` rendered "attempt 1/0" — which is how this line read for every
+    // failure before reliability-20.
+    const attempt = `${job?.attemptsMade || 1}/${job?.opts.attempts || 1}`;
     console.error(`[scheduled] ${job?.name} failed (attempt ${attempt}): ${err.message}`);
   });
 

@@ -165,6 +165,31 @@ is owned by another package; the exact change is in this package's report under
 `out_of_scope_files_needed`. Until it lands, read `/admin/plans` **before** you
 open Subscriptions.
 
+## Two steps the superseded version asked for and could not check (billing-15, billing-16)
+
+They are named here because the audit findings point at this file, and because
+both were the same failure: an instruction a reader can tick off without having
+done anything. **Both now live in [RUNBOOK §4.3b](RUNBOOK.md), with a command
+each.**
+
+- Step 3 said _"point the endpoint at `/webhooks/stripe`, send a test event and
+  confirm a 200"_, and never said **which events to subscribe to**. That check
+  cannot fail: the endpoint answers 200 to every event type whose signature it
+  can verify, handled or not. Driven against a running API — ten event types,
+  six handled and four not — all ten returned `200` and all ten landed in
+  `stripe_webhook_events` with `processedAt` set and `error` NULL. §4.3b lists
+  the six the controller acts on and gives the Stripe API call that reports
+  which of them the endpoint is actually subscribed to. It also adds the step
+  the old document never mentioned at all: **save a Customer Portal
+  configuration**, without which `billingPortal.sessions.create` fails and the
+  library's "Open portal" button 500s on first use.
+- _"Check no existing tenant is already over its cap"_ could not be performed:
+  the only usage route was tenant-scoped and 404 in production, and the counters
+  live in as many databases as there are libraries, so there was no SQL to hand
+  an operator either. `GET /lbr-api/admin/plan-usage/over-cap` on the admin host now answers it for the
+  whole fleet, against the CONTRACTED plan — the effective one is unlimited
+  before the flip, so asked the ordinary way the check could never fail.
+
 ## Two related facts an operator needs, neither of which this document can fix
 
 - **Starter must keep a fake price id.** `plans_stripe_price_matches_mode`

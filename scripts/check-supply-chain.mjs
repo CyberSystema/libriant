@@ -6,36 +6,47 @@
 //
 // The pre-release audit (supply-chain-12) walked the production dependency
 // closure by hand and found a package with NO licence grant at all —
-// `buffers@0.1.1`, arriving through `exceljs`, which is a first-order runtime
-// dependency of apps/api and powers the customer-facing export. Nothing had
-// looked before, and nothing would have looked again. Libriant is sold to Greek
-// public libraries; a procurement questionnaire asks for the third-party
-// licence position, and "we have never checked" is not an answer. So the walk
-// is code now, with the decisions written down beside it.
+// `buffers@0.1.1`, arriving through `exceljs`, a first-order runtime dependency
+// of apps/api behind both the spreadsheet import and the spreadsheet export.
+// Not dormant either: `require('exceljs')` on its own loads
+// buffers/index.js. Nothing had looked before, and nothing would have looked
+// again. Libriant is sold to Greek public libraries; a procurement
+// questionnaire asks for the third-party licence position, and "we have never
+// checked" is not an answer. So the walk is code now, with the decisions
+// written down beside it in
+// docs/audit/pre-release-2026-08-23/supply-chain-licences.md.
 //
 // It also watches the two things that made that walk necessary in the first
 // place. `settings: autoInstallPeers: true` (pnpm-lock.yaml:4) means an
 // OPTIONAL peer dependency gets resolved and recorded as a real edge, so
 // `@prisma/client` — a production dependency — drags the entire Prisma CLI into
-// the production closure. Measured on this tree with the two @prisma/client
-// auto-peer edges cut: 446 packages / 428.0 MiB becomes 315 / 185.0 MiB. That
-// is 131 packages and 243 MiB of Prisma Studio, @prisma/dev, an embedded WASM
-// Postgres and a MySQL driver in the API image, and it is where the tree's only
-// open advisory lives (supply-chain-09, deepmerge-ts). Turning autoInstallPeers
-// off is a whole-workspace re-resolution and is not a launch-window change, so
-// what this file does instead is hold the line: the set of auto-installed peer
-// edges is written down, and a NEW one — a new subtree entering the production
-// image without anyone choosing it — fails the build.
+// the production closure. Measured on this tree by walking it twice, once
+// refusing to traverse @prisma/client's two auto-peer edges: 477 packages /
+// 702.9 MiB becomes 349 / 467.3 MiB. That is 128 packages and 235 MiB —
+// @prisma/studio-core (42.0), the CLI itself (41.8), effect (25.8), typescript
+// (23.2), an embedded WASM Postgres (22.2), @prisma/dev (18.1) and a MySQL
+// driver — sitting in the API image with nothing to start them, and it is where
+// the one advisory this repo carries lives (supply-chain-09, deepmerge-ts). Turning
+// autoInstallPeers off is a whole-workspace re-resolution that changes how nine
+// workspaces resolve and surfaces genuinely missing peers; that is not a
+// launch-window change. So what this file does instead is hold the line: the
+// set of auto-installed peer edges is written down, and a NEW one — a new
+// subtree entering the production image without anyone choosing it — fails the
+// build.
 //
 // Deliberately dependency-free and text-based, like the other check:* scripts.
 // `pnpm audit` runs in CI for the advisory feed; this covers what an advisory
 // feed cannot know.
 //
-// Runs from `pnpm check:supply-chain`, and — because verify.yml's static-checks
-// job enumerates its checks one npm script per step and that file belongs to
-// another owner — it is also chained onto `pnpm check:pnpm-pins` in
-// package.json, which verify.yml:47 already runs. An unmounted check is worth
-// nothing. Give it its own verify.yml step when that file is next touched.
+// ## How this runs
+//
+// `pnpm check:supply-chain`, and — because .github/workflows/verify.yml
+// enumerates its static checks one npm script per step and belongs to another
+// owner — package.json's `check:pnpm-pins` runs it too, so it executes inside
+// the "pnpm pins match…" step verify.yml already has. That step's NAME
+// therefore under-describes what it runs, which is worth correcting the next
+// time that file is opened; a check nobody runs is worth nothing, and the
+// wrong-but-running arrangement beats the right-but-dormant one.
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 
@@ -77,6 +88,18 @@ const PERMISSIVE = new Set([
  *
  * Keyed name@version on purpose: a version bump re-opens the question, because
  * upstream can and does relicense.
+ *
+ * A key MAY carry one `*` in the name, and exactly one kind of entry needs it:
+ * a family of platform-specific builds of a single library. The production
+ * closure is platform-dependent — an arm64 macOS laptop installs
+ * `@img/sharp-libvips-darwin-arm64`, ubuntu-latest installs
+ * `@img/sharp-libvips-linux-x64` — so a key naming one architecture fails on
+ * every other machine, in BOTH directions at once: the resolved package has no
+ * decision, and the recorded decision names nothing installed. Not
+ * hypothetical: pointed at a store shaped the way ubuntu-latest resolves this
+ * tree, the architecture-keyed version of this file exited 1 with exactly those
+ * two errors, which is what CI would have done on its first run. The version
+ * stays exact.
  */
 const LICENCE_DECISIONS = {
   // NO GRANT AT ALL, and the only one in the tree. package.json has no
@@ -93,7 +116,8 @@ const LICENCE_DECISIONS = {
   // docs/audit/pre-release-2026-08-23/supply-chain-licences.md: keep and accept
   // in writing, replace the exceljs import path, or seek a grant. Recorded here
   // so it is answerable, not so it is settled.
-  'buffers@0.1.1': 'NO LICENCE — owner decision pending (see docs/audit/…/supply-chain-licences.md)',
+  'buffers@0.1.1':
+    'NO LICENCE — owner decision pending (see docs/audit/…/supply-chain-licences.md)',
 
   // Licence present but not machine-readable: package.json declares no
   // `license`, while the tarball ships a full MIT LICENSE ("(The MIT License)
@@ -123,12 +147,19 @@ const LICENCE_DECISIONS = {
   // one if it were ever bundled into a distributed binary — apps/desktop's
   // `dependencies` are electron-log and electron-updater only, so it is not,
   // and that is the condition to re-check before adding anything to them.
-  '@img/sharp-libvips-darwin-arm64@1.3.2':
+  //
+  // Wildcarded across the -darwin-arm64/-linux-x64/-linuxmusl-x64/… family:
+  // they are one library, one licence, one decision, and which of them is on
+  // disk is decided by the machine running this check rather than by anything
+  // Libriant chose.
+  '@img/sharp-libvips-*@1.3.2':
     'LGPL-3.0-or-later — server-side only, not conveyed; re-check if ever bundled into apps/desktop',
 
-  // The browser-support database, not code. CC-BY-4.0 needs attribution, which
-  // the NOTICE file covers; it imposes nothing else.
-  'caniuse-lite@1.0.30001809': 'CC-BY-4.0 — data, attribution only',
+  // The browser-support database, not code. CC-BY-4.0 asks for attribution and
+  // nothing else — and there is nowhere to put it yet: this repository has no
+  // LICENSE, NOTICE or attribution file at all, which the licences doc records
+  // as still owed. Same gap covers the MIT/Apache/BSD majority.
+  'caniuse-lite@1.0.30001809': 'CC-BY-4.0 — data, attribution only (NOTICE file still owed)',
 
   // MIT plus the zlib licence for the vendored zlib port. Both permissive; the
   // combined string is simply not on the permissive list as written.
@@ -351,6 +382,25 @@ function productionClosure() {
   return { seen, parents, autoPeerEdges };
 }
 
+/**
+ * The LICENCE_DECISIONS key covering `name@version`, or null if nobody has
+ * ruled on it. `*` in a key stands for a run of characters inside the package
+ * name only — it must not swallow the `@version`, or a decision taken about
+ * 1.3.2 would silently keep covering 2.0.0.
+ */
+function decisionKeyFor(id) {
+  if (id in LICENCE_DECISIONS) return id;
+  for (const key of Object.keys(LICENCE_DECISIONS)) {
+    if (!key.includes('*')) continue;
+    const pattern = key
+      .split('*')
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('[^@]*');
+    if (new RegExp(`^${pattern}$`).test(id)) return key;
+  }
+  return null;
+}
+
 /** SPDX-ish licence string from a manifest, in the several shapes npm allows. */
 function declaredLicence(pkg) {
   if (typeof pkg.license === 'string') return pkg.license;
@@ -395,8 +445,9 @@ export function run() {
     const id = `${pkg.name}@${pkg.version}`;
     const licence = declaredLicence(pkg);
     if (licence && PERMISSIVE.has(licence)) continue;
-    if (id in LICENCE_DECISIONS) {
-      usedDecisions.add(id);
+    const decided = decisionKeyFor(id);
+    if (decided) {
+      usedDecisions.add(decided);
       continue;
     }
     unaccounted.push({

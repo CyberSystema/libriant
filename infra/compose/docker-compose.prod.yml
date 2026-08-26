@@ -17,7 +17,8 @@
 # Tear down:  docker compose -f infra/compose/docker-compose.prod.yml down
 #
 # Required env (load via `--env-file` or shell):
-#   PUBLIC_HOST                 — apex domain (libriant.com)
+#   PUBLIC_HOST                 — the APP host (app.libriant.com). Not the apex:
+#                                 the marketing site owns libriant.com.
 #   ADMIN_HOST                  — admin host (admin.libriant.com)
 #   ACME_EMAIL                  — contact for Let's Encrypt
 #   IMAGE_TAG                   — image tag to pull (default: latest)
@@ -35,7 +36,26 @@ x-app-env: &app-env
   NODE_ENV: production
   CONTROL_DATABASE_URL: postgresql://libriant:${POSTGRES_PASSWORD}@pgbouncer:5432/libriant_control
   REDIS_URL: redis://redis:6379
-  PUBLIC_APP_URL: https://${PUBLIC_HOST:-libriant.com}
+  # boot-and-config-09. PUBLIC_HOST is REQUIRED, and has no default anywhere in
+  # this file. It used to have two, and they disagreed: this block and the web
+  # block defaulted it to `libriant.com`, while the caddy block below and
+  # infra/caddy/Caddyfile defaulted it to `app.libriant.com`. Since the
+  # marketing site moved onto its own vhost those are DIFFERENT hosts, and the
+  # apex one deliberately carries no `handle_path /lbr-api/*` (see the note
+  # above `{$SITE_HOST}` in the Caddyfile). So bringing the stack up by hand —
+  # the invocation this file's own header documents — from an env file complete
+  # enough to satisfy the five `:?` secrets but missing PUBLIC_HOST gave Caddy
+  # the app on app.libriant.com while the browser bundle asked libriant.com for
+  # its data. The panel painted its shell and then 404'd every fetch, the
+  # password-reset links already in the outbox pointed at the marketing site,
+  # and every container healthcheck stayed green throughout.
+  #
+  # ONE SOURCE: this variable. Everything else derives from it — the API's
+  # PUBLIC_APP_URL and BILLING_RETURN_URL here, the browser bundle's
+  # NEXT_PUBLIC_API_URL in the web block, and the app vhost's site address via
+  # the caddy block's PUBLIC_HOST. Nothing may reintroduce a default: there is
+  # no value that is right for both the app host and the apex.
+  PUBLIC_APP_URL: https://${PUBLIC_HOST:?PUBLIC_HOST is required (the app host, e.g. app.libriant.com)}
   PUBLIC_APEX_DOMAIN: ${PUBLIC_APEX_DOMAIN:-libriant.com}
   SITE_HOST: ${SITE_HOST:-libriant.com}
   HASH_PEPPER: ${HASH_PEPPER:?HASH_PEPPER is required in production}
@@ -72,7 +92,7 @@ x-app-env: &app-env
   STRIPE_DRIVER: ${STRIPE_DRIVER:-none}
   STRIPE_API_KEY: ${STRIPE_API_KEY:-}
   STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
-  BILLING_RETURN_URL: https://${PUBLIC_HOST:-libriant.com}
+  BILLING_RETURN_URL: https://${PUBLIC_HOST:?PUBLIC_HOST is required (the app host, e.g. app.libriant.com)}
   # REL-06: do NOT default to `console` in prod. A `console` driver writes
   # password-reset token URLs (account-takeover material) and member PII into
   # retained Docker logs, and the old `:-console` default silently DISABLED the
@@ -189,7 +209,11 @@ services:
       - '${EDGE_BIND_IPV4:-0.0.0.0}:443:443/udp' # HTTP/3
     environment:
       SITE_HOST: ${SITE_HOST:-libriant.com}
-      PUBLIC_HOST: ${PUBLIC_HOST:-app.libriant.com}
+      # boot-and-config-09: same variable, no default — see x-app-env above.
+      # The Caddyfile still spells `{$PUBLIC_HOST:app.libriant.com}` so it can be
+      # read and adapted standalone, but that literal is now unreachable through
+      # this file: compose refuses to start without a value to pass in.
+      PUBLIC_HOST: ${PUBLIC_HOST:?PUBLIC_HOST is required (the app host, e.g. app.libriant.com)}
       ADMIN_HOST: ${ADMIN_HOST:-admin.libriant.com}
       ACME_EMAIL: ${ACME_EMAIL:-ops@libriant.com}
       MAINTENANCE_HARD: ${MAINTENANCE_HARD:-false}
@@ -205,6 +229,11 @@ services:
       - caddy_config:/config
       - caddy_logs:/var/log/caddy
     networks: [edge, app]
+    # reliability-14, see `api`. Caddy stops accepting and then waits for
+    # in-flight requests with no deadline of its own, so this IS the deadline.
+    # 30s so the file downloads it is proxying — an export a library is in the
+    # middle of saving — finish rather than truncating at 10s.
+    stop_grace_period: 30s
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://localhost:80/healthz']
       interval: 30s
@@ -242,6 +271,13 @@ services:
     # INFRA-3: only the internal data tier — this one-shot does DB DDL and
     # serves no traffic, so it never needs the app/egress network.
     networks: [data]
+    # reliability-14. Of everything in this file, this is the container you
+    # least want SIGKILLed at 10s: `docker compose down` while a deploy's
+    # migrations are running would sever `prisma migrate deploy` mid-run. The
+    # DDL itself is transactional and rolls back, but the run is abandoned
+    # holding its migration advisory lock until the backend notices the socket
+    # is gone, and the next deploy then sits waiting for a lock nobody holds.
+    stop_grace_period: 60s
 
   api:
     image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-api:${IMAGE_TAG:-latest}
@@ -260,6 +296,10 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+      # `service_started` and not `service_healthy` — boot-and-config-15: the
+      # pooler has no healthcheck to wait for, on purpose. This container's own
+      # /readyz is the thing that proves the path through it works, and it is
+      # what the deploy gate reads.
       pgbouncer:
         condition: service_started
       redis:
@@ -271,6 +311,17 @@ services:
     # `app` for Caddy↔web↔api + egress (Stripe/SMTP); `data` (internal) for
     # postgres/pgbouncer/redis. (INFRA-3)
     networks: [app, data]
+    # reliability-14. Docker's default is 10s from SIGTERM to SIGKILL, and
+    # `worker` was the only service that said otherwise. Deploys recreate these
+    # containers in place, so the 10s applied to every deploy: a request still
+    # writing at the deadline — a tenant provision, an import commit, the tail
+    # of a large export kickoff — was severed mid-flight rather than finished.
+    # 30s is chosen against the API's own longest handler rather than as a round
+    # number, and it is an upper bound, not a wait: Docker sends SIGKILL as soon
+    # as the process exits. The remaining half of this — main.ts racing
+    # `app.close()` against its own deadline the way worker.ts:208 does, so the
+    # process never simply sits there — is in the API package, not this file.
+    stop_grace_period: 30s
     healthcheck:
       test: ['CMD', 'wget', '-qO-', 'http://localhost:3001/readyz']
       interval: 15s
@@ -295,8 +346,24 @@ services:
       # the docker network. Browser-side fetches still go through Caddy at
       # /lbr-api/* (see lib/api.ts).
       API_INTERNAL_URL: http://api:3001
-      NEXT_PUBLIC_API_URL: https://${PUBLIC_HOST:-libriant.com}
-      PUBLIC_APP_URL: https://${PUBLIC_HOST:-libriant.com}
+      # boot-and-config-09: this is the base the BROWSER bundle is built against
+      # — get it wrong and the panel loads, then 404s every /lbr-api/* call
+      # against a vhost that has no API route. No default; see x-app-env.
+      NEXT_PUBLIC_API_URL: https://${PUBLIC_HOST:?PUBLIC_HOST is required (the app host, e.g. app.libriant.com)}
+      PUBLIC_APP_URL: https://${PUBLIC_HOST:?PUBLIC_HOST is required (the app host, e.g. app.libriant.com)}
+      # boot-and-config-13. This block is the web service's OWN environment —
+      # compose merges nothing from x-app-env into it — so these two have to be
+      # repeated here or the two read-only mounts below are inert. They were,
+      # and it was invisible: apps/web/lib/locale-loader.ts and lib/legal.ts
+      # (and lib/asset-root.ts) fall back to a path resolved relative to the
+      # compiled server chunk, which happens to be the copy baked into the image
+      # at build time. So editing /srv/libriant/locales on the host — the
+      # documented way to correct a translation or a legal document without a
+      # rebuild — changed nothing for the pages a visitor sees, while changing
+      # everything the API served from the same files. The api/worker never had
+      # this problem: x-app-env sets both for them.
+      LOCALES_ROOT: /srv/libriant/locales
+      ASSETS_ROOT: /srv/libriant/assets
       # The admin panel is served ONLY from this host; the admin layout 404s the
       # /admin routes on any other host (e.g. the public apex libriant.com/admin).
       ADMIN_HOST: ${ADMIN_HOST:-admin.libriant.com}
@@ -307,6 +374,10 @@ services:
       - ../../assets:/srv/libriant/assets:ro
       - ../../locales:/srv/libriant/locales:ro
     networks: [app]
+    # reliability-14, see `api`. Next's server finishes in-flight renders on
+    # SIGTERM; 30s so a page being streamed to a librarian completes instead of
+    # being cut off into a broken document at the 10s default.
+    stop_grace_period: 30s
     # boot-and-config-08. This probed /api/healthz, which returns a constant
     # `{status:'ok'}` and — by its own comment — "doesn't touch the API or any
     # other dependency". The web container therefore could NOT become unhealthy
@@ -385,7 +456,39 @@ services:
       POSTGRES_USER: libriant
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: libriant_control
-      LANG: el_GR.UTF-8
+      # boot-and-config-14. This was `LANG: el_GR.UTF-8`, which configured the
+      # cluster's collation by side-effect — initdb reads LANG for its default
+      # locale — on an image whose C library has no such locale. musl accepts
+      # any locale name from setlocale() and behaves as C, so what was recorded
+      # in pg_control was a name with no behaviour behind it: Greek text sorted
+      # in BYTE order while the cluster claimed Greek collation.
+      #
+      # Both halves of that are real damage. Byte order is visibly wrong for the
+      # only market this product has — measured on PostgreSQL 16.15 over a list
+      # of Greek surnames, C collation returns
+      #   Άλκη < Έλσα < Βιζυηνός < Ελύτης < … < Ωνάσης < άλφα < όμηρος
+      # (every lowercase form dumped after Ω, and Έ sorted before Β), where ICU
+      # el-GR returns the order a librarian expects:
+      #   Άλκη < άλφα < Βιζυηνός < Έλσα < Ελύτης < … < Παπαδιαμάντης < Ωνάσης.
+      # And the label was a trap for later: a data directory or base backup
+      # carrying `el_GR.UTF-8` restored onto a glibc Postgres — a plausible DR
+      # or migration path — makes that collation REAL, at which point every text
+      # btree built under byte order disagrees with it. That is the classic
+      # silent index-corruption scenario.
+      #
+      # ICU rather than a libc locale, deliberately: an ICU collation is carried
+      # by the collation version recorded in the catalogue rather than by the
+      # host's C library, so it means the same thing on musl, on glibc, and on
+      # whatever restores the backup in five years. It also removes the reason
+      # this was ever ambiguous.
+      #
+      # THIS ONLY APPLIES TO A CLUSTER THAT DOES NOT EXIST YET. The entrypoint
+      # passes POSTGRES_INITDB_ARGS to initdb, and initdb runs once, on an empty
+      # pg_data volume. An existing cluster keeps the collation it was built
+      # with and cannot be changed in place without a full reindex, so this has
+      # to be right BEFORE the first library is provisioned.
+      # infra/compose/postgres-init.sql asserts it, on that same first run.
+      POSTGRES_INITDB_ARGS: --locale-provider=icu --icu-locale=el-GR --locale=C.UTF-8 --encoding=UTF8
     command:
       - postgres
       - -c
@@ -395,10 +498,76 @@ services:
       # budget and the server silently disagree again.
       - -c
       - max_connections=${PG_MAX_CONNECTIONS:-200}
+      # performance-14. Nothing anywhere bounded a tenant query. A runaway —
+      # a lock wait nobody notices, a plan that flips to a sequential scan after
+      # a bad ANALYZE — held one of that library's five pool slots for as long
+      # as it liked, and five of them wedged the library completely with no
+      # recovery short of an operator running pg_terminate_backend by hand.
+      #
+      # Set on the SERVER rather than on a connection string, because the
+      # per-tenant URL is written into `tenants.db_url` at signup: a change made
+      # there would apply to libraries provisioned afterwards and to no existing
+      # one. This applies to every session on the box, including the ones that
+      # already exist. Verified through the real client — a tenant client built
+      # by makeTenantPrismaClient against a cluster started with exactly these
+      # flags reports `statement_timeout=1min`, and `SELECT pg_sleep(300)` came
+      # back "canceling statement due to statement timeout" at 1:00.03.
+      #
+      # 60s, not the 30s the finding suggested: the longest legitimate single
+      # statement this product issues is the export worker's, and its author
+      # already picked 60s as the line between slow and broken
+      # (apps/api/src/export/export-processors.ts STATEMENT_TIMEOUT_MS). Nothing
+      # a librarian waits on in a browser survives a tenth of that.
+      #
+      # WHAT THIS DELIBERATELY DOES NOT KILL — checked, not assumed:
+      #  • Backups and restores. pg_dump/pg_dumpall set `statement_timeout = 0`
+      #    on their own connection AND write it into the dump prologue, so
+      #    backup.sh, restore.sh, dr-drill.sh and the export worker's pg_dump
+      #    are all exempt by construction. Measured against a cluster running
+      #    these flags: pg_dump exit 0, and the dump opens with
+      #    `SET statement_timeout = 0; SET lock_timeout = 0;
+      #     SET idle_in_transaction_session_timeout = 0;`, restore exit 0.
+      #  • Migrations and long maintenance. A migration that legitimately needs
+      #    longer opens with `SET statement_timeout = 0;` — Prisma runs each
+      #    migration file in one session — and an operator's psql session takes
+      #    `PGOPTIONS='-c statement_timeout=0'`, verified to reach the server
+      #    both through libpq and through the app's own Prisma/pg adapter.
+      #  • Imports. statement_timeout is per STATEMENT, not per transaction or
+      #    per job, and the import engine commits ONE RECORD PER TRANSACTION
+      #    (import-engine.ts:567 `$transaction` per row) out of a handful of
+      #    small writes. A two-hour import of a 400k-record catalogue is never
+      #    one statement, and it never sits idle inside a transaction either —
+      #    nothing but database calls happens between BEGIN and COMMIT.
+      #
+      # And no `lock_timeout`: a statement blocked on a lock is still a running
+      # statement, so statement_timeout already bounds it. Adding a separate
+      # lock_timeout would buy nothing and would abort a migration waiting
+      # legitimately behind a long read — a worse bug than the one being fixed.
+      - -c
+      - statement_timeout=${PG_STATEMENT_TIMEOUT:-60s}
+      # A session that opens a transaction and then stops — a crashed client, a
+      # tab closed mid-checkout — holds its locks and pins the xmin horizon, so
+      # autovacuum stops reclaiming for the whole database. Generous on purpose:
+      # Prisma's own interactive-transaction timeout is 5s, so anything reaching
+      # two minutes is a leak, not a workload.
+      - -c
+      - idle_in_transaction_session_timeout=${PG_IDLE_TX_TIMEOUT:-120s}
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ../compose/postgres-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
     networks: [data]
+    # reliability-14, and this is the one that matters. The official postgres
+    # image's STOPSIGNAL is SIGINT — fast shutdown — which still has to complete
+    # a shutdown checkpoint before it exits. Under Docker's 10s default, a
+    # checkpoint that overruns ends in SIGKILL, and the next start is WAL crash
+    # recovery: extra downtime on the component whose death takes the whole cell
+    # with it, at exactly the moment an operator is already doing something
+    # stressful. Measured on the seeded audit cluster the shutdown checkpoint
+    # took 0.048s, so 10s is not a live problem TODAY — it becomes one as the
+    # dataset grows into the 2 GB limit above, silently, with no warning between
+    # "fine" and "crash recovery". 120s is well past any checkpoint this box can
+    # produce; it costs nothing on a clean shutdown, which is the normal case.
+    stop_grace_period: 120s
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U libriant -d libriant_control']
       interval: 10s
@@ -430,11 +599,28 @@ services:
       MAX_CLIENT_CONN: '500'
       DEFAULT_POOL_SIZE: '20'
     networks: [data]
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -h localhost -p 5432 -U libriant']
-      interval: 30s
-      timeout: 5s
-      retries: 5
+    # boot-and-config-15. There is deliberately NO healthcheck here now. There
+    # was one — `pg_isready -h localhost -p 5432 -U libriant` — and it was a
+    # green light that could not turn red for the failure that matters:
+    # pg_isready is satisfied by the startup-packet reply, which pgbouncer sends
+    # itself. It never reaches Postgres, so the pooler reported "accepting
+    # connections" while the backend behind it was unreachable, wrong-password
+    # or gone. Nothing consumed the result either (`api` waits on
+    # `service_started` below, and scripts/deploy-on-host.sh's health gate
+    # asserts api/web/worker only), so its only effect was on the operator
+    # reading `docker compose ps` during a control-plane outage — where it
+    # pointed away from the problem.
+    #
+    # The honest end-to-end probe is `psql "$CONTROL_DATABASE_URL" -c 'select
+    # 1'`, and it is already running: that is exactly what the api's /readyz
+    # does (apps/api/src/platform/health.controller.ts:42 — `controlDb` connects
+    # through pgbouncer:5432), it is the api container's healthcheck, and the
+    # deploy gate does consume THAT. Repeating it here needs `psql` inside this
+    # image, and this is a single-maintainer community image whose contents are
+    # not verifiable from this repo (docs/RUNBOOK.md already carries that as an
+    # open question). A probe that turns a working pooler permanently red is a
+    # worse 3am signal than no probe, so: no probe, and no second opinion about
+    # a component whose health is already asserted one hop downstream.
 
   redis:
     # supply-chain-05 — see the note on `postgres` above.
@@ -443,12 +629,41 @@ services:
     mem_limit: ${REDIS_MEM_LIMIT:-512m}
     cpus: ${REDIS_CPUS:-1}
     pids_limit: 256
-    # NOTE: we intentionally do NOT set an internal `--maxmemory` here. Redis
-    # also backs the BullMQ queues; an active eviction policy could drop live job
-    # keys. The durable sources of truth (email_outbox + the A9-01 recovery scan,
-    # ImportBatch, repeatable scheduled jobs) make a container-level OOM
-    # recoverable, which is the safer blast-radius bound for this workload.
-    command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'allkeys-lru']
+    # reliability-18. This used to be `--maxmemory-policy allkeys-lru` with no
+    # `--maxmemory`, above a note explaining that eviction must never be allowed
+    # to drop a live BullMQ job key. Both halves were wrong in opposite
+    # directions: a maxmemory-policy is INERT without a maxmemory, so the line
+    # configured nothing while reading like a protection — and the policy it
+    # named was `allkeys-lru`, precisely the behaviour the note says would lose
+    # jobs, waiting for the day somebody set a limit and thought the pairing had
+    # been considered.
+    #
+    # The note's actual conclusion was right, so it is kept and made real. With
+    # `noeviction` Redis never drops a key; at the ceiling it refuses WRITES
+    # with an OOM error the app sees and logs, and reads and the existing queues
+    # keep working. Without a ceiling there is nothing between "fine" and the
+    # kernel OOM-killer taking the container — and a Redis that dies is not a
+    # degraded cache here, it is a 100%-500 API.
+    #
+    # 320mb of the 512m cgroup limit above, not 100%: Redis forks for the AOF
+    # rewrite and the child shares pages copy-on-write, so the container's peak
+    # is the dataset plus whatever is written during the rewrite plus client
+    # buffers. The two numbers move TOGETHER — raising REDIS_MEM_LIMIT alone
+    # leaves Redis refusing writes with the RAM unused, raising REDIS_MAXMEMORY
+    # alone puts the OOM-killer back in charge — and so does the alert
+    # threshold in infra/monitoring/alerts.yml (LibriantRedisMemoryHigh), which
+    # is what gives an operator warning before either edge. For scale: the
+    # audited instance carrying 50 seeded tenants plus BullMQ used 1.4 MB.
+    command:
+      [
+        'redis-server',
+        '--appendonly',
+        'yes',
+        '--maxmemory',
+        '${REDIS_MAXMEMORY:-320mb}',
+        '--maxmemory-policy',
+        'noeviction',
+      ]
     volumes:
       - redis_data:/data
     networks: [data]

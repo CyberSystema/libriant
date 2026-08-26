@@ -21,8 +21,14 @@
   "fallbackNotice": "This document isn't available in your language yet — showing the English version.",
   "backToIndex": "All legal documents",
   "footer.heading": "Legal",
-  "consent.pre": "I have read and agree to the",
-  "consent.and": "and the",
+  "consent.pre": "I have read and agree to",
+  "consent.and": "and",
   "consent.post": ".",
-  "consent.required": "Please accept the Terms of Service and Privacy Policy to continue."
+  "consent.article.terms": "the",
+  "consent.article.privacy": "the",
+  "consent.article.dpa": "the",
+  "consent.doc.terms": "Terms of Service",
+  "consent.doc.privacy": "Privacy Policy",
+  "consent.doc.dpa": "Data Processing Agreement",
+  "consent.required": "Please accept the documents listed above to continue."
 }

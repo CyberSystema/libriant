@@ -4,7 +4,7 @@
 
 # Data Processing Agreement (DPA)
 
-**Last updated: 2026-08-26**
+**Last updated: 2026-08-27**
 
 This Data Processing Agreement ("**DPA**") forms part of the
 [Terms of Service](/legal/terms) between `[COMPANY LEGAL NAME]` ("**Libriant**",
@@ -175,10 +175,38 @@ You are free to adapt the following:
 
 ## 7. Assistance with data-subject rights
 
-The Service gives you tools to access, correct, export, and delete Controller
-Personal Data directly. If a data subject contacts us directly about your data,
-we will refer them to you. We will provide reasonable assistance for requests you
-cannot fulfil through the Service.
+7.1 **What you can do yourself.** A member's record — and their loans,
+reservations and fines — are reachable from that member's page in the Service:
+you can read them, correct any field, and, as owner or admin, erase the member
+irreversibly under Article 17. That answers most access, rectification and
+erasure requests without involving us.
+
+7.2 **Export is at library level, not at data-subject level.** The export
+feature produces your whole library — catalogue, members, circulation — as CSV
+or JSON. There is no per-member export, so an Article 20 portability request for
+a single person is not something the Service lets you self-serve today. Ask us
+instead: through the support-access route in Section 6.2, which only you can
+open, we will produce that person's record and history in a structured, commonly
+used, machine-readable form. We say this plainly rather than describe the
+library-wide export as a per-subject tool, because producing a copy of your
+entire member registry in order to answer one member's question would disclose
+far more than the question asked.
+
+7.3 **School libraries and children.** The Service stores a date of birth if you
+enter one and otherwise treats every member alike: there is no guardian contact
+field, no age-based restriction on automated notices, and no shorter retention
+for a minor's record. Notices are sent to the address on the member record, so
+where a pupil's notices should reach a parent or guardian, that is the address
+to enter. The assistance we owe you under Section 4(e) towards an Article 35
+assessment is a **DPIA information pack for school libraries** — the description
+of the processing, the categories of data, the retention periods actually
+enforced by the system, the Article 32 measures, and the decisions that remain
+yours — which we will send you on request to `[CONTACT EMAIL]`, together with
+our Article 30(2) record.
+
+7.4 If a data subject contacts us directly about your data, we will refer them
+to you. We will provide reasonable assistance, taking into account the nature of
+the processing, for requests you cannot fulfil through the Service.
 
 ## 8. Return and deletion
 

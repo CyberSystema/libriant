@@ -6,6 +6,7 @@ import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { LIBRARY_TYPES } from '@libriant/shared/library';
 import { ApiError, api } from '@/lib/api';
+import { consentLabelParts } from '@/lib/consent-label';
 
 type Props = {
   catalog: Catalog;
@@ -367,16 +368,27 @@ export function SignupForm({ catalog, locale }: Props) {
             onChange={(e) => setAccept(e.currentTarget.checked)}
             aria-invalid={errors.accept ? true : undefined}
           />
+          {/*
+            privacy-legal-13: built from SIGNUP_CONSENT_DOCS, which is the same
+            list the API stamps `presented` with. Two hard-coded links here and
+            a third slug there is how an acceptance record ends up claiming a
+            document was shown that never was.
+          */}
           <span>
-            {t('legal.consent.pre')}{' '}
-            <a href={`/${locale}/legal/terms`} target="_blank" rel="noopener noreferrer">
-              {t('legal.docs.terms.title')}
-            </a>{' '}
-            {t('legal.consent.and')}{' '}
-            <a href={`/${locale}/legal/privacy`} target="_blank" rel="noopener noreferrer">
-              {t('legal.docs.privacy.title')}
-            </a>
-            {t('legal.consent.post')}
+            {consentLabelParts(t, locale).map((part, i) =>
+              part.kind === 'link' ? (
+                <a
+                  key={`${part.slug}-${i}`}
+                  href={part.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {part.text}
+                </a>
+              ) : (
+                <React.Fragment key={`t-${i}`}>{part.text}</React.Fragment>
+              ),
+            )}
           </span>
         </label>
         {errors.accept ? (

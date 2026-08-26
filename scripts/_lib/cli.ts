@@ -14,6 +14,28 @@ export function parseArgs<
       allowPositionals: true,
       strict: true,
     });
+    // A positional here is always a mistake, and it is the expensive kind.
+    //
+    // No script that uses this wrapper reads `positionals` (secrets.ts has its
+    // own parser and is not a caller). But `--` makes node:util stop parsing,
+    // so `pnpm tenant:migrate -- --dry-run` — the form these scripts print in
+    // their OWN usage text, because that is how pnpm forwards arguments —
+    // arrives as `values: {}` and `positionals: ['--dry-run']`. `dryRun` is
+    // then false and the script migrates every tenant database on the box for
+    // real, while the operator who typed it believes they asked for a listing.
+    //
+    // Silence is what makes that dangerous, so this refuses instead. Fixed here
+    // rather than in each script: the next one to be written would inherit the
+    // same trap, and the person who hits it is by definition not expecting to.
+    if (positionals.length) {
+      die(
+        opts.name,
+        `unexpected argument(s): ${positionals.join(' ')}\n` +
+          '  This usually means a `--` slipped in. pnpm forwards everything after `--`\n' +
+          '  to the script, but node stops PARSING there, so the flags arrive as plain\n' +
+          '  words and every one of them is silently ignored. Drop the `--`.',
+      );
+    }
     if (opts.required) {
       const missing = opts.required.filter((k) => values[k as string] === undefined);
       if (missing.length) {

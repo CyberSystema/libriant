@@ -45,7 +45,24 @@ PGHOST="${PGHOST:-127.0.0.1}"; PGPORT="${PGPORT:-5432}"
 PGUSER="${PGUSER:-libriant}"; export PGHOST PGPORT PGUSER PGPASSWORD
 WORK="$(mktemp -d)"
 ORIG_PW="${PGPASSWORD:-}"
+# Has this run actually altered the role yet?
+#
+# The trap has to be installed early — it owns $WORK, and a mktemp'd directory
+# leaks on every abort before it exists. But `assert_disposable_cluster` cannot
+# run until the arguments are parsed, at line ~127, and its refusal `exit 1`s
+# THROUGH the trap. So the first version of this shipped a script that printed
+# "REFUSING TO RUN … total data loss" and then, on the production cluster it had
+# just refused to touch, ran ALTER ROLE … RESET ALL and CONNECTION LIMIT -1
+# against the role the whole stack authenticates as — wiping every role-level
+# GUC an operator had set and clearing password expiry. The guard mutated the
+# thing it exists to protect, and did it quietly, output sent to /dev/null.
+#
+# Gating on a flag rather than moving the trap below the guard, because $WORK
+# still has to be cleaned up on an early abort, and because this stays correct
+# if anyone later inserts more work above the guard.
+ROLE_DRIFTED=0
 restore_password() {
+  [ "$ROLE_DRIFTED" = "1" ] || return 0
   [ -n "$ORIG_PW" ] || return 0
   for pw in "$ORIG_PW" "$DRIFT_PW"; do
     PGPASSWORD="$pw" psql -qtAX -h "${PGHOST:-127.0.0.1}" -p "${PGPORT:-5432}" -U "${PGUSER:-libriant}" \
@@ -53,7 +70,33 @@ restore_password() {
   done
   printf '  \033[31m!\033[0m could not restore the superuser password — it may still be the drifted one\n' >&2
 }
-trap 'restore_password; rm -rf "$WORK"' EXIT
+# reliability-11. The drill deliberately cripples the restoring role before the
+# restore (CONNECTION LIMIT 7, statement_timeout 1s — see "Drifting the
+# restoring role" below) so the post-restore assertions cannot be tautologies.
+# Undoing it used to live ONLY in the "Cleaning up" block at the very end of a
+# SUCCESSFUL run, and the EXIT trap put back the password and nothing else. So
+# any abort in between — `set -e` on a failed psql, a Ctrl-C, a lock wait, a
+# concurrent process dropping a database mid-pg_dumpall (which is how this was
+# found) — walked away leaving the role that the WHOLE STACK authenticates as
+# unable to run a query longer than a second or accept an eighth connection.
+# The symptoms are "canceling statement due to statement timeout" and "too many
+# connections for role", hours later, pointing nowhere near a shell script.
+#
+# It belongs in the trap, after restore_password: the drift does not change the
+# password, but the restore does, so the password has to be right before this
+# can connect. Idempotent, so the happy path running it twice costs nothing.
+undo_role_drift() {
+  # Nothing drifted, nothing to undo — and on a cluster we refused to touch,
+  # "nothing to undo" is the whole point. See ROLE_DRIFTED above.
+  [ "$ROLE_DRIFTED" = "1" ] || return 0
+  psql -qtAX -h "${PGHOST:-127.0.0.1}" -p "${PGPORT:-5432}" -U "${PGUSER:-libriant}" -d postgres \
+    -c "ALTER ROLE \"${PGUSER:-libriant}\" RESET ALL" \
+    -c "ALTER ROLE \"${PGUSER:-libriant}\" WITH CONNECTION LIMIT -1 VALID UNTIL 'infinity'" \
+    >/dev/null 2>&1 && return 0
+  printf '  \033[31m!\033[0m could not undo the role drift — check: ALTER ROLE %s RESET ALL; ALTER ROLE %s WITH CONNECTION LIMIT -1\n' \
+    "${PGUSER:-libriant}" "${PGUSER:-libriant}" >&2
+}
+trap 'restore_password; undo_role_drift; rm -rf "$WORK"' EXIT
 DRIFT_PW='drifted-not-the-real-one'
 # --- the guard the comment used to be -------------------------------------
 #
@@ -66,14 +109,35 @@ DRIFT_PW='drifted-not-the-real-one'
 # who does has read what it says.
 assert_disposable_cluster() {
   case "${1:-}" in
-    ''|localhost|127.0.0.1|::1|/*) return 0 ;;
+    ''|localhost|127.0.0.1|::1|/*) : ;;
+    *)
+      printf '\n\033[31mREFUSING TO RUN.\033[0m PGHOST=%s is not local.\n\n' "$1" >&2
+      printf '  This drill runs `pg_dumpall --clean` over the ENTIRE cluster and replays it,\n' >&2
+      printf '  so every database on that host is dropped and only then restored. A partial\n' >&2
+      printf '  restore leaves them dropped. On a production host that is total data loss.\n\n' >&2
+      printf '  If the host really is disposable, pass --i-know-this-destroys-the-cluster.\n\n' >&2
+      exit 1 ;;
   esac
-  printf '\n\033[31mREFUSING TO RUN.\033[0m PGHOST=%s is not local.\n\n' "$1" >&2
-  printf '  This drill runs `pg_dumpall --clean` over the ENTIRE cluster and replays it,\n' >&2
-  printf '  so every database on that host is dropped and only then restored. A partial\n' >&2
-  printf '  restore leaves them dropped. On a production host that is total data loss.\n\n' >&2
-  printf '  If the host really is disposable, pass --i-know-this-destroys-the-cluster.\n\n' >&2
-  exit 1
+  # reliability-11. Local is not the same as disposable, and the check above
+  # cannot tell them apart. The audit control database this script destroyed was
+  # on localhost, with the host check already in place — `pnpm dr:drill` with no
+  # PGPORT points at 5432, which on a developer's machine is the cluster holding
+  # their own control plane. `libriant_control` is the fingerprint of "somebody's
+  # Libriant lives here"; CI's drill clusters (verify.yml, ports 5433/5434) are
+  # created with POSTGRES_DB=postgres and carry no such database, so they pass.
+  # An unreachable cluster also passes: nothing can be destroyed on one, and the
+  # connection failure surfaces on the next line anyway.
+  if psql -qtAX -d postgres -c \
+      "SELECT 1 FROM pg_database WHERE datname = 'libriant_control'" 2>/dev/null | grep -q '^1$'; then
+    printf '\n\033[31mREFUSING TO RUN.\033[0m %s:%s holds a libriant_control database.\n\n' \
+      "${PGHOST:-127.0.0.1}" "${PGPORT:-5432}" >&2
+    printf '  That is a Libriant control plane, not a drill fixture. `pg_dumpall --clean` is\n' >&2
+    printf '  cluster-wide: it would drop that database along with every tenant database\n' >&2
+    printf '  beside it, and a replay that fails partway leaves them dropped.\n\n' >&2
+    printf '  Point PGPORT at a throwaway cluster (CI uses a separate service on 5433), or\n' >&2
+    printf '  pass --i-know-this-destroys-the-cluster if this really is one.\n\n' >&2
+    exit 1
+  fi
 }
 
 FORCE_DESTROY=0
@@ -148,8 +212,9 @@ schema_dump() {
 # auth assertion below is a tautology. Under `trust` a deliberately wrong
 # password succeeds — prove it fails before trusting anything that follows.
 # Count real errors in a psql -v VERBOSITY=verbose log, without depending on
-# the English word ERROR — compose sets LANG=el_GR.UTF-8 and psql localises
-# every severity. Verbose mode prints the SQLSTATE code, which is not
+# the English word ERROR — psql localises every severity to the LOCALE OF
+# WHOEVER RUNS IT, and the people running this have Greek desktops.
+# Verbose mode prints the SQLSTATE code, which is not
 # localised: `ERROR:  42809: ...`. NOTICE lines carry 00000 ("successful
 # completion"), so those are excluded rather than counted as failures.
 sqlstate_errors() {
@@ -250,6 +315,9 @@ say "Drifting the restoring role, so its assertions cannot be tautologies"
 # The self role is never dropped by the restore — that is the fix — so
 # asserting its state proves nothing unless it is wrong beforehand. Verified:
 # without this, the role checks passed even in a total-loss run.
+# Set BEFORE the psql, not after: if the ALTER partially applies and then the
+# statement fails, the drift is real and the trap still has to undo it.
+ROLE_DRIFTED=1
 psql -qtAX -d postgres -v ON_ERROR_STOP=1 >/dev/null <<SQL
 ALTER ROLE $PGUSER CONNECTION LIMIT 7;
 ALTER ROLE $PGUSER SET statement_timeout = '1s';
@@ -292,8 +360,9 @@ rc=$?
 set -e
 chk "psql exit code" "$rc" "0"
 [ "$rc" = "0" ] || { printf '  --- stderr ---\n'; sed 's/^/  /' "$WORK/err.txt" | head -20; }
-# Do NOT grep for the word "ERROR": compose sets LANG=el_GR.UTF-8 and psql
-# localises — this session's own client reported failures in Greek.
+# Do NOT grep for the word "ERROR": psql localises severities to the client's
+# own locale — a run of this very script reported its failures in Greek,
+# because the operator's shell said so. Nothing about the server decides it.
 # VERBOSITY=verbose prints a locale-independent SQLSTATE line instead.
 chk "no SQLSTATE errors in stderr" "$(sqlstate_errors "$WORK/err.txt" || true)" "0"
 

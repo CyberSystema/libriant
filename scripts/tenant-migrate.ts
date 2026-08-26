@@ -18,10 +18,10 @@
  *
  *   USAGE:
  *     pnpm tenant:migrate                              # all active tenants
- *     pnpm tenant:migrate -- --only=acme,step18a      # specific slugs
- *     pnpm tenant:migrate -- --include-archived       # archived too
- *     pnpm tenant:migrate -- --dry-run                # list, don't migrate
- *     pnpm tenant:migrate -- --concurrency=4          # parallel jobs (default 1)
+ *     pnpm tenant:migrate --only=acme,step18a      # specific slugs
+ *     pnpm tenant:migrate --include-archived       # archived too
+ *     pnpm tenant:migrate --dry-run                # list, don't migrate
+ *     pnpm tenant:migrate --concurrency=4          # parallel jobs (default 1)
  */
 import { execFile } from 'node:child_process';
 import path from 'node:path';

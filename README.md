@@ -1972,11 +1972,20 @@ pnpm tenant:create --owner-password=short  # < 12 chars → 1
 # 2) Fan-out migrations across every tenant. Default --concurrency=1, but
 # go higher when you have lots of tenants — local 15-tenant drill drops
 # from ~10s @ 1 to ~3s @ 4.
-pnpm tenant:migrate                          # all active tenants
-pnpm tenant:migrate -- --only=acme,step18a   # specific slugs
-pnpm tenant:migrate -- --include-archived    # also migrate archived
-pnpm tenant:migrate -- --dry-run             # list, don't migrate
-pnpm tenant:migrate -- --concurrency=4
+#
+# NOTE THE ABSENCE OF `--`. Every one of these lines used to carry
+# `pnpm tenant:migrate -- --flag`, and under pnpm 11 that literal `--` is
+# forwarded to the script, where `node:util#parseArgs` treats it as the
+# end-of-options marker and drops every flag after it into `positionals`.
+# `pnpm tenant:migrate -- --dry-run` therefore does NOT list — it migrates
+# every tenant on the box. Measured: it reported `done. 137 ok, 0 failed`
+# against the audit control plane while claiming to be a dry run. The same
+# `--` makes tenant:relocate abort with `missing required flag(s): --tenant`.
+pnpm tenant:migrate                       # all active tenants
+pnpm tenant:migrate --only=acme,step18a   # specific slugs
+pnpm tenant:migrate --include-archived    # also migrate archived
+pnpm tenant:migrate --dry-run             # list, don't migrate
+pnpm tenant:migrate --concurrency=4
 # Per-row outcomes printed at the end:
 #   [tenant-migrate]   acme         ✓ up to date
 #   [tenant-migrate]   step18a      ✓ 1 applied
@@ -1988,19 +1997,38 @@ pnpm tenant:migrate -- --concurrency=4
 # to the destination, verifies, updates tenants.db_url + cell_id, busts
 # the TenantResolver Redis cache, and closes the window. Failures leave
 # the tenant on the source DB and the read_only window open for inspection.
+#
+# --allow-remote is NOT optional in production. The script fences a database
+# read-only, restores over one with `pg_restore --clean` and can issue DROP
+# DATABASE, so it refuses any cluster that is not on the machine it runs from:
+#   refusing to run against a non-local cluster: --to-db-url destination
+#   resolves to host "cell-02.lan". … Re-run with --allow-remote once you have
+#   read the host above and meant it.
+# It checks CONTROL_DATABASE_URL, the tenant's live database and the
+# destination, so a run that crosses the network needs the flag even when only
+# one of the three is remote.
 REDIS_URL=redis://localhost:6379 \
-  pnpm tenant:relocate -- \
+  pnpm tenant:relocate \
     --tenant=acme \
     --to-db-url='postgresql://libriant:pw@cell-02.lan:5432/' \
     --to-cell=cell-02 \
+    --allow-remote \
     --dry-run
-# After verifying the new home is healthy, drop the old database:
-pnpm tenant:relocate -- --tenant=acme --drop-source
+# → [tenant-relocate] --allow-remote: proceeding against NON-LOCAL --to-db-url
+#     destination at cell-02.lan.
+# → [tenant-relocate]   from cell=cell-eu-1 dbUrl=…@localhost:5432/tenant_…
+# → [tenant-relocate]   to   cell=cell-02   dbUrl=…@cell-02.lan:5432/tenant_…
+# → [tenant-relocate] dry run: not relocating.
+#
+# After verifying the new home is healthy, drop the old database. --yes is a
+# second, separate consent: without it the run prints the host and the database
+# name it is about to destroy and then refuses.
+pnpm tenant:relocate --tenant=acme --drop-source --allow-remote --yes
 
 # 4) Storage migration. Same lifecycle — read_only window + verify + cache
 # bust. Today: file:// ↔ file:// only; s3:// / smb:// throw "not
 # implemented" with the wiring already in place.
-pnpm storage:migrate -- \
+pnpm storage:migrate \
   --tenant=acme \
   --to-storage-url='file:///srv/libriant-2/storage/<tenant-id>' \
   --dry-run

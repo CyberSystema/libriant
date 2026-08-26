@@ -14,7 +14,9 @@
  *   - duplicates (matched on the entity's natural key) are skipped, updated,
  *     or flagged per the batch's `duplicateMode`;
  *   - integer quotas (`max_books`, `max_members`) are enforced against a
- *     running counter seeded from the live count;
+ *     running projection while the ceiling is far away, and against the
+ *     database — inside the row's transaction, behind the same advisory lock
+ *     the UI's create path takes — once it is close (data-integrity-04);
  *   - the same normalization (`searchText`/`sortName`), member-number
  *     generation, custom-field validation, and DB CHECK constraints the
  *     manual UI relies on are reused verbatim — there is no second write path.
@@ -77,6 +79,39 @@ export type EngineContext = {
   /** When true, validate + resolve only — no writes. */
   dryRun: boolean;
 };
+
+/**
+ * Just enough of a tenant transaction client to take the quota lock and count
+ * behind it. Narrow on purpose: this is the only thing the quota code may do
+ * with the caller's transaction.
+ */
+type QuotaTx = Pick<Prisma.TransactionClient, '$executeRaw' | 'book' | 'member'>;
+
+/**
+ * How close the projection has to get to the ceiling before every remaining
+ * claim is settled against the database. See `claimQuotaWithinTx` for why the
+ * alternative — settling all 250,000 possible rows — is worse than the bug.
+ *
+ * 50 is chosen against the writer this defends from: staff cataloguing at a
+ * desk while an import runs. The overshoot the old code allowed was exactly the
+ * number of such writes; the zone has to be comfortably larger than that number
+ * for one import, and 50 books arriving by hand during a single import is not a
+ * library, it is a second import.
+ */
+const QUOTA_EXACT_ZONE = 50;
+
+/**
+ * Raised by `claimQuotaWithinTx` inside the row's transaction, so the write it
+ * guards rolls back with it. Caught by the committer, which turns it into the
+ * row's `quota_exceeded` issue — the same one the projection gate produces, so
+ * a librarian reads one message whichever gate refused the row.
+ */
+class QuotaExceededError extends Error {
+  constructor() {
+    super('quota exceeded');
+    this.name = 'QuotaExceededError';
+  }
+}
 
 export type EngineRowResult = {
   rowNumber: number;
@@ -231,8 +266,22 @@ export class ImportEngine {
   private holdPickupHours = 48;
 
   private quotaFeature: FeatureKey | null = null;
+  /**
+   * The run's PROJECTION of usage: seeded from a live count in `init()` and
+   * moved by one per row. It is what the dry run reports from — nothing is
+   * written there, so there is nothing to settle against — and outside the
+   * exact zone (see {@link QUOTA_EXACT_ZONE}) it is what the commit pass
+   * spends. `claimQuotaWithinTx` resets it to the truth whenever it counts.
+   */
   private quotaUsed = 0;
   private quotaLimit = Number.POSITIVE_INFINITY;
+  /**
+   * Latched the first time the DATABASE says, under the quota lock, that the
+   * ceiling is reached. Without it, every remaining row of a 250,000-row file
+   * would re-count a table nothing indexes to be told the same thing; a slot
+   * freed mid-import by someone archiving a book is not worth that.
+   */
+  private quotaFull = false;
 
   /**
    * The instant this run began, read from the DATABASE clock (see
@@ -292,16 +341,16 @@ export class ImportEngine {
       this.holdPickupHours = settings.holdPickupHours;
     }
 
-    if (this.kind === 'book') {
-      this.quotaFeature = 'max_books';
-      this.quotaUsed = await this.ctx.client.book.count({ where: { archivedAt: null } });
-    } else if (this.kind === 'member') {
-      this.quotaFeature = 'max_members';
-      this.quotaUsed = await this.ctx.client.member.count({
-        where: { archivedAt: null, status: { not: 'archived' } },
-      });
+    if (this.kind === 'book') this.quotaFeature = 'max_books';
+    else if (this.kind === 'member') this.quotaFeature = 'max_members';
+    if (this.quotaFeature) {
+      this.quotaUsed = await this.countQuotaUsage(this.ctx.client);
+      // Resolved once per run, not once per row: the LIMIT is a plan value
+      // behind a Redis cache, and the thing that goes stale during an import is
+      // the usage, not the ceiling. A plan change mid-import applies to the
+      // next one.
+      this.quotaLimit = await this.ctx.getLimit(this.quotaFeature);
     }
-    if (this.quotaFeature) this.quotaLimit = await this.ctx.getLimit(this.quotaFeature);
   }
 
   async processRow(mapped: MappedRow): Promise<EngineRowResult> {
@@ -352,18 +401,88 @@ export class ImportEngine {
   }
 
   // ---- quota -------------------------------------------------------------
+
+  /**
+   * The cheap gate, off the projection. Answers "this run has already spent the
+   * ceiling" without a query, which is what the dry run needs (it writes
+   * nothing, so there is nothing to settle against) and what stops the commit
+   * pass opening a transaction per row for a file that is already over.
+   *
+   * It is NOT the enforcement — see {@link claimQuotaWithinTx}, which is.
+   */
   private quotaBlocked(issues: RowIssue[]): boolean {
     if (this.quotaUsed >= this.quotaLimit) {
-      issues.push(
-        issue(
-          null,
-          'quota_exceeded',
-          `Plan limit reached for ${this.quotaFeature} (${this.quotaLimit}).`,
-        ),
-      );
+      issues.push(this.quotaIssue());
       return true;
     }
     return false;
+  }
+
+  private quotaIssue(): RowIssue {
+    return issue(
+      null,
+      'quota_exceeded',
+      `Plan limit reached for ${this.quotaFeature} (${this.quotaLimit}).`,
+    );
+  }
+
+  /**
+   * Current usage, counted with the SAME predicate the UI path counts by
+   * (`QUOTA_COUNTERS` in plans/quota-counters.ts). Two paths that disagree
+   * about what counts as a book are two different ceilings.
+   */
+  private async countQuotaUsage(db: Pick<QuotaTx, 'book' | 'member'>): Promise<number> {
+    if (this.quotaFeature === 'max_books') return db.book.count({ where: { archivedAt: null } });
+    if (this.quotaFeature === 'max_members') {
+      return db.member.count({ where: { archivedAt: null, status: { not: 'archived' } } });
+    }
+    return 0;
+  }
+
+  /**
+   * Claim one slot of the run's integer quota INSIDE the caller's transaction,
+   * throwing {@link QuotaExceededError} when the ceiling refuses it.
+   *
+   * data-integrity-04. The projection this engine spends is seeded once and
+   * then blind: every other create path counts inside
+   * `QuotaService.enforceWithinTx`, behind `pg_advisory_xact_lock` on
+   * `quota:<tenant>:<feature>:<context>`, and the import joined neither the
+   * lock nor the count. A librarian cataloguing three arrivals at the desk
+   * during a 10,000-row import was simply invisible to it, so the import
+   * admitted its full quota on top of theirs and the library ended the day over
+   * its plan ceiling with nothing in the report to say so. Reproduced at
+   * test/integration/import-quota-lock.spec.ts: eight books against a ceiling
+   * of five, deterministically.
+   *
+   * Settling EVERY row against the database was the finding's own suggested
+   * fix, and it is the one thing this must not do. `count(*)` on `books` is a
+   * sequential scan of a table nothing indexes — measured in-tree at 13,333
+   * buffers / 67.7 ms on a 400,000-title library (see quota.interceptor.ts,
+   * performance-05) — and `IMPORT_MAX_ROWS` is 250,000. That is hours added to
+   * the onboarding path for every new library, to defend a ceiling the run is
+   * nowhere near.
+   *
+   * So: count when it matters. While the projection is more than
+   * {@link QUOTA_EXACT_ZONE} slots from the ceiling, no lock and no count —
+   * being wrong there is being wrong by a margin nobody is standing on. Once
+   * inside the zone, every remaining claim takes the lock, counts, and RESETS
+   * the projection to the truth, so drift accumulated outside the zone is
+   * corrected before it can be spent rather than carried into the ceiling.
+   */
+  private async claimQuotaWithinTx(tx: QuotaTx): Promise<void> {
+    if (!this.quotaFeature) return;
+    if (this.quotaFull) throw new QuotaExceededError();
+    if (this.quotaLimit - this.quotaUsed > QUOTA_EXACT_ZONE) return;
+    // Byte-for-byte the key QuotaService builds (`lockContext ?? ''` — hence
+    // the trailing colon). A different string hashes to a different lock and
+    // serialises nothing.
+    const lockKey = `quota:${this.ctx.tenantId}:${this.quotaFeature}:`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+    this.quotaUsed = await this.countQuotaUsage(tx);
+    if (this.quotaUsed >= this.quotaLimit) {
+      this.quotaFull = true;
+      throw new QuotaExceededError();
+    }
   }
 
   private result(
@@ -457,21 +576,29 @@ export class ImportEngine {
     if (existingId) return this.resolveBookDuplicate(row, issues, existingId, isbn13);
 
     if (this.quotaBlocked(issues)) return this.result(row, 'error', issues);
-    this.quotaUsed++;
-    if (this.ctx.dryRun) return this.result(row, 'imported', issues);
+    if (this.ctx.dryRun) {
+      this.quotaUsed++;
+      return this.result(row, 'imported', issues);
+    }
     try {
+      // The slot is claimed inside this write's own transaction (see
+      // `writeBook`), so the projection only moves for a row that really
+      // landed — which also retires the `quotaUsed--` this branch used to need
+      // after a lost ISBN race.
       const id = await this.writeBook(row, null);
+      this.quotaUsed++;
       if (isbn13) this.bookByIsbn.set(isbn13, id);
       return this.result(row, 'imported', issues, id);
     } catch (err) {
+      if (err instanceof QuotaExceededError) {
+        issues.push(this.quotaIssue());
+        return this.result(row, 'error', issues);
+      }
       // data-integrity-03: `books_isbn13_unique_active` refuses the second
       // record for an ISBN, so a writer that lost the lookup-then-create race
       // lands here. That is exactly the duplicate case, so take the duplicate
-      // path rather than reporting a row error — and give back the quota slot
-      // we optimistically claimed above, or a 500-book plan would run out
-      // counting books it never created.
+      // path rather than reporting a row error.
       if (!isbn13 || !isUniqueViolationOn(err, BOOK_ISBN_UNIQUE)) throw err;
-      this.quotaUsed--;
       this.bookByIsbn.delete(isbn13);
       const winner = await this.findBookByIsbn(isbn13);
       if (!winner) throw err;
@@ -565,6 +692,12 @@ export class ImportEngine {
       const createdSortNames: string[] = [];
       try {
         return await this.ctx.client.$transaction(async (tx) => {
+          // data-integrity-04: FIRST statement of the transaction that writes
+          // the row, exactly as `QuotaService.enforceWithinTx` is the first
+          // statement of every UI create — the lock and the count are worth
+          // nothing if the insert can commit outside them. Updates claim
+          // nothing: an existing book already holds its slot.
+          if (!existingId) await this.claimQuotaWithinTx(tx);
           const authorIds: string[] = [];
           for (const name of authorNames) {
             authorIds.push(await this.findOrCreateAuthor(name, tx, createdSortNames));
@@ -681,14 +814,35 @@ export class ImportEngine {
     }
 
     if (this.quotaBlocked(issues)) return this.result(row, 'error', issues);
-    this.quotaUsed++;
-    if (this.ctx.dryRun) return this.result(row, 'imported', issues);
+    if (this.ctx.dryRun) {
+      this.quotaUsed++;
+      return this.result(row, 'imported', issues);
+    }
 
+    // Minted outside the transaction: `nextSequenceForYear` maintains its own
+    // counter row, and running it inside would nest a write the quota lock is
+    // already holding open. The cost is that a row refused by the ceiling below
+    // leaves a gap in the member numbers — at most one per run, because the
+    // refusal latches — and a gap in member numbers is not a defect.
     const memberNumber = number || (await this.generateMemberNumber());
-    const created = await this.ctx.client.member.create({
-      data: { memberNumber, ...this.memberData(row) },
-      select: { id: true },
-    });
+    let created: { id: string };
+    try {
+      created = await this.ctx.client.$transaction(async (tx) => {
+        // data-integrity-04: same lock domain, same transaction as the insert.
+        await this.claimQuotaWithinTx(tx);
+        return tx.member.create({
+          data: { memberNumber, ...this.memberData(row) },
+          select: { id: true },
+        });
+      });
+    } catch (err) {
+      if (err instanceof QuotaExceededError) {
+        issues.push(this.quotaIssue());
+        return this.result(row, 'error', issues);
+      }
+      throw err;
+    }
+    this.quotaUsed++;
     if (number) this.memberByNumber.set(number, created.id);
     if (email) this.memberByEmail.set(email.toLowerCase(), created.id);
     return this.result(row, 'imported', issues, created.id);

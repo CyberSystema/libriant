@@ -958,6 +958,24 @@ Six keys are `${VAR:?}` at the **compose** layer. A missing one aborts
 
 `HASH_PEPPER` needs ≥ 32 chars; the other secrets ≥ 24.
 
+**`STORAGE_SIGNING_SECRET` must not be a copy of `SESSION_SECRET`.** Under
+`NODE_ENV=production` the API refuses to boot when the two hold the same value:
+
+```
+Error: STORAGE_SIGNING_SECRET and SESSION_SECRET hold the same value — refusing
+to boot. They are deliberately different keys so a leaked storage-signing secret
+cannot be turned into a session-forgery oracle, or the reverse. Generate a
+distinct value for STORAGE_SIGNING_SECRET (`openssl rand -hex 32`).
+```
+
+The reason is `GET /_files/signed`, the one storage route with no guard at all:
+the token alone picks both the tenant and the object, so one key covering both
+session forgery and anonymous cross-tenant file reads is exactly the oracle the
+separation exists to prevent. `scripts/ensure-env.sh` generates the two
+independently (`ensure_rand STORAGE_SIGNING_SECRET 32`), so the ordinary deploy
+never trips this — a **hand-edited** `.env.prod` is what does, and the failure
+arrives as a container that will not start rather than as a warning.
+
 Note that `.env.prod.example` claims to document every key and **omits
 `HASH_PEPPER`** — one of the six compose hard-requires — along with
 `APPLY_NOTIFY_TO`, `COMPOSE_PROJECT_NAME`, `LIBRIANT_DATA_ROOT`, `BACKUP_ROOT`,
@@ -1025,6 +1043,10 @@ mail went to spam".
 >
 > These two are the reason the twelve blockers split 9 / 3: they do not block
 > a public launch on the free offer, but they block taking money.
+>
+> When they are closed, **§4.3b** is what you run before the toggle: the two
+> pre-flight checks the old go-live document asked for in words and gave no way
+> to perform.
 
 `ensure-env.sh` writes `STRIPE_DRIVER=fake` and `EMAIL_DRIVER=console` into
 `.env.prod` **on every deploy** (it runs with `--auto` from `deploy-on-host.sh`).
@@ -1035,6 +1057,139 @@ files in the same deploy path assert opposite policies. To change either driver
 for real you must edit `.env.prod` **and** accept that `ensure_default` will not
 overwrite your non-empty value (it only fills blanks) — so setting them once
 sticks.
+
+### 4.3b Before you flip subscriptions on: the two checks, and the commands that perform them
+
+Both of these used to be sentences with no way to carry them out. That is worse
+than an unwritten step: a reader ticks them off.
+
+**1. Is any library already over the cap it is about to be enforced against?**
+
+While `BILLING_ENABLED` is false every effective limit is the unlimited
+sentinel, so a library can spend twelve free months growing past a Starter cap
+with nothing to stop it. The flip makes those caps bite at once, and the first
+thing the library hears is a 402 in the middle of accessioning a delivery.
+
+```bash
+# Owner or support session on the ADMIN host.
+# Note the /lbr-api prefix: on the admin vhost Caddy only routes the API under
+# `handle_path /lbr-api/*` and sends everything else to Next, so the bare path
+# reaches the web app and 404s. Same convention as the system-mode calls below.
+curl -s -b "$ADMIN_COOKIE" https://<ADMIN_HOST>/lbr-api/admin/plan-usage/over-cap | jq
+```
+
+It counts every **active** library against its **contracted** plan — deliberately
+not the effective one, which before the flip is unlimited for everybody and
+would make the check unable to fail — using the same counters `QuotaInterceptor`
+refuses on, so the answer is about the refusal a librarian will actually meet.
+
+```json
+{
+  "checkedAt": "2026-08-26T20:52:57.049Z",
+  "billingEnabled": false,
+  "tenantsChecked": 136,
+  "ok": false,
+  "overCap": [
+    {
+      "slug": "…",
+      "name": "…",
+      "plan": "starter",
+      "breaches": [{ "feature": "staff_seats", "limit": 3, "used": 4 }]
+    }
+  ],
+  "unreadable": []
+}
+```
+
+Go ahead only on `"ok": true`. `ok` is false while **either** list is non-empty:
+a library whose database could not be read lands in `unreadable`, because "we
+could not look" must not be reported as "nothing found". A library that IS over
+needs a plan change, an override, or a conversation — before the switch, not
+after. The report costs one `COUNT(*)` per int feature per library and walks
+tenants one at a time; on a fleet of a few hundred it takes seconds, and it is
+not something to leave on a dashboard refreshing.
+
+The same numbers are now on the library's own **Plan & billing** page, so a
+librarian who is refused can see what they are up against instead of only the
+sentence in the 402.
+
+**2. Is Stripe actually wired, or does it only look wired?**
+
+`POST /webhooks/stripe` answers **200 to every event type it recognises the
+signature of**, including the ones it does nothing with. Sending a test event
+from the Stripe dashboard and seeing a green tick therefore proves the URL
+resolves and the signing secret matches — and nothing at all about whether the
+events that provision a subscription are subscribed. Driven against a running
+API: ten event types, six handled and four not, all ten returned `200` and all
+ten landed in `stripe_webhook_events` with `processedAt` set and `error` NULL.
+The only trace of the four that were dropped is a `logger.debug` line, and the
+production log level never emits it.
+
+**Subscribe the endpoint to exactly these six.** Anything less and libraries pay
+while nothing provisions; the list is `dispatch()` in
+`apps/api/src/billing/stripe-webhook.controller.ts`.
+
+| Event                           | What it does here                                                                              |
+| ------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `checkout.session.completed`    | Spends the tenant's outstanding Checkout session — the duplicate-purchase guard (`billing-03`) |
+| `customer.subscription.created` | Provisions the plan                                                                            |
+| `customer.subscription.updated` | Plan changes, cancellations, past-due transitions                                              |
+| `customer.subscription.deleted` | Ends the subscription                                                                          |
+| `invoice.payment_succeeded`     | Extends `paidUntil`, clears grace                                                              |
+| `invoice.payment_failed`        | Opens the grace window                                                                         |
+
+Ask Stripe what it is really subscribed to, rather than reading it off the
+dashboard:
+
+```bash
+WANT='["checkout.session.completed","customer.subscription.created",
+       "customer.subscription.updated","customer.subscription.deleted",
+       "invoice.payment_succeeded","invoice.payment_failed"]'
+curl -s https://api.stripe.com/v1/webhook_endpoints -u "$STRIPE_SECRET_KEY:" \
+  | jq --argjson want "$WANT" '.data[]
+      | select(.url | endswith("/webhooks/stripe"))
+      | {url, status, missing: ($want - .enabled_events)}'
+```
+
+`missing` must be `[]`. An endpoint subscribed to `checkout.session.completed`
+alone passes the dashboard's own test-event check and provisions nothing.
+
+**And save a Customer Portal configuration.** `billingPortal.sessions.create`
+is called with no `configuration` id, so Stripe uses the account default — and
+in live mode there is no default until one has been saved in the dashboard
+(Settings → Billing → Customer portal). Until then the **Open portal** button
+500s for every library, on first use, which is the day a card is declined.
+
+```bash
+curl -s https://api.stripe.com/v1/billing_portal/configurations \
+  -u "$STRIPE_SECRET_KEY:" | jq '[.data[] | select(.is_default and .active)] | length'
+```
+
+Must be `>= 1`. Both curls need a live secret key and reach Stripe, so they are
+the operator's to run on the box — they were not executed while writing this.
+
+**After the first real subscription, confirm each event type has actually
+arrived.** This one needs nothing but the database, and it is the check that
+would have caught a wrong subscription list:
+
+```bash
+dc exec -T postgres psql -U libriant -d libriant_control -c "
+SELECT want.type, count(e.id) AS seen,
+       count(e.id) FILTER (WHERE e.\"processedAt\" IS NOT NULL) AS processed,
+       max(e.\"receivedAt\") AS last_seen
+  FROM (VALUES ('checkout.session.completed'),
+               ('customer.subscription.created'),
+               ('customer.subscription.updated'),
+               ('customer.subscription.deleted'),
+               ('invoice.payment_succeeded'),
+               ('invoice.payment_failed')) AS want(type)
+  LEFT JOIN stripe_webhook_events e ON e.type = want.type
+ GROUP BY want.type ORDER BY seen, want.type;"
+```
+
+A `seen` of 0 on `customer.subscription.created` after a library has paid means
+the endpoint is not subscribed to it. `deleted` and `payment_failed` legitimately
+stay at 0 until something is cancelled or a card is declined.
 
 ### 4.4 Secrets: what breaks if you lose or rotate each one
 
@@ -1048,13 +1203,13 @@ sticks.
 
 **Recoverable but disruptive:**
 
-| Secret                   | Rotating it                                                 |
-| ------------------------ | ----------------------------------------------------------- |
-| `SESSION_SECRET`         | Logs out every library user.                                |
-| `ADMIN_SESSION_SECRET`   | Logs out all platform admins.                               |
-| `IMPERSONATION_SECRET`   | Kills live support sessions.                                |
-| `STORAGE_SIGNING_SECRET` | 403s every outstanding signed download link until reissued. |
-| `HASH_PEPPER`            | Resets the application-form IP throttle history.            |
+| Secret                   | Rotating it                                                                                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SESSION_SECRET`         | Logs out every library user.                                                                                                                                      |
+| `ADMIN_SESSION_SECRET`   | Logs out all platform admins.                                                                                                                                     |
+| `IMPERSONATION_SECRET`   | Kills live support sessions.                                                                                                                                      |
+| `STORAGE_SIGNING_SECRET` | 403s every outstanding signed download link until reissued. Rotate it to a value that is **not** `SESSION_SECRET` — the API refuses to boot if they match (§4.2). |
+| `HASH_PEPPER`            | Resets the application-form IP throttle history.                                                                                                                  |
 
 Rotation procedure: edit `/srv/libriant/.env.prod`, update the password manager
 **first**, then `dc up -d` to recreate the affected containers. `pnpm secrets`
@@ -1233,17 +1388,17 @@ A successful sign-in does the same thing by itself.
 
 ### 4.6 Host-shaped variables worth knowing
 
-| Variable             | Value                | Notes                                                                                                                                                                                                                                                                                                                                                    |
-| -------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PUBLIC_HOST`        | `app.libriant.com`   | The **app** host, not the apex. The compose file defaults it to `libriant.com` in `x-app-env` and `app.libriant.com` in the caddy block — an internal contradiction that would point the browser's API base at the marketing vhost, which has no `/lbr-api/*` handler. `ensure-env.sh` always sets it, so the defaults never fire. Treat it as required. |
-| `PUBLIC_APEX_DOMAIN` | `libriant.com`       | Drives tenant-subdomain resolution and the CSRF Origin allow-list, and derives `EMAIL_FROM`. **Does not drive cookie scope** — cookies carry no `Domain` and use the `__Host-` prefix, which forbids it.                                                                                                                                                 |
-| `ADMIN_HOST`         | `admin.libriant.com` | Load-bearing three times: excluded from tenant-subdomain resolution, the only Origin allowed for state-changing `/admin/*`, and the web app 404s `/admin` on any other host.                                                                                                                                                                             |
-| `SITE_HOST`          | `libriant.com`       | Marketing vhost. No `/lbr-api/*` handler, on purpose.                                                                                                                                                                                                                                                                                                    |
-| `EMAIL_FROM`         | derived              | Defaults to `Libriant <no-reply@${PUBLIC_APEX_DOMAIN}>` — from the **apex**, not `PUBLIC_HOST`. `.env.prod.example` says otherwise and is wrong.                                                                                                                                                                                                         |
-| `ACME_EMAIL`         | `ops@libriant.com`   | **Dead configuration.** Every vhost serves a file certificate, so no ACME order is ever placed.                                                                                                                                                                                                                                                          |
-| `LIBRIANT_DATA_ROOT` | `/mnt/libriant`      | Setting it in `.env.prod` **does nothing** — `deploy-on-host.sh` resolves it from the shell env and re-exports over whatever the file said. To relocate data, `export LIBRIANT_DATA_ROOT=… ` in the shell before invoking the script.                                                                                                                    |
-| `IMAGE_OWNER`        | absent               | Irrelevant on the manual path. Compose falls back to `${IMAGE_OWNER:-libriant}` for local image tags. It matters only if you ever pull.                                                                                                                                                                                                                  |
-| `APPLY_NOTIFY_TO`    | `info@libriant.com`  | Where marketing-form applications are notified. Interpolated by compose but absent from the template and from `ensure-env.sh`, so you would never see it.                                                                                                                                                                                                |
+| Variable             | Value                | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| -------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_HOST`        | `app.libriant.com`   | The **app** host, not the apex. The compose file used to default it to `libriant.com` in `x-app-env` and `app.libriant.com` in the caddy block — an internal contradiction that would have pointed the browser's API base at the marketing vhost, which has no `/lbr-api/*` handler. boot-and-config-09 removed both defaults: every site is now `${PUBLIC_HOST:?}`, so an unset value fails compose loudly instead of resolving to whichever block happened to be read. `ensure-env.sh` sets it before compose runs on both deploy paths, so this is belt and braces rather than a change of behaviour. |
+| `PUBLIC_APEX_DOMAIN` | `libriant.com`       | Drives tenant-subdomain resolution and the CSRF Origin allow-list, and derives `EMAIL_FROM`. **Does not drive cookie scope** — cookies carry no `Domain` and use the `__Host-` prefix, which forbids it.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `ADMIN_HOST`         | `admin.libriant.com` | Load-bearing three times: excluded from tenant-subdomain resolution, the only Origin allowed for state-changing `/admin/*`, and the web app 404s `/admin` on any other host.                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `SITE_HOST`          | `libriant.com`       | Marketing vhost. No `/lbr-api/*` handler, on purpose.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `EMAIL_FROM`         | derived              | Defaults to `Libriant <no-reply@${PUBLIC_APEX_DOMAIN}>` — from the **apex**, not `PUBLIC_HOST`. `.env.prod.example` says otherwise and is wrong.                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `ACME_EMAIL`         | `ops@libriant.com`   | **Dead configuration.** Every vhost serves a file certificate, so no ACME order is ever placed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `LIBRIANT_DATA_ROOT` | `/mnt/libriant`      | Setting it in `.env.prod` **does nothing** — `deploy-on-host.sh` resolves it from the shell env and re-exports over whatever the file said. To relocate data, `export LIBRIANT_DATA_ROOT=… ` in the shell before invoking the script.                                                                                                                                                                                                                                                                                                                                                                    |
+| `IMAGE_OWNER`        | absent               | Irrelevant on the manual path. Compose falls back to `${IMAGE_OWNER:-libriant}` for local image tags. It matters only if you ever pull.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `APPLY_NOTIFY_TO`    | `info@libriant.com`  | Where marketing-form applications are notified. Interpolated by compose but absent from the template and from `ensure-env.sh`, so you would never see it.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ---
 
@@ -1615,8 +1770,8 @@ Run `--dry-run` first. The generated owner password is printed **once**.
 **Relocating a tenant off-box silently stops all backups.** `backup.sh` aborts
 the whole nightly run if any tenant's `dbUrl` host is not
 `postgres`/`pgbouncer`/`localhost`/`127.0.0.1`, unless
-`BACKUP_ALLOW_OFFHOST_TENANTS=1`. If you ever run `pnpm tenant:relocate`, fix the
-cron in the same sitting.
+`BACKUP_ALLOW_OFFHOST_TENANTS=1`. If you ever run `pnpm tenant:relocate` (see
+§10.3 for the flags it refuses to run without), fix the cron in the same sitting.
 
 ### 6.7 The rhythm
 
@@ -2627,6 +2782,33 @@ The move, when it comes, is the cell architecture the code already has:
 restores to another Postgres host, rewrites `tenants.db_url` and `cell_id`, and
 busts the Redis cache. `--drain-seconds` must exceed the 30 s system-mode cache
 TTL. It leaves the source DB intact; `--drop-source` is a separate, explicit run.
+
+Two flags the earlier version of this section did not name, and without which
+the commands it printed do not run at all:
+
+```bash
+# Move. --allow-remote is what makes it willing to touch a cluster that is not
+# on this box; without it every production run stops at
+#   refusing to run against a non-local cluster: --to-db-url destination
+#   resolves to host "cell-02.lan".
+CONTROL_DATABASE_URL=… REDIS_URL=… pnpm tenant:relocate \
+  --tenant=<slug> --to-db-url='postgresql://libriant:<pw>@cell-02.lan:5432/' \
+  --to-cell=cell-02 --allow-remote --dry-run
+
+# Then the same line without --dry-run. Then, once the new home has served
+# real traffic, delete the old database. --yes is a second consent, separate
+# from --allow-remote: without it the run prints the host and the database name
+# and refuses.
+CONTROL_DATABASE_URL=… REDIS_URL=… pnpm tenant:relocate \
+  --tenant=<slug> --drop-source --allow-remote --yes
+```
+
+And do NOT write `pnpm tenant:relocate -- --tenant=…`. pnpm 11 forwards that
+literal `--` to the script, where `node:util#parseArgs` reads it as the
+end-of-options marker and discards every flag after it: the run dies with
+`missing required flag(s): --tenant`. The same mistake in `pnpm tenant:migrate
+-- --dry-run` is worse — the flag is dropped, the dry run becomes a real one,
+and it migrates every tenant on the box.
 
 **Before relocating anything: set `BACKUP_ALLOW_OFFHOST_TENANTS=1` in the cron
 line, or the nightly backup will abort for every tenant, silently.**

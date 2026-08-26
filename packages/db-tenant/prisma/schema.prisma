@@ -259,10 +259,21 @@ model Book {
   copies       BookCopy[]
   reservations Reservation[]
 
+  /// perf-03: this is the catalogue list's sort key, and the keyset predicate
+  /// in BooksService.list seeks into it with `sortTitle >= <cursor>`. Leave it
+  /// as a plain single-column index — `(sortTitle, id)` was measured and buys
+  /// nothing here: the residual tie-break inside one sortTitle is an
+  /// Incremental Sort over a handful of rows.
   @@index([sortTitle])
   @@index([isbn13])
   @@index([isbn10])
   @@index([publicationYear])
+  /// perf-09: this one is ASCENDING, which in Postgres means NULLS LAST, and
+  /// the metadata backfill sweep orders NULLS FIRST — so it cannot serve that
+  /// job. `books_metadata_backfill_idx` (migration 20260826210100) is the one
+  /// that does; it is partial and NULLS FIRST, neither of which Prisma can
+  /// express, so it lives in migration SQL only, like
+  /// `authors_sortname_unique_active`.
   @@index([metadataRefreshedAt])
   @@map("books")
 }
@@ -487,6 +498,17 @@ model Reservation {
   @@index([bookId, status, queuePosition])
   @@index([memberId, status])
   @@index([expiresAt])
+  // perf-10: the holds screen's default list orders by `status, queuePosition
+  // NULLS LAST, placedAt DESC, id` and filters on nothing else, so the only
+  // reservation index that existed (leading `bookId`) could not serve it.
+  // Postgres read the whole table and top-N sorted it to return 26 rows.
+  // Column directions match the ORDER BY exactly — `placedAt DESC`, the rest
+  // ascending, which for a NOT NULL / nullable-with-NULLS-LAST pair is what
+  // Postgres's default ASC already means — so the scan needs no sort node at
+  // all. Measured on 160,000 reservations with 40,000 live holds: `Seq Scan …
+  // Sort Method: top-N heapsort`, 591 buffers, 30.6 ms → `Index Only Scan …
+  // Heap Fetches: 0`, 4 buffers, 0.7 ms.
+  @@index([status, queuePosition, placedAt(sort: Desc), id], map: "reservations_status_queuePosition_placedAt_id_idx")
   @@map("reservations")
 }
 

@@ -312,8 +312,33 @@ http:// {
 			# conditional on who the peer actually is. The API applies its own
 			# peer check on top (apps/api/src/platform/client-ip.ts).
 			reverse_proxy api:3001 {
+				# reliability-21. EVERY reverse_proxy in this file now carries a
+				# retry budget, and the reason is the deployment model: one host,
+				# one replica of each service, `docker compose up -d` recreating
+				# containers in place. There is no second replica to shift traffic
+				# to, so without a budget Caddy makes exactly ONE dial attempt and
+				# hands the visitor a raw 502 the instant the container it proxies
+				# to goes away. Every deploy was therefore a burst of 502s — on the
+				# main HTML path too — while a librarian was mid-checkout.
+				#
+				# `lb_try_duration` keeps Caddy trying to reach an upstream for up
+				# to 10s instead of giving up on the first refusal; `lb_try_interval`
+				# is how often it retries inside that window. Only a DIAL failure is
+				# retried — nothing has been written to the upstream yet — so this is
+				# as safe for the POSTs below as for a GET. A container that comes
+				# back in two seconds becomes invisible; one that is genuinely gone
+				# still answers, ten seconds later, exactly as it did before.
+				lb_try_duration 10s
+				lb_try_interval 250ms
 				# A failed upstream should look like a 503, not a 502.
-				fail_duration 10s
+				#
+				# 2s, and it used to be 10s. With a SINGLE upstream passive health
+				# is a short-circuit and nothing else: once three failures marked it
+				# down, every request was refused for the whole window even after
+				# the container was back and answering — a 200ms restart amplified
+				# into a 10-second blackout. 2s keeps the 503-rather-than-502 shape
+				# for a real outage while sitting well inside the retry window above.
+				fail_duration 2s
 				max_fails 3
 			}
 		}
@@ -333,7 +358,14 @@ http:// {
 	handle /webhooks/* {
 		route {
 			import origin_guard webhooks
-			reverse_proxy api:3001
+			reverse_proxy api:3001 {
+				# reliability-21, see the app host /lbr-api block above.
+				# Stripe retries a failed webhook itself, but only after minutes, and a
+				# subscription that lands late is a library locked out of a paid feature
+				# in the meantime. Riding out the restart costs nothing here.
+				lb_try_duration 10s
+				lb_try_interval 250ms
+			}
 		}
 	}
 
@@ -344,7 +376,13 @@ http:// {
 	handle {
 		route {
 			import origin_guard appweb
-			reverse_proxy web:3000
+			reverse_proxy web:3000 {
+				# reliability-21, see the app host /lbr-api block above.
+				# The main HTML path. This is the one a librarian sees: without a budget,
+				# every deploy served a raw 502 page to whoever was mid-task.
+				lb_try_duration 10s
+				lb_try_interval 250ms
+			}
 		}
 	}
 }
@@ -374,7 +412,13 @@ http:// {
 			respond @internal 404
 			# X-Real-IP comes from origin_guard, not from a header_up. See the
 			# app host above for why that distinction is the whole fix.
-			reverse_proxy api:3001
+			reverse_proxy api:3001 {
+				# reliability-21, see the app host /lbr-api block above.
+				# The admin API. An operator investigating an incident is the person most
+				# likely to be here DURING a deploy.
+				lb_try_duration 10s
+				lb_try_interval 250ms
+			}
 		}
 	}
 
@@ -392,7 +436,12 @@ http:// {
 		# attacker would want to reach directly.
 		import origin_guard adminweb
 		redir @bare /admin/login 302
-		reverse_proxy web:3000
+		reverse_proxy web:3000 {
+			# reliability-21, see the app host /lbr-api block above.
+			# The admin console itself.
+			lb_try_duration 10s
+			lb_try_interval 250ms
+		}
 	}
 }
 
@@ -439,7 +488,13 @@ http:// {
 			# readable when everything else is down. Anything reaching api:3001 is.
 			import origin_guard apply
 			reverse_proxy api:3001 {
-				fail_duration 10s
+				# reliability-21, see the app host. This one is a form POST: a
+				# library filling in the application form during a deploy got a 502
+				# and their answers back as a browser error page. Retried only on a
+				# dial failure, so the POST body has not been sent anywhere yet.
+				lb_try_duration 10s
+				lb_try_interval 250ms
+				fail_duration 2s
 				max_fails 3
 			}
 		}
@@ -506,8 +561,9 @@ www.{$SITE_HOST:libriant.com} {
 # TenantMiddleware already supports subdomain resolution.
 # ---------------------------------------------------------------------------
 
-# Written out WITH the origin guard already in place, because the version that
-# used to sit here was a bare `handle_path { reverse_proxy api:3001 }` — the same
+# Written out WITH the origin guard AND the retry budget already in place,
+# because the version that used to sit here was a bare
+# `handle_path { reverse_proxy api:3001 }` — the same
 # shape as the /webhooks/* route that shipped unguarded. Uncommenting it would
 # have re-opened the finding on a brand-new vhost, and the person doing it would
 # have had no reason to suspect that. Every reverse_proxy in this file lives
@@ -527,13 +583,19 @@ www.{$SITE_HOST:libriant.com} {
 # 			import origin_guard wildapi
 # 			@internal path /metrics /metrics/* /healthz /readyz
 # 			respond @internal 404
-# 			reverse_proxy api:3001
+# 			reverse_proxy api:3001 {
+# 				lb_try_duration 10s
+# 				lb_try_interval 250ms
+# 			}
 # 		}
 # 	}
 # 	handle {
 # 		route {
 # 			import origin_guard wildweb
-# 			reverse_proxy web:3000
+# 			reverse_proxy web:3000 {
+# 				lb_try_duration 10s
+# 				lb_try_interval 250ms
+# 			}
 # 		}
 # 	}
 # }

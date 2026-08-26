@@ -31,11 +31,14 @@ type Book = {
   language: string | null;
 };
 
-function makeClient(books: Book[]) {
+function makeClient(books: Book[], remaining = books.length) {
   const updates: Array<{ where: { id: string }; data: Record<string, unknown> }> = [];
   const client = {
     book: {
       findMany: vi.fn(async () => books),
+      // performance-09: the sweep reports how much still qualifies after its
+      // budget, so the operator can see a queue it will never drain.
+      count: vi.fn(async () => remaining),
       update: vi.fn(async (args: { where: { id: string }; data: Record<string, unknown> }) => {
         updates.push(args);
         return {};
@@ -114,6 +117,46 @@ describe('refreshBookMetadata', () => {
     expect(Object.keys(updates[0]!.data)).toEqual(['metadataRefreshedAt']);
     expect(res.counts?.enriched).toBe(0);
     expect(res.counts?.attempted).toBe(1);
+  });
+
+  it('reports the backlog it did NOT get to, and stays green about it', async () => {
+    // performance-09. The budget is 40 books per tenant per run and the job
+    // ticks every 6 h — 160 attempts a day. On the audit's 400,000-title
+    // fixture 160,000 books qualify, so one pass takes 1,000 days. The sweep
+    // cannot fix that (the ceiling is politeness towards a free public API,
+    // not the database), but it used to REPORT "no books needed metadata"
+    // whether the queue held nothing or held 160,000 — so nobody could tell.
+    //
+    // `backlog` is deliberately not a `…Failed` counter: the runner prints it
+    // for the operator and exports it on /metrics without flipping the run
+    // red, because a job that is permanently red says exactly as much as one
+    // that is permanently green (see BACKLOG_KEYS in scheduled-jobs.runner.ts).
+    const { client } = makeClient(
+      [
+        {
+          id: 'b1',
+          isbn13: '9780000000001',
+          description: null,
+          publicationYear: null,
+          numPages: null,
+          language: null,
+        },
+      ],
+      12_345,
+    );
+    tenantGetClient.mockReturnValue(client);
+    fetchOpenLibraryBook.mockResolvedValue({ description: 'x' });
+
+    const res = await refreshBookMetadata();
+
+    expect(res.counts?.backlog).toBe(12_345);
+    expect(res.counts?.tenantsFailed).toBe(0);
+    // Counted AFTER the run's updates land, so it is the size of the queue the
+    // next tick will see, not the one this tick started with.
+    expect(client.book.count).toHaveBeenCalledTimes(1);
+    expect(client.book.count.mock.invocationCallOrder[0]!).toBeGreaterThan(
+      client.book.update.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('leaves the row untouched on a transient fetch error so it retries', async () => {

@@ -1,5 +1,6 @@
 import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
+import { applicationNotifyKey } from '../applications/applications.service.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { RedisService } from '../platform/redis.service.js';
@@ -33,7 +34,9 @@ import type { JobContext, JobResult } from './jobs.types.js';
  *      sentence — "if we do go ahead, the details move into your library's
  *      account and are governed by the service agreement". So: everything that
  *      did not become a partnership goes at 12 months; `accepted` rows stay,
- *      because those are the ones the notice says move on to the contract.
+ *      because those are the ones the notice says move on to the contract. The
+ *      admin notification the submission raised goes with the row it describes
+ *      (privacy-legal-14) — it is a second copy of the same applicant.
  *
  *   2. **Tenant audit_log — the plan's `audit_log_retention_days`.** Resolved
  *      per tenant through the same EffectivePlanService the rest of the product
@@ -59,7 +62,9 @@ import type { JobContext, JobResult } from './jobs.types.js';
  *
  * The finding also named the control-plane `audit_log`, `support_sessions` /
  * `support_redemption_attempts` (IP addresses), `users.legalAcceptedIp` and the
- * `email_outbox` envelope. Every one of those falls under Privacy Policy §6,
+ * `email_outbox` envelope AT LARGE — every message the platform has ever
+ * composed, not just the application notifications limb 1 removes. Every one of
+ * those falls under Privacy Policy §6,
  * whose four periods are still unresolved placeholders — `[30]` days, `[14]`-day
  * backups, `[up to 5–10]` years, `[a limited period, e.g. 90 days]`. There is
  * nothing to enforce there yet, and picking numbers here would put a deletion
@@ -213,18 +218,38 @@ export async function sweepRetention(ctx?: JobContext): Promise<JobResult> {
  */
 async function purgeExpiredApplications(now: Date): Promise<number> {
   const cutoff = monthsBefore(now, APPLICATION_RETENTION_MONTHS);
+  const where = {
+    status: { not: 'accepted' as const },
+    OR: [
+      { reviewedAt: { not: null, lt: cutoff } },
+      { reviewedAt: null, createdAt: { lt: cutoff } },
+    ],
+  };
+
+  // privacy-legal-14, the half the first pass left behind. Submitting the form
+  // writes the applicant TWICE: the `applications` row, and an admin
+  // notification in `email_outbox` whose body restates their name, e-mail,
+  // phone and message and whose envelope keeps their address in `replyToEmail`.
+  // Deleting only the first left the second sitting in the control plane —
+  // inside every nightly backup — after we had published that their details
+  // would be gone. So the ids are read first and their notifications go with
+  // them, in that order: a crash between the two statements leaves the
+  // application row present and the sweep simply finishes the job next tick,
+  // whereas the reverse order would leave a row we can no longer find the
+  // notification for.
+  const doomed = await controlDb.application.findMany({ where, select: { id: true } });
+  if (doomed.length === 0) return 0;
+
+  const notifications = await controlDb.emailOutbox.deleteMany({
+    where: { idempotencyKey: { in: doomed.map((a) => applicationNotifyKey(a.id)) } },
+  });
   const res = await controlDb.application.deleteMany({
-    where: {
-      status: { not: 'accepted' },
-      OR: [
-        { reviewedAt: { not: null, lt: cutoff } },
-        { reviewedAt: null, createdAt: { lt: cutoff } },
-      ],
-    },
+    where: { id: { in: doomed.map((a) => a.id) } },
   });
   if (res.count > 0) {
     logger.log(
-      `deleted ${res.count} application(s) last contacted before ${cutoff.toISOString().slice(0, 10)}`,
+      `deleted ${res.count} application(s) last contacted before ${cutoff.toISOString().slice(0, 10)}, ` +
+        `with ${notifications.count} admin notification(s)`,
     );
   }
   return res.count;

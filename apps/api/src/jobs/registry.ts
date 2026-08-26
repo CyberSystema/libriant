@@ -16,11 +16,18 @@ import type { ScheduledJob } from './jobs.types.js';
  * stable + canonical: changing one renames the BullMQ schedule, which
  * the runner reconciles (old name removed, new name registered).
  *
- * Frequency cheatsheet:
- *   60 s   — user-facing state cleanup (sessions, holds).
- *   5 min  — best-effort retry of failed integrations.
- *  60 min  — nightly-ish stats jobs (none today).
- *  24 h    — heavy batch (none today).
+ * Frequency cheatsheet — what each band is FOR, and what is in it today:
+ *   60 s   — user-facing state cleanup: support-session-expiry,
+ *            reservation-pickup-expiry, announcement-publish.
+ *   5 min  — best-effort retry of failed integrations: stripe-webhook-retry.
+ *  60 min  — desk-facing sweeps that are cheap to re-run: fine-accrual,
+ *            member-notifications, export-file-cleanup, storage-temp-cleanup.
+ *   6 h    — polite backfill against a third-party API: book-metadata-refresh.
+ *  24 h    — heavy batch: retention-sweep, storage-usage-recompute.
+ *
+ * Every interval here is also a retry budget: the runner gives each tick
+ * SCHEDULED_JOB_ATTEMPTS attempts backing off by intervalMs/6, so the whole
+ * chain finishes inside one interval and two copies of a sweep never overlap.
  */
 export const SCHEDULED_JOBS: ScheduledJob[] = [
   {
@@ -75,12 +82,14 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     handler: (ctx) => sendMemberNotifications(ctx),
   },
   {
-    // Hourly: best-effort disk cleanup of crash-orphaned upload temps. Each tick
-    // walks every active tenant's storage tree, so it's a filesystem sweep
-    // rather than a DB query — hourly keeps orphans from lingering without
-    // re-walking constantly (temps only appear on a crash mid-upload, so the
-    // working set is normally empty). Default 30-min staleness skips in-flight
-    // writes; idempotent — a re-run with nothing stale removes nothing.
+    // Hourly: best-effort disk cleanup of crash-orphaned upload temps. Each
+    // tick reads one staging directory per active tenant — the one `put()`
+    // renames out of — so it is a handful of syscalls, not a tree walk
+    // (performance-16). That is why hourly is affordable AND right: temps only
+    // appear on a crash mid-upload, so the working set is normally empty, and
+    // when it is not the orphan is gone within 90 minutes. Default 30-min
+    // staleness skips in-flight writes; idempotent — a re-run with nothing
+    // stale removes nothing.
     name: 'storage-temp-cleanup',
     intervalMs: 60 * 60_000,
     handler: () => sweepStaleStorageTemps(),

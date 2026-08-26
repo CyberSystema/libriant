@@ -9,6 +9,7 @@ import { HttpExceptionFilter } from './platform/http-exception.filter.js';
 import { describeTrustedProxies, isTrustedProxy } from './platform/client-ip.js';
 import { compressResponses } from './platform/compression.js';
 import { resolveStripeDriverKind } from './billing/stripe-driver-kind.js';
+import { controlDb } from '@libriant/db-control';
 
 async function bootstrap() {
   const env = loadEnv();
@@ -93,6 +94,50 @@ async function bootstrap() {
       `cookie-secure=${env.sessionCookieSecure} control-db=${endpointOf(env.controlDbUrl)} ` +
       `redis=${endpointOf(env.redisUrl)} storage=${env.storageRoot}`,
   );
+  void warnIfGreekSortsWrong();
+}
+
+/**
+ * Does this cluster sort Greek in Greek order, or in byte order?
+ *
+ * boot-and-config-14 put the assertion in `postgres-init.sql`, which the
+ * official entrypoint runs exactly once, on an empty data directory. That is
+ * the only moment the collation can still be CHOSEN — but it is not the only
+ * moment it can be WRONG, and the compose file gives `postgres` a
+ * `restart: unless-stopped` policy. So a cluster that fails the assertion
+ * aborts boot 1, Docker restarts it, and boot 2 skips every init script
+ * because pg_data is no longer empty. The stack then comes up healthy on a
+ * byte-ordered cluster, and nothing downstream notices: every extension the
+ * init file creates is also created `IF NOT EXISTS` by the Prisma migrations.
+ *
+ * This runs on EVERY boot, which is the property the init script cannot have.
+ * It only warns. Refusing to start would be the wrong trade — the collation
+ * cannot be corrected at runtime (it is baked into every text index in every
+ * tenant database), so a refusal turns a bad sort order into a total outage
+ * with no way out but a reindex. A librarian can work with Ω-first browsing
+ * for an afternoon; they cannot work with a dead server.
+ *
+ * Asserted as BEHAVIOUR, matching postgres-init.sql: under byte order 'άλφα'
+ * (U+03AC) sorts after 'Βιζυηνός' (U+0392); under ICU el-GR it sorts before,
+ * where the alphabet puts it.
+ */
+async function warnIfGreekSortsWrong(): Promise<void> {
+  try {
+    const rows = await controlDb.$queryRaw<Array<{ ok: boolean }>>`
+      SELECT ('άλφα' < 'Βιζυηνός') AS ok
+    `;
+    if (rows[0]?.ok) return;
+    console.error(
+      '[libriant-api] COLLATION: this cluster sorts Greek in byte order, not Greek order. ' +
+        'Every catalogue browse puts lowercase and accented titles after Ω. It cannot be ' +
+        'changed in place — the cluster must be rebuilt with ' +
+        'POSTGRES_INITDB_ARGS=--locale-provider=icu --icu-locale=el-GR --locale=C.UTF-8 ' +
+        '--encoding=UTF8 before libraries have data. See boot-and-config-14.',
+    );
+  } catch {
+    // A database that cannot answer this has larger problems, and /readyz is
+    // what reports them. Never let a diagnostic stop the process from booting.
+  }
 }
 
 /** Host + path of a connection URL. Credentials are dropped on purpose. */

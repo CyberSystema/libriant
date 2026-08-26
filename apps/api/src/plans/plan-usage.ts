@@ -66,5 +66,17 @@ export function breaches(rows: UsageRow[]): UsageRow[] {
   // sitting exactly on its cap is already unable to add the next book. An
   // operator told "nobody is over" about that library would be wrong on the
   // Monday morning this check exists to prevent.
-  return rows.filter((r) => !r.unlimited && r.used !== null && r.used >= r.limit);
+  //
+  // `used > 0` is the other half, and it is not a nicety. Starter's
+  // `max_custom_collections` is 0 — the feature is switched off, not a cap
+  // anyone has filled — so `0 >= 0` made every Starter library a breach.
+  // Driven against the 135 tenants on the audit control plane, the report came
+  // back `tenantsChecked: 135, overCap: 135, ok: false`, every one of them for
+  // that single line. A pre-flight that names every library is a pre-flight the
+  // operator scrolls past, and it hides the one library that really is over.
+  // A library holding none of a thing is not over its allowance for it; a
+  // library holding three collections on a plan that allows none still is, and
+  // that case is exactly what this check exists to find, so the test cannot be
+  // `limit > 0` either.
+  return rows.filter((r) => !r.unlimited && r.used !== null && r.used > 0 && r.used >= r.limit);
 }

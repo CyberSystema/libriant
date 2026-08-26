@@ -118,7 +118,7 @@ describe('legal acceptance evidence', () => {
     }
   });
 
-  it('records every document in the version, flagging the two actually presented', () => {
+  it('records every document in the version, flagging the ones actually presented', () => {
     const evidence = legalAcceptanceEvidence('el');
     expect(evidence.version).toBe(LEGAL_VERSION);
     expect(evidence.locale).toBe('el');
@@ -127,13 +127,25 @@ describe('legal acceptance evidence', () => {
     const presented = evidence.documents.filter((d) => d.presented).map((d) => d.slug);
     expect(presented).toEqual([...SIGNUP_CONSENT_DOCS]);
 
-    // The DPA is incorporated by reference rather than shown, and the record
-    // has to fingerprint it anyway — otherwise nobody can say later what the
-    // Article 28 agreement said on the day it was accepted.
+    // privacy-legal-13: the DPA is one of them now. It used to be flagged
+    // `presented: false` here — correctly, because the signup label linked the
+    // Terms and the Privacy Policy and nothing else, and the Article 28
+    // agreement reached the library only through Terms §5's incorporation by
+    // reference. The label is now built from SIGNUP_CONSENT_DOCS
+    // (apps/web/lib/consent-label.ts), so this flag and the screen cannot
+    // disagree.
     const dpa = evidence.documents.find((d) => d.slug === 'dpa');
-    expect(dpa?.presented).toBe(false);
+    expect(dpa?.presented).toBe(true);
     expect(dpa?.sha256).toBe(liveDigest('el', 'dpa'));
     expect(dpa?.archivePath).toBe(`docs/legal/accepted/${LEGAL_VERSION}/el/dpa.md`);
+
+    // A document that is still only incorporated by reference has to be
+    // fingerprinted all the same — otherwise nobody can say later what the
+    // Acceptable Use Policy said on the day the Terms that bind it were
+    // accepted.
+    const aup = evidence.documents.find((d) => d.slug === 'acceptable-use');
+    expect(aup?.presented).toBe(false);
+    expect(aup?.sha256).toBe(liveDigest('el', 'acceptable-use'));
   });
 
   it('will not mint evidence for a locale it was not told about', () => {

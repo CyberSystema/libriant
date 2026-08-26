@@ -98,17 +98,21 @@ export function EmailOutboxClient({
   return (
     <div style={{ display: 'grid', gap: 'var(--sp-4)' }}>
       {/*
-        The single most important sentence on the page. A row that says
-        "delivered" with a provider id looks exactly like a delivered email;
-        under the console driver it means the opposite. Say so above the table,
-        not in a footnote.
+        The single most important sentence on the page: the rows below are mail
+        nobody received. It used to say the rows were LABELLED "delivered" and
+        that the label was fabricated — true when it was written, and false
+        since privacy-legal-18 made the console driver report what it actually
+        did. Each row now reads `failed`, with no provider id and no delivery
+        time, which is the same warning in the table itself; this banner says it
+        once, above the table, because a librarian on the phone is looking at
+        the page, not at one row.
       */}
       {!list.delivering ? (
         <Banner severity="warning">
           <strong>Nothing on this page was delivered.</strong> EMAIL_DRIVER is{' '}
-          <code>{list.driver}</code>, so messages are composed and stored but never sent — the
-          &ldquo;delivered&rdquo; status and provider id below are fabricated by the console driver.
-          Open a message to read what the recipient would have seen, and pass it on yourself.
+          <code>{list.driver}</code>, so messages are composed and stored but never sent — each one
+          is recorded as <code>failed</code>, with no provider id and no delivery time. Open a
+          message to read what the recipient would have seen, and pass it on yourself.
         </Banner>
       ) : null}
 

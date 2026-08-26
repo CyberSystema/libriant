@@ -182,6 +182,23 @@ export class TenantResolverService {
     tenantId: string,
     data: Prisma.TenantUpdateInput,
   ): Promise<{ id: string; slug: string; name: string; status: TenantContext['status'] }> {
+    // The cache keys are derived from `slug` and `customSubdomain`, and BOTH
+    // are writable columns — so on a rename the row this write returns names
+    // the NEW keys, and the entry an existing process is serving from is filed
+    // under the OLD ones. Invalidating only the post-update values left the old
+    // slug resolving the pre-rename context for the full TTL: the trap laid
+    // inside the helper whose docblock says to prefer it to
+    // `controlDb.tenant.update` precisely so nobody has to think about this.
+    //
+    // Read before, invalidate both. The extra SELECT is paid only on the writes
+    // that touch a cached column — not on the branding and profile edits, which
+    // are the common ones.
+    const before = touchesCachedContext(data)
+      ? await controlDb.tenant.findUnique({
+          where: { id: tenantId },
+          select: { slug: true, customSubdomain: true },
+        })
+      : null;
     const row = await controlDb.tenant.update({
       where: { id: tenantId },
       data,
@@ -189,6 +206,9 @@ export class TenantResolverService {
     });
     if (touchesCachedContext(data)) {
       await this.invalidate({ slug: row.slug, customSubdomain: row.customSubdomain });
+      if (before && (before.slug !== row.slug || before.customSubdomain !== row.customSubdomain)) {
+        await this.invalidate(before);
+      }
     }
     return { id: row.id, slug: row.slug, name: row.name, status: row.status };
   }
