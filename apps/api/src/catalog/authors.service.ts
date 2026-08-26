@@ -1,8 +1,11 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@libriant/db-tenant';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { normalizeText } from './normalize.js';
+
+/** Prisma's unique-constraint violation. */
+const PRISMA_UNIQUE_VIOLATION = 'P2002';
 
 export type AuthorDto = {
   id: string;
@@ -69,18 +72,69 @@ export class AuthorsService {
     },
   ): Promise<AuthorDto> {
     const client = this.tenantPrisma.getClient(tenant);
-    const created = await client.author.create({
-      data: {
-        fullName: input.fullName,
-        sortName: normalizeText(input.fullName),
-        isOrganization: input.isOrganization ?? false,
-        birthYear: input.birthYear ?? null,
-        deathYear: input.deathYear ?? null,
-        notes: input.notes ?? null,
-        customFields: (input.customFields ?? {}) as Prisma.InputJsonValue,
-      },
+    const sortName = normalizeText(input.fullName);
+
+    // RETURN THE EXISTING AUTHOR RATHER THAN FAILING.
+    //
+    // `authors_sortname_unique_active` makes the accent-folded name the natural
+    // key, which is what makes the importer's deduplication real. But a
+    // librarian typing "ΓΙΩΡΓΟΣ ΣΕΦΕΡΗΣ" when "Γιώργος Σεφέρης" already exists
+    // folds to the same sortName, and a bare create then raised a Prisma error
+    // that HttpExceptionFilter — which is @Catch() and sees neither an
+    // HttpException nor a client status — re-skinned as a 500 with a support
+    // code. Adding the constraint without this turned an ordinary action into
+    // an incident.
+    //
+    // Returning the existing row is what the finding asks for and what the
+    // importer already does: two people typing the same name mean one author.
+    const existing = await client.author.findFirst({
+      where: { sortName, archivedAt: null },
     });
+    if (existing) return this.toDto(existing);
+
+    const created = await this.createRow(client, input, sortName);
     return this.toDto(created);
+  }
+
+  /**
+   * The insert itself, with the race the lookup above cannot close.
+   *
+   * Two requests can both find nothing and both insert. The constraint is the
+   * real arbiter — so catch its violation and return the row the winner wrote,
+   * rather than handing the loser a 500 for doing exactly what the other did.
+   */
+  private async createRow(
+    client: ReturnType<TenantPrismaService['getClient']>,
+    input: {
+      fullName: string;
+      isOrganization?: boolean;
+      birthYear?: number;
+      deathYear?: number;
+      notes?: string;
+      customFields?: Record<string, unknown>;
+    },
+    sortName: string,
+  ) {
+    try {
+      return await client.author.create({
+        data: {
+          fullName: input.fullName,
+          sortName,
+          isOrganization: input.isOrganization ?? false,
+          birthYear: input.birthYear ?? null,
+          deathYear: input.deathYear ?? null,
+          notes: input.notes ?? null,
+          customFields: (input.customFields ?? {}) as Prisma.InputJsonValue,
+        },
+      });
+    } catch (err) {
+      if ((err as { code?: string }).code !== PRISMA_UNIQUE_VIOLATION) throw err;
+      const winner = await client.author.findFirst({ where: { sortName, archivedAt: null } });
+      if (winner) return winner;
+      // The constraint fired but the row is not there — an archived collision,
+      // or the winner was rolled back. Rethrow rather than invent a result.
+      throw err;
+    }
   }
 
   async update(
@@ -112,7 +166,26 @@ export class AuthorsService {
       data.customFields = input.customFields as Prisma.InputJsonValue;
     }
     if (input.archived !== undefined) data.archivedAt = input.archived ? new Date() : null;
-    const updated = await client.author.update({ where: { id }, data });
+    // A RENAME ONTO AN EXISTING NAME IS A CONFLICT, NOT A CRASH.
+    //
+    // Same constraint, same 500: renaming an author to a name another active
+    // author already folds to raised a raw Prisma error that the exception
+    // filter turned into "something went wrong on our end" with a support code.
+    // The librarian's actual situation — two records for one person — is a
+    // thing they can act on, and the message has to say so.
+    let updated;
+    try {
+      updated = await client.author.update({ where: { id }, data });
+    } catch (err) {
+      if ((err as { code?: string }).code !== PRISMA_UNIQUE_VIOLATION) throw err;
+      throw new ConflictException({
+        code: 'catalog.authorNameTaken',
+        message:
+          'Another author already has that name. Names are matched ignoring accents and case, so ' +
+          '"Γιώργος Σεφέρης" and "ΓΙΩΡΓΟΣ ΣΕΦΕΡΗΣ" count as the same. Merge the two records or ' +
+          'choose a different name.',
+      });
+    }
     return this.toDto(updated);
   }
 

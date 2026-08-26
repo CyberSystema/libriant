@@ -128,13 +128,28 @@ BEGIN
         -- `reservations_ready_after_placed` wants readyAt >= placedAt and
         -- `reservations_expires_after_ready` wants expiresAt > readyAt. Keeping
         -- the original readyAt (or falling back to placedAt) satisfies the
-        -- first; a deadline measured from NOW satisfies the second and is also
-        -- the fair answer — the pickup window starts when the patron could
-        -- actually have been told.
+        -- first; the deadline satisfies the second and is also the fair answer —
+        -- the pickup window starts when the patron could actually have been told.
+        --
+        -- MEASURED FROM GREATEST(now, readyAt), NOT FROM now.
+        --
+        -- A bare `now + pickup_hours` is only greater than readyAt while readyAt
+        -- is in the PAST, and the old importer could write a hold dated in the
+        -- future: an orphan `ready` row with readyAt 400 days ahead made this
+        -- statement violate reservations_expires_after_ready and abort the whole
+        -- migration — taking the next migration with it, since Prisma stops at
+        -- the first failure. A repair that bricks a customer's upgrade is worse
+        -- than the rows it was written to repair.
+        --
+        -- readyAt is deliberately NOT clamped back to now. placedAt can be in
+        -- the future on the same corrupt row, and readyAt >= placedAt is the
+        -- constraint that would then break instead. pickup_hours is floored at 1
+        -- above, so the result is strictly greater either way.
         UPDATE reservations
            SET "fulfilledByCopyId" = copy_id,
                "readyAt"   = COALESCE("readyAt", "placedAt"),
-               "expiresAt" = stamp_utc + (pickup_hours || ' hours')::interval,
+               "expiresAt" = GREATEST(stamp_utc, COALESCE("readyAt", "placedAt"))
+                             + (pickup_hours || ' hours')::interval,
                "queuePosition" = NULL,
                "updatedAt" = stamp_utc
          WHERE id = hold.id;

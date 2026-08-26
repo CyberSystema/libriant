@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { controlDb, type ImportBatch, type ImportEntityKind } from '@libriant/db-control';
+import { controlDb, Prisma, type ImportBatch, type ImportEntityKind } from '@libriant/db-control';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { ImportQueueService } from './import-queue.service.js';
 import { deleteStaged, stageFile } from './import-staging.js';
@@ -43,6 +43,13 @@ export type UploadInput = {
 
 export type BatchDto = ReturnType<ImportService['toDto']>;
 
+/**
+ * How long an inserted-but-unwritten batch holds its staging slot. Long enough
+ * to cover a large upload's disk write, short enough that a crashed request
+ * does not park a slot until someone notices.
+ */
+const STAGING_RESERVATION_TTL_MS = 10 * 60 * 1000;
+
 @Injectable()
 export class ImportService {
   constructor(@Inject(ImportQueueService) private readonly queue: ImportQueueService) {}
@@ -55,7 +62,9 @@ export class ImportService {
     // this is the only thing standing between a retry loop and a full shared
     // volume — and the volume is shared with every other library's covers and
     // with the export artifacts.
-    await this.assertStagingBudget(tenant, input.file.buffer.byteLength);
+    // The budget is no longer checked here. See reserveBatch(): the check and
+    // the row that consumes it have to happen under one lock, or a burst of
+    // concurrent uploads all read the same pre-burst total and all pass.
     const format = this.resolveFormat(input.format, input.file);
     const noHeader = input.hasHeader === false;
 
@@ -87,27 +96,25 @@ export class ImportService {
     }
 
     const mapping = autoMap(entityKind, preview.columns);
-    const batch = await controlDb.importBatch.create({
-      data: {
-        tenantId: tenant.id,
-        entityKind,
-        format,
-        status: 'uploaded',
-        originalName: input.file.originalname.slice(0, 255),
-        stagingPath: '',
-        sizeBytes: input.file.buffer.byteLength,
-        encoding: preview.meta.encoding ?? null,
-        delimiter: preview.meta.delimiter ?? null,
-        sheetName: preview.meta.sheetName ?? null,
-        hasHeaderRow: !noHeader,
-        columnsJson: {
-          columns: preview.columns,
-          sample: preview.rows.slice(0, 10),
-          availableSheets: preview.meta.availableSheets ?? [],
-        } as object,
-        mappingJson: mapping as object,
-        duplicateMode: 'skip',
-      },
+    const batch = await this.reserveBatch(tenant, input.file.buffer.byteLength, {
+      tenantId: tenant.id,
+      entityKind,
+      format,
+      status: 'uploaded',
+      originalName: input.file.originalname.slice(0, 255),
+      stagingPath: '',
+      sizeBytes: input.file.buffer.byteLength,
+      encoding: preview.meta.encoding ?? null,
+      delimiter: preview.meta.delimiter ?? null,
+      sheetName: preview.meta.sheetName ?? null,
+      hasHeaderRow: !noHeader,
+      columnsJson: {
+        columns: preview.columns,
+        sample: preview.rows.slice(0, 10),
+        availableSheets: preview.meta.availableSheets ?? [],
+      } as object,
+      mappingJson: mapping as object,
+      duplicateMode: 'skip',
     });
     const stagingPath = await stageFile(batch.id, stagingExtFor(format), input.file.buffer);
     const updated = await controlDb.importBatch.update({
@@ -288,16 +295,58 @@ export class ImportService {
    * behaviour that fills the volume. The message tells the librarian which
    * lever to pull.
    */
-  private async assertStagingBudget(tenant: TenantContext, incomingBytes: number): Promise<void> {
-    const staged = await controlDb.importBatch.findMany({
+  /**
+   * Take the staging slot AND create the row that occupies it, under one lock.
+   *
+   * This used to be a bare read-then-write: count the staged batches, then
+   * return, then create the row much later. Two things made that advisory
+   * rather than enforced. Concurrent requests all read the same pre-burst
+   * total and all passed — measured at 30 uploads accepted against a cap of 3.
+   * And the count only saw rows whose `stagingPath` was already set, which
+   * happens AFTER the file is written, so even a serial burst was invisible to
+   * itself for the length of a disk write.
+   *
+   * Now the ROW is the reservation: it is inserted inside the same transaction
+   * that counted, behind `pg_advisory_xact_lock` on the tenant, which is the
+   * shape LoansService already uses for per-member and per-book contention.
+   * The lock is per tenant, so one library's uploads never block another's.
+   *
+   * In-flight rows (stagingPath still empty) count against the budget, because
+   * their bytes are about to land on the same volume — but only for
+   * STAGING_RESERVATION_TTL_MS, so an upload that died between the insert and
+   * the write does not hold a slot for ever.
+   */
+  private async reserveBatch(
+    tenant: TenantContext,
+    incomingBytes: number,
+    data: Prisma.ImportBatchUncheckedCreateInput,
+  ) {
+    return controlDb.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`import-staging:${tenant.id}`}, 0))`;
+      await this.assertStagingBudget(tx, tenant, incomingBytes);
+      return tx.importBatch.create({ data });
+    });
+  }
+
+  private async assertStagingBudget(
+    tx: Prisma.TransactionClient,
+    tenant: TenantContext,
+    incomingBytes: number,
+  ): Promise<void> {
+    const inFlightSince = new Date(Date.now() - STAGING_RESERVATION_TTL_MS);
+    const staged = await tx.importBatch.findMany({
       where: {
         tenantId: tenant.id,
         status: { in: [...IMPORT_STAGED_STATUSES] },
-        NOT: { stagingPath: '' },
+        OR: [
+          { NOT: { stagingPath: '' } },
+          // Reserved but not yet written. Counted so a burst sees itself.
+          { stagingPath: '', createdAt: { gte: inFlightSince } },
+        ],
       },
       select: { sizeBytes: true },
     });
-    const stagedBytes = staged.reduce((n, b) => n + b.sizeBytes, 0);
+    const stagedBytes = staged.reduce((n: number, b: { sizeBytes: number }) => n + b.sizeBytes, 0);
     const mb = (bytes: number) => Math.max(1, Math.round(bytes / (1024 * 1024)));
 
     if (staged.length >= IMPORT_MAX_STAGED_BATCHES) {
