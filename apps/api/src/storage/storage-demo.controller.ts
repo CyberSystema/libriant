@@ -21,7 +21,7 @@ import { controlDb } from '@libriant/db-control';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
+import { Roles, StaffWrite } from '../tenancy/roles.decorator.js';
 import { TenantResolverService } from '../tenancy/tenant-resolver.service.js';
 import { loadEnv } from '../config/env.js';
 import { StorageService } from './storage.service.js';
@@ -77,8 +77,14 @@ export class StorageDemoController {
 
   // -------- Authenticated uploads / downloads ----------------------------
 
+  // authn-authz-06: this was @UseGuards(TenantGuard) alone while the DELETE
+  // below already had RolesGuard — so the read-only `volunteer` role could
+  // upload but not remove. Per-handler rather than class-level here, unlike the
+  // photo and cover controllers, because this class also serves genuine reads
+  // (signed downloads) that every staff role is entitled to.
   @Post('t/:slug/storage/:resourceType')
-  @UseGuards(TenantGuard)
+  @UseGuards(TenantGuard, RolesGuard)
+  @StaffWrite()
   @UseInterceptors(
     FileInterceptor('file', { limits: { fileSize: loadEnv().storageMaxUploadBytes } }),
   )

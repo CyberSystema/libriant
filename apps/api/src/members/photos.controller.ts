@@ -13,6 +13,8 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
+import { RolesGuard } from '../tenancy/roles.guard.js';
+import { StaffWrite } from '../tenancy/roles.decorator.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { loadEnv } from '../config/env.js';
@@ -26,8 +28,19 @@ import { loadEnv } from '../config/env.js';
  *   POST   /t/:slug/members/:id/photo    (multipart `file`)
  *   DELETE /t/:slug/members/:id/photo
  */
+// authn-authz-06: the class carried @UseGuards(TenantGuard) alone, so the
+// read-only `volunteer` role could upload and delete. Proved by execution: a
+// real volunteer account got 403 from POST /t/:slug/members (a @StaffWrite
+// route) and 201 from this one.
+//
+// The guard is at CLASS level deliberately. Every handler here is a write —
+// there are no reads to exempt — so a handler added later inherits the
+// restriction instead of needing someone to remember it, which is how these
+// three routes came to differ from the rest of the tenant surface in the first
+// place.
 @Controller('t/:slug/members/:id/photo')
-@UseGuards(TenantGuard)
+@UseGuards(TenantGuard, RolesGuard)
+@StaffWrite()
 export class MemberPhotosController {
   constructor(
     @Inject(StorageService) private readonly storage: StorageService,
