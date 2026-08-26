@@ -75,10 +75,19 @@ export class ApplicationsController {
     }
 
     // Throttle AFTER validation, exactly where the Worker had it: an honest
-    // typo should not burn someone's hourly budget. Fails open — a Redis
-    // outage must never eat a lead.
-    if (await this.svc.isRateLimited(clientIp(req))) {
-      this.send(res, 429, lang, parsed, E.rateLimited);
+    // typo should not burn someone's hourly budget. The per-visitor bucket
+    // still fails open — a Redis outage must never eat a lead — with a
+    // platform-wide ceiling behind it that fails closed (input-and-files-10).
+    const verdict = await this.svc.throttle(clientIp(req));
+    if (verdict !== 'ok') {
+      // A 'global' refusal is not this visitor's doing, so don't answer them
+      // with "we have already had several submissions from you" — that reads as
+      // an accusation and tells them to wait an hour for something that may
+      // clear in seconds. The honest copy we have names the escape hatch (write
+      // to us at this address); a string of its own belongs in
+      // apps/site/src/copy.ts alongside the others.
+      const message = verdict === 'ip' ? E.rateLimited : E.saveFailed(config.identity.contactEmail);
+      this.send(res, 429, lang, parsed, message);
       return;
     }
 

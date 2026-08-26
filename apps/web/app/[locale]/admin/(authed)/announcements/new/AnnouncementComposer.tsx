@@ -2,11 +2,11 @@
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Banner,
   Button,
   Card,
   CardBody,
   CardHeader,
+  FormError,
   FormField,
   Input,
   Textarea,
@@ -127,11 +127,7 @@ export function AnnouncementComposer({ tenants, plans, knownTags }: Props) {
 
   return (
     <form onSubmit={submit}>
-      {error ? (
-        <Banner severity="critical" style={{ marginBottom: 'var(--sp-3)' }}>
-          {error}
-        </Banner>
-      ) : null}
+      <FormError style={{ marginBottom: 'var(--sp-3)' }}>{error}</FormError>
 
       <Card style={{ marginBottom: 'var(--sp-4)' }}>
         <CardHeader title="Message" />

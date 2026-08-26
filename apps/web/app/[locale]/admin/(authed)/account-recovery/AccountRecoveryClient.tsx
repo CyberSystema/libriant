@@ -7,6 +7,7 @@ import {
   CardBody,
   CardHeader,
   EmptyState,
+  FormError,
   FormField,
   Input,
 } from '@libriant/ui';
@@ -186,7 +187,7 @@ export function AccountRecoveryClient() {
         </CardBody>
       </Card>
 
-      {error ? <Banner severity="critical">{error}</Banner> : null}
+      <FormError>{error}</FormError>
       {notice ? <Banner severity="success">{notice}</Banner> : null}
 
       {link ? (

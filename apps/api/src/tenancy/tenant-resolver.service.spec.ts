@@ -4,13 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // `vi.hoisted` exposes the mock fns to the (also-hoisted) `vi.mock`
 // factory — direct top-level consts would still be in the TDZ when the
 // factory runs.
-const { findUnique, findFirst } = vi.hoisted(() => ({
+const { findUnique, findFirst, update } = vi.hoisted(() => ({
   findUnique: vi.fn(),
   findFirst: vi.fn(),
+  update: vi.fn(),
 }));
 vi.mock('@libriant/db-control', () => ({
   controlDb: {
-    tenant: { findUnique, findFirst },
+    tenant: { findUnique, findFirst, update },
   },
 }));
 
@@ -285,5 +286,120 @@ describe('TenantResolverService with Redis unavailable', () => {
     const service = new TenantResolverService(deadRedis() as never);
 
     await expect(service.invalidate({ slug: 'acme' })).rejects.toThrow(/Stream isn't writeable/);
+  });
+});
+
+/**
+ * tenant-isolation-05 / -07: the write-through path. `invalidate()` works and
+ * always has — what kept failing is a caller writing the row and not calling
+ * it, so what these cover is that the resolver decides, from the column list
+ * the cache is built out of, rather than the caller remembering.
+ */
+describe('TenantResolverService.updateTenant', () => {
+  beforeEach(() => {
+    findUnique.mockReset();
+    findFirst.mockReset();
+    update.mockReset();
+  });
+
+  it('drops the cached context when the write touches a cached column', async () => {
+    const redis = makeFakeRedis();
+    const service = new TenantResolverService({ client: redis.client } as never);
+    findUnique.mockResolvedValue(tenantRow());
+    await service.resolveBySlug('acme');
+    expect(redis.store.has('tenant:slug:acme')).toBe(true);
+
+    update.mockResolvedValue({
+      id: 'tnt-1',
+      slug: 'acme',
+      name: 'Renamed Library',
+      status: 'active',
+      customSubdomain: 'acme',
+    });
+    await service.updateTenant('tnt-1', { name: 'Renamed Library' });
+
+    // Both keys the tenant could be reached by, not just the slug one.
+    expect(redis.store.has('tenant:slug:acme')).toBe(false);
+    expect(redis.store.has('tenant:sub:acme')).toBe(false);
+    // …and the next resolve re-reads the row, so the new name is served at once.
+    findUnique.mockResolvedValue(tenantRow({ name: 'Renamed Library' }));
+    expect((await service.resolveBySlug('acme'))?.name).toBe('Renamed Library');
+  });
+
+  it('leaves the cache alone for a column the context never carried', async () => {
+    const redis = makeFakeRedis();
+    const del = vi.spyOn(redis.client, 'del');
+    const service = new TenantResolverService({ client: redis.client } as never);
+    findUnique.mockResolvedValue(tenantRow());
+    await service.resolveBySlug('acme');
+
+    update.mockResolvedValue({
+      id: 'tnt-1',
+      slug: 'acme',
+      name: 'Acme Public Library',
+      status: 'active',
+      customSubdomain: null,
+    });
+    await service.updateTenant('tnt-1', { publicPhone: '+30 210 0000000' });
+
+    // A library editing its public phone number is a common, unremarkable
+    // write; making it evict every process's tenant context would trade one
+    // bug for a needless control-DB read on the next request everywhere.
+    expect(del).not.toHaveBeenCalled();
+    expect(redis.store.has('tenant:slug:acme')).toBe(true);
+  });
+
+  it('never selects the tenant addresses back out of the row it writes', async () => {
+    const redis = makeFakeRedis();
+    const service = new TenantResolverService({ client: redis.client } as never);
+    update.mockResolvedValue({
+      id: 'tnt-1',
+      slug: 'acme',
+      name: 'Acme Public Library',
+      status: 'suspended',
+      customSubdomain: null,
+    });
+
+    const result = await service.updateTenant('tnt-1', { status: 'suspended' });
+
+    // tenant-isolation-03: `dbUrl` is the fleet's superuser credential. A
+    // helper this central must not hand it back for a caller to log or return.
+    const select = update.mock.calls[0]?.[0]?.select ?? {};
+    expect(select).not.toHaveProperty('dbUrl');
+    expect(select).not.toHaveProperty('storageUrl');
+    expect(result).not.toHaveProperty('dbUrl');
+    expect(result.status).toBe('suspended');
+  });
+});
+
+describe('TenantResolverService.invalidateById', () => {
+  beforeEach(() => {
+    findUnique.mockReset();
+    findFirst.mockReset();
+    update.mockReset();
+  });
+
+  it('resolves the keys from the row so a post-commit caller needs only the id', async () => {
+    const redis = makeFakeRedis();
+    redis.store.set('tenant:slug:acme', '{}');
+    redis.store.set('tenant:sub:acme-lib', '{}');
+    const service = new TenantResolverService({ client: redis.client } as never);
+    findUnique.mockResolvedValue({ slug: 'acme', customSubdomain: 'acme-lib' });
+
+    await service.invalidateById('tnt-1');
+
+    expect(redis.store.has('tenant:slug:acme')).toBe(false);
+    expect(redis.store.has('tenant:sub:acme-lib')).toBe(false);
+  });
+
+  it('is a no-op for a tenant that no longer exists', async () => {
+    const redis = makeFakeRedis();
+    const del = vi.spyOn(redis.client, 'del');
+    const service = new TenantResolverService({ client: redis.client } as never);
+    findUnique.mockResolvedValue(null);
+
+    await service.invalidateById('gone');
+
+    expect(del).not.toHaveBeenCalled();
   });
 });

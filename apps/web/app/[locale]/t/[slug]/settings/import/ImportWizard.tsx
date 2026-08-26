@@ -1,6 +1,6 @@
 'use client';
 import * as React from 'react';
-import { Banner, Button, Card, CardBody, CardHeader, EmptyState } from '@libriant/ui';
+import { Banner, Button, Card, CardBody, CardHeader, EmptyState, FormError } from '@libriant/ui';
 import { createTranslator, type Catalog, type Locale } from '@libriant/i18n';
 import { API_JOB_TIMEOUT_MS, ApiError, api } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
@@ -247,7 +247,7 @@ export function ImportWizard({ catalog, locale, slug, entities, initialBatches }
   // ---- render -------------------------------------------------------------
   return (
     <div style={{ display: 'grid', gap: 'var(--sp-4)' }}>
-      {error ? <Banner severity="critical">{error}</Banner> : null}
+      <FormError>{error}</FormError>
 
       {!detail ? (
         <UploadForm

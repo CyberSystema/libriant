@@ -13,12 +13,23 @@
  *   7. Verify the destination is reachable + non-empty
  *   8. Update tenants.db_url + cell_id in the control DB
  *   9. Bust the TenantResolver Redis cache (key: tenant:slug:<slug>)
- *  10. End the read_only window
+ *  10. Drain post-cutover stragglers
+ *  11. End the read_only window
+ *  12. Lift the source's DB-level read-only fence — LAST (data-integrity-08)
+ *
+ * Steps 8–12 are an order, not a list. The fence used to come off between 7
+ * and 8, which meant the tenant still resolved to the source while the source
+ * had become writable again — see the comment on step 12 for the rows that
+ * cost.
  *
  * If anything between steps 3 and 7 fails, the tenant stays on the source
  * DB and the read_only window stays open for an admin to inspect. The
  * source DB is left intact — call `--drop-source` manually after a
  * post-migration probe to free the disk.
+ *
+ * This script fences, restores over, and can drop databases, so it refuses to
+ * run against a cluster that is not on this machine unless you pass
+ * `--allow-remote`. Every production run needs that flag.
  *
  *   ENV:
  *     CONTROL_DATABASE_URL  — control-plane DB
@@ -29,10 +40,11 @@
  *       --tenant=acme \
  *       --to-db-url='postgresql://lib:pw@cell-02.lan:5432/' \
  *       --to-cell=cell-02 \
+ *       --allow-remote \
  *       --dry-run
  *
  *     # After verifying the new home is healthy, optionally:
- *     pnpm tenant:relocate -- --tenant=acme --drop-source
+ *     pnpm tenant:relocate -- --tenant=acme --drop-source --allow-remote --yes
  */
 import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -63,6 +75,11 @@ const args = parseArgs({
     // Seconds to wait after opening read_only for in-flight writers to drain
     // before pg_dump (must exceed the system-mode cache TTL of 30s).
     'drain-seconds': { type: 'string' },
+    // Seconds to wait AFTER the cutover before the source stops being fenced.
+    'cutover-drain-seconds': { type: 'string' },
+    // Consent to point this script at a Postgres cluster that is not on this
+    // machine. See `assertLocalCluster`.
+    'allow-remote': { type: 'boolean' },
   },
   required: ['tenant'] as const,
 });
@@ -70,11 +87,83 @@ const args = parseArgs({
 /** System-mode cache TTL is 30s; default drain margin gives headroom. */
 const DEFAULT_DRAIN_SECONDS = 35;
 
+/**
+ * How long the source stays fenced AFTER the control plane has been moved and
+ * the resolver cache busted (data-integrity-08).
+ *
+ * It only has to outlive work that had ALREADY resolved the old address when
+ * the cache was busted, which is two bounded things:
+ *
+ *   - an HTTP request holding a `TenantContext` it resolved a moment ago, and
+ *   - `TenantResolverService`'s degraded memo, which holds a resolved context
+ *     in-process for DEGRADED_MEMO_MS = 5 s, but only along the path where a
+ *     Redis read THREW.
+ *
+ * NOT the tenant cache TTL (TENANT_CACHE_TTL_SEC, 300 s), which is what this
+ * was first written as. That would fence a library's database for five minutes
+ * after it had already been moved, for nothing: the per-process address map in
+ * tenant-resolver.service.ts is consulted ONLY after a positive Redis hit
+ * (`resolveCached`, and the comment above it says so), so the DEL that
+ * `bustResolverCache` issues forces every process to re-read the control plane
+ * on its very next request. There is no straggler holding the old URL for a
+ * TTL — the audit's "any API process still holding a cached tenant client"
+ * does not exist.
+ */
+const DEFAULT_CUTOVER_DRAIN_SECONDS = 15;
+
+/**
+ * Hostnames that mean "this machine". Anything else is somebody's production.
+ */
+const LOCAL_PG_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0']);
+
+function pgHost(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '(unparseable)';
+  }
+}
+
+/**
+ * Refuse to touch a Postgres cluster that is not on this machine unless the
+ * operator says so on the command line.
+ *
+ * This script fences a live database read-only, restores over a database with
+ * `pg_restore --clean`, and — under `--drop-source` — issues DROP DATABASE.
+ * Every one of those is unrecoverable, and the only thing that decides which
+ * cluster receives them is a URL typed into a flag or sitting in an env var
+ * from another shell. The relocation family has already produced one
+ * data-destroying footgun (`--drop-source` dropping the tenant's LIVE database,
+ * REL-001), so the bar here is that reaching production must be a deliberate
+ * act rather than the default.
+ *
+ * `--allow-remote` is the deliberate act. It is not a safety you can forget to
+ * turn on: without it the script stops before it has touched anything.
+ */
+function assertLocalCluster(what: string, url: string, allowRemote: boolean): void {
+  const host = pgHost(url);
+  if (LOCAL_PG_HOSTS.has(host)) return;
+  if (allowRemote) {
+    log(SCRIPT, `--allow-remote: proceeding against NON-LOCAL ${what} at ${host}.`);
+    return;
+  }
+  die(
+    SCRIPT,
+    `refusing to run against a non-local cluster: ${what} resolves to host "${host}". ` +
+      'This script fences a database read-only, restores over one with --clean, and can ' +
+      'DROP DATABASE. Re-run with --allow-remote once you have read the host above and ' +
+      'meant it.',
+  );
+}
+
 async function main() {
   const v = args.values as Record<string, string | boolean | undefined>;
   const slug = String(v.tenant);
   const dryRun = isYes(v['dry-run']);
   const dropSourceMode = isYes(v['drop-source']);
+  const allowRemote = isYes(v['allow-remote']);
+
+  assertLocalCluster('CONTROL_DATABASE_URL', process.env.CONTROL_DATABASE_URL ?? '', allowRemote);
 
   const tenant = await controlDb.tenant.findUnique({
     where: { slug },
@@ -82,14 +171,17 @@ async function main() {
   });
   if (!tenant) die(SCRIPT, `tenant "${slug}" not found.`);
 
+  assertLocalCluster(`tenant "${slug}" live database`, tenant.dbUrl, allowRemote);
+
   if (dropSourceMode) {
-    return dropSource(tenant, v);
+    return dropSource(tenant, v, allowRemote);
   }
 
   const targetHostUrl = v['to-db-url']
     ? String(v['to-db-url'])
     : die(SCRIPT, '--to-db-url is required (use --drop-source for post-cutover cleanup).');
   const newCellId = v['to-cell'] ? String(v['to-cell']) : tenant.cellId;
+  assertLocalCluster('--to-db-url destination', targetHostUrl, allowRemote);
 
   const dbName = dbNameForTenant(tenant.id);
   const newDbUrl = urlForDb(targetHostUrl, dbName);
@@ -154,23 +246,6 @@ async function main() {
     log(SCRIPT, 'verifying destination…');
     await verifyDestination(newDbUrl);
 
-    // REL-002: the tenant now lives on the destination DB, so the read-only
-    // fence we set on the SOURCE at the Postgres level is no longer needed and,
-    // if left, would silently reject writes (opaque 500s) should the operator
-    // ever reuse the old DB or relocate back without manually RESETting it. The
-    // source is no longer referenced, so lifting the fence here is harmless.
-    // (--drop-source remains the intended terminal step to free the disk.)
-    log(SCRIPT, 'lifting source read-only fence (tenant now on destination)…');
-    let sourceUnfenced = true;
-    await unfenceSource(tenant.dbUrl, dbName).catch((e) => {
-      sourceUnfenced = false;
-      log(
-        SCRIPT,
-        `warning: could not lift source read-only fence (lift it manually with ` +
-          `ALTER DATABASE "${dbName}" RESET default_transaction_read_only): ${(e as Error).message}`,
-      );
-    });
-
     log(SCRIPT, 'updating control plane (db_url + cell_id)…');
     await controlDb.$transaction(async (tx: Prisma.TransactionClient) => {
       await tx.tenant.update({
@@ -187,12 +262,15 @@ async function main() {
           // beforeJson.dbUrl is the OLD host — --drop-source reads it to know
           // which DB to delete. Do not change its shape.
           beforeJson: { dbUrl: tenant.dbUrl, cellId: tenant.cellId },
-          // REL-002: record the fence disposition so an operator can find/lift
-          // it if the automatic unfence above failed.
+          // REL-002: name the fenced database, because at the instant this row
+          // is written the SOURCE is still fenced read-only — the fence is now
+          // the last thing this script lifts (see below). A run that dies
+          // between here and the end leaves it on, and this is where an
+          // operator finds which database to RESET.
           afterJson: {
             dbUrl: newDbUrl,
             cellId: newCellId,
-            sourceReadOnlyFenceLifted: sourceUnfenced,
+            sourceReadOnlyFencedDb: dbName,
           },
         },
       });
@@ -201,8 +279,41 @@ async function main() {
     log(SCRIPT, 'busting TenantResolver cache…');
     await bustResolverCache(tenant.slug, tenant.customSubdomain);
 
+    // data-integrity-08: the DB-level fence on the SOURCE comes off LAST — after
+    // the control plane names the destination, after the resolver cache has been
+    // busted, and after a drain for whatever had already resolved the old
+    // address. It used to come off FIRST, immediately after verifyDestination
+    // and before all three of those, which left a window in which the tenant
+    // still resolved to the source AND the source accepted writes again. That
+    // is not theoretical: driving a real relocation with a worker-shaped writer
+    // attached (a fresh session per attempt, straight at the tenant DB, exactly
+    // what the retention/notification sweeps do) put 11 rows into the source in
+    // the 151 ms between the old unfence and the cache bust, with
+    // `tenants.dbUrl` still naming the source at the instant of the first one.
+    // Those rows were behind the pg_dump and were simply not at the destination
+    // afterwards — 68 rows on the source, 56 on the destination, no
+    // reconciliation step anywhere.
+    //
+    // Order within the tail matters too: close the read_only window BEFORE
+    // unfencing, so ordinary HTTP writes resume against the destination while
+    // the abandoned source is still incapable of accepting one.
+    const cutoverDrainSeconds = v['cutover-drain-seconds']
+      ? Number(v['cutover-drain-seconds'])
+      : DEFAULT_CUTOVER_DRAIN_SECONDS;
+    log(SCRIPT, `draining post-cutover stragglers for ${cutoverDrainSeconds}s…`);
+    await sleep(cutoverDrainSeconds * 1000);
+
     log(SCRIPT, 'closing read_only window…');
     await closeEvent(modeEvent.id);
+
+    log(SCRIPT, 'lifting source read-only fence (last, on purpose)…');
+    await unfenceSource(tenant.dbUrl, dbName).catch((e) => {
+      log(
+        SCRIPT,
+        `warning: could not lift source read-only fence (lift it manually with ` +
+          `ALTER DATABASE "${dbName}" RESET default_transaction_read_only): ${(e as Error).message}`,
+      );
+    });
 
     log(SCRIPT, 'done. Probe the new home, then re-run with --drop-source to delete the old DB.');
   } catch (err) {
@@ -235,6 +346,7 @@ async function main() {
 async function dropSource(
   tenant: { id: string; slug: string; dbUrl: string },
   v: Record<string, string | boolean | undefined>,
+  allowRemote: boolean,
 ) {
   const dbName = dbNameForTenant(tenant.id);
   if (!/^tenant_[a-z0-9_]+$/.test(dbName)) {
@@ -265,6 +377,10 @@ async function dropSource(
         'Pass the old host explicitly with --from-db-url, and double-check it.',
     );
   }
+
+  // The DROP lands on THIS url, which is read out of an audit row or a flag and
+  // has been wrong before (REL-001). Check it against the local-cluster bar too.
+  assertLocalCluster('--drop-source target', sourceUrl, allowRemote);
 
   // SAFETY NET: never drop the host the tenant currently lives on. This blocks
   // the post-cutover footgun, a failed relocation (tenant still on source), and

@@ -25,7 +25,36 @@
 # and update apps/web/Dockerfile + infra/caddy/Dockerfile in the same commit.
 FROM node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019 AS base
 # postgresql-client provides pg_dump for the SQL-format database export.
-RUN apk add --no-cache openssl tini postgresql-client
+#
+# launch-readiness-14: the client major is PINNED to the server major, and the
+# pin is asserted rather than assumed. `postgresql-client` is a meta-package
+# that resolves to whatever major the base image's Alpine release defaults to,
+# so the client floated upward with every re-resolution of the node:26-alpine
+# digest above while the server stayed on postgres:16-alpine
+# (infra/compose/docker-compose.prod.yml:376). A newer client dumping an older
+# server writes its own settings into the header: a pg_dump 18 dump opens with
+# `SET transaction_timeout = 0;`, which 16 does not know. Measured against this
+# project's Postgres 16.15, restoring such a file with plain `psql -f` prints
+# the error and carries on (exit 0), but `psql -v ON_ERROR_STOP=1 -f` — what a
+# careful technician uses — stops on that line and exits 3 having restored
+# nothing. apps/site tells libraries the SQL export "restores into any
+# PostgreSQL installation"; that promise gets tested on the worst day they will
+# ever have, and nothing in CI restores an export.
+#
+# The `case` is not decoration. Alpine puts the binaries under
+# /usr/libexec/postgresql16 and reaches /usr/bin/pg_dump through
+# postgresql-common's version-dispatching wrapper, so the package name alone
+# does not settle which major actually answers. This asserts it inside the
+# image, at build time, on every build — including verify.yml's image-contents
+# job, which builds this Dockerfile on every run. If postgresql16-client is ever
+# dropped from Alpine, this line fails loudly at build time; move the server and
+# both numbers together rather than un-pinning the client.
+RUN apk add --no-cache openssl tini postgresql16-client \
+ && case "$(pg_dump --version)" in \
+      *' 16.'*) pg_dump --version ;; \
+      *) echo "pg_dump is not major 16: $(pg_dump --version) — see launch-readiness-14" >&2; \
+         exit 1 ;; \
+    esac
 # Pin corepack's cache to a SHARED, world-readable location instead of the
 # per-user default (~/.cache/node/corepack). The migrate one-shot runs `pnpm`
 # via corepack as the non-root `node` user (INFRA-4); without a warm cache it

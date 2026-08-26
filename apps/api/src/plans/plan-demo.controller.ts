@@ -12,25 +12,22 @@ import {
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { controlDb } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { RolesGuard } from '../tenancy/roles.guard.js';
 import { Roles } from '../tenancy/roles.decorator.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
-import { EffectivePlanService } from './effective-plan.service.js';
 import { PlanGuard } from './plan.guard.js';
 import { QuotaInterceptor } from './quota.interceptor.js';
 import { RequiresFeature, RequiresQuota } from './decorators.js';
-import { countUsage, KNOWN_QUOTA_KEYS } from './quota-counters.js';
 
 /**
- * PQF-1: this controller is a developer smoke-test for the plan layer. One of
- * its routes (`POST /demo/books`) performs a REAL, unvalidated book write that
- * bypasses the race-safe quota authority (BooksService.create's enforceWithinTx)
- * and the others dump raw plan/override internals — none of it should be
- * reachable in production.
+ * PQF-1: this controller is a developer smoke-test for the plan layer. Its
+ * `POST /demo/books` route performs a REAL, unvalidated book write that
+ * bypasses the race-safe quota authority (BooksService.create's
+ * enforceWithinTx) — that must not be reachable in production, and it is the
+ * whole reason the guard below exists.
  *
  * The clean fix is to not register the controller in a prod build, but that
  * lives in PlansModule. As a self-contained guard, every demo route is gated by
@@ -52,62 +49,31 @@ export class NonProductionOnlyGuard implements CanActivate {
 }
 
 /**
- * Tenant-scoped endpoints that expose the plan layer for the UI and that
- * exercise the guard + interceptor end-to-end.
+ * Tenant-scoped endpoints that exercise the guard + interceptor end-to-end.
  *
- *   GET  /t/:slug/plan                — full effective plan (with sources)
- *   GET  /t/:slug/plan/usage          — counters vs. effective limits
  *   GET  /t/:slug/demo/reservations   — gated by `reservations_enabled`
  *   POST /t/:slug/demo/books          — gated by `max_books`
  *
  * The real catalog/members controllers (Step 11+) will use the same
  * decorators against their real DTOs; this controller is just the
  * end-to-end smoke test until they land.
+ *
+ * `GET /t/:slug/plan` and `GET /t/:slug/plan/usage` used to be here too, and
+ * were 404 in production as collateral damage from the guard above — a library
+ * could not see its own numbers anywhere in the product (launch-readiness-17).
+ * They now live on `PlanUsageController`, which carries no demo write and so
+ * needs no production gate.
  */
 @Controller('t/:slug')
 // NonProductionOnlyGuard MUST run first so prod requests 404 before TenantGuard
 // warms a tenant DB pool or PlanGuard touches the plan layer (PQF-1).
-// A2-03: also role-gate (defence-in-depth) so even in dev/test the raw plan /
-// override internals + the demo write aren't exposed to a low-privilege role.
+// A2-03: also role-gate (defence-in-depth) so even in dev/test the demo write
+// isn't exposed to a low-privilege role.
 @UseGuards(NonProductionOnlyGuard, TenantGuard, RolesGuard, PlanGuard)
 @Roles('owner', 'admin')
 @UseInterceptors(QuotaInterceptor)
 export class PlanDemoController {
-  constructor(
-    @Inject(EffectivePlanService) private readonly effective: EffectivePlanService,
-    @Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService,
-  ) {}
-
-  @Get('plan')
-  async plan(@TenantCtx() tenant: TenantContext) {
-    return this.effective.getEffectivePlan(tenant.id);
-  }
-
-  @Get('plan/usage')
-  async usage(@TenantCtx() tenant: TenantContext) {
-    const plan = await this.effective.getEffectivePlan(tenant.id);
-    const tenantClient = this.tenantPrisma.getClient(tenant);
-    const rows: Array<{
-      feature: string;
-      limit: number;
-      used: number | null;
-      unit: string | null;
-      source: string;
-    }> = [];
-    for (const key of KNOWN_QUOTA_KEYS) {
-      const fv = plan.features[key];
-      if (fv?.type !== 'int') continue;
-      const used = await countUsage(key, { tenant, tenantClient, controlDb });
-      rows.push({
-        feature: key,
-        limit: fv.value,
-        used,
-        unit: fv.unit ?? null,
-        source: fv.source,
-      });
-    }
-    return { plan: plan.plan, usage: rows };
-  }
+  constructor(@Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService) {}
 
   // -------- Demo: feature-flag gate ---------------------------------------
 

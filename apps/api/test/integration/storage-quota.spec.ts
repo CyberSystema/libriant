@@ -51,11 +51,24 @@ let redis: RedisService;
 const password = 'storage-quota-pw-1';
 const env = loadEnv();
 
+/**
+ * A payload of EXACTLY `bytes` bytes that is also a real PNG. The size has to
+ * be exact — the assertions below are about the byte counter — and the header
+ * has to be real, because input-and-files-09 made the storage layer read it:
+ * `Buffer.alloc()` on its own is now a 415 and this file would be measuring the
+ * type check instead of the quota.
+ */
+const pngOfSize = (bytes: number) =>
+  Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(bytes - 8, 7),
+  ]);
+
 const uploadCover = (bytes: number) =>
   request(app.getHttpServer())
     .post(`/t/${slug}/storage/covers`)
     .set('Cookie', cookie)
-    .attach('file', Buffer.alloc(bytes, 7), { filename: 'cover.png', contentType: 'image/png' });
+    .attach('file', pngOfSize(bytes), { filename: 'cover.png', contentType: 'image/png' });
 
 async function usedBytes(): Promise<bigint> {
   const row = await controlDb.tenant.findUniqueOrThrow({

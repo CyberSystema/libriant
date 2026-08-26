@@ -17,7 +17,7 @@ import { controlDb } from '@libriant/db-control';
 import { validateDto } from '../auth/validate-dto.js';
 import { AdminAuthGuard, AdminSess } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
-import { AdminRoles } from './admin-roles.decorator.js';
+import { AdminRoles, AnyAdmin } from './admin-roles.decorator.js';
 import type { AdminSessionPayload } from './admin-session.service.js';
 import { adminAuditActor, recordAdminAudit } from '../platform/admin-audit.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
@@ -100,6 +100,7 @@ export class AdminPlansController {
   constructor(@Inject(EffectivePlanService) private readonly effectivePlan: EffectivePlanService) {}
 
   @Get('feature-keys')
+  @AnyAdmin()
   async featureKeys() {
     const rows = await controlDb.planFeature.findMany({
       orderBy: [{ sortOrder: 'asc' }, { key: 'asc' }],
@@ -108,6 +109,7 @@ export class AdminPlansController {
   }
 
   @Get('plans')
+  @AnyAdmin()
   async list() {
     const plans = await controlDb.plan.findMany({
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
@@ -117,6 +119,7 @@ export class AdminPlansController {
   }
 
   @Get('plans/:slug')
+  @AnyAdmin()
   async get(@Param('slug') slug: string) {
     const plan = await controlDb.plan.findUnique({
       where: { slug },

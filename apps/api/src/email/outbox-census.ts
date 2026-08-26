@@ -30,11 +30,19 @@ import { controlDb } from '@libriant/db-control';
  */
 
 /**
- * Every value of the `EmailOutboxStatus` enum, not just the ones the worker
- * writes today. `failed` is currently unreachable (a transient failure goes
- * back to `pending`), but a status the census does not know about would be
- * silently dropped from the head-count, which is the failure this whole file
- * exists to stop. Emitted even at zero — see `renderOutboxCensus`.
+ * Every value of the `EmailOutboxStatus` enum. A status the census does not
+ * know about would be silently dropped from the head-count, which is the
+ * failure this whole file exists to stop. Emitted even at zero — see
+ * `renderOutboxCensus`.
+ *
+ * `failed` was dead weight here for a long time — a transient failure goes
+ * back to `pending`, so nothing wrote it. privacy-legal-18 gave it a writer:
+ * it is now the status of a message the driver reported as NOT SENT without
+ * throwing, which on the shipped `EMAIL_DRIVER=console` configuration is every
+ * message. So `libriant_email_outbox_rows{status="failed"}` is the count of
+ * mail this deployment composed and never sent, and it climbing while
+ * `delivered` stays flat is exactly what "no mail provider is configured"
+ * looks like on the dashboard.
  */
 const STATUSES = ['pending', 'sending', 'delivered', 'failed', 'dead'] as const;
 type OutboxStatus = (typeof STATUSES)[number];

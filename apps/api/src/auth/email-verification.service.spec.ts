@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { userUpdateMany, userFindUnique, userFindFirst, tenantFindUnique } = vi.hoisted(() => ({
@@ -88,6 +89,16 @@ describe('EmailVerificationService.send', () => {
     // The verify link uses the token from the Redis key.
     const body = (emails.enqueue.mock.calls[0]![0] as { bodyMarkdown: string }).bodyMarkdown;
     expect(body).toContain('https://app.test/en/verify-email?token=');
+
+    // authn-authz-11: the key must not BE the token. It used to be
+    // `emailverify:<token>`, so anyone who could read Redis — or a Redis dump,
+    // or the appendonly file inside a volume backup — could take over any
+    // account with a verification in flight. The key is the digest; the
+    // plaintext exists only in the message.
+    const token = /verify-email\?token=([A-Za-z0-9_-]+)/.exec(body)![1]!;
+    expect(token.length).toBeGreaterThan(20);
+    expect(key).not.toContain(token);
+    expect(key).toBe(`emailverify:${createHash('sha256').update(token, 'utf8').digest('hex')}`);
   });
 
   it('stays silent + sends nothing when the per-account limit is exceeded', async () => {

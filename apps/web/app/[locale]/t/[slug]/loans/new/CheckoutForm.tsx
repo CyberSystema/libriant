@@ -3,7 +3,17 @@ import * as React from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { SEARCH_MIN_CHARS } from '@libriant/shared/search';
-import { Banner, Button, Card, CardBody, FormField, Input, Textarea, useToast } from '@libriant/ui';
+import {
+  Banner,
+  Button,
+  Card,
+  CardBody,
+  FormError,
+  FormField,
+  Input,
+  Textarea,
+  useToast,
+} from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { api } from '@/lib/api';
@@ -245,11 +255,7 @@ export function CheckoutForm({
 
   return (
     <form onSubmit={handleSubmit} noValidate>
-      {formError ? (
-        <Banner severity="critical" style={{ marginBottom: 'var(--sp-4)' }}>
-          {formError}
-        </Banner>
-      ) : null}
+      <FormError style={{ marginBottom: 'var(--sp-4)' }}>{formError}</FormError>
 
       <BarcodeScanner
         open={scanTarget !== null}

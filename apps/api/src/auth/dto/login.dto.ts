@@ -1,5 +1,6 @@
-import { IsBoolean, IsOptional, IsString, Length, Matches } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, Length, Matches, MinLength } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { MaxPasswordBytes } from './password-bounds.js';
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/;
 
@@ -15,6 +16,14 @@ export class LoginDto {
   @Transform(({ value }) => (typeof value === 'string' ? value.toLowerCase().trim() : value))
   identifier!: string;
 
+  /**
+   * Deliberately looser than the password-SETTING paths, which stop at 72 UTF-8
+   * bytes (input-and-files-11, see password-bounds.ts). bcrypt reads only the
+   * first 72 bytes, so an account whose password predates that ceiling still
+   * signs in with the full string its owner types — tightening this to match
+   * would lock those people out, which is the exact harm the finding was about,
+   * pointed the other way.
+   */
   @IsString()
   @Length(1, 200)
   password!: string;
@@ -51,6 +60,7 @@ export class CompleteSetupDto {
   fullName?: string;
 
   @IsString({ message: 'Please choose a new password.' })
-  @Length(12, 200, { message: 'Please use at least 12 characters.' })
+  @MinLength(12, { message: 'Please use at least 12 characters.' })
+  @MaxPasswordBytes()
   newPassword!: string;
 }

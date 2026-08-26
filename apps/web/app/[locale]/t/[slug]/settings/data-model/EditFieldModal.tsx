@@ -1,6 +1,6 @@
 'use client';
 import * as React from 'react';
-import { Banner, Button, FormField, Input, Modal, useToast } from '@libriant/ui';
+import { Button, FormError, FormField, Input, Modal, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
@@ -153,11 +153,7 @@ export function EditFieldModal({
         </>
       }
     >
-      {formError ? (
-        <Banner severity="critical" style={{ marginBottom: 'var(--sp-3)' }}>
-          {formError}
-        </Banner>
-      ) : null}
+      <FormError style={{ marginBottom: 'var(--sp-3)' }}>{formError}</FormError>
 
       <FormField
         id="edit-label-en"

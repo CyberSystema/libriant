@@ -18,9 +18,10 @@ import { isPastAbsoluteMax, isSessionRevoked } from '../auth/jwt-session.service
  *      `req.tenant`). Otherwise → 400.
  *   2. The caller is signed in (`req.session` set by SessionMiddleware).
  *      Otherwise → 401.
- *   3. The signed-in user's tenant matches the URL's tenant. Otherwise
- *      → 403 — this is the central cross-tenant defense in our path-based
- *      URL world (where cookies are shared across paths).
+ *   3. The signed-in user's tenant matches the URL's tenant — as the session
+ *      claims it (403) and as the user row still says it is (401,
+ *      tenant-isolation-04). This is the central cross-tenant defense in our
+ *      path-based URL world (where cookies are shared across paths).
  *   4. The signed-in user is STILL active in the DB AND the session hasn't been
  *      revoked (password reset / role change — `sessionsValidAfter`) or aged out
  *      (absolute lifetime cap). This is the SAME revocation AuthGuard enforces,
@@ -78,10 +79,25 @@ export class TenantGuard implements CanActivate {
     // immutable session start so a sliding re-issue can't escape it.
     const user = await controlDb.user.findUnique({
       where: { id: req.session.sub },
-      select: { status: true, sessionsValidAfter: true },
+      select: { status: true, tenantId: true, sessionsValidAfter: true },
     });
     if (!user || user.status !== 'active') {
       throw new UnauthorizedException('Your account is no longer active. Please sign in again.');
+    }
+    // tenant-isolation-04: the `tid` test above compares two halves of the same
+    // request — a claim minted at login against the slug in the URL — so it
+    // cannot notice that the user has since been moved out of this library. The
+    // row that says where they actually belong is already in hand (same query,
+    // one more column), and AuthGuard has always compared it; tenant DATA routes
+    // run TenantGuard instead, which is exactly where the binding matters.
+    // Proved by moving a signed-in owner's `users.tenantId` to another library
+    // and replaying the cookie: /t/<the-library-they-left>/members kept
+    // answering 200 for the rest of the session's 90-day absolute lifetime.
+    // 401, not 403, matching AuthGuard: signing in again is what actually fixes
+    // it for a librarian who has genuinely been moved, whereas a 403 sends them
+    // to a "wrong library" screen they can do nothing about.
+    if (user.tenantId !== req.tenant.id) {
+      throw new UnauthorizedException('Your session is no longer valid. Please sign in again.');
     }
     const validAfterMs = user.sessionsValidAfter ? user.sessionsValidAfter.getTime() : 0;
     if (isSessionRevoked(req.session, validAfterMs)) {

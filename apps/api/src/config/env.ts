@@ -210,15 +210,93 @@ function num(
   return n;
 }
 
-/** Truthy-string parse shared by boolean env flags. */
+const BOOL_TRUE = ['true', '1', 'yes', 'on'];
+const BOOL_FALSE = ['false', '0', 'no', 'off'];
+
+/**
+ * Truthy-string parse shared by boolean env flags. Unset or blank takes the
+ * fallback; anything outside the two allow-lists FAILS BOOT.
+ *
+ * boot-and-config-10: this used to return `BOOL_TRUE.includes(v)`, so every
+ * value it did not recognise silently meant `false`. The plausible operator
+ * spellings are the dangerous ones — `BILLING_ENABLED=enabled` and
+ * `BILLING_ENABLED=y` both read as "subscriptions off", i.e. the whole product
+ * free, with nothing logged and the admin panel still showing the switch the
+ * operator thought they had set. A flag with two legal settings that quietly
+ * picks one of them on a typo is the same defect class as NODE_ENV below.
+ */
 function bool(key: string, fallback: boolean): boolean {
   const raw = process.env[key];
   if (raw === undefined || raw.trim().length === 0) return fallback;
-  return ['true', '1', 'yes', 'on'].includes(raw.toLowerCase().trim());
+  const v = raw.toLowerCase().trim();
+  if (BOOL_TRUE.includes(v)) return true;
+  if (BOOL_FALSE.includes(v)) return false;
+  throw new Error(
+    `Env var ${key} must be one of ${[...BOOL_TRUE, ...BOOL_FALSE].join(', ')} — got "${raw}".`,
+  );
+}
+
+/** The only environments this app knows how to be. */
+const APP_ENVS = ['development', 'production', 'test'] as const;
+
+/**
+ * NODE_ENV, validated rather than cast.
+ *
+ * boot-and-config-03 / tenant-isolation-06 are one defect: this was
+ * `(process.env.NODE_ENV ?? 'development') as AppEnv['nodeEnv']`, a bare cast
+ * with no allow-list, and FOUR protections key on the string being exactly
+ * `production` — main.ts refusing to boot with RATE_LIMIT_DISABLED,
+ * RateLimitService ignoring that flag, the NonProductionOnlyGuard on the
+ * dev-only demo controller (whose POST /demo/books does a real, unvalidated
+ * book write around the quota authority), and STORAGE_SIGNING_SECRET being
+ * demanded instead of silently collapsing into SESSION_SECRET.
+ *
+ * `staging`, `prod` or a typo'd `Production` was neither: still non-dev, so
+ * every secret was demanded and the box LOOKED correctly configured, while all
+ * four protections were off. Executed against a real boot before this change:
+ * `NODE_ENV=staging` and `NODE_ENV=Production` both started clean, and
+ * `NODE_ENV=staging` with STORAGE_SIGNING_SECRET unset booted with the storage
+ * HMAC key equal to the session JWT key.
+ *
+ * Fixing it at the four call sites would have left the fifth to be written
+ * later, so it is fixed here instead: an environment we do not recognise is a
+ * configuration error, not a mode. Nothing this repo deploys is affected —
+ * Dockerfile and compose both pin `production`.
+ */
+function resolveNodeEnv(): AppEnv['nodeEnv'] {
+  const raw = process.env.NODE_ENV;
+  if (raw === undefined || raw.trim().length === 0) return 'development';
+  const v = raw.trim();
+  if ((APP_ENVS as readonly string[]).includes(v)) return v as AppEnv['nodeEnv'];
+  throw new Error(
+    `Env var NODE_ENV must be one of ${APP_ENVS.join(', ')} — got "${raw}". ` +
+      'Anything else is treated as non-development (so every secret is still demanded) ' +
+      'while silently disabling every production-only protection: the dev-only demo ' +
+      'endpoints become reachable, RATE_LIMIT_DISABLED starts being honoured, and ' +
+      'STORAGE_SIGNING_SECRET falls back to SESSION_SECRET.',
+  );
+}
+
+/**
+ * Infrastructure the process cannot function without, kept quickstart-friendly
+ * in development only.
+ *
+ * boot-and-config-07: these four were `optional()` with PRODUCTION-SHAPED
+ * fallbacks — `postgresql://libriant:libriant@localhost:5432/libriant_control`
+ * and `/srv/libriant/storage` — against this file's own promise that every
+ * value we depend on is present + valid or boot fails loudly. Executed: with
+ * NODE_ENV=production and PG_SUPERUSER_URL unset the API booted fully green
+ * (readyz=200), because nothing on the startup or readiness path touches it;
+ * the mistake would first surface as a tenant signup running CREATE DATABASE
+ * against localhost with the guessable libriant/libriant credentials. Same
+ * rule as the secrets above: a dev fallback, or a loud failure.
+ */
+function requiredOutsideDev(key: string, devFallback: string, nodeEnv: AppEnv['nodeEnv']): string {
+  return nodeEnv === 'development' ? optional(key, devFallback) : required(key);
 }
 
 export function loadEnv(): AppEnv {
-  const nodeEnv = (process.env.NODE_ENV ?? 'development') as AppEnv['nodeEnv'];
+  const nodeEnv = resolveNodeEnv();
   // In dev, allow a static fallback so quickstart works without configuration.
   // In any other environment, refuse to boot without a real secret.
   const isDev = nodeEnv === 'development';
@@ -258,16 +336,47 @@ export function loadEnv(): AppEnv {
         (nodeEnv !== 'development' && nodeEnv !== 'test') ||
         optional('PUBLIC_APP_URL', 'http://localhost:3000').startsWith('https://')
       : cookieSecure === 'true';
+
+  // Storage signing — separate secret so we can rotate it independently of
+  // session JWTs. Dev + test fall back to the session secret to keep
+  // quickstart / fixtures painless; PRODUCTION must set it explicitly (TEN-05)
+  // so a leaked storage secret can't be turned into a session-forgery oracle
+  // and vice-versa.
+  //
+  // tenant-isolation-06: the non-production half of that ("`staging` silently
+  // reuses the session secret") is closed at source by resolveNodeEnv(). What
+  // no gate ever caught is the copy-paste — two variables in .env.prod holding
+  // the same string satisfies `required()` and collapses the separation just as
+  // completely. It matters because `GET /_files/signed` is the one storage
+  // route with no guard at all: `verify(token)` alone picks both the tenant and
+  // the object, so one key covering both session forgery and anonymous
+  // cross-tenant file reads is exactly the oracle the paragraph above says must
+  // not exist. Asserted only in production, because dev + test share the two on
+  // purpose via the fallback directly above.
+  const storageSigningSecret =
+    nodeEnv === 'production'
+      ? requiredSecret('STORAGE_SIGNING_SECRET', sessionSecret, nodeEnv)
+      : optional('STORAGE_SIGNING_SECRET', sessionSecret);
+  if (nodeEnv === 'production' && storageSigningSecret === sessionSecret) {
+    throw new Error(
+      'STORAGE_SIGNING_SECRET and SESSION_SECRET hold the same value — refusing to boot. ' +
+        'They are deliberately different keys so a leaked storage-signing secret cannot be ' +
+        'turned into a session-forgery oracle, or the reverse. Generate a distinct value ' +
+        'for STORAGE_SIGNING_SECRET (`openssl rand -hex 32`).',
+    );
+  }
+
   return {
     nodeEnv,
     port: num('PORT', 3001, { int: true, min: 1, max: 65535 }),
     publicAppUrl: optional('PUBLIC_APP_URL', 'http://localhost:3000'),
-    controlDbUrl: optional(
+    controlDbUrl: requiredOutsideDev(
       'CONTROL_DATABASE_URL',
       'postgresql://libriant:libriant@localhost:5432/libriant_control',
+      nodeEnv,
     ),
-    redisUrl: optional('REDIS_URL', 'redis://localhost:6379'),
-    storageRoot: optional('STORAGE_ROOT', '/srv/libriant/storage'),
+    redisUrl: requiredOutsideDev('REDIS_URL', 'redis://localhost:6379', nodeEnv),
+    storageRoot: requiredOutsideDev('STORAGE_ROOT', '/srv/libriant/storage', nodeEnv),
     assetsRoot: optional('ASSETS_ROOT', new URL('../../../../assets', import.meta.url).pathname),
     publicApexDomain: optional('PUBLIC_APEX_DOMAIN', 'localhost'),
     siteHost: optional('SITE_HOST', optional('PUBLIC_APEX_DOMAIN', 'localhost')).toLowerCase(),
@@ -331,19 +440,12 @@ export function loadEnv(): AppEnv {
     loginLockoutMs: num('LOGIN_LOCKOUT_MS', 15 * 60 * 1000, { int: true, min: 1000 }),
     // Used by signup to CREATE DATABASE for new tenants. In dev this is the
     // libriant superuser. In prod, a dedicated provisioning role per cell.
-    pgSuperuserUrl: optional(
+    pgSuperuserUrl: requiredOutsideDev(
       'PG_SUPERUSER_URL',
       'postgresql://libriant:libriant@localhost:5432/libriant_control',
+      nodeEnv,
     ),
-    // Storage signing — separate secret so we can rotate it independently of
-    // session JWTs. Dev + test fall back to the session secret to keep
-    // quickstart / fixtures painless; PRODUCTION must set it explicitly (TEN-05)
-    // so a leaked storage secret can't be turned into a session-forgery oracle
-    // and vice-versa.
-    storageSigningSecret:
-      nodeEnv === 'production'
-        ? requiredSecret('STORAGE_SIGNING_SECRET', sessionSecret, nodeEnv)
-        : optional('STORAGE_SIGNING_SECRET', sessionSecret),
+    storageSigningSecret,
     storageSignedTtlSec: num('STORAGE_SIGNED_TTL_SEC', 3600, { int: true, min: 1 }),
     storageMaxUploadBytes: num('STORAGE_MAX_UPLOAD_BYTES', 25 * 1024 * 1024, {
       int: true,

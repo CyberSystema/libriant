@@ -1,7 +1,7 @@
 'use client';
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Banner, Button, FormField, Input, Textarea, useToast } from '@libriant/ui';
+import { Banner, Button, FormError, FormField, Input, Textarea, useToast } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
 
 type SystemModeKind =
@@ -116,11 +116,7 @@ export function TenantSystemModePanel({ tenantId, initialActive }: Props) {
         </>
       ) : (
         <>
-          {error ? (
-            <Banner severity="critical" style={{ marginBottom: 'var(--sp-3)' }}>
-              {error}
-            </Banner>
-          ) : null}
+          <FormError style={{ marginBottom: 'var(--sp-3)' }}>{error}</FormError>
           <FormField id="t-mode" label="Mode">
             <select
               className="lbr-input"

@@ -3,11 +3,11 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
-  Banner,
   Button,
   Card,
   CardBody,
   CardHeader,
+  FormError,
   FormField,
   Input,
   useToast,
@@ -186,11 +186,7 @@ export function MemberForm({
 
   return (
     <form onSubmit={handleSubmit} noValidate>
-      {formError ? (
-        <Banner severity="critical" style={{ marginBottom: 'var(--sp-4)' }}>
-          {formError}
-        </Banner>
-      ) : null}
+      <FormError style={{ marginBottom: 'var(--sp-4)' }}>{formError}</FormError>
 
       <Card style={{ marginBottom: 'var(--sp-4)' }}>
         <CardHeader title={t('members.form.identity')} />

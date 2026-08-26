@@ -112,6 +112,48 @@ describe('HttpExceptionFilter', () => {
     );
   });
 
+  it('logs the body-parser 4xx it re-skins, instead of returning silently', () => {
+    const { host, status, json } = makeHost('/t/acme/import/marc');
+    const warn = vi.spyOn(filter['logger'], 'warn').mockImplementation(() => undefined);
+
+    // The shape body-parser throws: an http-errors instance with `type`,
+    // `expose` and a 4xx `status`.
+    const tooLarge = Object.assign(new Error('request entity too large'), {
+      status: 413,
+      expose: true,
+      type: 'entity.too.large',
+    });
+
+    filter.catch(tooLarge, host);
+
+    expect(status).toHaveBeenCalledWith(413);
+    expect((json.mock.calls[0]![0] as Record<string, unknown>).message).toContain('too large');
+    // reliability-13: the whole defect was that this branch said NOTHING.
+    const logged = warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logged).toContain('413');
+    expect(logged).toContain('/t/acme/import/marc');
+    expect(logged).toContain('request entity too large');
+  });
+
+  it("does NOT claim a Stripe-shaped 402 as the caller's bad input", () => {
+    const { host, status, json } = makeHost('/t/acme/billing/checkout');
+
+    // Stripe's SDK errors carry `statusCode` and a `type`, but no `expose` and
+    // no body-parser type — the exact shape that used to be relabelled "check
+    // your input" and dropped without a log line.
+    const stripeErr = Object.assign(new Error('Your card was declined.'), {
+      statusCode: 402,
+      type: 'card_error',
+      rawType: 'card_error',
+    });
+
+    filter.catch(stripeErr, host);
+
+    expect(status).toHaveBeenCalledWith(500);
+    const body = json.mock.calls[0]![0] as Record<string, unknown>;
+    expect(body).toHaveProperty('supportCode');
+  });
+
   it('does not log a query-string credential when a 503 is refused', () => {
     const { host } = makeHost('/_files/signed?token=eyJhbGciOiJIUzI1NiJ9.SECRET.sig');
     const warn = vi.spyOn(filter['logger'], 'warn').mockImplementation(() => undefined);

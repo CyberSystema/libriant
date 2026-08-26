@@ -210,11 +210,16 @@ describe('tenant-isolation audit probe', () => {
     note(`P3 GET /t/<pct-encoded A slug>/members (B cookie) -> ${r.status}`);
   });
 
+  const COVER_MARKER = Buffer.from('AAA-SECRET-COVER-BYTES');
+
   it('P4 storage: cross-tenant ref + traversal', async () => {
     const up = await request(app.getHttpServer())
       .post(`/t/${slugA}/storage/covers`)
       .set('Cookie', cookieA)
-      .attach('file', Buffer.from('AAA-SECRET-COVER-BYTES'), {
+      // A real JPEG header in front of the marker bytes: input-and-files-09
+      // made the storage layer read the header, and without one this upload is
+      // a 415 and every observation below it silently stops being made.
+      .attach('file', Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), COVER_MARKER]), {
         filename: 'a.jpg',
         contentType: 'image/jpeg',
       });

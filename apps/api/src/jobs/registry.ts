@@ -7,6 +7,7 @@ import { publishDueAnnouncements } from './announcement-publish.job.js';
 import { refreshBookMetadata } from './book-metadata-refresh.job.js';
 import { sendMemberNotifications } from './member-notifications.job.js';
 import { sweepStaleStorageTemps } from './storage-temp-cleanup.job.js';
+import { recomputeStorageUsage } from './storage-usage-recompute.job.js';
 import { sweepRetention } from './retention.job.js';
 import type { ScheduledJob } from './jobs.types.js';
 
@@ -101,5 +102,20 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     intervalMs: 24 * 60 * 60_000,
     // Takes the ctx for the runner's warm Redis client (plan resolution).
     handler: (ctx) => sweepRetention(ctx),
+  },
+  {
+    // 24h: this IS the "nightly recompute" that storage.service.ts names three
+    // separate times as the backstop for its best-effort counter maintenance
+    // (data-integrity-12). It never existed, so every swallowed decrement was
+    // permanent and a library's usable storage only ever shrank. Each tick
+    // walks every active tenant's whole storage tree, so it is the heaviest
+    // sweep here; daily is the cadence the comments promise and the drift it
+    // repairs is not minute-grained. Idempotent — it overwrites a derived
+    // number with what is on the volume.
+    name: 'storage-usage-recompute',
+    intervalMs: 24 * 60 * 60_000,
+    // Takes the ctx for the runner's warm Redis client (StorageService's
+    // EffectivePlanService dependency).
+    handler: (ctx) => recomputeStorageUsage(ctx),
   },
 ];

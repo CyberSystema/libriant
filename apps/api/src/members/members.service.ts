@@ -19,7 +19,7 @@ import { QuotaService } from '../customization/quota.service.js';
 import { validateRecordOrThrow } from '../customization/dynamic-validator.js';
 import { buildSearchText, normalizeText } from '../catalog/normalize.js';
 import { StorageService } from '../storage/storage.service.js';
-import { buildMemberNumber, nextSequenceForYear } from './member-numbers.js';
+import { buildMemberNumber, nextSequenceForYear, resyncSequenceForYear } from './member-numbers.js';
 
 export type MemberDto = {
   id: string;
@@ -310,9 +310,21 @@ export class MembersService {
 
     // Enforce `max_members` and insert in ONE transaction, serialized by a
     // per-tenant advisory lock, so parallel creates can't both pass the quota
-    // check and push the tenant past its plan ceiling. The lock also
-    // serializes member-number assignment, but the retry loop stays as a
-    // belt-and-braces guard against any residual sequence race.
+    // check and push the tenant past its plan ceiling.
+    //
+    // data-integrity-11: this comment used to add "the lock also serializes
+    // member-number assignment". It does not — the number is minted below,
+    // BEFORE this transaction opens, so the lock is not held when it is chosen.
+    // What actually serialises it is the row lock inside
+    // `nextSequenceForYear`'s `UPDATE … RETURNING` on `member_number_counters`
+    // (performance-04), and that is enough: 25 simultaneous enrolments get 25
+    // distinct numbers (test/integration/member-number-minting.spec.ts).
+    //
+    // Minting it inside this transaction was considered and REJECTED. The
+    // counter bump would then roll back with the transaction, so a create that
+    // failed the quota gate — or hit the unique index — would hand the very
+    // same number to the next attempt, which is how a ticker turns into a
+    // livelock. A sequence has to commit independently of the row it numbers.
     const createWithQuota = (memberNumber: string) =>
       client.$transaction(async (tx) => {
         await this.quota.enforceWithinTx(tx, {
@@ -335,7 +347,15 @@ export class MembersService {
 
     let lastErr: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const seq = await nextSequenceForYear(client, year);
+      // A collision means the counter is BEHIND numbers the library assigned
+      // itself — an imported roster in our own `M-<year>-<n>` shape is the
+      // common case — so stepping one at a time just walks further into the
+      // gap and burns the three attempts inside it. Resync past the whole block
+      // instead; it repairs the counter, so this happens at most once.
+      const seq =
+        attempt === 0
+          ? await nextSequenceForYear(client, year)
+          : await resyncSequenceForYear(client, year);
       const memberNumber = buildMemberNumber(year, seq);
       try {
         const created = await createWithQuota(memberNumber);
@@ -346,7 +366,8 @@ export class MembersService {
           throw this.translateCreateError(err);
         }
         this.logger.debug(
-          `Member-number race on ${memberNumber} (attempt ${attempt + 1}); retrying.`,
+          `Member number ${memberNumber} is already taken (attempt ${attempt + 1}); ` +
+            'resyncing the counter past the numbers already on the shelf.',
         );
       }
     }

@@ -81,3 +81,18 @@ export class DecisionDto {
   @Length(0, 500)
   decisionNote?: string;
 }
+
+/** Pause / resume a library (platform owner-admin). `archived` is not offered:
+ *  it is a 410-Gone retention state, not a pause. */
+export class SetLibraryStatusDto {
+  @IsIn(['active', 'suspended'], {
+    message: 'Status must be "suspended" (pause the library) or "active" (resume it).',
+  })
+  status!: 'active' | 'suspended';
+
+  /** Recorded on the audit row so the next operator can see why. */
+  @IsOptional()
+  @IsString()
+  @Length(0, 500)
+  reason?: string;
+}

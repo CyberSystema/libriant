@@ -69,6 +69,9 @@ export class ResendEmailDriver implements EmailDriver {
       throw new Error(`Resend send failed (${res.status}): ${detail.slice(0, 300)}`);
     }
     const json = (await res.json().catch(() => ({}))) as { id?: string };
-    return { providerId: json.id ?? null };
+    // privacy-legal-18: Resend returned 2xx with an id, so the message is
+    // handed off. `delivered` means "it left this machine", not "it reached
+    // the inbox" — a later bounce arrives by webhook, not from this call.
+    return { providerId: json.id ?? null, delivered: true };
   }
 }

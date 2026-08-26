@@ -11,6 +11,7 @@ import { controlDb } from '@libriant/db-control';
 import { EffectivePlanService, isUnlimitedInt } from '../plans/effective-plan.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { ALLOWED_TYPES, rejectedMessage } from './allowed-types.js';
+import { assertBytesMatchContentType } from './content-sniff.js';
 import { createStorageDriver } from './drivers/create-driver.js';
 import type { ResourceType, StorageDriver, StoredFile } from './drivers/storage-driver.js';
 
@@ -59,6 +60,12 @@ export class StorageService {
         rejectedMessage(input.resourceType, input.contentType),
       );
     }
+    // input-and-files-09: and the bytes have to back the claim up. The check
+    // above tests a string the client chose, so an HTML page sent as image/png
+    // used to be stored as a book cover. Every upload path — covers, member
+    // photos, branding logos, the storage endpoint — funnels through this
+    // method, so this is the one place it has to be for all of them.
+    assertBytesMatchContentType(input.contentType, input.data);
 
     // 2. Effective quota — `max_storage_mb` from the plan/override layer.
     //    `0` is a legitimate "no storage allowed" value; treat it as deny.

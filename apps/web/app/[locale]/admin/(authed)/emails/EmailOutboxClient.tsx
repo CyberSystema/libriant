@@ -7,6 +7,7 @@ import {
   CardBody,
   CardHeader,
   EmptyState,
+  FormError,
   FormField,
   Input,
 } from '@libriant/ui';
@@ -141,7 +142,7 @@ export function EmailOutboxClient({
         </CardBody>
       </Card>
 
-      {error ? <Banner severity="critical">{error}</Banner> : null}
+      <FormError>{error}</FormError>
 
       {open ? (
         <Card>

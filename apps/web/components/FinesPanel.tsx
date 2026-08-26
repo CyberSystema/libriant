@@ -2,11 +2,11 @@
 import * as React from 'react';
 import Link from 'next/link';
 import {
-  Banner,
   Button,
   Card,
   CardBody,
   CardHeader,
+  FormError,
   FormField,
   Modal,
   Textarea,
@@ -344,11 +344,7 @@ export function FinesPanel({
           }
         />
         <CardBody>
-          {listError ? (
-            <Banner severity="critical" style={{ marginBottom: 'var(--sp-4)' }}>
-              {listError}
-            </Banner>
-          ) : null}
+          <FormError style={{ marginBottom: 'var(--sp-4)' }}>{listError}</FormError>
 
           {scope.kind === 'member' ? (
             <p style={{ marginTop: 0, marginBottom: 'var(--sp-4)' }}>

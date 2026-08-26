@@ -50,6 +50,38 @@ export class HttpExceptionFilter implements ExceptionFilter {
       const status = exception.getStatus();
       const body = normalizeBody(exception);
       if (status < HttpStatus.INTERNAL_SERVER_ERROR) {
+        // reliability-13, the half a 413 hid. NestJS converts the two errors
+        // Express raises before routing into HttpExceptions of its own —
+        // `SyntaxError` from a malformed JSON body and `URIError` from a bad
+        // percent-encoding in the path both become `BadRequestException`
+        // (routes-resolver.ts `mapExternalException`) — so they arrive HERE,
+        // as Path 1, not at the framework-error branch below, and this branch
+        // answered them without a single log line. Worse than the 413 that
+        // finding started from: pino-http lives in the middleware chain, which
+        // is BEHIND the body parsers, so those requests never got the "request
+        // completed" line every other request gets either. `POST /auth/login`
+        // with `{oops` — the one unauthenticated endpoint anyone can reach —
+        // was a 400 with NO server-side record of any kind. Nothing to grep
+        // when someone reports being unable to sign in, and nothing to see
+        // when a scanner walks the endpoint.
+        //
+        // `req.log` is the tell, and it is exact: pino-http attaches the
+        // request-scoped child logger it writes that line from, so its absence
+        // means nothing else recorded this request and this filter is the only
+        // thing that can. Measured against a running API: the CSRF 403, the
+        // unknown-tenant 404 and every controller 4xx all carry `req.log`; the
+        // malformed body and `/t/%FF/members` do not.
+        //
+        // Logged, then answered with the ORIGINAL body. Re-skinning it the way
+        // Path 1.5 does would be a much larger change than the finding asks
+        // for: these bodies carry the `code` strings the web app switches on
+        // (`auth.setupAlreadyComplete`, `catalog.authorNameTaken`, and every
+        // other translated message), and replacing them with a generic
+        // "BadRequest" would turn precise Greek error text into a shrug. The
+        // defect was silence, so silence is what gets fixed.
+        if (status >= HttpStatus.BAD_REQUEST && !wasAccessLogged(req)) {
+          this.logClientError(req, status, exception);
+        }
         res.status(status).json(body);
         return;
       }
@@ -80,23 +112,69 @@ export class HttpExceptionFilter implements ExceptionFilter {
       return;
     }
 
-    // Path 1.5: framework/middleware errors that carry a client-error
-    // status but aren't NestJS HttpExceptions — e.g. body-parser's
-    // `PayloadTooLargeError` (413) or a malformed-body `SyntaxError` (400).
-    // These are the user's fault, not a server bug, so surface the real
-    // 4xx with a plain message rather than masking it as a 500.
+    // Path 1.5: framework/middleware errors that carry a client-error status
+    // but aren't NestJS HttpExceptions — body-parser's `PayloadTooLargeError`
+    // (413), an unsupported charset, an aborted upload. These are the user's
+    // fault, not a server bug, so surface the real 4xx with a plain message
+    // rather than masking it as a 500.
+    //
+    // NOT the malformed-body `SyntaxError` this comment used to claim: NestJS
+    // turns that one into a `BadRequestException` before any filter runs, so
+    // it is handled up in Path 1. Same answer, one branch earlier.
     const clientStatus = clientErrorStatus(exception);
     if (clientStatus !== null) {
-      res.status(clientStatus).json({
-        statusCode: clientStatus,
-        error: 'BadRequest',
-        message: friendlyClientMessage(clientStatus),
-      });
+      this.reportClientError(req, res, clientStatus, exception);
       return;
     }
 
     // Path 2: anything else — unhandled throw, db connection lost, etc.
     this.handle5xx(req, res, HttpStatus.INTERNAL_SERVER_ERROR, exception, null);
+  }
+
+  /**
+   * The answer to "your request was unreadable": one log line, one plain
+   * sentence. Shared by the two branches that produce it so a request that
+   * failed in the body parser reads the same whether NestJS relabelled it on
+   * the way (Path 1) or not (Path 1.5).
+   *
+   * reliability-13: both branches used to return without a single log call.
+   * Combined with a `clientErrorStatus` that accepted ANY object carrying a
+   * numeric 4xx — the shape of a Stripe SDK error and of most HTTP client
+   * wrappers — a Stripe 402/429, or the GitHub desktop-release proxy 404ing,
+   * reached the user as "We couldn't process that request" with no support
+   * code, no stack and no server-side record of the real cause. Silent 4xx is
+   * the failure mode nobody notices.
+   *
+   * Warn rather than error, because an oversized upload or a truncated body is
+   * an ordinary event and must not read as an incident; one JSON line, matching
+   * the 5xx record so both grep alike.
+   */
+  /**
+   * One warn line for a client error, in the shape an operator greps.
+   *
+   * Separate from `reportClientError` because the two callers need different
+   * halves: Path 1.5 logs AND replaces the body, Path 1 logs and keeps the
+   * body it was given.
+   */
+  private logClientError(req: Request, status: number, exception: unknown): void {
+    this.logger.warn(
+      JSON.stringify({
+        status,
+        method: req.method,
+        url: scrubUrl(req.originalUrl),
+        kind: describeKind(exception),
+        message: (exception as Error)?.message ?? String(exception),
+      }),
+    );
+  }
+
+  private reportClientError(req: Request, res: Response, status: number, exception: unknown): void {
+    this.logClientError(req, status, exception);
+    res.status(status).json({
+      statusCode: status,
+      error: 'BadRequest',
+      message: friendlyClientMessage(status),
+    });
   }
 
   private handle5xx(
@@ -141,16 +219,56 @@ export class HttpExceptionFilter implements ExceptionFilter {
 }
 
 /**
+ * The `type` values body-parser / raw-body stamp on the errors they throw.
+ * These are the errors this branch was written for.
+ */
+const BODY_PARSER_ERROR_TYPES = new Set([
+  'charset.unsupported',
+  'encoding.unsupported',
+  'entity.parse.failed',
+  'entity.too.large',
+  'entity.verify.failed',
+  'parameters.too.many',
+  'request.aborted',
+  'request.size.invalid',
+  'stream.encoding.set',
+  'stream.not.readable',
+]);
+
+/**
  * If `exception` is an error-like object carrying a client-error status
  * (4xx) — the shape http-errors / body-parser use — return that status,
  * else null. We only trust 4xx here: 5xx-ish library errors fall through
  * to the generic 500 path so they get a support code + full logging.
+ *
+ * reliability-13: "has a numeric 4xx `status`" was too generous a test. Stripe's
+ * SDK errors carry `statusCode`, and http client wrappers carry `status`, so a
+ * Stripe 402 or 429 escaping a handler was relabelled as the librarian's own
+ * bad input and dropped. The extra condition is the `expose` flag http-errors
+ * sets on errors whose message is meant for the caller, or one of the
+ * body-parser `type`s above; a Stripe error has neither, so it now falls
+ * through to the 5xx path and gets a support code and a stack like any other
+ * upstream failure.
  */
 function clientErrorStatus(exception: unknown): number | null {
   if (!exception || typeof exception !== 'object') return null;
-  const e = exception as { status?: unknown; statusCode?: unknown };
+  const e = exception as {
+    status?: unknown;
+    statusCode?: unknown;
+    type?: unknown;
+    expose?: unknown;
+  };
   const raw = typeof e.status === 'number' ? e.status : e.statusCode;
-  return typeof raw === 'number' && raw >= 400 && raw < 500 ? raw : null;
+  if (typeof raw !== 'number' || raw < 400 || raw >= 500) return null;
+  const fromBodyParser = typeof e.type === 'string' && BODY_PARSER_ERROR_TYPES.has(e.type);
+  return fromBodyParser || e.expose === true ? raw : null;
+}
+
+/** Constructor name if there is one — the single most useful field when a
+ *  library error turns up somewhere it was not expected. */
+function describeKind(exception: unknown): string {
+  if (exception === null || exception === undefined) return String(exception);
+  return (exception as object).constructor?.name ?? typeof exception;
 }
 
 /** Plain-language message for the common middleware-level client errors. */
@@ -187,3 +305,21 @@ function newSupportCode(): string {
 }
 
 const ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+/**
+ * Did anything else already record this request?
+ *
+ * `nestjs-pino` attaches a request-scoped child logger as `req.log` at the top
+ * of its middleware, and that is the object it writes the "request completed"
+ * line from. Its ABSENCE is therefore exact evidence that the request died
+ * before the logging middleware ran — which is precisely the case this filter
+ * has to cover, because Express's body parsers sit in front of it.
+ *
+ * Measured against a running API: the CSRF 403, the unknown-tenant 404 and
+ * every controller 4xx all carry `req.log`; a malformed JSON body and a bad
+ * percent-encoding in the path do not. Checking the property beats keeping our
+ * own list of error types, which would drift the moment Express adds one.
+ */
+function wasAccessLogged(req: Request): boolean {
+  return Boolean((req as Request & { log?: unknown }).log);
+}

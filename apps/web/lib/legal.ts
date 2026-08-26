@@ -9,8 +9,12 @@ import { LEGAL_DOCUMENTS, type LegalDocSlug } from '@libriant/shared/legal';
  * Loader for the public legal documents. Each doc is checked-in markdown at
  * `locales/<locale>/legal/<slug>.md` (same mount as the help/translation files,
  * so it ships in prod via LOCALES_ROOT). Rendered to HTML at request time with
- * `marked`. The content is OURS (no user input), so the rendered HTML is safe to
- * inject — identical trust model to the help articles.
+ * `marked`. `marked` passes raw HTML straight through and nothing here filtered
+ * it, so for a while a `<script>` typed into a legal markdown file would have run
+ * on a public page (input-and-files-04). The page no longer injects this string:
+ * it goes through `renderSafeHtml`, which parses it against an allowlist and
+ * emits React elements. Keep it a string here so the sink stays the one place
+ * that decides what is renderable.
  *
  * When a doc is missing in the requested locale we fall back to English so a
  * not-yet-translated document is still readable (the page flags the fallback).
@@ -46,7 +50,7 @@ export const LEGAL_DOC_ORDER: readonly LegalDocSlug[] = LEGAL_DOCUMENTS;
 
 export type LegalDoc = {
   slug: LegalDocSlug;
-  /** Rendered HTML body (server-owned markdown — safe to inject). */
+  /** Rendered HTML body. Render it with `renderSafeHtml`, never as innerHTML. */
   html: string;
   /** True when we served the English copy because the requested locale lacked it. */
   fallback: boolean;

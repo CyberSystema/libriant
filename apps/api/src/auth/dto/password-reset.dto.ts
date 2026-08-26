@@ -1,5 +1,6 @@
 import { IsEmail, IsString, Length, Matches, MinLength } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { MaxPasswordBytes } from './password-bounds.js';
 
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,48}[a-z0-9])?$/;
 
@@ -21,5 +22,6 @@ export class PasswordResetCompleteDto {
 
   @IsString()
   @MinLength(12, { message: 'Please use at least 12 characters.' })
+  @MaxPasswordBytes()
   newPassword!: string;
 }

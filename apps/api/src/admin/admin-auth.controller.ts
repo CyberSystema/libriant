@@ -21,7 +21,7 @@ import { RateLimitService } from '../platform/rate-limit.service.js';
 import { MfaRecoveryService } from '../support/mfa-recovery.service.js';
 import { MfaService } from '../support/mfa.service.js';
 import { AdminAuthService } from './admin-auth.service.js';
-import { AdminAuthGuard, AdminSess } from './admin-auth.guard.js';
+import { AdminAuthGuard, AdminSess, MfaExempt } from './admin-auth.guard.js';
 import { AdminCookieService } from './admin-cookie.service.js';
 import { AdminSessionService, type AdminSessionPayload } from './admin-session.service.js';
 
@@ -185,8 +185,16 @@ export class AdminAuthController {
     };
   }
 
+  /**
+   * Exempt from the AUTH-06 enrollment wall (authn-authz-12): the panel calls
+   * this first on every load, and an admin who has not enrolled yet must still
+   * be told who they are — otherwise the enrollment screen cannot render and
+   * the wall becomes a lockout. It returns the caller's OWN row and nothing
+   * about the platform.
+   */
   @Get('me')
   @UseGuards(AdminAuthGuard)
+  @MfaExempt()
   async me(@AdminSess() session: AdminSessionPayload) {
     const admin = await controlDb.adminUser.findUnique({
       where: { id: session.sub },

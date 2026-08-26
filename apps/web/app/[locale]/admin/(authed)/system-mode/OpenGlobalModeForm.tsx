@@ -1,7 +1,7 @@
 'use client';
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Banner, Button, FormField, Input, Textarea, useToast } from '@libriant/ui';
+import { Button, FormError, FormField, Input, Textarea, useToast } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
 import { type SystemModeKind, MODE_DESCRIPTION } from './types';
 
@@ -52,11 +52,7 @@ export function OpenGlobalModeForm(_props: { locale: string }) {
 
   return (
     <form onSubmit={submit}>
-      {error ? (
-        <Banner severity="critical" style={{ marginBottom: 'var(--sp-3)' }}>
-          {error}
-        </Banner>
-      ) : null}
+      <FormError style={{ marginBottom: 'var(--sp-3)' }}>{error}</FormError>
 
       <FormField id="mode" label="Mode">
         <select

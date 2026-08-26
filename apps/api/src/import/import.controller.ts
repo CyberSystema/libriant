@@ -23,6 +23,7 @@ import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { RolesGuard } from '../tenancy/roles.guard.js';
 import { Roles } from '../tenancy/roles.decorator.js';
+import { assertBytesMatchContentType } from '../storage/content-sniff.js';
 import { IMPORT_ENTITY_KINDS, mappableFields } from './mapping/entity-fields.js';
 import { IMPORT_MAX_UPLOAD_BYTES } from './import.constants.js';
 import { ImportService } from './import.service.js';
@@ -80,6 +81,13 @@ export class ImportController {
     if (!body.entityKind) {
       throw new BadRequestException('Choose what to import via the "entityKind" field.');
     }
+    // input-and-files-09: the other four upload routes get this inside
+    // StorageService.put, but an import is staged straight to disk and never
+    // touches that service — so the same check is applied here rather than
+    // leaving one upload surface out. It only bites on declared types with an
+    // unambiguous header (a .xlsx that is really HTML); CSV, TSV and MARC carry
+    // no signature and are still detected from their bytes downstream.
+    assertBytesMatchContentType(file.mimetype, file.buffer);
     return this.svc.createBatch(tenant, {
       entityKind: body.entityKind,
       file: { buffer: file.buffer, originalname: file.originalname, mimetype: file.mimetype },

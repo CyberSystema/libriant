@@ -9,6 +9,7 @@ import {
   unsealBody,
 } from '../email/outbox-secrets.js';
 import { RedisService } from '../platform/redis.service.js';
+import { tokenKey } from '../auth/token-digest.js';
 
 /**
  * The operator's escape hatch for launch-readiness-01.
@@ -46,12 +47,14 @@ export class AdminOutboxService {
   private readonly logger = new Logger(AdminOutboxService.name);
 
   /**
-   * Must match `PasswordResetService.TOKEN_TTL_SEC`, the Redis key shape
-   * `pwreset:<token>` and the `{uid,tid}` payload that
-   * `PasswordResetService.complete()` reads back. This is duplicated rather
+   * Must match `PasswordResetService.TOKEN_TTL_SEC` and the `{uid,tid}` payload
+   * that `PasswordResetService.complete()` reads back. This is duplicated rather
    * than imported because the auth service exposes no mint-only entry point
    * (its `request()` is the anti-enumeration public flow: rate-limited, silent,
    * and it enqueues an email that will not be delivered).
+   *
+   * The KEY shape is no longer duplicated: both sides call `tokenKey()`, so the
+   * digest-at-rest of authn-authz-11 cannot hold on one path and not the other.
    *
    * The duplication is CHECKED, not trusted:
    * `apps/api/test/integration/email-escape-hatch.spec.ts` mints a link through
@@ -367,7 +370,7 @@ export class AdminOutboxService {
     const token = randomBytes(32).toString('base64url');
     const expiresAt = new Date(Date.now() + AdminOutboxService.RESET_TOKEN_TTL_SEC * 1000);
     await this.redis.client.set(
-      `pwreset:${token}`,
+      tokenKey('pwreset', token),
       JSON.stringify({ uid: user.id, tid: user.tenant.id }),
       'EX',
       AdminOutboxService.RESET_TOKEN_TTL_SEC,

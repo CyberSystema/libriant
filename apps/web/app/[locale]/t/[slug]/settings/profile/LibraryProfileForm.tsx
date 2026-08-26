@@ -7,6 +7,7 @@ import {
   Card,
   CardBody,
   CardHeader,
+  FormError,
   FormField,
   Input,
   Textarea,
@@ -179,11 +180,7 @@ export function LibraryProfileForm({
             </Banner>
           ) : requesting ? (
             <form onSubmit={submitRequest} style={{ marginTop: 'var(--sp-3)' }}>
-              {coreErr ? (
-                <Banner severity="critical" style={{ marginBottom: 'var(--sp-3)' }}>
-                  {coreErr}
-                </Banner>
-              ) : null}
+              <FormError style={{ marginBottom: 'var(--sp-3)' }}>{coreErr}</FormError>
               <FormField id="lp-name" label={t('library.field.name')}>
                 <Input value={name} onChange={(e) => setName(e.currentTarget.value)} />
               </FormField>

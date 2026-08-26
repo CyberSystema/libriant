@@ -8,7 +8,7 @@
     "start": "next start -p 3000",
     "typecheck": "tsc --noEmit",
     "lint": "echo 'lint: ok'",
-    "test": "echo 'tests: none yet' && exit 0"
+    "test": "node --import tsx --test \"lib/**/*.test.ts\""
   },
   "dependencies": {
     "@libriant/i18n": "workspace:*",

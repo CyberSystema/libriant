@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { LRUCache } from 'lru-cache';
-import { controlDb } from '@libriant/db-control';
+import { controlDb, type Prisma } from '@libriant/db-control';
 import { FailOpenMemo, RedisService } from '../platform/redis.service.js';
 import { loadEnv } from '../config/env.js';
 import type { TenantContext } from './tenant-context.js';
@@ -59,6 +59,31 @@ const DEGRADED_MEMO_MS = 5_000;
  */
 const ADDRESS_CACHE_MAX = 2_000;
 
+/**
+ * The Tenant columns the cached context is built from. A write to any of them
+ * has to drop the cache; a write to anything else (branding, the free profile
+ * fields, the storage counter) does not, and paying a Redis round trip for
+ * those would be noise. `updateTenant()` reads this list rather than keeping a
+ * second copy of it in a comment somewhere.
+ */
+const TENANT_SELECT = {
+  id: true,
+  slug: true,
+  name: true,
+  defaultLocale: true,
+  status: true,
+  dbUrl: true,
+  storageUrl: true,
+  customSubdomain: true,
+  tags: true,
+} as const;
+
+const CACHED_COLUMNS: ReadonlySet<string> = new Set(Object.keys(TENANT_SELECT));
+
+function touchesCachedContext(data: Prisma.TenantUpdateInput): boolean {
+  return Object.keys(data).some((column) => CACHED_COLUMNS.has(column));
+}
+
 @Injectable()
 export class TenantResolverService {
   private readonly logger = new Logger(TenantResolverService.name);
@@ -112,6 +137,12 @@ export class TenantResolverService {
    * reactivate, or a billing past_due → suspend transition) MUST call this, or
    * every API process will keep serving the stale status for up to the cache
    * TTL. Relocate, tenant-tags, and hard-delete already do.
+   *
+   * tenant-isolation-07 is what that "MUST call this" is worth on its own: the
+   * library-rename approval wrote `tenants.name` and never called it, and every
+   * process kept the old name for the rest of the TTL. Prefer
+   * {@link updateTenant} / {@link invalidateById} below, which do not depend on
+   * the next caller reading this paragraph.
    */
   async invalidate(opts: { slug?: string; customSubdomain?: string | null }): Promise<void> {
     const keys: string[] = [];
@@ -128,6 +159,57 @@ export class TenantResolverService {
       await this.redis.client.del(...keys);
       this.logger.debug(`Invalidated ${keys.length} cache key(s).`);
     }
+  }
+
+  /**
+   * Write a tenant row THROUGH the resolver so the cached copy cannot outlive
+   * it. Prefer this to `controlDb.tenant.update` anywhere a tenant row changes.
+   *
+   * tenant-isolation-05 / -07: `invalidate()` has existed all along and its own
+   * docblock has always said to call it; the approval path that renames a
+   * library did not, and there is no reason to think the next writer will
+   * either. Here the write and the invalidation are the same call, and which
+   * columns need one is read off {@link TENANT_SELECT} — the very list the
+   * cached context is built from — so a column added to the cache is covered
+   * the day it is added, by nobody in particular.
+   *
+   * Returns the identifying columns only. Never widen this select to the whole
+   * row: `dbUrl` is the fleet's superuser credential (tenant-isolation-03), and
+   * a convenience field on a helper this central is how it ends up in a log
+   * line or a JSON response.
+   */
+  async updateTenant(
+    tenantId: string,
+    data: Prisma.TenantUpdateInput,
+  ): Promise<{ id: string; slug: string; name: string; status: TenantContext['status'] }> {
+    const row = await controlDb.tenant.update({
+      where: { id: tenantId },
+      data,
+      select: { id: true, slug: true, name: true, status: true, customSubdomain: true },
+    });
+    if (touchesCachedContext(data)) {
+      await this.invalidate({ slug: row.slug, customSubdomain: row.customSubdomain });
+    }
+    return { id: row.id, slug: row.slug, name: row.name, status: row.status };
+  }
+
+  /**
+   * Drop the cached context for a tenant known only by its id — the shape a
+   * caller is left with once its own transaction has committed and it no longer
+   * holds the slug.
+   *
+   * Invalidating from INSIDE that transaction was tried and rejected: it is
+   * worse than not invalidating at all, because a concurrent request repopulates
+   * the entry from the pre-commit row and the stale value then lives a full TTL
+   * instead of the remainder of one.
+   */
+  async invalidateById(tenantId: string): Promise<void> {
+    const row = await controlDb.tenant.findUnique({
+      where: { id: tenantId },
+      select: { slug: true, customSubdomain: true },
+    });
+    if (!row) return;
+    await this.invalidate(row);
   }
 
   // --- internals ---------------------------------------------------------
@@ -214,7 +296,7 @@ export class TenantResolverService {
   private async lookupBySlug(slug: string): Promise<TenantContext | null> {
     const row = await controlDb.tenant.findUnique({
       where: { slug },
-      select: this.tenantSelect,
+      select: TENANT_SELECT,
     });
     return row ? this.rowToContext(row, 'path') : null;
   }
@@ -222,22 +304,10 @@ export class TenantResolverService {
   private async lookupBySubdomain(subdomain: string): Promise<TenantContext | null> {
     const row = await controlDb.tenant.findFirst({
       where: { customSubdomain: subdomain },
-      select: this.tenantSelect,
+      select: TENANT_SELECT,
     });
     return row ? this.rowToContext(row, 'subdomain') : null;
   }
-
-  private readonly tenantSelect = {
-    id: true,
-    slug: true,
-    name: true,
-    defaultLocale: true,
-    status: true,
-    dbUrl: true,
-    storageUrl: true,
-    customSubdomain: true,
-    tags: true,
-  } as const;
 
   private rowToContext(
     row: {

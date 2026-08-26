@@ -5,6 +5,7 @@ import { createTranslator, isLocale } from '@libriant/i18n';
 import { LEGAL_VERSION, isLegalDocSlug } from '@libriant/shared/legal';
 import { loadCatalog } from '@/lib/locale-loader';
 import { loadLegalDoc, legalTitleKey } from '@/lib/legal';
+import { renderSafeHtml } from '@/lib/safe-html';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,12 +43,11 @@ export default async function LegalDocPage(props: {
 
       <Card>
         <CardBody>
-          <article
-            className="lbr-prose"
-            // Server-owned, checked-in markdown rendered at request time — no
-            // user input, identical trust model to the help articles.
-            dangerouslySetInnerHTML={{ __html: rendered.html }}
-          />
+          {/* input-and-files-04: same allowlist as the help articles. This body
+              had no sanitizer at all — `marked.parse()` went straight into
+              `dangerouslySetInnerHTML`, and these documents are the one page a
+              non-customer can reach without signing in. */}
+          <article className="lbr-prose">{renderSafeHtml(rendered.html)}</article>
         </CardBody>
       </Card>
 

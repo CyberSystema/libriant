@@ -3,13 +3,34 @@ import {
   ExecutionContext,
   ForbiddenException,
   Injectable,
+  SetMetadata,
   UnauthorizedException,
   createParamDecorator,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { controlDb } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
 import type { AdminSessionPayload } from './admin-session.service.js';
+
+/**
+ * Controllers that are entirely second-factor self-service, named by class
+ * identity because they live outside `src/admin/` and cannot carry
+ * {@link MfaExempt} without an edit over there. `MfaController` is
+ * `/admin/mfa/*` — status, setup, verify, recovery-codes — and an admin who
+ * cannot reach it under ADMIN_MFA_REQUIRED cannot enroll, which turns the
+ * enrollment wall into a lockout.
+ */
+const MFA_EXEMPT_CONTROLLERS: ReadonlySet<string> = new Set(['MfaController']);
+
+export const MFA_EXEMPT_KEY = 'adminMfaExempt';
+
+/**
+ * Reachable by an admin who has not yet enrolled a second factor, while
+ * `ADMIN_MFA_REQUIRED` holds everything else back. Put it only on routes that
+ * an admin needs IN ORDER to enroll, or the wall stops meaning anything.
+ */
+export const MfaExempt = () => SetMetadata(MFA_EXEMPT_KEY, true);
 
 /**
  * Gate every `/admin/*` route behind a valid admin session **AND** a
@@ -21,11 +42,16 @@ import type { AdminSessionPayload } from './admin-session.service.js';
  *   • session invalidation (AUTH-01) — a token issued before the admin's
  *     `sessionsValidAfter` epoch is rejected (forced reset / disable);
  *   • mandatory MFA (AUTH-06) — when `ADMIN_MFA_REQUIRED`, an admin without
- *     MFA enrolled is allowed ONLY onto the enrollment/auth endpoints and is
- *     pushed to enroll before anything else.
+ *     MFA enrolled reaches only the routes that let them enroll (see
+ *     {@link MfaExempt}) and is pushed to enroll before anything else.
  */
 @Injectable()
 export class AdminAuthGuard implements CanActivate {
+  // Own Reflector, no DI — same reason AdminRolesGuard builds its own, spelled
+  // out in that file: under tsx there is no `design:paramtypes`, so an injected
+  // Reflector arrives as `undefined` and every admin route 500s.
+  private readonly reflector = new Reflector();
+
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
     const req = ctx.switchToHttp().getRequest<Request>();
     const session = req.adminSession;
@@ -86,7 +112,7 @@ export class AdminAuthGuard implements CanActivate {
     // AUTH-06: force MFA enrollment. The enrollment + auth endpoints stay
     // reachable so a not-yet-enrolled admin can actually set MFA up; everything
     // else 403s until they do.
-    if (loadEnv().adminMfaRequired && !admin.mfaEnabled && !isMfaEnrollmentPath(req.path)) {
+    if (loadEnv().adminMfaRequired && !admin.mfaEnabled && !this.isMfaExempt(ctx)) {
       throw new ForbiddenException({
         code: 'mfa_enrollment_required',
         message: 'Set up two-factor authentication before using the admin console.',
@@ -94,11 +120,26 @@ export class AdminAuthGuard implements CanActivate {
     }
     return true;
   }
-}
 
-/** Endpoints a not-yet-enrolled admin must still reach (to enroll / sign out). */
-function isMfaEnrollmentPath(path: string): boolean {
-  return path.includes('/mfa/') || path.includes('/auth/');
+  /**
+   * authn-authz-12. This was
+   * `path.includes('/mfa/') || path.includes('/auth/')` — a substring test on
+   * the request path, which the caller writes. Three admin controllers take a
+   * `:tenantId`, so `GET /admin/billing/tenants/auth/` contained `/auth/` and
+   * came back 200 while every honest route the same un-enrolled admin touched
+   * came back 403: mandatory MFA, defeated by naming a path segment `auth`.
+   *
+   * Nothing here reads the path. Exemption is a decision recorded on the
+   * handler, or the identity of the controller class — neither of which a
+   * request can influence — and a route that says nothing is not exempt.
+   */
+  private isMfaExempt(ctx: ExecutionContext): boolean {
+    const marked = this.reflector.getAllAndOverride<boolean | undefined>(MFA_EXEMPT_KEY, [
+      ctx.getHandler(),
+      ctx.getClass(),
+    ]);
+    return marked === true || MFA_EXEMPT_CONTROLLERS.has(ctx.getClass().name);
+  }
 }
 
 /**

@@ -36,6 +36,38 @@ const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
 const RATE_LIMIT = 5;
 const RATE_WINDOW_SEC = 3600;
 
+/**
+ * Ceiling on applications accepted platform-wide per hour, whatever address
+ * they come from.
+ *
+ * input-and-files-10: the per-IP bucket above was the ONLY throttle on the one
+ * unauthenticated write in the control plane, and it fails open by design — so
+ * a Redis blip removed it entirely, leaving a single hidden honeypot input as
+ * the whole defence. Rotating a forwarded-for header walked around it even with
+ * Redis healthy: the auditor executed eight submissions with rotating
+ * X-Real-IP and every one persisted. Each accepted submission is a
+ * control-plane row plus an email to the operator's inbox, arriving exactly
+ * when the Greek launch campaign is pointing real traffic at that page.
+ *
+ * 60/hour is twelve times the per-visitor budget and far above any honest burst
+ * — 277 libraries on the campaign list, five free spots — so a real applicant
+ * will never meet it. A script meets it inside the first minute.
+ *
+ * The `apply-all:` prefix is what makes this bucket fail CLOSED; see
+ * FAIL_CLOSED_PREFIXES in RateLimitService for why this one and not the other.
+ */
+const GLOBAL_RATE_LIMIT = 60;
+const GLOBAL_RATE_WINDOW_SEC = 3600;
+const GLOBAL_RATE_KEY = 'apply-all:hour';
+
+/**
+ * `ip` — this visitor is over their own hourly budget.
+ * `global` — the platform-wide ceiling tripped, or Redis is unreachable and
+ * that bucket fails closed. Either way it is not the visitor's doing, and the
+ * answer they get must not say it was.
+ */
+export type ThrottleVerdict = 'ok' | 'ip' | 'global';
+
 export type ApplyResult =
   | { ok: true; id: string }
   | { ok: false; kind: 'invalid' | 'rate-limited' | 'save-failed'; parsed: Parsed };
@@ -113,10 +145,25 @@ export class ApplicationsService {
     return `apply:iph:${hash}`;
   }
 
-  /** True when this IP is over budget. Fails OPEN — a Redis outage must not eat leads. */
-  async isRateLimited(ip: string | undefined): Promise<boolean> {
-    const res = await this.rateLimit.hit(this.ipKey(ip), RATE_LIMIT, RATE_WINDOW_SEC);
-    return !res.allowed;
+  /**
+   * Whether this submission is over budget, and WHICH budget — the caller needs
+   * to know, because only one of the two is the visitor's own doing.
+   *
+   * The per-visitor bucket still fails OPEN: a Redis outage must not eat leads,
+   * and it is checked first so a flood from one address never reaches (or
+   * spends) the shared ceiling. The platform-wide ceiling behind it fails
+   * CLOSED, which is the entire point of adding it — it is what is left
+   * standing when Redis is the thing that broke.
+   */
+  async throttle(ip: string | undefined): Promise<ThrottleVerdict> {
+    const perVisitor = await this.rateLimit.hit(this.ipKey(ip), RATE_LIMIT, RATE_WINDOW_SEC);
+    if (!perVisitor.allowed) return 'ip';
+    const platformWide = await this.rateLimit.hit(
+      GLOBAL_RATE_KEY,
+      GLOBAL_RATE_LIMIT,
+      GLOBAL_RATE_WINDOW_SEC,
+    );
+    return platformWide.allowed ? 'ok' : 'global';
   }
 
   /**

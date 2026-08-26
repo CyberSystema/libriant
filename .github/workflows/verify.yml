@@ -138,6 +138,17 @@ jobs:
       - name: Unit tests
         run: pnpm --filter @libriant/api exec vitest run --project unit
 
+      # The web and ui packages run node:test, not vitest, and for a while their
+      # `test` scripts were `echo 'tests: none yet' && exit 0` — so when real
+      # tests were added, nothing noticed that no gate ran them. That left
+      # `apps/web/lib/safe-html.test.ts` — the only automated guard between this
+      # repo and a re-introduced stored-XSS sink on the public legal pages —
+      # unable to fail a build. Kept as its own step rather than folded into
+      # `pnpm test`, because @libriant/api's `test` script also runs the
+      # integration project, which needs a database this job does not have.
+      - name: Web and design-system tests
+        run: pnpm --filter @libriant/web --filter @libriant/ui test
+
   # The verify gate ran typecheck, lint, prettier, translations, assets, unit,
   # integration, migrations and the DR drill — and zero supply-chain checks.
   # Combined with --frozen-lockfile everywhere, that meant the resolved tree was

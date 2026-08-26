@@ -38,6 +38,17 @@ export function createEmailDriver(): EmailDriver {
  * production deployment. It is a deliberate, documented one for the launch
  * (there is no Resend key), which is exactly why the message names the
  * supported way to work around it rather than only complaining.
+ *
+ * privacy-legal-18 asked for this to REFUSE TO BOOT outside development unless
+ * an acknowledgement variable were set, the way scripts/backup.sh handles
+ * BACKUP_ALLOW_LOCAL_ONLY. Rejected: the launch configuration IS
+ * `EMAIL_DRIVER=console` with no Resend key, and no compose file sets such a
+ * variable, so the refusal would stop the api and worker containers from
+ * starting at all — turning "notices are not delivered" into "the library
+ * cannot circulate a book". The banner plus the honest `failed` status is the
+ * signal; the refusal is only correct once a real driver is the norm and
+ * console is the accident. Reinstate it then, together with the compose change
+ * that acknowledges it.
  */
 function announceUndeliveredMail(nodeEnv: string): void {
   const logger = new Logger('EmailDriver');
@@ -52,7 +63,7 @@ function announceUndeliveredMail(nodeEnv: string): void {
       '  │  EMAIL IS NOT BEING DELIVERED.                                        │',
       '  └───────────────────────────────────────────────────────────────────────┘',
       `  EMAIL_DRIVER=console under NODE_ENV=${nodeEnv}. Every message is written to`,
-      '  the email_outbox table and marked delivered with a fabricated provider id.',
+      "  the email_outbox table with status='failed' and no provider id, because",
       '  NOTHING leaves this machine. No password reset, no e-mail verification,',
       '  no overdue notice, no support-access notification reaches anyone.',
       '',

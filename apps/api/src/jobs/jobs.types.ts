@@ -3,8 +3,10 @@
  *
  * Handlers return a small result so the runner can log a single line per
  * tick (`[jobs] support-session-expiry: ended 2 expired session(s)`).
- * Errors are caught by the runner — handlers should just throw and
- * BullMQ records the failure for the next tick.
+ * Errors are caught by the runner — handlers should just throw. BullMQ retries
+ * the tick (see SCHEDULED_JOB_ATTEMPTS in scheduled-jobs.runner.ts), which is
+ * only safe because every job here is an idempotent sweep; a handler that is
+ * not re-runnable does not belong in this registry.
  */
 export type JobResult = {
   /** Free-form short status line for logging. */

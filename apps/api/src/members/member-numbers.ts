@@ -141,6 +141,52 @@ export async function nextSequenceForYear(
   }
 }
 
+/**
+ * Claim a sequence for `year` that is past everything already on the shelf.
+ *
+ * data-integrity-11. The counter is a cheap monotonic ticker; it knows nothing
+ * about numbers a library assigned ITSELF. A new customer's first act is to
+ * load their existing roster, and Greek libraries number members in exactly the
+ * `M-<year>-<n>` shape we mint — so the counter is routinely left sitting
+ * BELOW a solid block of taken numbers. `nextSequenceForYear` then hands out
+ * one taken number per attempt, the caller's three retries step 1, 2, 3 into a
+ * gap twelve or two hundred wide, and the librarian is shown "A member with
+ * this number already exists" about a number they never typed. Reproduced with
+ * no concurrency at all in test/integration/member-number-minting.spec.ts.
+ *
+ * So: on a collision, RESYNC rather than step. One aggregate scan — the same
+ * one the cold path already pays once per tenant per year — and the counter is
+ * permanently repaired, so the next create is back on the one-row hot path.
+ *
+ * `GREATEST("nextSeq" + 1, seed)` and not a bare assignment: two callers can
+ * resync at once, and a counter that ever moves BACKWARDS re-issues numbers.
+ * It only goes forwards, so the loser of the race lands above the winner.
+ */
+export async function resyncSequenceForYear(
+  client: TenantPrismaClient,
+  year: number,
+): Promise<number> {
+  const seed = (await highestExistingSequence(client, year)) + 1;
+  try {
+    const rows = await client.$queryRaw<{ nextSeq: number }[]>`
+      INSERT INTO "member_number_counters" ("year", "nextSeq")
+      VALUES (${year}, ${seed})
+      ON CONFLICT ("year")
+      DO UPDATE SET "nextSeq" = GREATEST("member_number_counters"."nextSeq" + 1, ${seed})
+      RETURNING "nextSeq"`;
+    const seq = Number(rows[0]?.nextSeq ?? seed);
+    if (!Number.isInteger(seq) || seq < 1) {
+      throw new Error(`Member-number counter for ${year} returned an unusable sequence.`);
+    }
+    return seq;
+  } catch (err) {
+    if (!isMissingCounterTable(err)) throw err;
+    // Same un-migrated tenant database `nextSequenceForYear` tolerates. The
+    // seed IS the answer there — it is already past every number on the shelf.
+    return seed;
+  }
+}
+
 /** True for Postgres 42P01 (undefined_table) naming the counter table. */
 function isMissingCounterTable(err: unknown): boolean {
   const text = [

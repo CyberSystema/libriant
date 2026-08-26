@@ -1,7 +1,7 @@
 'use client';
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Banner, Button, Card, CardBody, FormField, Input, useToast } from '@libriant/ui';
+import { Button, Card, CardBody, FormError, FormField, Input, useToast } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
 
 type RedeemResponse = {
@@ -42,11 +42,7 @@ export function RedeemForm({ locale }: { locale: string }) {
   return (
     <Card>
       <CardBody>
-        {error ? (
-          <Banner severity="critical" style={{ marginBottom: 'var(--sp-3)' }}>
-            {error}
-          </Banner>
-        ) : null}
+        <FormError style={{ marginBottom: 'var(--sp-3)' }}>{error}</FormError>
         <form onSubmit={submit}>
           <FormField id="code" label="Support code" hint="Looks like SUPPORT-XXXXXX.">
             <Input

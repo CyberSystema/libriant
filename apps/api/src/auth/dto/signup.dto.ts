@@ -14,6 +14,7 @@ import {
 import { Transform } from 'class-transformer';
 import { LIBRARY_TYPES } from '@libriant/shared';
 import { LEGAL_LOCALES, type LegalLocale } from '../consent-locales.js';
+import { MaxPasswordBytes } from './password-bounds.js';
 
 /**
  * Same slug regex as the DB CHECK constraint.
@@ -44,6 +45,7 @@ export class SignupDto {
 
   @IsString()
   @MinLength(12, { message: 'Please use at least 12 characters.' })
+  @MaxPasswordBytes()
   password!: string;
 
   /**

@@ -16,6 +16,7 @@ import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import { TenantResolverService } from '../tenancy/tenant-resolver.service.js';
 import { PasswordService } from './password.service.js';
 import { SessionRevocationService } from './session-revocation.service.js';
+import { tokenKey } from './token-digest.js';
 
 /** What we stash in Redis under the one-time verification token. */
 type VerifyPayload = {
@@ -57,8 +58,8 @@ export type VerifyResult =
  * Soft gate: an unverified user can still sign in; `EmailVerifiedGuard` blocks
  * the verification-sensitive actions until `users.emailVerifiedAt` is set.
  *
- * Mirrors PasswordResetService: Redis-stored token (atomic GETDEL claim on
- * verify), per-account rate limit, idempotency-keyed enqueue.
+ * Mirrors PasswordResetService: Redis-stored token DIGEST (atomic GETDEL claim
+ * on verify), per-account rate limit, idempotency-keyed enqueue.
  */
 @Injectable()
 export class EmailVerificationService {
@@ -128,8 +129,10 @@ export class EmailVerificationService {
       mode: input.mode,
       ...(input.mode === 'change' ? { prevEmail: input.prevEmail ?? null } : {}),
     };
+    // Digest, not the token — the link in the mailbox is the only place the
+    // plaintext exists. token-digest.ts (authn-authz-11).
     await this.redis.client.set(
-      `emailverify:${token}`,
+      tokenKey('emailverify', token),
       JSON.stringify(payload),
       'EX',
       EmailVerificationService.TOKEN_TTL_SEC,
@@ -179,7 +182,8 @@ export class EmailVerificationService {
   /** Consume a token and apply it. Returns `{ ok:false }` for any bad/expired token. */
   async verify(token: string): Promise<VerifyResult> {
     // Atomic single-use claim (GETDEL) — a token can't be replayed or raced.
-    const raw = await this.redis.client.getdel(`emailverify:${token}`);
+    // Looked up by digest (authn-authz-11); a wrong token names no key.
+    const raw = await this.redis.client.getdel(tokenKey('emailverify', token));
     if (!raw) return { ok: false };
     let p: VerifyPayload;
     try {

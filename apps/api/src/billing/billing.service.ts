@@ -65,6 +65,24 @@ export { isUsableStripePriceId } from './plan-price-check.js';
  * correctness.
  */
 const SUB_EVENT_KEY = (subscriptionId: string) => `billing:subevent:${subscriptionId}`;
+
+/**
+ * Control-plane advisory-lock key serialising everything that read-modify-writes
+ * one tenant's `subscriptions` row (data-integrity-09).
+ *
+ * The webhook controller dedupes on `event.id`, so it serialises RETRIES of one
+ * event and nothing else. Two DISTINCT events for the same library — a
+ * `customer.subscription.updated` and an `invoice.payment_succeeded` arriving
+ * together, which is exactly how Stripe delivers a recovered dunning — used to
+ * run concurrently through a read, a derivation and a write with no transaction
+ * and no row lock between them. The loser's write silently reverted the
+ * winner's: a library that had just paid left marked `past_due`, or a
+ * delinquent one left with an open grace window.
+ *
+ * Same pattern StaffService.create already uses against the control plane, on
+ * the same connection pool.
+ */
+const BILLING_LOCK_KEY = (tenantId: string) => `billing:${tenantId}`;
 /**
  * Long enough to outlast every Stripe redelivery window (3 days) and the retry
  * sweep's give-up budget (24h) many times over, short enough that dead
@@ -133,6 +151,27 @@ function parseCheckoutMarker(raw: string | null): CheckoutMarker | null {
  */
 function epochSecsToDate(secs: number | null | undefined): Date | null {
   return typeof secs === 'number' && Number.isFinite(secs) ? new Date(secs * 1000) : null;
+}
+
+/**
+ * The `graceUntil` a `customer.subscription.*` event should leave behind, given
+ * the subscription row as it stands.
+ *
+ * Extracted because it is a pure function OF THE ROW, and that is exactly why
+ * data-integrity-09 mattered: it has to be evaluated against the row the write
+ * is about to overwrite, read inside the same transaction, not against a copy
+ * fetched four round trips earlier that a concurrent event has since moved.
+ */
+function resolveGraceUntil(
+  stripeStatus: string,
+  row: { status: SubscriptionStatus; graceUntil: Date | null } | null,
+): Date | null {
+  if (stripeStatus !== 'past_due') return null;
+  const running =
+    row?.status === 'past_due' && row.graceUntil != null && row.graceUntil.getTime() > Date.now();
+  return running
+    ? row.graceUntil
+    : new Date(Date.now() + loadEnv().billingGracePeriodDays * MS_PER_DAY);
 }
 
 /**
@@ -1082,58 +1121,83 @@ export class BillingService {
     evidence: { hasSettledInvoice: boolean },
   ): Promise<BillingSnapshot> {
     const env = loadEnv();
-    const sub = await controlDb.subscription.findUnique({
-      where: { tenantId },
-      select: { status: true, graceUntil: true },
-    });
-    if (!sub) throw new NotFoundException('No subscription on file.');
-    const now = Date.now();
-    // Keep an already-running grace deadline; only arm a fresh one on the
-    // first failure (or if a stale/elapsed window left graceUntil unset).
-    const graceStillRunning =
-      sub.status === 'past_due' && sub.graceUntil != null && sub.graceUntil.getTime() > now;
+    // data-integrity-09: the read, the derivation and the write are ONE
+    // control-plane transaction on the per-tenant billing lock.
+    // `invoice.payment_failed` and `customer.subscription.updated` are two
+    // DISTINCT Stripe events, so the webhook controller's per-event-id dedupe
+    // never serialised them against each other — and BOTH of them derive
+    // `graceUntil` from whatever `status`/`graceUntil` they happened to read.
+    // Interleaved, the loser wrote a deadline computed from a row the winner
+    // had already replaced: a library that had just paid left with an open
+    // grace window, or one still in dunning left with none.
+    await controlDb.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${BILLING_LOCK_KEY(tenantId)}, 0))`;
+      const sub = await tx.subscription.findUnique({
+        where: { tenantId },
+        select: { status: true, graceUntil: true },
+      });
+      if (!sub) throw new NotFoundException('No subscription on file.');
+      const now = Date.now();
+      // Keep an already-running grace deadline; only arm a fresh one on the
+      // first failure (or if a stale/elapsed window left graceUntil unset).
+      const graceStillRunning =
+        sub.status === 'past_due' && sub.graceUntil != null && sub.graceUntil.getTime() > now;
 
-    // billing-05. The grace window keeps FULL paid entitlement alive for
-    // BILLING_GRACE_PERIOD_DAYS (effective-plan.service.ts admits
-    // `past_due AND graceUntil > now()`), and it exists to protect an
-    // established payer whose card lapsed between renewals. Arming it on the
-    // failure of a subscription's FIRST invoice grants the top tier to someone
-    // who has never paid a cent — the auditor executed exactly that and got
-    // `institutional past_due grace=+7d` on a subscription with no settled
-    // invoice. So: no settled invoice, no grace. The status still moves to
-    // past_due, which is true and which gates them, and a later
-    // `invoice.payment_succeeded` clears it the normal way.
-    const graceUntil = evidence.hasSettledInvoice
-      ? graceStillRunning
-        ? sub.graceUntil
-        : new Date(now + env.billingGracePeriodDays * MS_PER_DAY)
-      : // Never EXTEND on an unproven failure, but do not tear down a window a
-        // genuine renewal failure already armed either.
-        graceStillRunning
-        ? sub.graceUntil
-        : null;
+      // billing-05. The grace window keeps FULL paid entitlement alive for
+      // BILLING_GRACE_PERIOD_DAYS (effective-plan.service.ts admits
+      // `past_due AND graceUntil > now()`), and it exists to protect an
+      // established payer whose card lapsed between renewals. Arming it on the
+      // failure of a subscription's FIRST invoice grants the top tier to someone
+      // who has never paid a cent — the auditor executed exactly that and got
+      // `institutional past_due grace=+7d` on a subscription with no settled
+      // invoice. So: no settled invoice, no grace. The status still moves to
+      // past_due, which is true and which gates them, and a later
+      // `invoice.payment_succeeded` clears it the normal way.
+      const graceUntil = evidence.hasSettledInvoice
+        ? graceStillRunning
+          ? sub.graceUntil
+          : new Date(now + env.billingGracePeriodDays * MS_PER_DAY)
+        : // Never EXTEND on an unproven failure, but do not tear down a window a
+          // genuine renewal failure already armed either.
+          graceStillRunning
+          ? sub.graceUntil
+          : null;
 
-    if (!evidence.hasSettledInvoice && !graceStillRunning) {
-      this.logger.warn(
-        `Payment failed for tenant ${tenantId} on a subscription with no settled invoice — ` +
-          'marking past_due WITHOUT a grace window. Grace is for a renewal that failed, not for a ' +
-          'first payment that never succeeded.',
-      );
-    }
+      if (!evidence.hasSettledInvoice && !graceStillRunning) {
+        this.logger.warn(
+          `Payment failed for tenant ${tenantId} on a subscription with no settled invoice — ` +
+            'marking past_due WITHOUT a grace window. Grace is for a renewal that failed, not for a ' +
+            'first payment that never succeeded.',
+        );
+      }
 
-    await controlDb.subscription.update({
-      where: { tenantId },
-      data: { status: 'past_due', graceUntil },
+      await tx.subscription.update({
+        where: { tenantId },
+        data: { status: 'past_due', graceUntil },
+      });
     });
     await this.effectivePlan.invalidate(tenantId);
     return this.getSnapshot(tenantId);
   }
 
-  /** Successful payment received. Clears grace and re-arms the subscription. */
+  /**
+   * Successful payment received. Clears grace and re-arms the subscription.
+   *
+   * A single unconditional UPDATE, so it needs no re-read of its own — but it
+   * takes the billing lock all the same (data-integrity-09). Without it, this
+   * write can land in the middle of a `syncStripeSubscription` that has already
+   * read `past_due` and is about to write a grace window derived from it, and
+   * the library that just paid us goes straight back to past_due. Joining a
+   * lock domain is all-or-nothing: one writer outside it reopens the race for
+   * everyone in it.
+   */
   async recordPaymentSuccess(tenantId: string): Promise<BillingSnapshot> {
-    await controlDb.subscription.update({
-      where: { tenantId },
-      data: { status: 'active', graceUntil: null },
+    await controlDb.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${BILLING_LOCK_KEY(tenantId)}, 0))`;
+      await tx.subscription.update({
+        where: { tenantId },
+        data: { status: 'active', graceUntil: null },
+      });
     });
     await this.effectivePlan.invalidate(tenantId);
     return this.getSnapshot(tenantId);
@@ -1204,11 +1268,13 @@ export class BillingService {
     const periodEnd = item?.current_period_end ?? payload.current_period_end;
     const nextPeriodStart = epochSecsToDate(periodStart);
 
+    // PRE-FLIGHT ONLY (data-integrity-09). Everything the WRITE is derived from
+    // — `status`, `graceUntil` — is re-read inside the transaction below, so it
+    // is deliberately not selected here: a field on this row is an invitation
+    // to derive the write from it again.
     const existing = await controlDb.subscription.findUnique({
       where: { tenantId: billing.tenantId },
       select: {
-        status: true,
-        graceUntil: true,
         stripeSubscriptionId: true,
         currentPeriodStart: true,
         // Only read for the stale-replay guard (billing-06): "would this event
@@ -1227,18 +1293,7 @@ export class BillingService {
     // only guard when both ids match and both periods are known — a genuinely
     // new subscription (different id) or a first-ever sync (no persisted
     // period) always applies.
-    if (
-      existing?.stripeSubscriptionId === payload.id &&
-      existing.currentPeriodStart != null &&
-      nextPeriodStart != null &&
-      nextPeriodStart.getTime() < existing.currentPeriodStart.getTime()
-    ) {
-      this.logger.warn(
-        `Webhook: ignoring stale subscription event for ${payload.id} ` +
-          `(period start ${nextPeriodStart.toISOString()} < persisted ${existing.currentPeriodStart.toISOString()})`,
-      );
-      return;
-    }
+    if (this.isStaleByPeriodStart(payload.id, nextPeriodStart, existing)) return;
 
     // billing-06: the guard above is INERT for exactly the events that matter.
     // A mid-cycle plan change does not move the billing period — Stripe keeps
@@ -1250,89 +1305,114 @@ export class BillingService {
     // envelope instead.
     if (await this.isStaleSubscriptionEvent(payload, priceId, plan.id, existing, event)) return;
 
-    // Events about a subscription that is NOT the one we track.
-    //
-    // Two separate defects lived in the old single condition, which required
-    // `localStatus !== 'canceled'` before it would even speak up:
-    //
-    //   a) It went SILENT whenever the incoming event was the cancellation of
-    //      a different subscription — the one case where the operator most
-    //      needs to know which of a customer's two subscriptions just died.
-    //   b) Worse than silent: it then APPLIED that event. A terminal event for
-    //      a foreign subscription would overwrite the plan, status and
-    //      subscription id of a tenant who is actively paying on the one we do
-    //      track, cancelling a live customer's access from a webhook about
-    //      something else. `handleStripeSubscriptionDeleted` has guarded
-    //      against exactly this since A6-01; the update path never did.
-    const tracked = existing?.stripeSubscriptionId ?? null;
-    if (tracked != null && tracked !== payload.id) {
-      if (!STRIPE_LIVE_STATUSES.has(payload.status)) {
-        this.logger.warn(
-          `Webhook: ignoring ${payload.status} event for foreign subscription ${payload.id} ` +
-            `(tenant ${billing.tenantId} is on ${tracked}). Applying it would have downgraded a ` +
-            'subscription this event says nothing about.',
-        );
-        return;
-      }
-      if (existing?.status !== 'canceled') {
-        // Both are live. We are about to overwrite `stripeSubscriptionId`, the
-        // ONLY record we keep of the previous one — after this write nothing
-        // in the product can see it and cancelling reaches only the newest.
-        // `startCheckout` can no longer produce this, but a Dashboard-created
-        // subscription still can.
-        this.logger.error(
-          `Tenant ${billing.tenantId} has TWO live Stripe subscriptions: ${tracked} ` +
-            `(ours until now) and ${payload.id} (this event). The older one keeps billing and is about to ` +
-            'disappear from our records — cancel it in Stripe and refund the overlap.',
-        );
-      }
-    }
+    // data-integrity-09: everything from here to the write is ONE control-plane
+    // transaction, opened on the per-tenant billing advisory lock, and the row
+    // is re-read INSIDE it. The read above is a pre-flight — it exists so the
+    // guards that may call Stripe (`isStaleSubscriptionEvent`, no-envelope
+    // regime) do their network round trip outside a held transaction — and a
+    // pre-flight read cannot be what a write is derived from. `graceUntil` in
+    // particular is computed FROM the row: two distinct events for one library
+    // in flight together (Stripe delivers `customer.subscription.updated` and
+    // `invoice.payment_succeeded` within milliseconds of each other on a
+    // recovered dunning) both read `past_due`, and the loser's write put the
+    // grace window back on a library that had just paid.
+    const applied = await controlDb.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${BILLING_LOCK_KEY(billing.tenantId)}, 0))`;
+      const current = await tx.subscription.findUnique({
+        where: { tenantId: billing.tenantId },
+        select: {
+          status: true,
+          graceUntil: true,
+          stripeSubscriptionId: true,
+          currentPeriodStart: true,
+        },
+      });
 
-    await controlDb.subscription.update({
-      where: { tenantId: billing.tenantId },
-      data: {
-        planId: plan.id,
-        billingMode: 'stripe',
-        status: localStatus,
-        stripeSubscriptionId: payload.id,
-        currentPeriodStart: nextPeriodStart,
-        currentPeriodEnd: epochSecsToDate(periodEnd),
-        cancelAtPeriodEnd: payload.cancel_at_period_end,
-        canceledAt: epochSecsToDate(payload.canceled_at),
-        // Stripe's own retry policy moved us to past_due; arm the grace
-        // window so feature access continues until the deadline. billing-new:
-        // anchor the deadline to the first failure — if we're already past_due
-        // with a future grace window, keep it instead of sliding it forward on
-        // every dunning redelivery.
-        //
-        // Keyed on STRIPE's status, not our collapsed local one. `incomplete`
-        // and `unpaid` also map to local `past_due`, and granting either of
-        // them a grace window hands out N days of paid features on a
-        // subscription whose first payment never completed (`incomplete`) or
-        // whose dunning is already over (`unpaid`). A grace window is for a
-        // paying customer whose RENEWAL failed; those two never paid.
-        graceUntil:
-          payload.status === 'past_due'
-            ? existing?.status === 'past_due' &&
-              existing.graceUntil != null &&
-              existing.graceUntil.getTime() > Date.now()
-              ? existing.graceUntil
-              : new Date(Date.now() + loadEnv().billingGracePeriodDays * MS_PER_DAY)
-            : null,
-      },
+      // Re-run under the lock: between the pre-flight read and here, a
+      // concurrent event may have moved the period forward, which makes this
+      // one the stale replay.
+      if (this.isStaleByPeriodStart(payload.id, nextPeriodStart, current)) return false;
+
+      // Events about a subscription that is NOT the one we track.
+      //
+      // Two separate defects lived in the old single condition, which required
+      // `localStatus !== 'canceled'` before it would even speak up:
+      //
+      //   a) It went SILENT whenever the incoming event was the cancellation of
+      //      a different subscription — the one case where the operator most
+      //      needs to know which of a customer's two subscriptions just died.
+      //   b) Worse than silent: it then APPLIED that event. A terminal event for
+      //      a foreign subscription would overwrite the plan, status and
+      //      subscription id of a tenant who is actively paying on the one we do
+      //      track, cancelling a live customer's access from a webhook about
+      //      something else. `handleStripeSubscriptionDeleted` has guarded
+      //      against exactly this since A6-01; the update path never did.
+      const tracked = current?.stripeSubscriptionId ?? null;
+      if (tracked != null && tracked !== payload.id) {
+        if (!STRIPE_LIVE_STATUSES.has(payload.status)) {
+          this.logger.warn(
+            `Webhook: ignoring ${payload.status} event for foreign subscription ${payload.id} ` +
+              `(tenant ${billing.tenantId} is on ${tracked}). Applying it would have downgraded a ` +
+              'subscription this event says nothing about.',
+          );
+          return false;
+        }
+        if (current?.status !== 'canceled') {
+          // Both are live. We are about to overwrite `stripeSubscriptionId`, the
+          // ONLY record we keep of the previous one — after this write nothing
+          // in the product can see it and cancelling reaches only the newest.
+          // `startCheckout` can no longer produce this, but a Dashboard-created
+          // subscription still can.
+          this.logger.error(
+            `Tenant ${billing.tenantId} has TWO live Stripe subscriptions: ${tracked} ` +
+              `(ours until now) and ${payload.id} (this event). The older one keeps billing and is about to ` +
+              'disappear from our records — cancel it in Stripe and refund the overlap.',
+          );
+        }
+      }
+
+      await tx.subscription.update({
+        where: { tenantId: billing.tenantId },
+        data: {
+          planId: plan.id,
+          billingMode: 'stripe',
+          status: localStatus,
+          stripeSubscriptionId: payload.id,
+          currentPeriodStart: nextPeriodStart,
+          currentPeriodEnd: epochSecsToDate(periodEnd),
+          cancelAtPeriodEnd: payload.cancel_at_period_end,
+          canceledAt: epochSecsToDate(payload.canceled_at),
+          // Stripe's own retry policy moved us to past_due; arm the grace
+          // window so feature access continues until the deadline. billing-new:
+          // anchor the deadline to the first failure — if we're already past_due
+          // with a future grace window, keep it instead of sliding it forward on
+          // every dunning redelivery.
+          //
+          // Keyed on STRIPE's status, not our collapsed local one. `incomplete`
+          // and `unpaid` also map to local `past_due`, and granting either of
+          // them a grace window hands out N days of paid features on a
+          // subscription whose first payment never completed (`incomplete`) or
+          // whose dunning is already over (`unpaid`). A grace window is for a
+          // paying customer whose RENEWAL failed; those two never paid.
+          graceUntil: resolveGraceUntil(payload.status, current),
+        },
+      });
+      // An active Stripe subscription is an explicit choice — stamp it if it
+      // wasn't already (covers subs created outside our checkout flow, e.g. the
+      // Stripe dashboard). `updateMany` keeps the original timestamp intact.
+      await tx.subscription.updateMany({
+        where: { tenantId: billing.tenantId, planSelectedAt: null },
+        data: { planSelectedAt: new Date() },
+      });
+      return true;
     });
+    if (!applied) return;
+
     // billing-06: remember how new this event was, so a later replay of an
     // OLDER one is refused. Written after the row, never before: a marker
     // ahead of the state it describes would reject the very event that still
     // has to be applied.
     await this.recordAppliedSubscriptionEvent(payload.id, event);
-    // An active Stripe subscription is an explicit choice — stamp it if it
-    // wasn't already (covers subs created outside our checkout flow, e.g. the
-    // Stripe dashboard). `updateMany` keeps the original timestamp intact.
-    await controlDb.subscription.updateMany({
-      where: { tenantId: billing.tenantId, planSelectedAt: null },
-      data: { planSelectedAt: new Date() },
-    });
     // The purchase landed. Any Checkout session still recorded as open for this
     // tenant is now a loaded gun (billing-03) — completing it would open a
     // SECOND subscription. Best-effort: a failure here only means the tenant's
@@ -2066,6 +2146,43 @@ export class BillingService {
       checkedAt: new Date().toISOString(),
       plans: rows,
     };
+  }
+
+  /**
+   * STRIPE-RETRY-STALE-REPLAY: is this an out-of-order event for the SAME
+   * subscription? Stripe's `current_period_start` is monotonic across a
+   * subscription's lifecycle, so a captured payload whose period starts
+   * strictly before the one we already persisted is a stale replay (the retry
+   * sweep re-running an old `payloadJson`, or webhooks arriving out of order).
+   * Applying it would revert plan/status/grace to older state. We only guard
+   * when both ids match and both periods are known — a genuinely new
+   * subscription (different id) or a first-ever sync (no persisted period)
+   * always applies.
+   *
+   * Called TWICE per event on purpose (data-integrity-09): once on the
+   * pre-flight read, so an obviously-stale replay never costs the Stripe round
+   * trip `isStaleSubscriptionEvent` may make, and once on the row re-read
+   * inside the billing lock, which is the answer that actually decides the
+   * write.
+   */
+  private isStaleByPeriodStart(
+    subscriptionId: string,
+    nextPeriodStart: Date | null,
+    row: { stripeSubscriptionId: string | null; currentPeriodStart: Date | null } | null,
+  ): boolean {
+    if (
+      row?.stripeSubscriptionId !== subscriptionId ||
+      row.currentPeriodStart == null ||
+      nextPeriodStart == null ||
+      nextPeriodStart.getTime() >= row.currentPeriodStart.getTime()
+    ) {
+      return false;
+    }
+    this.logger.warn(
+      `Webhook: ignoring stale subscription event for ${subscriptionId} ` +
+        `(period start ${nextPeriodStart.toISOString()} < persisted ${row.currentPeriodStart.toISOString()})`,
+    );
+    return true;
   }
 
   /**

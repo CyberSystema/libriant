@@ -9,7 +9,14 @@ import type { TenantContext } from '../tenancy/tenant-context.js';
  * test, and adding a new counter is just one entry below.
  */
 export type QuotaCounterCtx = {
-  tenant: TenantContext;
+  /**
+   * Narrower than the full `TenantContext` on purpose: the counters read only
+   * the id and the database address, and the fleet-wide pre-flight
+   * (`AdminPlanUsageController`) has to count for a tenant that is not on the
+   * current request and so has no resolved context at all. A request handler
+   * still passes its whole `req.tenant`.
+   */
+  tenant: Pick<TenantContext, 'id' | 'dbUrl'>;
   tenantClient: TenantPrismaClient;
   controlDb: typeof controlDb;
 };

@@ -3,7 +3,7 @@ import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { SEARCH_MIN_CHARS } from '@libriant/shared/search';
-import { Banner, Button, Card, CardBody, FormField, Textarea, useToast } from '@libriant/ui';
+import { Button, Card, CardBody, FormError, FormField, Textarea, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { api } from '@/lib/api';
@@ -83,11 +83,7 @@ export function PlaceHoldForm({ slug, catalog, locale }: Props) {
 
   return (
     <form onSubmit={handleSubmit} noValidate>
-      {formError ? (
-        <Banner severity="critical" style={{ marginBottom: 'var(--sp-4)' }}>
-          {formError}
-        </Banner>
-      ) : null}
+      <FormError style={{ marginBottom: 'var(--sp-4)' }}>{formError}</FormError>
       <Card style={{ marginBottom: 'var(--sp-4)' }}>
         <CardBody>
           <FormField id="hold-book" label={t('reservations.placeHold.book')} required>

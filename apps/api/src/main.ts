@@ -7,6 +7,8 @@ import { AppModule } from './app.module.js';
 import { loadEnv } from './config/env.js';
 import { HttpExceptionFilter } from './platform/http-exception.filter.js';
 import { describeTrustedProxies, isTrustedProxy } from './platform/client-ip.js';
+import { compressResponses } from './platform/compression.js';
+import { resolveStripeDriverKind } from './billing/stripe-driver-kind.js';
 
 async function bootstrap() {
   const env = loadEnv();
@@ -42,6 +44,12 @@ async function bootstrap() {
   const trustedProxies = describeTrustedProxies();
   app.set('trust proxy', (addr: string) => isTrustedProxy(addr));
 
+  // performance-15: gzip the API's own responses. Registered with `app.use`
+  // rather than in AppModule.configure so it wraps `res` ahead of the parsers
+  // and the whole module middleware chain — it has to be the outermost thing on
+  // the response for the same reason it is the innermost on the request.
+  app.use(compressResponses());
+
   // Parse Cookie header into req.cookies — required by SessionMiddleware.
   app.use(cookieParser());
 
@@ -68,6 +76,33 @@ async function bootstrap() {
   console.log(
     `[libriant-api] listening on :${env.port} (${env.nodeEnv}) — trusted proxies: ${trustedProxies}`,
   );
+  // boot-and-config-10: the process used to say nothing at all about the
+  // configuration it had resolved — the line above was the only one. An
+  // operator who left EMAIL_DRIVER=console on a server that is meant to be
+  // sending password resets, or who expected subscriptions to be enforced,
+  // had to shell in and read the env file to find out. One greppable line, no
+  // secrets: which driver, which switch, and the HOST half of each connection
+  // string with any credentials dropped.
+  // eslint-disable-next-line no-console
+  console.log(
+    `[libriant-api] config: email=${env.emailDriver} stripe=${resolveStripeDriverKind().kind} ` +
+      // The `platform_settings` row set from the admin panel overrides this at
+      // runtime and is the authoritative switch, so name what this actually is.
+      `billing-env=${env.billingEnabled ? 'enforced' : 'free'} ` +
+      `admin-mfa=${env.adminMfaRequired ? 'required' : 'optional'} ` +
+      `cookie-secure=${env.sessionCookieSecure} control-db=${endpointOf(env.controlDbUrl)} ` +
+      `redis=${endpointOf(env.redisUrl)} storage=${env.storageRoot}`,
+  );
+}
+
+/** Host + path of a connection URL. Credentials are dropped on purpose. */
+function endpointOf(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return `${url.host}${url.pathname}`;
+  } catch {
+    return '(unparseable)';
+  }
 }
 
 // REL-09: last-resort process-level handlers. Node's default

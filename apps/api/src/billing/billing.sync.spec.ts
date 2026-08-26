@@ -9,8 +9,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * subscription sync. The fix reads from `items.data[0]` and never builds an
  * Invalid Date.
  */
-const { billingFindFirst, planFindFirst, subUpdate, subUpdateMany, subFindUnique } = vi.hoisted(
-  () => ({
+const { billingFindFirst, planFindFirst, subUpdate, subUpdateMany, subFindUnique, execRaw } =
+  vi.hoisted(() => ({
     billingFindFirst: vi.fn(),
     planFindFirst: vi.fn(),
     subUpdate: vi.fn().mockResolvedValue({}),
@@ -19,18 +19,26 @@ const { billingFindFirst, planFindFirst, subUpdate, subUpdateMany, subFindUnique
     // monotonic guard (STRIPE-RETRY-STALE-REPLAY); null → no prior row → the
     // guard is a no-op and the period-shape assertions below still hold.
     subFindUnique: vi.fn().mockResolvedValue(null),
-  }),
-);
+    // data-integrity-09: the write half now runs inside a control-plane
+    // transaction opened on `pg_advisory_xact_lock('billing:<tenant>')`.
+    execRaw: vi.fn().mockResolvedValue(1),
+  }));
 
-vi.mock('@libriant/db-control', () => ({
-  controlDb: {
+vi.mock('@libriant/db-control', () => {
+  const controlDb: Record<string, unknown> = {
+    $executeRaw: execRaw,
     billingAccount: { findFirst: billingFindFirst },
     // The webhook resolves a Stripe price against EITHER cadence (findFirst);
     // the cancellation downgrade still looks up 'starter' by slug (findUnique).
     plan: { findFirst: planFindFirst, findUnique: planFindFirst },
     subscription: { update: subUpdate, updateMany: subUpdateMany, findUnique: subFindUnique },
-  },
-}));
+  };
+  // The interactive-transaction client is the same surface here; handing back
+  // `controlDb` keeps every assertion below pointed at the same spies whether
+  // the statement runs inside the transaction or outside it.
+  controlDb.$transaction = (fn: (tx: unknown) => unknown) => fn(controlDb);
+  return { controlDb };
+});
 
 import { BillingService } from './billing.service.js';
 import type { StripeSubscriptionShape } from './stripe-driver.js';

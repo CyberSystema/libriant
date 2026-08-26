@@ -4,6 +4,7 @@ import { Banner, Card, CardBody, PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { ApiError, api } from '@/lib/api';
+import { renderSafeHtml } from '@/lib/safe-html';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,13 +57,12 @@ export default async function HelpArticlePage(props: {
 
       <Card>
         <CardBody>
-          <article
-            className="lbr-prose"
-            // The HTML comes from our own ingest-time markdown render of
-            // checked-in markdown. No user input is involved, so the
-            // `dangerouslySetInnerHTML` here is safe by construction.
-            dangerouslySetInnerHTML={{ __html: article.bodyHtml }}
-          />
+          {/* input-and-files-04: parsed against an allowlist into React
+              elements rather than handed to `dangerouslySetInnerHTML`. The
+              ingest-time sanitizer this body passes through is a regex denylist
+              with proven bypasses, and it is the wrong place for the guard
+              anyway — the row is written once and read on every page view. */}
+          <article className="lbr-prose">{renderSafeHtml(article.bodyHtml)}</article>
         </CardBody>
       </Card>
     </>

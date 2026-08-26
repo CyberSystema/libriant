@@ -14,6 +14,7 @@ const {
   billingFindFirst,
   billingFindUnique,
   billingUpdateMany,
+  execRaw,
   planFindFirst,
   planFindUnique,
   subFindUnique,
@@ -23,6 +24,10 @@ const {
   billingFindFirst: vi.fn(),
   billingFindUnique: vi.fn(),
   billingUpdateMany: vi.fn(),
+  // data-integrity-09: the read-derive-write half of every subscription and
+  // payment handler now runs inside a control-plane transaction opened on
+  // `pg_advisory_xact_lock('billing:<tenant>')`.
+  execRaw: vi.fn(),
   planFindFirst: vi.fn(),
   planFindUnique: vi.fn(),
   subFindUnique: vi.fn(),
@@ -30,8 +35,9 @@ const {
   subUpdateMany: vi.fn(),
 }));
 
-vi.mock('@libriant/db-control', () => ({
-  controlDb: {
+vi.mock('@libriant/db-control', () => {
+  const controlDb: Record<string, unknown> = {
+    $executeRaw: execRaw,
     billingAccount: {
       findFirst: billingFindFirst,
       findUnique: billingFindUnique,
@@ -39,8 +45,13 @@ vi.mock('@libriant/db-control', () => ({
     },
     plan: { findFirst: planFindFirst, findUnique: planFindUnique },
     subscription: { findUnique: subFindUnique, update: subUpdate, updateMany: subUpdateMany },
-  },
-}));
+  };
+  // The interactive-transaction client is the same surface here; handing back
+  // `controlDb` keeps every assertion below pointed at the same spies whether
+  // the statement runs inside the transaction or outside it.
+  controlDb.$transaction = (fn: (tx: unknown) => unknown) => fn(controlDb);
+  return { controlDb };
+});
 
 const GRACE_DAYS = 7;
 vi.mock('../config/env.js', () => ({

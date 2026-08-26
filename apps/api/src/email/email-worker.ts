@@ -4,7 +4,7 @@ import { controlDb } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
 import { RedisService } from '../platform/redis.service.js';
 import { createEmailDriver } from './drivers/create-email-driver.js';
-import type { EmailDriver } from './drivers/email-driver.js';
+import type { EmailDriver, SendResult } from './drivers/email-driver.js';
 import { EMAIL_JOB_NAME, EMAIL_QUEUE_NAME } from './email.service.js';
 import { outboxSecretKey, parseSecretPayload, sealedRef, unsealBody } from './outbox-secrets.js';
 
@@ -33,10 +33,25 @@ const RECOVERY_BATCH = 1000;
  * status / timestamps) is kept forever: it is what the outbox stats and the
  * admin viewer are for, and it is far less sensitive than the prose.
  *
- * Only `delivered` and `dead` rows are swept. A `pending`/`sending` row still
- * owes someone an email and its body is the message.
+ * Only TERMINAL rows are swept — `delivered`, `dead` and (privacy-legal-18)
+ * `failed`. A `pending`/`sending` row still owes someone an email and its body
+ * is the message.
+ *
+ * `failed` is in that list because of the interlock between the two findings:
+ * privacy-legal-18 makes every console-driver message terminate as `failed`
+ * instead of `delivered`, and on the shipped configuration that is EVERY
+ * message. Leaving `failed` out would have quietly turned this sweep off — the
+ * bodies it exists to remove (member names, borrowed titles) would have sat in
+ * the shared control plane forever, with the retention fix still reading as
+ * present in the diff.
  */
 const BODY_RETENTION_DAYS = 90;
+/**
+ * Statuses that will never be sent again, so their body has no reader left.
+ * Shared by the retention sweep and the no-double-send guard in `processOne`
+ * so the two can never disagree about what "finished" means.
+ */
+const TERMINAL_STATUSES = ['delivered', 'dead', 'failed'] as const;
 const BODY_REDACTED_MARKER = `[body removed after ${BODY_RETENTION_DAYS} days — outbox retention]`;
 /** Cap per pass so the first sweep on a long-lived install can't stall the loop. */
 const RETENTION_BATCH = 5000;
@@ -63,9 +78,12 @@ const BRAND_EMAIL_FOOTER = '\n\n---\n\nPowered by **CyberSystema** — https://c
  *   1. Load outbox row + assert it's `pending` (no double-send)
  *   2. Flip to `sending`, increment `attempts`
  *   3. Call driver.send
- *   4a. Success → `delivered` + providerId + deliveredAt
- *   4b. Failure & attempts < maxAttempts → back to `pending` + lastError
- *   4c. Failure & attempts >= maxAttempts → `dead` + abandonedAt
+ *   4a. Sent → `delivered` + providerId + deliveredAt
+ *   4b. Returned, but the driver says it sent nothing (privacy-legal-18:
+ *       `EMAIL_DRIVER=console`) → `failed` + failedAt + lastError, no
+ *       deliveredAt and no provider id. Terminal; nothing retries it.
+ *   4c. Threw & attempts < maxAttempts → back to `pending` + lastError
+ *   4d. Threw & attempts >= maxAttempts → `dead` + abandonedAt
  *
  * On step 4b we let BullMQ's exponential backoff queue the retry — the
  * row going back to `pending` is just so a cold-start recovery scan can
@@ -128,8 +146,11 @@ export async function startEmailWorker(): Promise<EmailWorkerHandle> {
     console.error(`[email-worker] job ${job?.id} failed: ${err.message}`);
   });
   worker.on('completed', (job) => {
+    // "processed", not "delivered": privacy-legal-18. A job completes when
+    // `processOne` returns, which it also does for a message the driver
+    // refused to send. The row's own status is the answer to "did it go out?".
     // eslint-disable-next-line no-console
-    console.log(`[email-worker] job ${job.id} delivered`);
+    console.log(`[email-worker] job ${job.id} processed`);
   });
 
   // A9-01: durable-outbox recovery. The outbox is the source of truth, but a
@@ -196,7 +217,7 @@ export async function startEmailWorker(): Promise<EmailWorkerHandle> {
       // a year would otherwise be one unbounded UPDATE.
       const stale = await controlDb.emailOutbox.findMany({
         where: {
-          status: { in: ['delivered', 'dead'] },
+          status: { in: [...TERMINAL_STATUSES] },
           createdAt: { lt: cutoff },
           NOT: { bodyMarkdown: BODY_REDACTED_MARKER },
         },
@@ -251,9 +272,13 @@ async function processOne(
     console.warn(`[email-worker] outbox row ${outboxId} not found — skipping`);
     return;
   }
-  // Idempotency: don't re-send already-delivered rows. BullMQ retries
-  // can revive a job after the worker already finished it.
-  if (row.status === 'delivered' || row.status === 'dead') {
+  // Idempotency: don't re-process a row that is already finished. BullMQ
+  // retries can revive a job after the worker already handled it. `failed`
+  // (privacy-legal-18) belongs here for the same reason `dead` does: nothing
+  // retries it, so re-entering would only re-log and re-stamp it. A row put
+  // back in play by hand — the re-drive SQL in the alert annotations — is set
+  // to `pending`, which is not in this list and is picked up normally.
+  if ((TERMINAL_STATUSES as readonly string[]).includes(row.status)) {
     return;
   }
 
@@ -287,7 +312,7 @@ async function processOne(
   });
 
   try {
-    const { providerId } = await driver.send({
+    const result = await driver.send({
       to: row.toEmail,
       from: row.fromEmail ?? env.emailFrom,
       replyTo: row.replyToEmail ?? env.emailReplyTo,
@@ -299,13 +324,11 @@ async function processOne(
     });
     await controlDb.emailOutbox.update({
       where: { id: outboxId },
-      data: {
-        status: 'delivered',
-        providerId,
-        deliveredAt: new Date(),
-        lastError: null,
-      },
+      data: sendOutcome(result, new Date()),
     });
+    if (!result.delivered) {
+      console.warn(`[email-worker] outbox row ${outboxId} not sent: ${result.notDeliveredReason}`);
+    }
   } catch (err) {
     const reason = (err as Error).message;
     // Pull the latest row to read the now-incremented attempts count.
@@ -323,6 +346,65 @@ async function processOne(
     // Re-throw so BullMQ records the failure and applies backoff.
     throw err;
   }
+}
+
+/**
+ * Turn what the driver reported into the row the outbox will keep
+ * (privacy-legal-18).
+ *
+ * The old code wrote `status: 'delivered', deliveredAt: now` the moment
+ * `driver.send` returned without throwing. The console driver — the driver the
+ * product SHIPS with, because there is no mail provider yet — never throws and
+ * never sends, so every stored notice claimed to have been delivered. That is
+ * not a cosmetic inaccuracy: a librarian looking at `/admin/emails`, or
+ * answering a member who says "nobody told me it was overdue", or assembling
+ * an Art. 5(2) accountability file, was reading a row asserting a delivery
+ * that never happened.
+ *
+ * `failed`, not `dead`, for an undelivered message. `dead` means "we tried
+ * `maxAttempts` times and gave up", which is what `LibriantEmailOutboxDeadLetters`
+ * (infra/monitoring/alerts.yml) pages a human about and offers re-drive SQL for
+ * — and on the shipped console configuration that alert would fire on every
+ * single message, forever, with a re-drive that can only produce another
+ * undelivered row. Alert fatigue on the one rule that means "a real password
+ * reset was abandoned" is a worse outcome than the finding. `failed` was
+ * documented in outbox-census.ts as an unreachable enum member; this is the
+ * writer it never had. The signal that mail is not being delivered stays where
+ * it belongs, at boot, in create-email-driver.ts's banner.
+ *
+ * Exported for `email-worker.spec.ts`, which drives a REAL driver instance
+ * through this function rather than a hand-built result object.
+ */
+export type OutboxSendOutcome = {
+  status: 'delivered' | 'failed';
+  providerId: string | null;
+  deliveredAt: Date | null;
+  failedAt: Date | null;
+  lastError: string | null;
+};
+
+export function sendOutcome(result: SendResult, at: Date): OutboxSendOutcome {
+  if (result.delivered) {
+    return {
+      status: 'delivered',
+      providerId: result.providerId,
+      deliveredAt: at,
+      failedAt: null,
+      lastError: null,
+    };
+  }
+  return {
+    status: 'failed',
+    // Never a provider id on a message no provider ever saw.
+    providerId: null,
+    deliveredAt: null,
+    failedAt: at,
+    // A driver that reports `delivered: false` without a reason still has to
+    // leave the operator something readable next to the row.
+    lastError:
+      result.notDeliveredReason ??
+      'the email driver reported this message as not delivered, and gave no reason',
+  };
 }
 
 /**

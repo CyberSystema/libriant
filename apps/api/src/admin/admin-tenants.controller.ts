@@ -22,7 +22,7 @@ import { SLUG_KEY, SUBDOMAIN_KEY } from '../tenancy/tenant-resolver.service.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { AdminAuthGuard, AdminSess } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
-import { AdminRoles } from './admin-roles.decorator.js';
+import { AdminRoles, AnyAdmin } from './admin-roles.decorator.js';
 import type { AdminSessionPayload } from './admin-session.service.js';
 import { DeleteTenantDto } from './admin-tenants.dto.js';
 
@@ -53,6 +53,7 @@ export class AdminTenantsController {
   ) {}
 
   @Get()
+  @AnyAdmin()
   async list(
     @Query('status') status?: string,
     @Query('planSlug') planSlug?: string,

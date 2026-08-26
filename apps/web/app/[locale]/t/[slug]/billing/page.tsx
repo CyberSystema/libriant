@@ -7,6 +7,7 @@ import { api, type BillingSnapshot } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
 import { BillingActions } from './BillingActions';
 import { PlanGrid, type AvailablePlan } from './PlanGrid';
+import { PlanUsage, type PlanUsageResponse } from './PlanUsage';
 
 export default async function BillingPage(props: {
   params: Promise<{ locale: string; slug: string }>;
@@ -17,17 +18,26 @@ export default async function BillingPage(props: {
   const t = createTranslator(catalog, params.locale);
   const cookie = await requestCookieHeader();
 
-  // Load both endpoints in parallel — both server-rendered so the page is
+  // Load all three endpoints in parallel — all server-rendered so the page is
   // useful on first paint. Failures are local: if `/billing` is down we
   // can still show the plan grid; if `/plans` is down we still show the
   // current snapshot.
-  const [snapshotResult, plansResult] = await Promise.allSettled([
+  //
+  // launch-readiness-17: `/plan/usage` is the third. It counts rows in the
+  // library's own database, so it is the slowest of the three and the one most
+  // worth loading alongside the others rather than after them. A failure here
+  // silently drops the usage card — the page's job is the subscription, and a
+  // library must still be able to fix a declined card on a day the counters
+  // cannot be read.
+  const [snapshotResult, plansResult, usageResult] = await Promise.allSettled([
     api<BillingSnapshot>(`/t/${params.slug}/billing`, { cookie }),
     api<{ plans: AvailablePlan[] }>(`/t/${params.slug}/billing/plans`, { cookie }),
+    api<PlanUsageResponse>(`/t/${params.slug}/plan/usage`, { cookie }),
   ]);
 
   const snapshot = snapshotResult.status === 'fulfilled' ? snapshotResult.value : null;
   const plans = plansResult.status === 'fulfilled' ? plansResult.value.plans : [];
+  const usage = usageResult.status === 'fulfilled' ? usageResult.value.usage : [];
   const errorMessage =
     snapshotResult.status === 'rejected'
       ? translateApiError(snapshotResult.reason, t, t('common.states.error'))
@@ -55,8 +65,14 @@ export default async function BillingPage(props: {
 
       {snapshot && snapshot.status === 'past_due' ? (
         <Banner severity="warning" title={t('billing.errors.paymentFailed')}>
+          {/* billing-17: this sentence carries the deadline for fixing a
+              declined card, and it was the one string on the page that skipped
+              the catalog — so the Greek library whose payment just failed read
+              the headline in Greek and the date in English. */}
           {snapshot.graceUntil
-            ? `Your plan stays active until ${fmtDate(snapshot.graceUntil)}.`
+            ? t('billing.errors.paymentFailedGrace', {
+                date: fmtDate(snapshot.graceUntil) ?? '',
+              })
             : null}
         </Banner>
       ) : null}
@@ -146,6 +162,8 @@ export default async function BillingPage(props: {
           )}
         </CardBody>
       </Card>
+
+      <PlanUsage usage={usage} catalog={catalog} locale={params.locale} />
 
       <section style={{ marginTop: 'var(--sp-6)' }}>
         <h2 style={{ fontSize: 'var(--fs-xl)', marginBottom: 'var(--sp-3)' }}>

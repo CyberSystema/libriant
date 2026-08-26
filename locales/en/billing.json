@@ -28,6 +28,7 @@
   "perMonth": "/ month",
   "free": "Free",
   "errors.paymentFailed": "Your last payment didn't go through. Please update your payment details to keep your access.",
+  "errors.paymentFailedGrace": "Your plan stays active until {date}.",
   "chooser.title": "Choose your plan",
   "chooser.subtitle": "To continue using {library}, pick the plan that fits your library. You can change it later in Plan & billing.",
   "chooser.choose": "Choose {plan}",

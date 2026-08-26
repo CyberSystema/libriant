@@ -26,6 +26,29 @@ return count
 `;
 
 /**
+ * Buckets that DENY on a Redis error rather than allowing the request through.
+ *
+ *   `signup:*`    — REM-2. A signup provisions a Postgres database, so an
+ *                   unthrottled signup path under a Redis outage re-opens the
+ *                   provisioning-DoS the limiter was added to close.
+ *   `apply-all:*` — input-and-files-10. The public application form's only
+ *                   throttle was its per-IP bucket, which fails OPEN on
+ *                   purpose ("a Redis outage must not eat leads") and leaves a
+ *                   honeypot field as the sole defence for the duration of any
+ *                   blip. Every accepted submission is a control-plane row plus
+ *                   an email to the operator's inbox. This is the
+ *                   platform-wide ceiling behind it, and it is the one that has
+ *                   to survive Redis being the thing that broke: refusing
+ *                   applications for a few minutes is recoverable, a flooded
+ *                   inbox and lead table during the launch campaign is not.
+ *
+ * Everything else fails open — for login and password-reset, an outage that
+ * locks every librarian out is worse than one that lets a few extra attempts
+ * through, and per-account lockout is the backstop there.
+ */
+const FAIL_CLOSED_PREFIXES = ['signup:', 'apply-all:'];
+
+/**
  * Redis-backed fixed-window rate limiter, shared by the unauthenticated edge
  * endpoints (signup / login / password-reset). Keys are namespaced under the
  * RedisService `lbr:` prefix.
@@ -38,11 +61,10 @@ return count
  *   - Cheap endpoints (login / password-reset) **fail open**: if Redis is
  *     unreachable we allow the request rather than locking every user out
  *     during a Redis blip. Per-account lockout (LoginService) is the backstop.
- *   - The signup buckets (`signup:*`) **fail closed** (REM-2): signup
- *     provisions a Postgres DB, so an unthrottled signup path under a Redis
- *     outage re-opens the provisioning-DoS the rate limiter was added to close.
- *     We'd rather refuse signups (loudly) for the duration of a Redis outage
- *     than let an attacker exhaust the cell while Redis is down.
+ *   - The buckets in {@link FAIL_CLOSED_PREFIXES} **fail closed**: each one
+ *     guards something that costs the platform real, unbounded resources per
+ *     accepted request, so an outage that refuses them loudly is cheaper than
+ *     an outage that waves them all through.
  */
 @Injectable()
 export class RateLimitService {
@@ -73,9 +95,7 @@ export class RateLimitService {
         return { allowed: true, count: 0, retryAfterSec: 0 };
       }
     }
-    // Signup is expensive (provisions a DB) so its buckets fail CLOSED on a
-    // Redis error; every other bucket fails open (auth availability wins).
-    const failClosed = key.startsWith('signup:');
+    const failClosed = FAIL_CLOSED_PREFIXES.some((prefix) => key.startsWith(prefix));
     const redisKey = `rl:${key}`;
     try {
       const count = (await this.redis.client.eval(
@@ -93,10 +113,10 @@ export class RateLimitService {
       return { allowed: count <= limit, count, retryAfterSec: ttl };
     } catch (err) {
       if (failClosed) {
-        // REM-2: deny + log loudly so the signup-provisioning DoS can't
-        // re-open under a Redis outage. Logged at error so it pages, not warn.
+        // REM-2: deny + log loudly so the DoS these buckets close can't re-open
+        // under a Redis outage. Logged at error so it pages, not warn.
         this.logger.error(
-          `rate-limit check failed for ${redisKey} (DENYING — signup fails closed): ${(err as Error).message}`,
+          `rate-limit check failed for ${redisKey} (DENYING — this bucket fails closed): ${(err as Error).message}`,
         );
         return { allowed: false, count: limit + 1, retryAfterSec: windowSec };
       }

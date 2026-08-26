@@ -119,32 +119,32 @@ describe('ApplicationsService.validate', () => {
   });
 });
 
-describe('ApplicationsService.isRateLimited', () => {
+describe('ApplicationsService.throttle', () => {
   it('keys on a hash, never on the raw address', async () => {
     const hit = vi.fn().mockResolvedValue({ allowed: true, count: 1, retryAfterSec: 0 });
     const { svc } = makeService(hit);
-    await svc.isRateLimited('203.0.113.7');
+    await svc.throttle('203.0.113.7');
     const key = hit.mock.calls[0]?.[0] as string;
     expect(key).toMatch(/^apply:iph:[0-9a-f]{64}$/);
     expect(key).not.toContain('203.0.113.7');
   });
 
-  it('does not use the signup: prefix, which would make it fail CLOSED', async () => {
+  it('keeps the per-visitor bucket outside every fail-closed prefix', async () => {
     const hit = vi.fn().mockResolvedValue({ allowed: true, count: 1, retryAfterSec: 0 });
     const { svc } = makeService(hit);
-    await svc.isRateLimited('203.0.113.7');
-    // RateLimitService fails closed only for signup:* — a Redis outage must not
-    // eat applications, so this bucket must stay outside that prefix.
-    expect(hit.mock.calls[0]?.[0]).not.toMatch(/^signup:/);
+    await svc.throttle('203.0.113.7');
+    // A Redis outage must not eat one visitor's lead, so this bucket must not
+    // pick up `signup:` or the `apply-all:` prefix the ceiling below uses.
+    expect(hit.mock.calls[0]?.[0]).not.toMatch(/^(signup:|apply-all:)/);
   });
 
   it('gives the same visitor the same bucket and different visitors different ones', async () => {
     const hit = vi.fn().mockResolvedValue({ allowed: true, count: 1, retryAfterSec: 0 });
     const { svc } = makeService(hit);
-    await svc.isRateLimited('203.0.113.7');
-    await svc.isRateLimited('203.0.113.7');
-    await svc.isRateLimited('203.0.113.8');
-    const [a, b, c] = hit.mock.calls.map((call) => call[0] as string);
+    await svc.throttle('203.0.113.7');
+    await svc.throttle('203.0.113.7');
+    await svc.throttle('203.0.113.8');
+    const [a, , b, , c] = hit.mock.calls.map((call) => call[0] as string);
     expect(a).toBe(b);
     expect(a).not.toBe(c);
   });
@@ -152,13 +152,59 @@ describe('ApplicationsService.isRateLimited', () => {
   it('allows 5 an hour', async () => {
     const hit = vi.fn().mockResolvedValue({ allowed: true, count: 1, retryAfterSec: 0 });
     const { svc } = makeService(hit);
-    await svc.isRateLimited('203.0.113.7');
+    await svc.throttle('203.0.113.7');
     expect(hit.mock.calls[0]?.slice(1)).toEqual([5, 3600]);
   });
 
   it('reports over-budget when the limiter says so', async () => {
     const hit = vi.fn().mockResolvedValue({ allowed: false, count: 6, retryAfterSec: 900 });
     const { svc } = makeService(hit);
-    await expect(svc.isRateLimited('203.0.113.7')).resolves.toBe(true);
+    await expect(svc.throttle('203.0.113.7')).resolves.toBe('ip');
+  });
+
+  /**
+   * input-and-files-10. The per-IP bucket is the visitor's own budget and fails
+   * open; behind it there has to be something that a rotated X-Real-IP cannot
+   * step around and a Redis outage cannot remove. The auditor executed the
+   * first half — eight submissions with rotating headers, all persisted.
+   */
+  it('also spends a platform-wide hourly ceiling that no address can dodge', async () => {
+    const hit = vi.fn().mockResolvedValue({ allowed: true, count: 1, retryAfterSec: 0 });
+    const { svc } = makeService(hit);
+
+    await svc.throttle('203.0.113.7');
+    await svc.throttle('198.51.100.9');
+
+    const shared = hit.mock.calls.filter((call) => (call[0] as string).startsWith('apply-all:'));
+    expect(shared).toHaveLength(2);
+    // Same key from two different addresses, or it is not a ceiling.
+    expect(shared[0]?.[0]).toBe(shared[1]?.[0]);
+    expect(shared[0]?.slice(1)).toEqual([60, 3600]);
+  });
+
+  it('uses the prefix that makes that ceiling fail CLOSED on a Redis error', async () => {
+    // The prefix is the whole mechanism: RateLimitService decides deny-vs-allow
+    // from the key. Get it wrong and the ceiling evaporates in the outage it
+    // exists for, which is exactly how the per-IP bucket behaves today.
+    const hit = vi.fn().mockResolvedValue({ allowed: true, count: 1, retryAfterSec: 0 });
+    const { svc } = makeService(hit);
+    await svc.throttle('203.0.113.7');
+    expect(hit.mock.calls[1]?.[0]).toMatch(/^apply-all:/);
+  });
+
+  it('reports "global" when the ceiling refuses, so the visitor is not blamed', async () => {
+    const hit = vi
+      .fn()
+      .mockResolvedValueOnce({ allowed: true, count: 1, retryAfterSec: 0 })
+      .mockResolvedValueOnce({ allowed: false, count: 61, retryAfterSec: 3600 });
+    const { svc } = makeService(hit);
+    await expect(svc.throttle('203.0.113.7')).resolves.toBe('global');
+  });
+
+  it('does not spend the shared ceiling on a visitor already over their own budget', async () => {
+    const hit = vi.fn().mockResolvedValue({ allowed: false, count: 6, retryAfterSec: 900 });
+    const { svc } = makeService(hit);
+    await svc.throttle('203.0.113.7');
+    expect(hit).toHaveBeenCalledTimes(1);
   });
 });

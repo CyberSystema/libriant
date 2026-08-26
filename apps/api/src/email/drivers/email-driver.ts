@@ -28,6 +28,28 @@ export type SendInput = {
 export type SendResult = {
   /** Provider-assigned identifier we can look up later (Message-ID, etc.). */
   providerId: string | null;
+  /**
+   * privacy-legal-18: did this message actually leave the machine?
+   *
+   * This field exists because `email_outbox.status` used to be written from
+   * "did `send()` throw?" alone, and the console driver does not throw — it
+   * does nothing. So on the shipped configuration (`EMAIL_DRIVER=console`,
+   * no mail provider) every overdue notice was stored as `delivered` with a
+   * fabricated provider id. A librarian who checks whether the notice went out
+   * — in `/admin/emails`, in a support call, in an HDPA file — was reading a
+   * row that asserted a fact that never happened, about a patron who never got
+   * the message and is now accruing a fine.
+   *
+   * REQUIRED, not optional-defaulting-to-true, on purpose: a driver that can
+   * fail to deliver without throwing has to say so, and a new backend must not
+   * be able to inherit "delivered" by forgetting a field.
+   */
+  delivered: boolean;
+  /**
+   * Why not, when `delivered` is false. Written verbatim to
+   * `email_outbox.lastError`, so it is what an operator reads next to the row.
+   */
+  notDeliveredReason?: string;
 };
 
 export interface EmailDriver {

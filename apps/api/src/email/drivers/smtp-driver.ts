@@ -65,7 +65,10 @@ export class SmtpEmailDriver implements EmailDriver, OnModuleDestroy {
       html: markdownToBasicHtml(input.bodyMarkdown),
       ...(messageId ? { messageId } : {}),
     });
-    return { providerId: info.messageId ?? null };
+    // privacy-legal-18: the relay accepted it, so it left this machine. That
+    // is what `delivered` claims — not that the recipient's mailbox took it
+    // (a later bounce is invisible to SMTP submission and always was).
+    return { providerId: info.messageId ?? null, delivered: true };
   }
 
   async onModuleDestroy() {

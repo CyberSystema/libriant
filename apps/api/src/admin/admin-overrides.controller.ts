@@ -17,7 +17,7 @@ import { controlDb } from '@libriant/db-control';
 import { validateDto } from '../auth/validate-dto.js';
 import { AdminAuthGuard, AdminSess } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
-import { AdminRoles } from './admin-roles.decorator.js';
+import { AdminRoles, AnyAdmin } from './admin-roles.decorator.js';
 import type { AdminSessionPayload } from './admin-session.service.js';
 import { adminAuditActor, recordAdminAudit } from '../platform/admin-audit.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
@@ -78,6 +78,7 @@ export class AdminOverridesController {
   constructor(@Inject(EffectivePlanService) private readonly effectivePlan: EffectivePlanService) {}
 
   @Get()
+  @AnyAdmin()
   async list(@Param('tenantId') tenantId: string) {
     const tenant = await controlDb.tenant.findUnique({ where: { id: tenantId } });
     if (!tenant) throw new NotFoundException('Tenant not found.');

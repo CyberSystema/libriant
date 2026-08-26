@@ -21,7 +21,10 @@ import { Banner } from './Banner';
  * action the reader just took, and waiting for a pause means waiting past the
  * moment they were listening.
  *
- * Renders nothing visible when empty, so it costs no layout.
+ * Renders nothing visible when empty, so it costs no layout — which is why
+ * `className`/`style` are applied only when there IS an error. Every call site
+ * passes a `marginBottom`, and an always-mounted empty div wearing that margin
+ * left a permanent gap above the first field of every form it guarded.
  */
 export function FormError({
   children,
@@ -36,7 +39,12 @@ export function FormError({
   const hasError =
     children !== null && children !== undefined && children !== false && children !== '';
   return (
-    <div role="alert" aria-live="assertive" className={className} style={style}>
+    <div
+      role="alert"
+      aria-live="assertive"
+      className={hasError ? className : undefined}
+      style={hasError ? style : undefined}
+    >
       {hasError ? (
         // role="none": the wrapper above is already the live region. Nesting a
         // second one makes some screen readers read the message twice.

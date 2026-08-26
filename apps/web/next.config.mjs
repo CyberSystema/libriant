@@ -48,12 +48,17 @@ const nextConfig = {
   },
   // WEB-02: Content-Security-Policy. The Caddy edge already sets the other
   // hardening headers (HSTS, X-Frame-Options, X-Content-Type-Options, …) but
-  // there was no CSP anywhere, so an HTML sink regression (we render
-  // `dangerouslySetInnerHTML` for the injected token <style> and for
-  // tenant-authored help articles) would have no containment for script
-  // execution or data exfiltration. We set CSP here at the web app rather than
-  // Caddy because the Caddyfile is one shared snippet for both hosts and these
-  // rules track the Next.js app's needs.
+  // there was no CSP anywhere, so an HTML sink regression would have no
+  // containment for script execution or data exfiltration. We set CSP here at
+  // the web app rather than Caddy because the Caddyfile is one shared snippet
+  // for both hosts and these rules track the Next.js app's needs.
+  //
+  // input-and-files-04: the only remaining `dangerouslySetInnerHTML` in the app
+  // is the per-library accent-colour <style> we build ourselves. Help articles
+  // and legal documents used to be injected as HTML and now go through
+  // `lib/safe-html.ts`, which parses them into React elements — so a content
+  // sink no longer depends on this policy to contain it, which matters because
+  // 'unsafe-inline' below would not have contained it.
   //
   // `style-src` allows 'unsafe-inline' because Next injects inline styles (and
   // the per-library accent-colour <style>) without a nonce; a nonce-based
@@ -66,9 +71,10 @@ const nextConfig = {
   // per-request nonce via a Next middleware ('nonce-<v>' + 'strict-dynamic').
   // That is the right hardening but it must be runtime-verified (a wrong nonce
   // breaks ALL hydration), so it is tracked as a follow-up rather than shipped
-  // blind. Containment today rests on: no unescaped tenant HTML sinks (help
-  // markdown is server-owned; announcements/branding are React-escaped; SVG
-  // upload is blocked server-side), plus object-src/base-uri/frame-ancestors.
+  // blind. Containment today rests on: no unescaped HTML sinks at all (help and
+  // legal markdown go through the allowlist in lib/safe-html.ts;
+  // announcements/branding are React-escaped; SVG upload is blocked
+  // server-side), plus object-src/base-uri/frame-ancestors.
   async headers() {
     const csp = [
       "default-src 'self'",

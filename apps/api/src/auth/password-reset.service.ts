@@ -7,14 +7,16 @@ import { RedisService } from '../platform/redis.service.js';
 import { RateLimitService } from '../platform/rate-limit.service.js';
 import { AuthGuard } from './auth.guard.js';
 import { PasswordService } from './password.service.js';
+import { tokenKey } from './token-digest.js';
 
 /**
  * Password-reset flow.
  *
  * - `request()` always returns the same generic OK to avoid leaking which
  *   emails are registered. If the (tenant, email) combo exists, a one-time
- *   reset token is generated, stored in Redis with a 60-minute TTL, and
- *   the reset link is enqueued for delivery via Step 18d's email pipeline.
+ *   reset token is generated, its SHA-256 digest is stored in Redis with a
+ *   60-minute TTL (authn-authz-11 — see token-digest.ts), and the reset link is
+ *   enqueued for delivery via Step 18d's email pipeline.
  * - `complete()` consumes a token and sets a new password atomically.
  *
  * Idempotency: a (tenant, user, minute-bucket) key prevents the same
@@ -85,9 +87,10 @@ export class PasswordResetService {
     }
 
     const token = crypto.randomBytes(32).toString('base64url');
-    const key = `pwreset:${token}`;
+    // The token itself never reaches Redis — only its digest does. See
+    // token-digest.ts (authn-authz-11).
     await this.redis.client.set(
-      key,
+      tokenKey('pwreset', token),
       JSON.stringify({ uid: user.id, tid: tenant.id }),
       'EX',
       PasswordResetService.TOKEN_TTL_SEC,
@@ -134,11 +137,12 @@ export class PasswordResetService {
    * otherwise. Tokens are one-time-use (DEL on success).
    */
   async complete(input: { token: string; newPassword: string }): Promise<boolean> {
-    const key = `pwreset:${input.token}`;
     // Claim the token ATOMICALLY before doing any work (AUTH-08): GETDEL returns
     // the value and deletes it in one round-trip, so a token can't be replayed
-    // or raced — only the caller that wins the delete proceeds.
-    const raw = await this.redis.client.getdel(key);
+    // or raced — only the caller that wins the delete proceeds. It is the
+    // DIGEST of the submitted token that names the key (authn-authz-11); a
+    // wrong token simply digests to a key that does not exist.
+    const raw = await this.redis.client.getdel(tokenKey('pwreset', input.token));
     if (!raw) return false;
     let parsed: { uid: string; tid: string };
     try {

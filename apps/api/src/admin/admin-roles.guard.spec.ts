@@ -9,11 +9,23 @@ vi.mock('@libriant/db-control', () => ({
 
 import { AdminRolesGuard } from './admin-roles.guard.js';
 
-function ctxWith(sub: string | undefined): ExecutionContext {
+/**
+ * The class/handler names matter now: with no `@AdminRoles` the guard asks
+ * admin-route-roles.ts who may reach THIS route, and the answer is keyed on
+ * them. Default to a route nobody pinned, so a test that says nothing about
+ * identity is testing the fail-closed path.
+ */
+function ctxWith(
+  sub: string | undefined,
+  route: { controller: string; handler: string } = {
+    controller: 'SomeBrandNewController',
+    handler: 'index',
+  },
+): ExecutionContext {
   return {
     switchToHttp: () => ({ getRequest: () => ({ adminSession: sub ? { sub } : undefined }) }),
-    getHandler: () => undefined,
-    getClass: () => undefined,
+    getHandler: () => ({ name: route.handler }),
+    getClass: () => ({ name: route.controller }),
   } as unknown as ExecutionContext;
 }
 
@@ -30,8 +42,30 @@ function guardRequiring(roles: string[] | undefined): AdminRolesGuard {
 describe('AdminRolesGuard', () => {
   beforeEach(() => findUnique.mockReset());
 
-  it('allows any admin when no role is required', async () => {
+  // authn-authz-14: this used to assert the opposite — "allows any admin when
+  // no role is required" — which is precisely how the applicant-PII export
+  // ended up readable by the support tier. An undeclared route is owner-only.
+  it('refuses a support admin on a route that declares nothing and is not pinned', async () => {
+    findUnique.mockResolvedValue({ role: 'support', status: 'active', disabledAt: null });
+    await expect(guardRequiring(undefined).canActivate(ctxWith('a1'))).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+
+  it('still lets an owner through a route that declares nothing', async () => {
+    findUnique.mockResolvedValue({ role: 'owner', status: 'active', disabledAt: null });
     await expect(guardRequiring(undefined).canActivate(ctxWith('a1'))).resolves.toBe(true);
+  });
+
+  it('allows a pinned any-admin route without spending a second query on the row', async () => {
+    // AdminAuthGuard already read this admin one guard earlier.
+    await expect(
+      guardRequiring(undefined).canActivate(
+        // A route still pinned in admin-route-roles.ts. If that pin ever moves
+        // onto the route as @AnyAdmin(), this test goes red rather than quiet.
+        ctxWith('a1', { controller: 'AdminLibraryRequestsController', handler: 'list' }),
+      ),
+    ).resolves.toBe(true);
     expect(findUnique).not.toHaveBeenCalled();
   });
 

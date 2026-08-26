@@ -12,6 +12,7 @@ import { ConsentModule } from './auth/consent.module.js';
 import { SessionMiddleware } from './auth/session.middleware.js';
 import { HttpMetricsMiddleware } from './platform/http-metrics.js';
 import { OriginCheckMiddleware } from './platform/origin-check.middleware.js';
+import { RequestSanityMiddleware } from './platform/request-sanity.middleware.js';
 import { LOG_REDACT_CENSOR, logRedactPaths, serializeRes } from './platform/log-redaction.js';
 import { BillingModule } from './billing/billing.module.js';
 import { CatalogModule } from './catalog/catalog.module.js';
@@ -145,6 +146,15 @@ export class AppModule implements NestModule {
         // reject a cross-site browser Origin on any state-changing request
         // before it touches session/tenant.
         OriginCheckMiddleware,
+        // input-and-files-05 / -07: strip NUL bytes and bound body nesting
+        // BEFORE anything reads either. Behind OriginCheck, which keeps the
+        // first word among the rejecting middleware (see above), and ahead of
+        // everything that touches the request — session, tenant resolution and
+        // every handler. It belongs in the ROOT chain for the same reason
+        // HttpMetricsMiddleware does: an imported module's middleware runs
+        // after the root's, so mounting it in PlatformModule would put it
+        // behind the very resolution stack it exists to protect.
+        RequestSanityMiddleware,
         SessionMiddleware,
         AdminMiddleware,
         ImpersonationMiddleware,

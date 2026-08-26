@@ -180,6 +180,26 @@ export class ReservationsService {
     let result: { id: string; outcome: 'queued' | 'ready' };
     try {
       result = await client.$transaction(async (tx) => {
+        // data-integrity-07: join the MEMBER lock domain, and take it FIRST.
+        // `MembersService.archive` counts a member's live reservations inside
+        // `member:<id>` and refuses while any exist — but this path validated
+        // the member at step 2 outside any transaction and then locked only
+        // `book:<id>`, so archive and hold placement never excluded each other.
+        // Firing both for the same patron at once produced precisely the state
+        // archive() exists to prevent, 25 times out of 25 in the repro
+        // (test/integration/circulation-lock-domains.spec.ts): an archived
+        // member holding a `ready` hold, occupying their
+        // `reservations_one_active_per_book_member` slot, blocking every other
+        // member's renewal of that title, and pinning a physical copy in
+        // `reserved` that nobody can collect until staff cancel the hold by
+        // hand.
+        //
+        // ORDER MATTERS — member THEN book, and this is the only place in the
+        // product that holds both. Archive, erase and checkout take `member:`
+        // alone; return, renew, cancel/expire, the expiry sweep and the import
+        // engine take `book:` alone. Nothing takes them the other way round, so
+        // there is no cycle to deadlock on; keep it that way.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`member:${input.memberId}`}, 0))`;
         // Serialize concurrent holds on the SAME book so the queued vs.
         // ready decision and the `max(queuePosition) + 1` computation are
         // race-free (two parallel holds previously both read the same max
@@ -193,6 +213,20 @@ export class ReservationsService {
         // under different keys can both allocate a just-freed copy and strand
         // one in `reserved`.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`book:${input.bookId}`}, 0))`;
+
+        // Re-read the member under the lock we now hold, exactly as
+        // loans.service.ts:230 does. The named messages at step 2 stay — they
+        // are what a librarian normally sees and they say who is archived —
+        // but a check that ran before any lock existed cannot be the guard.
+        const liveMember = await tx.member.findUnique({
+          where: { id: input.memberId },
+          select: { status: true, archivedAt: true },
+        });
+        if (!liveMember || liveMember.archivedAt || liveMember.status !== 'active') {
+          throw new ConflictException(
+            'That member was just archived or deactivated. Refresh and try again.',
+          );
+        }
 
         const liveCount = await tx.reservation.count({
           where: {

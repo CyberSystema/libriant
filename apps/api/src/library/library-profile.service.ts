@@ -3,6 +3,7 @@ import { controlDb, type Prisma } from '@libriant/db-control';
 import { CORE_PROFILE_FIELDS, type CoreProfileField } from '@libriant/shared';
 import { EmailService } from '../email/email.service.js';
 import { recordAdminAudit, type AdminAuditActor } from '../platform/admin-audit.js';
+import { TenantResolverService } from '../tenancy/tenant-resolver.service.js';
 import type { ProposeCoreEditDto, UpdateFreeProfileDto } from './library.dto.js';
 
 /** Columns that make up the public library profile. */
@@ -35,7 +36,13 @@ type ProfileRow = Prisma.TenantGetPayload<{ select: typeof PROFILE_SELECT }>;
 export class LibraryProfileService {
   private readonly logger = new Logger(LibraryProfileService.name);
 
-  constructor(@Inject(EmailService) private readonly email: EmailService) {}
+  constructor(
+    @Inject(EmailService) private readonly email: EmailService,
+    // tenant-isolation-07: every write in this service lands on the same row
+    // TenantMiddleware caches, so the writes go through the resolver rather
+    // than through `controlDb` directly.
+    @Inject(TenantResolverService) private readonly tenantResolver: TenantResolverService,
+  ) {}
 
   // ---- tenant-side --------------------------------------------------------
 
@@ -63,7 +70,11 @@ export class LibraryProfileService {
     if (Object.keys(data).length === 0) {
       throw new BadRequestException('No changes to save.');
     }
-    await controlDb.tenant.update({ where: { id: tenantId }, data });
+    // None of the free fields is part of the cached context, so this costs no
+    // Redis round trip today — but it is the same call as the one that renames
+    // a library, which does, and having two ways to write this row is how the
+    // rename came to be missing an invalidation in the first place.
+    await this.tenantResolver.updateTenant(tenantId, data);
     return this.getProfile(tenantId);
   }
 
@@ -198,6 +209,15 @@ export class LibraryProfileService {
         throw new BadRequestException('This request was just decided by someone else.');
       }
     });
+
+    // tenant-isolation-07: `data` can carry `name`, which TenantMiddleware
+    // caches for TENANT_CACHE_TTL_SEC (300s by default) and hands to every
+    // request as `TenantCtx().name`. Without this, a library that has just been
+    // approved for a rename keeps seeing its old name in the app header and in
+    // the notification emails the outbox sends, for five minutes, on every API
+    // and worker process at once. After the commit, never inside it — see
+    // `invalidateById`.
+    await this.tenantResolver.invalidateById(req.tenantId);
 
     await recordAdminAudit(actor, {
       tenantId: req.tenantId,

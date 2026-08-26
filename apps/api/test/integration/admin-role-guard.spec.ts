@@ -4,7 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import bcrypt from 'bcryptjs';
 import { randomBytes } from 'node:crypto';
-import { afterAll, beforeAll, describe, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { controlDb } from '@libriant/db-control';
 import { AppModule } from '../../src/app.module.js';
@@ -157,6 +157,40 @@ describe('admin role guard (Nest-boot regression)', () => {
         where: { email: adminEmail },
         data: { role: 'owner' },
       });
+    }
+  });
+});
+
+/**
+ * authn-authz-14. `GET /admin/applications.csv` carried `AdminRolesGuard` and
+ * no `@AdminRoles`, and the guard's old first line — `if (!required) return
+ * true` — made that combination a no-op: the support tier, the lowest platform
+ * privilege, pulled the whole prospect list (contact name, email, phone, city
+ * and the free-text message every library typed into the public form) with one
+ * GET. The default is now deny; see admin-route-roles.ts.
+ */
+describe('authn-authz-14: no @AdminRoles means owner-only, not everyone', () => {
+  it('refuses the applicant-PII export to the support tier — and still serves it to an owner', async () => {
+    const http = app.getHttpServer();
+    // Owner FIRST. A "fix" that 403s every tier would pass the support half of
+    // this test on its own while quietly deleting the export the operator uses.
+    const asOwner = await request(http)
+      .get('/admin/applications.csv')
+      .set('Cookie', adminCookie)
+      .expect(200);
+    expect(asOwner.text).toContain('contact_email');
+
+    await controlDb.adminUser.update({ where: { email: adminEmail }, data: { role: 'support' } });
+    try {
+      await request(http).get('/admin/applications.csv').set('Cookie', adminCookie).expect(403);
+      // The undecorated reads that are MEANT to be any-admin must survive the
+      // flipped default — a pin is what keeps them open, not the absence of a
+      // decorator.
+      await request(http).get('/admin/tenants').set('Cookie', adminCookie).expect(200);
+      await request(http).get('/admin/library-requests').set('Cookie', adminCookie).expect(200);
+      await request(http).get('/admin/plans').set('Cookie', adminCookie).expect(200);
+    } finally {
+      await controlDb.adminUser.update({ where: { email: adminEmail }, data: { role: 'owner' } });
     }
   });
 });

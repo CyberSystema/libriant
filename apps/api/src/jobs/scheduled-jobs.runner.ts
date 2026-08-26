@@ -9,6 +9,47 @@ const QUEUE_NAME = 'scheduled';
 const QUEUE_PREFIX = 'lbr-bull';
 
 /**
+ * How many times a scheduled tick may run before BullMQ gives up on it.
+ *
+ * reliability-20: the scheduler template used to carry only
+ * `{ removeOnComplete, removeOnFail }`. BullMQ's default is `attempts: 1`, so
+ * nothing was ever retried — while the worker body below re-threw with the
+ * comment "so BullMQ marks the job failed + retries". It did not retry, and the
+ * comment told every maintainer since that it did.
+ *
+ * Whether that matters depends on the interval. The registry's hourly jobs are
+ * the ones that hurt: a two-second Postgres blip at the top of the hour cost
+ * `member-notifications` a whole hour, so a hold that went ready at 10:00
+ * reached the member at 12:00 — and `fine-accrual` an hour of staleness at the
+ * desk. Three attempts turn that into a ~30-second delay.
+ *
+ * Deliberately NOT the other half of the pair the finding offered ("or correct
+ * the comment to say recovery is the next tick"): every job here is an
+ * idempotent sweep, so re-running one is free, and free recovery inside the
+ * minute beats documented recovery in an hour.
+ */
+const SCHEDULED_JOB_ATTEMPTS = 3;
+
+/**
+ * Exponential backoff delay for a job that ticks every `intervalMs`.
+ *
+ * The constraint is that the whole retry chain has to finish inside ONE
+ * interval, or the last retry of tick N lands on top of tick N+1 and two copies
+ * of the same sweep run against the same tenant databases. BullMQ's exponential
+ * strategy fires at `delay`, then `2 * delay`, so `SCHEDULED_JOB_ATTEMPTS = 3`
+ * spends `3 * delay` in total: at the cap that is 30 s, half of the 60 s
+ * shortest interval in the registry.
+ *
+ * Derived from the interval rather than hard-coded at 10 s so it stays true
+ * without anyone rechecking it — registering a job that ticks every 15 s would
+ * otherwise silently reintroduce the overlap, and this is exactly the class of
+ * comment-that-stops-being-true the finding is about.
+ */
+function retryBackoffMs(intervalMs: number): number {
+  return Math.max(1_000, Math.min(10_000, Math.floor(intervalMs / 6)));
+}
+
+/**
  * Does this count key mean "a unit of work THIS RUN attempted threw"?
  *
  * SCHEDULED-TENANTSFAILED-DISCARDED: every multi-tenant sweep catches
@@ -213,11 +254,20 @@ export async function startScheduledJobs(
   }
   for (const j of jobs) {
     // Scheduler id == job name, so it is stable across deploys and interval
-    // changes. The template carries the name the Worker switches on below.
+    // changes. The template carries the name the Worker switches on below, and
+    // the retry budget every produced job inherits.
     await queue.upsertJobScheduler(
       j.name,
       { every: j.intervalMs },
-      { name: j.name, opts: { removeOnComplete: 100, removeOnFail: 100 } },
+      {
+        name: j.name,
+        opts: {
+          removeOnComplete: 100,
+          removeOnFail: 100,
+          attempts: SCHEDULED_JOB_ATTEMPTS,
+          backoff: { type: 'exponential', delay: retryBackoffMs(j.intervalMs) },
+        },
+      },
     );
   }
 
@@ -257,7 +307,11 @@ export async function startScheduledJobs(
           message: `FAILED: ${describeError(err)}`,
           ok: false,
         };
-        throw err; // re-throw so BullMQ marks the job failed + retries
+        // Re-throw so BullMQ marks the attempt failed and retries it — up to
+        // SCHEDULED_JOB_ATTEMPTS, backing off by retryBackoffMs. Before
+        // reliability-20 the template carried no `attempts`, so this line
+        // marked the tick failed and recovery waited for the next interval.
+        throw err;
       } finally {
         inFlight--;
       }
@@ -266,7 +320,11 @@ export async function startScheduledJobs(
   );
 
   worker.on('failed', (job, err) => {
-    console.error(`[scheduled] ${job?.name} failed: ${err.message}`);
+    // Name the attempt. With retries on (reliability-20) this line fires once
+    // per attempt, and "3/3" versus "1/3" is the difference between a sweep
+    // that is down and one that rode out a blip.
+    const attempt = `${job?.attemptsMade ?? 1}/${job?.opts.attempts ?? 1}`;
+    console.error(`[scheduled] ${job?.name} failed (attempt ${attempt}): ${err.message}`);
   });
 
   // eslint-disable-next-line no-console

@@ -2,12 +2,12 @@
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Banner,
   Button,
   Card,
   CardBody,
   CardHeader,
   EmptyState,
+  FormError,
   FormField,
   Input,
 } from '@libriant/ui';
@@ -58,7 +58,7 @@ export function LibraryRequestsClient({ initial }: { initial: LibraryRequest[] }
 
   return (
     <div style={{ display: 'grid', gap: 'var(--sp-4)' }}>
-      {error ? <Banner severity="critical">{error}</Banner> : null}
+      <FormError>{error}</FormError>
       {requests.map((req) => {
         const fields = Object.keys(req.proposedJson);
         return (

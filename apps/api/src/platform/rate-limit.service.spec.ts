@@ -91,6 +91,25 @@ describe('RateLimitService', () => {
     expect((await s.hit('signup:ip:1.2.3.4', 5, 600)).allowed).toBe(false);
   });
 
+  it('fails CLOSED for the platform-wide /apply ceiling too (input-and-files-10)', async () => {
+    const broken = {
+      client: {
+        eval: vi.fn(async () => {
+          throw new Error('redis down');
+        }),
+        ttl: vi.fn(),
+      },
+    } as unknown as RedisService;
+    const s = new RateLimitService(broken);
+    // The public application form's per-visitor bucket fails open on purpose,
+    // which left a Redis outage with a honeypot field as the only defence on
+    // the one unauthenticated write in the control plane. The ceiling behind it
+    // is what has to survive that outage.
+    expect((await s.hit('apply-all:hour', 60, 3600)).allowed).toBe(false);
+    // ...and the per-visitor bucket must NOT be dragged closed with it.
+    expect((await s.hit('apply:iph:deadbeef', 5, 3600)).allowed).toBe(true);
+  });
+
   it('honours RATE_LIMIT_DISABLED outside production', async () => {
     process.env.NODE_ENV = 'test';
     process.env.RATE_LIMIT_DISABLED = 'true';

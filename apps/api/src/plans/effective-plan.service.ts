@@ -127,21 +127,41 @@ export class EffectivePlanService {
 
   /** Full effective plan for the tenant. Cached. */
   async getEffectivePlan(tenantId: string): Promise<EffectivePlan> {
-    let plan = await this.readCache(tenantId);
-    if (!plan) {
-      const loaded = await this.loadFromDb(tenantId);
-      plan = loaded.plan;
-      // PQF-3: cap the cache TTL at the soonest upcoming expiry boundary (a
-      // time-boxed override, a past-due grace window, or a manual paidUntil) so
-      // access stops over-granting no later than that deadline rather than
-      // lingering for the full TTL window.
-      await this.writeCache(tenantId, plan, loaded.soonestExpiry);
-    }
+    const plan = await this.getPlanAsContracted(tenantId);
     // Subscriptions disabled → every tenant gets everything. Applied at read
     // time (the per-tenant cache keeps the real plan) so flipping the master
     // switch in the admin panel takes effect within the toggle's own short
     // cache window, not after each tenant's plan TTL.
     return (await this.billingEnabledSafe()) ? plan : unlimitedPlan(plan);
+  }
+
+  /**
+   * The plan the tenant is CONTRACTUALLY on — the same three-layer resolution,
+   * without the free-mode rewrite `getEffectivePlan` applies while
+   * subscriptions are off.
+   *
+   * billing-16: the go-live pre-flight is "is any library already over the cap
+   * it is about to be enforced against?", and it has to be asked BEFORE the
+   * switch is flipped — which is precisely the window in which
+   * `getEffectivePlan` answers `UNLIMITED_INT` for every limit on every tenant.
+   * Asked through that method the check could not fail, and a check that cannot
+   * fail is worse than no check: it is a green tick in a runbook. So the
+   * pre-flight reads the contracted limits and everything a librarian is
+   * actually being held to keeps reading `getEffectivePlan`.
+   *
+   * Not a general-purpose accessor. Enforcement must never come through here —
+   * that would charge libraries against caps the platform has switched off.
+   */
+  async getPlanAsContracted(tenantId: string): Promise<EffectivePlan> {
+    const cached = await this.readCache(tenantId);
+    if (cached) return cached;
+    const loaded = await this.loadFromDb(tenantId);
+    // PQF-3: cap the cache TTL at the soonest upcoming expiry boundary (a
+    // time-boxed override, a past-due grace window, or a manual paidUntil) so
+    // access stops over-granting no later than that deadline rather than
+    // lingering for the full TTL window.
+    await this.writeCache(tenantId, loaded.plan, loaded.soonestExpiry);
+    return loaded.plan;
   }
 
   /** Convenience: read one feature as a boolean. False if missing/not-bool. */

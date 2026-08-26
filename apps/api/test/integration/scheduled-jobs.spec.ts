@@ -77,6 +77,47 @@ describe('scheduled-jobs runner on BullMQ 6 job schedulers', () => {
     expect(results['test-tick']).toMatchObject({ ok: true });
   }, 60_000);
 
+  /**
+   * reliability-20. The scheduler template carried no `attempts`, so BullMQ's
+   * default of 1 applied and a tick that threw was never retried — while the
+   * runner's own re-throw was commented "so BullMQ marks the job failed +
+   * retries". For `member-notifications` and `fine-accrual` (hourly) that made
+   * a two-second Postgres blip cost a full hour of hold-ready notices.
+   *
+   * The interval is 60 s and the assertion window is 30 s, so a second call
+   * CANNOT be the next tick — it can only be a retry. Anything shorter would
+   * pass on either code path and certify nothing.
+   */
+  it('retries a tick that throws, instead of waiting for the next interval', async () => {
+    const attempts: number[] = [];
+    handle = await startScheduledJobs(
+      [
+        {
+          name: 'flaky-tick',
+          intervalMs: 60_000,
+          handler: async () => {
+            attempts.push(Date.now());
+            if (attempts.length === 1) throw new Error('transient postgres blip');
+            return { message: 'recovered' };
+          },
+        },
+      ],
+      ctx,
+    );
+
+    // Backoff for a 60 s job is 10 s (interval/6, capped), so the retry lands
+    // around t+10 s; 30 s leaves room without reaching the next tick.
+    const deadline = Date.now() + 30_000;
+    while (attempts.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+
+    expect(attempts.length).toBeGreaterThanOrEqual(2);
+    // And the health surface heals: the failed attempt is overwritten by the
+    // successful retry, so /healthz stops showing a job that is now fine.
+    expect(handle.lastResults()['flaky-tick']).toMatchObject({ ok: true });
+  }, 60_000);
+
   it('reconciles: a scheduler whose job is gone from the registry is removed', async () => {
     handle = await startScheduledJobs(
       [{ name: 'going-away', intervalMs: 60_000, handler: async () => ({ message: 'x' }) }],
