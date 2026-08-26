@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { controlDb } from '@libriant/db-control';
@@ -10,6 +11,8 @@ import { makeTenantPrismaClient, type TenantPrismaClient } from '@libriant/db-te
 import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { RedisService } from '../../src/platform/redis.service.js';
+import { EffectivePlanService, isUnlimitedInt } from '../../src/plans/effective-plan.service.js';
+import { TenantPrismaService } from '../../src/tenancy/tenant-prisma.service.js';
 import { sweepFineAccrual } from '../../src/jobs/fine-accrual.job.js';
 import { sweepRetention } from '../../src/jobs/retention.job.js';
 import { listenOnce } from './listen-once.js';
@@ -44,6 +47,7 @@ declareBillingPosture(
 let app: NestExpressApplication;
 let tenantCookie = '';
 let slug = '';
+let tenantId = '';
 let tenantClient: TenantPrismaClient | null = null;
 const tag = randomBytes(3).toString('hex');
 const YEAR = new Date().getUTCFullYear();
@@ -102,13 +106,31 @@ beforeAll(async () => {
 
   const tenant = await controlDb.tenant.findUnique({ where: { slug } });
   if (!tenant) throw new Error('signup did not provision a tenant');
+  tenantId = tenant.id;
   tenantClient = makeTenantPrismaClient({ databaseUrl: tenant.dbUrl, maxPoolSize: 2 });
 }, 120_000);
 
 afterAll(async () => {
+  // performance-05's second case arms the GLOBAL subscriptions switch and pins
+  // this tenant's max_books. BOTH halves have to come back down — the rows AND
+  // the Redis keys they are cached under — or every sibling spec for the next
+  // 30 s resolves a switch this file set. Unconditional, so a failure mid-case
+  // cannot leave enforcement armed for the rest of the suite.
+  await controlDb.platformSetting
+    .deleteMany({ where: { key: 'billing.enabled' } })
+    .catch(() => undefined);
+  await controlDb.tenantPlanOverride
+    .deleteMany({ where: { tenantId, featureKey: 'max_books' } })
+    .catch(() => undefined);
+  if (app) {
+    await app
+      .get(RedisService)
+      .client.del('platform_setting:billing.enabled', `plan:effective:${tenantId}`)
+      .catch(() => undefined);
+  }
   if (tenantClient) await tenantClient.$disconnect().catch(() => undefined);
   if (app) await app.close();
-});
+}, 60_000);
 
 describe('performance-04 — member numbers come from the counter, not a table scan', () => {
   it('seeds the counter from the numbers already on the shelf', async () => {
@@ -499,5 +521,248 @@ describe('performance-07 — the 30-day Stripe payload prune the schema promised
       "SELECT indexname FROM pg_indexes WHERE tablename = 'stripe_webhook_events'",
     );
     expect(idx.map((r) => r.indexname)).toContain('stripe_webhook_events_prunable_idx');
+  });
+});
+
+/**
+ * performance-05 — the count the request path was still paying.
+ *
+ * The previous round taught `BooksService.create` to skip its own count when
+ * the ceiling is the UNLIMITED_INT sentinel, and proved it with a UNIT test
+ * that builds the service directly. Over HTTP nothing changed: `BooksController`
+ * was `@UseInterceptors(QuotaInterceptor)` with `@RequiresQuota('max_books')`,
+ * and the interceptor called `countUsage(...)` unconditionally. So a book
+ * create still ran `book.count({ where: { archivedAt: null } })` — the literal
+ * statement being
+ *
+ *   SELECT COUNT(*) AS "_count$_all" FROM (SELECT "public"."books"."id"
+ *     FROM "public"."books" WHERE "public"."books"."archivedAt" IS NULL
+ *     OFFSET $1) AS "sub"
+ *
+ * which on the audit's 400,000-title fixture is `Seq Scan on books, Buffers:
+ * shared read=13333, Execution Time: 67.7 ms` — on every single create.
+ *
+ * WHY THE INSTRUMENT IS WHAT IT IS. `pg_stat_user_tables.seq_scan` was the
+ * obvious choice and is wrong here: this spec's tenant holds a handful of
+ * books, and on a table that small the planner sequentially scans for point
+ * lookups too, so the create's own `findUnique` drowns the signal. Counting
+ * the calls the APPLICATION makes on its OWN Prisma client, during a real HTTP
+ * request, is exact at any table size and cannot be satisfied by anything but
+ * the request path actually not counting. Verified to discriminate: with the
+ * interceptor's `isUnlimitedInt` short-circuit removed this reads 1, with it
+ * in place it reads 0.
+ */
+describe('performance-05 — a book create does not count the catalogue', () => {
+  /**
+   * Count `book.count(...)` calls the app makes while `run()` executes.
+   *
+   * The delegate on the app's cached tenant client is patched, not mocked:
+   * the real query still runs, so the route behaves exactly as it does in
+   * production and only the observation is added. Restored in a `finally` so a
+   * failing assertion cannot leak the patch into the rest of the file.
+   */
+  async function bookCountCallsDuring(run: () => Promise<void>): Promise<number> {
+    const tenantRow = await controlDb.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+    const client = app
+      .get(TenantPrismaService)
+      .getClient({ ...tenantRow, resolvedFrom: 'path' } as never);
+    const delegate = client.book as unknown as Record<string, unknown>;
+    const original = delegate.count as (...a: unknown[]) => Promise<number>;
+    let calls = 0;
+    delegate.count = async (...a: unknown[]) => {
+      calls++;
+      return original.apply(delegate, a);
+    };
+    try {
+      await run();
+    } finally {
+      delegate.count = original;
+    }
+    return calls;
+  }
+
+  it('counts the catalogue zero times on a create, in the shipped configuration', async () => {
+    // Precondition, stated rather than assumed: with subscriptions off every
+    // int limit is the sentinel. If a sibling spec left the switch armed, the
+    // assertion below would be measuring the wrong posture.
+    const plans = app.get(EffectivePlanService);
+    expect(isUnlimitedInt(await plans.getInt(tenantId, 'max_books'))).toBe(true);
+
+    const before = await tenantClient!.book.count({ where: { archivedAt: null } });
+    const calls = await bookCountCallsDuring(async () => {
+      await http()
+        .post(`/t/${slug}/catalog/books`)
+        .set('Cookie', tenantCookie)
+        .send({ title: 'Βιβλίο χωρίς σάρωση καταλόγου' })
+        .expect(201);
+    });
+
+    expect(calls).toBe(0);
+    // And the create really happened — a route that 402'd or 500'd would also
+    // have counted zero times.
+    expect(await tenantClient!.book.count({ where: { archivedAt: null } })).toBe(before + 1);
+  }, 60_000);
+
+  it('still refuses a create at a real finite ceiling', async () => {
+    // Removing `@RequiresQuota` from the route removed a RACY pre-check, not
+    // the enforcement: `BooksService.create` counts and inserts inside one
+    // transaction behind `pg_advisory_xact_lock('quota:<tenant>:max_books:')`.
+    // Under the shipped posture (`unenforced`) that assertion would be vacuous
+    // — every int limit is the sentinel — so this case arms the switch itself,
+    // exactly as storage-quota.spec.ts does. afterAll disarms it.
+    const held = await tenantClient!.book.count({ where: { archivedAt: null } });
+    expect(held).toBeGreaterThan(0);
+
+    await controlDb.platformSetting.upsert({
+      where: { key: 'billing.enabled' },
+      create: { key: 'billing.enabled', value: 'true' },
+      update: { value: 'true' },
+    });
+    await controlDb.tenantPlanOverride.upsert({
+      where: { tenantId_featureKey: { tenantId, featureKey: 'max_books' } },
+      create: { tenantId, featureKey: 'max_books', valueInt: held },
+      update: { valueInt: held },
+    });
+    const redis = app.get(RedisService);
+    await redis.client.del('platform_setting:billing.enabled', `plan:effective:${tenantId}`);
+
+    // State the precondition rather than assume it — if the switch or the
+    // override did not take, the 402 below would be proving nothing.
+    const plans = app.get(EffectivePlanService);
+    expect(await plans.getInt(tenantId, 'max_books')).toBe(held);
+
+    const refused = await http()
+      .post(`/t/${slug}/catalog/books`)
+      .set('Cookie', tenantCookie)
+      .send({ title: 'Πάνω από το όριο' })
+      .expect(402);
+    expect(refused.body).toMatchObject({ feature: 'max_books', limit: held, used: held });
+
+    // A refused create must not have written anything.
+    expect(await tenantClient!.book.count({ where: { archivedAt: null } })).toBe(held);
+  }, 60_000);
+});
+
+/**
+ * performance-12, the third table in apps/api/src/catalog with the shape the
+ * finding describes. `authors.sortName LIKE '%q%'` is served by
+ * `authors_sortname_trgm` only from three characters. Measured on the audit's
+ * 20,000-author fixture, a non-matching two-character term is `Seq Scan on
+ * authors, Buffers: shared hit=246, 1.88 ms` — and at that table size the
+ * three-character term seq-scans too, so what this buys is not a better plan
+ * but no query at all below three characters. Smaller than the catalogue's
+ * 13,407 buffers, and reachable from the same URL-driven DataTable search box
+ * and from the author picker.
+ */
+describe('performance-12 — the author picker has the same three-character floor', () => {
+  const NAME = 'Ομήρου Παπαδόπουλος';
+
+  it('records an author a two-letter search would otherwise match', async () => {
+    await http()
+      .post(`/t/${slug}/catalog/authors`)
+      .set('Cookie', tenantCookie)
+      .send({ fullName: NAME })
+      .expect(201);
+  });
+
+  it('answers a two-character search with an empty page and a minQueryChars hint', async () => {
+    const res = await http()
+      .get(`/t/${slug}/catalog/authors?q=${encodeURIComponent('ομ')}`)
+      .set('Cookie', tenantCookie)
+      .expect(200);
+    expect(res.body.items).toEqual([]);
+    expect(res.body.minQueryChars).toBe(3);
+  });
+
+  it('serves the same author from three characters, accented or not', async () => {
+    for (const q of ['ομη', 'Ομή', 'ΟΜΗΡ']) {
+      const res = await http()
+        .get(`/t/${slug}/catalog/authors?q=${encodeURIComponent(q)}`)
+        .set('Cookie', tenantCookie)
+        .expect(200);
+      const names = res.body.items.map((a: { fullName: string }) => a.fullName);
+      expect(names, `q=${q}`).toContain(NAME);
+      expect(res.body.minQueryChars, `q=${q}`).toBeUndefined();
+    }
+  });
+});
+
+/**
+ * performance-11's two loose ends, both named in the refutation of the first
+ * attempt.
+ */
+describe('performance-11 — the summary is actually reached, and actually cached', () => {
+  it('caches a library that has a catalogue but no members yet', async () => {
+    // The cache guard used to be `books > 0 && members > 0`. That made the
+    // exact tenant this endpoint exists to protect the one it never cached: a
+    // library that has imported its catalogue but has not enrolled a member
+    // recomputed the whole five-subquery statement on EVERY server render —
+    // re-measured 2026-08-26 on the audit's Institutional fixture at 17,107
+    // shared buffers, 13,333 of them the `books` count no index can answer.
+    // Never caching that tenant is the worst of the three cases. Only the literal
+    // brand-new-library state (zero books AND zero members) stays uncached,
+    // because that is the state the onboarding welcome is keyed on and the one
+    // state where computing this is free.
+    const redis = app.get(RedisService);
+    const restore = await tenantClient!.member.findMany({
+      where: { archivedAt: null },
+      select: { id: true },
+    });
+    expect(restore.length).toBeGreaterThan(0);
+    try {
+      await tenantClient!.member.updateMany({
+        where: { archivedAt: null },
+        data: { archivedAt: new Date() },
+      });
+      await redis.client.del(`dashboard:summary:${tenantId}`);
+
+      const first = await http().get(`/t/${slug}/summary`).set('Cookie', tenantCookie).expect(200);
+      expect(first.body.members).toBe(0);
+      expect(first.body.books).toBeGreaterThan(0);
+      expect(first.body.cachedForSeconds).toBe(0);
+
+      const second = await http().get(`/t/${slug}/summary`).set('Cookie', tenantCookie).expect(200);
+      expect(second.body.cachedForSeconds).toBeGreaterThan(0);
+    } finally {
+      await tenantClient!.member.updateMany({
+        where: { id: { in: restore.map((m) => m.id) } },
+        data: { archivedAt: null },
+      });
+      await redis.client.del(`dashboard:summary:${tenantId}`).catch(() => undefined);
+    }
+  }, 60_000);
+
+  it('is wired into the page that has the defect, not merely mounted', async () => {
+    // THIS ASSERTION EXISTS BECAUSE THE FIRST ATTEMPT SHIPPED WITHOUT IT.
+    // The endpoint above was built, mounted, tested and correct — and
+    // `apps/web/app/[locale]/t/[slug]/page.tsx` had an EMPTY diff, so the
+    // product still rendered a 400,000-title catalogue's tile as "1" and still
+    // fired five list queries per server render. There is no test runner in
+    // apps/web, so the cheapest durable guard against re-orphaning the
+    // endpoint is to read the page and check the wiring. It fails against the
+    // audited file, which is the only property that makes it worth having.
+    const raw = await readFile(
+      new URL('../../../web/app/[locale]/t/[slug]/page.tsx', import.meta.url),
+      'utf8',
+    );
+    // Comments are stripped first. The file's own docblock names the removed
+    // helper and the five URLs so a reader knows what was wrong; asserting
+    // over them would make this test fail on its own explanation.
+    const page = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+    expect(page).toContain('/summary`');
+    // The helper that returned a page size as if it were a total.
+    expect(page).not.toContain('items.length');
+    expect(page).not.toContain('safeCount');
+    // And none of the five list endpoints it used to call for a tile.
+    for (const gone of [
+      'catalog/books?limit=',
+      'members?limit=',
+      'loans?status=',
+      'loans?overdue=',
+      'reservations?status=',
+    ]) {
+      expect(page, `tenant home still calls ${gone}`).not.toContain(gone);
+    }
   });
 });

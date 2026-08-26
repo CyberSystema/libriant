@@ -2,7 +2,7 @@ import { ConflictException, Inject, Injectable, NotFoundException } from '@nestj
 import type { Prisma } from '@libriant/db-tenant';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
-import { normalizeText } from './normalize.js';
+import { classifySearchTerm, normalizeText } from './normalize.js';
 
 /** Prisma's unique-constraint violation. */
 const PRISMA_UNIQUE_VIOLATION = 'P2002';
@@ -29,19 +29,51 @@ export type ListAuthorsOptions = {
   includeArchived?: boolean;
 };
 
+export type ListAuthorsResult = {
+  items: AuthorDto[];
+  nextCursor: string | null;
+  /**
+   * Present ONLY when the caller's `q` was too short to be indexed and the page
+   * was therefore answered empty without querying (performance-12). Additive:
+   * every existing consumer reads `items` / `nextCursor` and is unaffected.
+   */
+  minQueryChars?: number;
+};
+
 @Injectable()
 export class AuthorsService {
   constructor(@Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService) {}
 
-  async list(
-    tenant: TenantContext,
-    opts: ListAuthorsOptions = {},
-  ): Promise<{ items: AuthorDto[]; nextCursor: string | null }> {
+  async list(tenant: TenantContext, opts: ListAuthorsOptions = {}): Promise<ListAuthorsResult> {
     const client = this.tenantPrisma.getClient(tenant);
     const limit = Math.max(1, Math.min(100, opts.limit ?? 25));
     const where: Prisma.AuthorWhereInput = {};
     if (!opts.includeArchived) where.archivedAt = null;
-    if (opts.q) where.sortName = { contains: normalizeText(opts.q) };
+    // performance-12, the same floor `BooksService.list` applies and for the
+    // same reason. `sortName LIKE '%q%'` can only be answered by
+    // `authors_sortname_trgm` once the pattern yields a full trigram, i.e.
+    // from three characters; below that the planner has nothing to seek with
+    // and reads the whole table. The finding named `books_search_trgm` and
+    // `members_search_trgm`; authors is the third table in this directory with
+    // the identical shape, reachable from the same URL-driven DataTable search
+    // box and from the author picker, so it gets the same treatment rather
+    // than waiting to be found again.
+    //
+    // BE HONEST ABOUT THE SIZE. Measured on the audit's 20,000-author fixture,
+    // a non-matching two-character term is `Seq Scan on authors, Buffers:
+    // shared hit=246, 1.88 ms` — and at that size a THREE-character term also
+    // seq-scans (246 buffers), because the planner does not reach for the GIN
+    // index on a table this small. So the win here is not "the index takes
+    // over at three", it is "the query is not run at all below three": 246
+    // buffers per keystroke that a staff member can hold down, on a shared
+    // Postgres, becomes zero. The 1,915x index crossover the finding measured
+    // is the catalogue's (13,407 buffers vs 7 at 400,000 titles); an authors
+    // table only reaches it once a library's name list is large.
+    const term = classifySearchTerm(opts.q);
+    if (term.kind === 'short') {
+      return { items: [], nextCursor: null, minQueryChars: term.minChars };
+    }
+    if (term.kind === 'term') where.sortName = { contains: term.value };
     const rows = await client.author.findMany({
       where,
       orderBy: [{ sortName: 'asc' }, { id: 'asc' }],

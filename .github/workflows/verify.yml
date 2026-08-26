@@ -68,6 +68,13 @@ jobs:
       - name: Alert rules reference metrics that exist
         run: pnpm check:alerts
 
+      # `@libriant/shared` ships TS source whose barrel re-exports with `.js`
+      # specifiers. tsc rewrites those and is happy; Turbopack cannot resolve
+      # them. So a barrel import passes typecheck and then kills `next build`
+      # minutes later. This is seconds, and runs before the build does.
+      - name: Web imports @libriant/shared by subpath, never the barrel
+        run: pnpm check:shared-imports
+
       - name: Prometheus rules and Alertmanager config are valid
         run: |
           docker run --rm -v "$PWD/infra/monitoring:/m:ro" --entrypoint promtool \
@@ -169,7 +176,11 @@ jobs:
       - name: Every third-party action is pinned to a commit SHA
         run: |
           set -euo pipefail
-          floating=$(grep -rn 'uses: ' .github/workflows/ \
+          # Anchored to the YAML key. The unanchored version matched the
+          # literal `uses: ` inside THIS script and reported itself, so the
+          # gate failed on every run regardless of the workflows' contents —
+          # a check that cannot pass is a check nobody reads.
+          floating=$(grep -rnE '^[[:space:]]*-?[[:space:]]*uses: ' .github/workflows/ \
             | grep -v '@[0-9a-f]\{40\}' \
             | grep -v 'uses: \./\.github/' || true)
           if [ -n "$floating" ]; then
@@ -465,3 +476,156 @@ jobs:
         run: pnpm tenant:smoke
         env:
           TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
+
+  # ---------------------------------------------------------------------------
+  # supply-chain-03 + supply-chain-06.
+  #
+  # The audit's own acceptance test for supply-chain-03 was "verify with
+  # `docker image inspect` that eslint/vitest/turbo/next are gone". Nothing in
+  # this repo built the images (supply-chain-06), so nothing could run that
+  # check — and the previous attempt at the finding shipped a Dockerfile change
+  # whose effect no one measured. This job is that check, plus the half that
+  # matters more: a pruned image that cannot boot is worse than a fat one, so it
+  # runs the real image against real Postgres and Redis and makes it serve.
+  # ---------------------------------------------------------------------------
+  image-contents:
+    name: Production images ship no dev tooling, and still boot
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: libriant
+          POSTGRES_PASSWORD: libriant
+          POSTGRES_DB: libriant_control
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U libriant -d libriant_control"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:8-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Build the API image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: false
+          load: true
+          tags: libriant-api:verify
+
+      - name: Build the web image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: false
+          load: true
+          tags: libriant-web:verify
+
+      # The literal assertion the finding asked for. `ls node_modules/.pnpm`
+      # is the whole installed set, so a package that survives anywhere in the
+      # image — including as a transitive dependency of something else — shows
+      # up here.
+      - name: No dev tooling in either production image
+        run: |
+          set -euo pipefail
+          banned='^(eslint|vitest|turbo|prettier|typescript-eslint|supertest|@typescript-eslint\+|@eslint\+|@vitest\+|next|@next\+|rolldown|vite)@'
+          fail=0
+          for img in libriant-api:verify libriant-web:verify; do
+            echo "── $img"
+            hits=$(docker run --rm --entrypoint sh "$img" -c \
+              "ls node_modules/.pnpm 2>/dev/null | grep -E '$banned' || true")
+            if [ -n "$hits" ]; then
+              echo "✗ $img still ships dev tooling:"; echo "$hits"; fail=1
+            else
+              echo "✓ clean"
+            fi
+          done
+          # The web image is the one that legitimately contains Next.js; assert
+          # it separately rather than weakening the shared pattern.
+          docker run --rm --entrypoint sh libriant-web:verify -c \
+            'ls node_modules/.pnpm | grep -qE "^next@"' \
+            || { echo "✗ the web image lost Next.js"; fail=1; }
+          exit $fail
+
+      # The prune keeps three devDependencies on purpose because containers
+      # execute them. If any of these stops resolving, the stack does not start
+      # — and that failure would otherwise only surface on a production deploy.
+      - name: The kept entrypoints still resolve inside the image
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh libriant-api:verify -c \
+            './apps/api/node_modules/.bin/tsx --version'
+          docker run --rm --entrypoint sh libriant-api:verify -c \
+            './packages/db-control/node_modules/.bin/prisma --version' >/dev/null
+          docker run --rm --entrypoint sh libriant-api:verify -c \
+            'node -e "import(\"marked\").then(()=>console.log(\"marked ok\"))"'
+          docker run --rm --entrypoint sh libriant-web:verify -c \
+            './apps/web/node_modules/.bin/next --version'
+
+      - name: Report image sizes
+        run: docker image ls libriant-api:verify libriant-web:verify
+
+      - name: Postgres extensions
+        run: |
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "
+            CREATE EXTENSION IF NOT EXISTS unaccent;
+            CREATE EXTENSION IF NOT EXISTS pg_trgm;
+            CREATE EXTENSION IF NOT EXISTS pgcrypto;
+            CREATE EXTENSION IF NOT EXISTS citext;
+          "
+
+      # Migrate + seed FROM INSIDE THE PRUNED IMAGE. This is the compose
+      # `migrate` one-shot's job, and it is the step a `pnpm install --prod`
+      # would have silently destroyed.
+      - name: The pruned image can migrate and seed the control plane
+        run: |
+          set -euo pipefail
+          docker run --rm --network host \
+            -e CONTROL_DATABASE_URL=postgresql://libriant:libriant@localhost:5432/libriant_control \
+            -e PG_SUPERUSER_URL=postgresql://libriant:libriant@localhost:5432/libriant_control \
+            --entrypoint sh libriant-api:verify \
+            -c 'pnpm db:migrate:deploy && pnpm db:seed'
+
+      - name: The pruned image starts and serves
+        run: |
+          set -euo pipefail
+          docker run -d --name api-verify --network host \
+            -e CONTROL_DATABASE_URL=postgresql://libriant:libriant@localhost:5432/libriant_control \
+            -e PG_SUPERUSER_URL=postgresql://libriant:libriant@localhost:5432/libriant_control \
+            -e REDIS_URL=redis://localhost:6379 \
+            -e SESSION_SECRET=ci-only-session-secret-0123456789abcdef \
+            -e ADMIN_SESSION_SECRET=ci-only-admin-secret-0123456789abcdef \
+            -e IMPERSONATION_SECRET=ci-only-imp-secret-0123456789abcdefgh \
+            -e HASH_PEPPER=ci-only-pepper-0123456789abcdefghijklmn \
+            -e STORAGE_SIGNING_SECRET=ci-only-storage-secret-0123456789abcd \
+            -e MFA_MASTER_KEY=0011223344556677889900112233445566778899001122334455667788990011 \
+            -e STRIPE_DRIVER=fake \
+            -e EMAIL_DRIVER=console \
+            -e STORAGE_ROOT=/tmp/libriant-storage \
+            libriant-api:verify
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null http://localhost:3001/metrics; then
+              echo "✓ the pruned API image booted and served /metrics after ${i}s"
+              docker rm -f api-verify >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "✗ the pruned API image never served a request:"
+          docker logs api-verify
+          docker rm -f api-verify >/dev/null
+          exit 1

@@ -4,17 +4,68 @@ import { Banner, Card, CardBody, CardHeader, EmptyState, PageHeader } from '@lib
 import { isLocale, createTranslator } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
-import { api, type BillingSnapshot, type ListResponse } from '@/lib/api';
-
-type ListShape = ListResponse<unknown>;
+import { api, type BillingSnapshot } from '@/lib/api';
 
 /**
- * Tenant home — at-a-glance counts pulled in parallel from the API, plus
- * the current billing snapshot. Server-rendered so the page is usable
- * the moment the layout finishes auth-redirects.
+ * `GET /t/:slug/summary` — the five tile counts in one call.
  *
- * Each API failure is caught locally so one slow endpoint doesn't blank
- * the whole dashboard; the affected tile shows its own friendly error.
+ * Declared here rather than imported from `@/lib/api` for the same reason
+ * `BillingSnapshot` is declared there: this is the only consumer, and the
+ * shape is the API's `TenantSummary` (apps/api/src/dashboard/dashboard.service.ts).
+ */
+type TenantSummary = {
+  books: number;
+  members: number;
+  activeLoans: number;
+  overdueLoans: number;
+  queuedHolds: number;
+  cachedForSeconds: number;
+};
+
+/**
+ * Tenant home — at-a-glance counts plus the current billing snapshot.
+ * Server-rendered so the page is usable the moment the layout finishes
+ * auth-redirects.
+ *
+ * performance-11. THIS PAGE WAS THE FINDING. It used to define a `safeCount`
+ * helper that called a cursor-paged LIST endpoint and returned
+ * `res.items.length` — the page size, not a total — five times in parallel:
+ *
+ *     catalog/books?limit=1        members?limit=1
+ *     loans?status=active&limit=100   loans?overdue=1&limit=100
+ *     reservations?status=queued&limit=100
+ *
+ * THE NUMBERS WERE NOT THE NUMBERS. `limit=1` meant a 400,000-title catalogue
+ * rendered its tile as "1" and a 100,000-member library rendered "1"; the three
+ * `limit=100` tiles saturated at 100 (and the service clamps `limit` to 100
+ * anyway, so asking for more would not have helped). Driven through this page
+ * against a seeded library of 5,006 titles / 800 members / 400 active loans /
+ * 150 overdue / 250 queued holds, the five tiles server-rendered as
+ * 1 · 1 · 100 · 100 · 100. They now render 5006 · 800 · 400 · 150 · 250.
+ *
+ * ON COST, BE PRECISE — the finding's "two full scans of loans, 32,845 buffers
+ * each" is STALE. performance-02 added the ordering indexes those list calls
+ * needed, and re-measured on the audit's 400,000-title fixture the three
+ * expensive-looking ones are now `Index Scan using loans_status_loanedAt_id_idx`
+ * (52 buffers), `Index Only Scan using loans_status_dueAt_id_idx` (6) and
+ * `Index Scan using books_sortTitle_idx` (11). What this replaces is therefore
+ * five HTTP round trips and ~15 statements per render, not two table scans.
+ *
+ * One call now, to an endpoint that answers with real counts and caches them in
+ * Redis for 30 s. Uncached that statement is 17,107 buffers — MORE than the
+ * five list calls — so the cache is not a nicety, it is what makes this a cost
+ * win as well as a correctness one, and the missing `books_active_idx` partial
+ * index (13,333 of those 17,107) is what would make it unconditional. Both are
+ * recorded with the remediation.
+ *
+ * The helper is gone on purpose: leaving a `safeCount` in the file is how the
+ * next tile gets wired back to a page size.
+ *
+ * The API failure is still caught locally so a slow or down API degrades the
+ * dashboard to "—" tiles rather than blanking the page — and note that on that
+ * path `summary` is null, so the onboarding welcome (which is keyed on "zero
+ * books AND zero members") is NOT shown to a library whose API simply did not
+ * answer.
  */
 export default async function TenantHome(props: {
   params: Promise<{ locale: string; slug: string }>;
@@ -25,15 +76,11 @@ export default async function TenantHome(props: {
   const t = createTranslator(catalog, params.locale);
   const cookie = await requestCookieHeader();
 
-  async function safeCount(path: string): Promise<{ count: number | null; error: boolean }> {
+  async function safeSummary(): Promise<TenantSummary | null> {
     try {
-      const res = await api<ListShape>(path, { cookie });
-      // Cursor-paged endpoints don't return a total; render the page-1 size
-      // followed by "+" if there's a nextCursor. Good enough for the home
-      // tile; a totals endpoint can replace this later.
-      return { count: res.items.length, error: false };
+      return await api<TenantSummary>(`/t/${params.slug}/summary`, { cookie });
     } catch {
-      return { count: null, error: true };
+      return null;
     }
   }
 
@@ -45,16 +92,18 @@ export default async function TenantHome(props: {
     }
   }
 
-  const [books, members, activeLoans, overdueLoans, queuedHolds, billing] = await Promise.all([
-    safeCount(`/t/${params.slug}/catalog/books?limit=1`),
-    safeCount(`/t/${params.slug}/members?limit=1`),
-    safeCount(`/t/${params.slug}/loans?status=active&limit=100`),
-    safeCount(`/t/${params.slug}/loans?overdue=1&limit=100`),
-    safeCount(`/t/${params.slug}/reservations?status=queued&limit=100`),
-    safeBilling(),
-  ]);
+  const [summary, billing] = await Promise.all([safeSummary(), safeBilling()]);
 
-  const isEmpty = books.count === 0 && members.count === 0;
+  const books = tile(summary?.books);
+  const members = tile(summary?.members);
+  const activeLoans = tile(summary?.activeLoans);
+  const overdueLoans = tile(summary?.overdueLoans);
+  const queuedHolds = tile(summary?.queuedHolds);
+
+  // Only a summary we actually received can say "this library is empty".
+  const isEmpty = summary !== null && summary.books === 0 && summary.members === 0;
+  const needsBooks = summary !== null && summary.books === 0;
+  const needsMembers = summary !== null && summary.members === 0;
   const off = t('common.dashboard.offline');
 
   return (
@@ -87,15 +136,13 @@ export default async function TenantHome(props: {
             </Link>
           }
         />
-      ) : books.count === 0 || members.count === 0 ? (
+      ) : needsBooks || needsMembers ? (
         <Banner
           severity="info"
           title={t('onboarding.nudge.title')}
           style={{ marginBottom: 'var(--sp-4)' }}
         >
-          {books.count === 0
-            ? t('onboarding.nudge.bookMissing')
-            : t('onboarding.nudge.memberMissing')}{' '}
+          {needsBooks ? t('onboarding.nudge.bookMissing') : t('onboarding.nudge.memberMissing')}{' '}
           <Link href={`/${params.locale}/t/${params.slug}/onboarding`}>
             {t('onboarding.nudge.cta')}
           </Link>
@@ -156,6 +203,15 @@ export default async function TenantHome(props: {
       )}
     </>
   );
+}
+
+/**
+ * One tile's state, derived from the single summary call. `null` means the
+ * summary did not arrive — every tile then reads "—" with the offline caption,
+ * which is the same degradation the five separate calls used to give per tile.
+ */
+function tile(count: number | undefined): { count: number | null; error: boolean } {
+  return count === undefined ? { count: null, error: true } : { count, error: false };
 }
 
 function Tile({

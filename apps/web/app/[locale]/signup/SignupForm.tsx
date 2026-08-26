@@ -1,7 +1,7 @@
 'use client';
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Banner, Button, FormField, Input, Textarea } from '@libriant/ui';
+import { FormError, Button, FormField, Input, Textarea } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { LIBRARY_TYPES } from '@libriant/shared/library';
@@ -146,11 +146,10 @@ export function SignupForm({ catalog, locale }: Props) {
 
   return (
     <form onSubmit={handleSubmit} noValidate>
-      {errors.form ? (
-        <Banner severity="critical" style={{ marginBottom: 'var(--sp-4)' }}>
-          {errors.form}
-        </Banner>
-      ) : null}
+      {/* Always mounted — see FormError. */}
+      <FormError style={{ marginBottom: 'var(--sp-4)' }}>
+        {errors.form ? errors.form : null}
+      </FormError>
 
       <FormField
         id="signup-library-name"

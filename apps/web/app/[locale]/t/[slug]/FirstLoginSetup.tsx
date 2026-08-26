@@ -1,7 +1,7 @@
 'use client';
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Asset, Banner, Button, FormField, Input, PoweredBy, useToast } from '@libriant/ui';
+import { Asset, FormError, Button, FormField, Input, PoweredBy, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { api } from '@/lib/api';
@@ -66,11 +66,8 @@ export function FirstLoginSetup({
         <h1 className="lbr-auth-card__heading">{t('auth.firstLogin.title')}</h1>
         <p className="lbr-auth-card__subtitle">{t('auth.firstLogin.subtitle')}</p>
         <form onSubmit={submit} noValidate>
-          {error ? (
-            <Banner severity="critical" style={{ marginBottom: 'var(--sp-4)' }}>
-              {error}
-            </Banner>
-          ) : null}
+          {/* Always mounted — see FormError. */}
+          <FormError style={{ marginBottom: 'var(--sp-4)' }}>{error ? error : null}</FormError>
           <FormField id="fl-name" label={t('auth.firstLogin.name')}>
             <Input value={fullName} onChange={(e) => setFullName(e.currentTarget.value)} />
           </FormField>

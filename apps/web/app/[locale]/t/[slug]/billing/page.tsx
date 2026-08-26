@@ -151,7 +151,21 @@ export default async function BillingPage(props: {
         <h2 style={{ fontSize: 'var(--fs-xl)', marginBottom: 'var(--sp-3)' }}>
           {t('billing.availablePlans')}
         </h2>
-        <PlanGrid plans={plans} slug={params.slug} catalog={catalog} locale={params.locale} />
+        <PlanGrid
+          plans={plans}
+          slug={params.slug}
+          catalog={catalog}
+          locale={params.locale}
+          // billing-11 round 2. The grid is rendered for EVERY tenant — the
+          // `billingMode === 'manual'` test at line 119 only swaps
+          // BillingActions for a static notice, it never hid the grid — so a
+          // contract library needs the grid itself to know it is a contract
+          // library. Defaults to 'stripe' when the snapshot call failed, which
+          // is the self-serve behaviour we had before; `selectPlan` refuses a
+          // contract move server-side regardless, so a failed read cannot turn
+          // into a downgrade.
+          tenantBillingMode={snapshot?.billingMode === 'manual' ? 'manual' : 'stripe'}
+        />
       </section>
     </>
   );

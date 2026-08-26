@@ -32,35 +32,26 @@ import {
   type StripeSubscriptionState,
 } from './stripe-driver.js';
 import { buildWebReturnUrl, resolveWebLocale } from './return-url.js';
+import { isTrustedLocalNodeEnv, resolveStripeDriverKind } from './stripe-driver-kind.js';
+import {
+  isUsableStripePriceId,
+  stripePriceProblems,
+  unusablePriceIdProblem,
+  type PriceLookupOutcome,
+} from './plan-price-check.js';
 
 const MS_PER_DAY = 86_400_000;
 
 /**
- * Prefix of the Stripe price ids the SEED writes so the
- * `plans_stripe_price_matches_mode` CHECK constraint can be satisfied before
- * anyone has a Stripe account (`price_seed_starter`, `price_seed_community`,
- * `price_seed_community_annual`, …).
- *
- * billing-10: `hasStripePrice` was `!!plan.stripePriceId`, which is TRUE for
- * every one of these — so a completely unconfigured control plane reported a
- * fully configured price catalogue, the operator's go-live check passed on
- * seed data, and the UI rendered a Subscribe button that Stripe answers with
- * `No such price: price_seed_community`.
+ * billing-10. `isUsableStripePriceId` and the per-column comparisons used to
+ * live in this file. They moved to `plan-price-check.ts` when the write-time
+ * guard (`PlanPriceWriteInterceptor`) had to make the SAME judgements: a write
+ * guard and an after-the-fact report that disagree are worse than either alone,
+ * because the operator fixes the plan until the report goes green and the save
+ * still refuses. Re-exported here because half a dozen call sites — and the
+ * existing specs — import it from this module.
  */
-const SEED_PRICE_PREFIX = 'price_seed_';
-
-/**
- * Whether a stored Stripe price id could plausibly BUY something.
- *
- * Deliberately narrower than "non-null": a real Stripe Price id starts
- * `price_`, and anything under `price_seed_` is a placeholder this repository
- * wrote itself. This is not a substitute for asking Stripe (see
- * `auditPriceCatalogue`) — it is the cheap check that keeps the product from
- * offering a purchase it cannot complete, on every read path.
- */
-export function isUsableStripePriceId(id: string | null | undefined): id is string {
-  return typeof id === 'string' && id.startsWith('price_') && !id.startsWith(SEED_PRICE_PREFIX);
-}
+export { isUsableStripePriceId } from './plan-price-check.js';
 
 /**
  * Redis key holding `event.created` (ms) of the newest subscription event we
@@ -414,6 +405,42 @@ export class BillingService {
     if (!plan || !plan.isActive || !plan.isPublic || plan.archivedAt) {
       throw new NotFoundException(`Plan "${input.planSlug}" isn't available.`);
     }
+    // billing-11, round 2 — the regression round 1's free-plan branch shipped.
+    //
+    // Giving PlanGrid the free-plan branch it was missing was right; handing a
+    // CONTRACTED library a working one-click self-downgrade it never had was
+    // not. A tenant on `billingMode='manual'` is there because an operator put
+    // it there (`scripts/tenant-create.ts --billing-mode=manual`, or
+    // `applyAdminPlanChange`, which since billing-12 leaves
+    // `stripeSubscriptionId` null). A null subscription id skips the cancel
+    // branch below, so the direct update ran and rewrote `billingMode` from
+    // 'manual' to the target plan's 'stripe' — undoing on the tenant side
+    // exactly the operator state `handleStripeSubscriptionDeleted` gained a
+    // guard to protect, with no admin involvement and no audit row. The
+    // launch-offer cohort is provisioned this way, so "switch to Starter"
+    // would have thrown away twelve prepaid months in one click.
+    //
+    // A contract's tier is not a self-serve setting. But this must NOT become a
+    // dead end either: with subscriptions on, a manual tenant that has never
+    // stamped `planSelectedAt` is held by the full-page chooser until it picks
+    // something. So confirming the plan they are already on is allowed — it
+    // stamps the choice and changes nothing else — and every actual move is
+    // refused. Deliberately placed ABOVE the "that plan requires payment" test
+    // so a contract sitting on a paid public plan can still confirm it.
+    if (sub.billingMode === 'manual') {
+      if (plan.id !== sub.planId) {
+        throw new BadRequestException(
+          'Your library is billed by contract, not through the app — please contact us to ' +
+            'change your plan.',
+        );
+      }
+      await controlDb.subscription.updateMany({
+        where: { tenantId, planSelectedAt: null },
+        data: { planSelectedAt: new Date() },
+      });
+      return this.getSnapshot(tenantId);
+    }
+
     if (plan.billingMode === 'stripe' && plan.monthlyPriceCents > 0) {
       throw new BadRequestException(
         'That plan requires payment — start checkout to add a payment method.',
@@ -436,8 +463,9 @@ export class BillingService {
         where: { tenantId, planSelectedAt: null },
         data: { planSelectedAt: new Date() },
       });
-      // Throws for a manually-billed tenant, which is correct: there is nothing
-      // self-serve to cancel and the message says who to contact.
+      // A manually-billed tenant can no longer get this far (the guard above
+      // returns first), but cancelAtPeriodEnd refuses one anyway — belt and
+      // braces on the only path that can stop a real card.
       return this.cancelAtPeriodEnd(tenantId);
     }
 
@@ -485,6 +513,44 @@ export class BillingService {
     // its slug — unless the tenant is already on it (a grandfathered renewal).
     if (!plan || !plan.isActive || plan.archivedAt || (!plan.isPublic && plan.id !== sub.planId)) {
       throw new NotFoundException(`Plan "${input.planSlug}" isn't available.`);
+    }
+    // billing-11, round 2 — the same contract-library rule `selectPlan` now
+    // applies, on the other self-serve route.
+    //
+    // `startCheckout` only ever looked at the PLAN's billingMode, never the
+    // TENANT's. So a library an operator had put on a contract could open
+    // Stripe Checkout for itself: `handleCheckoutSessionCompleted` +
+    // `syncStripeSubscription` then copy the plan's `billingMode='stripe'` over
+    // the contract, and the library is charged a card on top of an invoice it
+    // has already paid. The forced plan chooser reaches this method for every
+    // PAID plan, so closing `selectPlan` alone would only have moved the hole.
+    //
+    // Confirming the plan they are already on is allowed and takes no payment
+    // detail: it stamps `planSelectedAt`, which is the only thing the chooser
+    // is waiting for. Without this branch a contract library held by the
+    // chooser would have no reachable exit at all — selectPlan refuses a move
+    // and every paid card lands here.
+    if (sub.billingMode === 'manual') {
+      if (plan.id !== sub.planId) {
+        throw new BadRequestException(
+          'Your library is billed by contract, not through the app — please contact us to ' +
+            'change your plan.',
+        );
+      }
+      await controlDb.subscription.updateMany({
+        where: { tenantId, planSelectedAt: null },
+        data: { planSelectedAt: new Date() },
+      });
+      return {
+        url: buildWebReturnUrl({
+          base: loadEnv().billingReturnUrl,
+          locale: resolveWebLocale(sub.tenant.defaultLocale),
+          slug: sub.tenant.slug,
+          returnPath: input.returnPath,
+        }),
+        sessionId: null,
+        outcome: 'plan_changed',
+      };
     }
     if (plan.billingMode !== 'stripe') {
       throw new BadRequestException(
@@ -1792,6 +1858,27 @@ export class BillingService {
    */
   async auditPriceCatalogue(): Promise<{
     driver: 'real' | 'fake' | 'disabled';
+    /**
+     * billing-14. Whether this host can charge a card at all.
+     *
+     * Computed from the LIVE `STRIPE_DRIVER` posture rather than from the
+     * driver object this process booted with, because that is exactly what
+     * `PlatformSettingsService.setBillingEnabled` consults when it decides
+     * whether to accept the Subscriptions toggle — so this field predicts that
+     * decision instead of merely correlating with it.
+     *
+     * It existed before, on `subscriptionsStatus()`, and NO UI read it: an
+     * operator on a host that cannot charge saw a completely normal admin
+     * screen and found out when the toggle threw. It is returned here because
+     * this is the payload the admin Plans screen renders.
+     */
+    stripeReady: boolean;
+    /** The master switch as it stands right now. */
+    billingEnabled: boolean;
+    /** Would `POST /admin/subscriptions {enabled:true}` be accepted today? */
+    subscriptionsCanBeEnabled: boolean;
+    /** Plain-language reason the toggle would refuse, or null when it would not. */
+    blockReason: string | null;
     ok: boolean;
     checkedAt: string;
     plans: Array<{
@@ -1808,16 +1895,19 @@ export class BillingService {
       notes: string[];
     }>;
   }> {
-    const plans = await controlDb.plan.findMany({
-      where: { archivedAt: null, isActive: true },
-      orderBy: { sortOrder: 'asc' },
-    });
+    const [plans, billingEnabled] = await Promise.all([
+      controlDb.plan.findMany({
+        where: { archivedAt: null, isActive: true },
+        orderBy: { sortOrder: 'asc' },
+      }),
+      this.settings.billingEnabled(),
+    ]);
     /** Memoised so two plans sharing an id cost one Stripe call, not two. */
-    const priceCache = new Map<string, Awaited<ReturnType<StripeDriver['getPrice']>> | 'error'>();
-    const lookup = async (id: string) => {
+    const priceCache = new Map<string, PriceLookupOutcome>();
+    const lookup = async (id: string): Promise<PriceLookupOutcome> => {
       const hit = priceCache.get(id);
       if (hit !== undefined) return hit;
-      let result: Awaited<ReturnType<StripeDriver['getPrice']>> | 'error';
+      let result: PriceLookupOutcome;
       try {
         result = await this.stripe.getPrice(id);
       } catch (err) {
@@ -1860,7 +1950,7 @@ export class BillingService {
       }
 
       const columns: Array<{
-        label: string;
+        label: 'monthly' | 'annual';
         id: string | null;
         expectedCents: number | null;
         expectedInterval: 'month' | 'year';
@@ -1920,44 +2010,23 @@ export class BillingService {
           continue;
         }
         if (!isUsableStripePriceId(column.id)) {
-          problems.push(
-            `the ${column.label} price id "${column.id}" is a seeded placeholder, not a Stripe ` +
-              'Price — replace it with the real id from the Stripe Dashboard',
-          );
+          problems.push(unusablePriceIdProblem(column.label, column.id));
           continue;
         }
-        const price = await lookup(column.id);
-        if (price === 'error') {
-          problems.push(`Stripe could not be asked about the ${column.label} price ${column.id}`);
-          continue;
-        }
-        if (price === null) {
-          problems.push(
-            `Stripe has no Price ${column.id} (${column.label}) — Checkout would fail on it`,
-          );
-          continue;
-        }
-        if (!price.active) problems.push(`the ${column.label} Price ${column.id} is archived`);
-        if (price.currency.toLowerCase() !== plan.currency.toLowerCase()) {
-          problems.push(
-            `the ${column.label} Price ${column.id} is in ${price.currency.toUpperCase()} but the ` +
-              `plan is priced in ${plan.currency.toUpperCase()}`,
-          );
-        }
-        if (column.expectedCents != null && price.unitAmount !== column.expectedCents) {
-          problems.push(
-            `the ${column.label} Price ${column.id} charges ${price.unitAmount ?? 'a variable amount'} ` +
-              `but the plan advertises ${column.expectedCents} (minor units) — the page and the ` +
-              'card would disagree',
-          );
-        }
-        if (price.interval !== column.expectedInterval || price.intervalCount !== 1) {
-          problems.push(
-            `the ${column.label} Price ${column.id} recurs every ${price.intervalCount ?? '?'} ` +
-              `${price.interval ?? 'one-off'} — the ${column.label} column must hold a ` +
-              `1-${column.expectedInterval} Price`,
-          );
-        }
+        // Same comparisons, same words, as the write-time guard — see
+        // plan-price-check.ts for why there is only one copy of them.
+        problems.push(
+          ...stripePriceProblems(
+            {
+              label: column.label,
+              id: column.id,
+              expectedCents: column.expectedCents,
+              expectedCurrency: plan.currency,
+              expectedInterval: column.expectedInterval,
+            },
+            await lookup(column.id),
+          ),
+        );
       }
 
       rows.push({
@@ -1973,8 +2042,26 @@ export class BillingService {
       });
     }
 
+    // billing-14. The posture the admin toggle will consult, resolved the same
+    // way `setBillingEnabled` resolves it (live env, not the booted driver), so
+    // the banner the operator reads and the refusal they would hit cannot
+    // disagree.
+    const posture = resolveStripeDriverKind().kind;
+    const standInIsIntentional = posture === 'fake' && isTrustedLocalNodeEnv();
+    const subscriptionsCanBeEnabled = posture === 'real' || standInIsIntentional;
+    const blockReason = subscriptionsCanBeEnabled
+      ? null
+      : `STRIPE_DRIVER resolves to "${posture}" on this host, so checkout and the customer ` +
+        'portal have nothing that can take a payment. Enabling subscriptions would gate every ' +
+        'library behind a purchase it cannot complete, so the Subscriptions switch will refuse. ' +
+        'Set STRIPE_DRIVER=real with STRIPE_API_KEY + STRIPE_WEBHOOK_SECRET and restart the API.';
+
     return {
       driver: this.stripe.kind,
+      stripeReady: posture === 'real',
+      billingEnabled,
+      subscriptionsCanBeEnabled,
+      blockReason,
       ok: rows.every((r) => r.problems.length === 0),
       checkedAt: new Date().toISOString(),
       plans: rows,

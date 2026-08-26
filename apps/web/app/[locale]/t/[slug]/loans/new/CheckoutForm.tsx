@@ -2,6 +2,7 @@
 import * as React from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { SEARCH_MIN_CHARS } from '@libriant/shared/search';
 import { Banner, Button, Card, CardBody, FormField, Input, Textarea, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
@@ -324,6 +325,8 @@ export function CheckoutForm({
                 setCopyId('');
               }}
               endpoint={(q) => `/t/${slug}/catalog/books?q=${encodeURIComponent(q)}&limit=8`}
+              minQueryChars={SEARCH_MIN_CHARS}
+              minCharsText={t('common.search.minChars', { count: SEARCH_MIN_CHARS })}
               renderOption={(b) => (
                 <div>
                   <div style={{ fontWeight: 500 }}>{b.title}</div>

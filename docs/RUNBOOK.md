@@ -1040,11 +1040,11 @@ sticks.
 
 **Irrecoverable if lost — nothing on disk or in any backup can regenerate them:**
 
-| Secret              | Consequence                                                                                                                                                                                                                                   |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MFA_MASTER_KEY`    | The only decryptor of stored admin TOTP secrets. Losing it orphans every enrolment; with MFA mandatory in production and **no recovery codes on `AdminUser`**, you are locked out of the admin panel. Classified rotation: _never_.           |
-| `POSTGRES_PASSWORD` | Postgres applies it only at initdb. Once the cluster exists, the value in `.env.prod` must match `pg_authid` or every connection fails auth. Classified rotation: _never_ — changing it needs a coordinated `ALTER ROLE libriant PASSWORD …`. |
-| origin cert + key   | `deploy-on-host.sh` says it outright: _no backup contains it_. A missing pair fails the deploy at `caddy validate` with the misleading message `Caddyfile is invalid`.                                                                        |
+| Secret              | Consequence                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MFA_MASTER_KEY`    | The only decryptor of stored admin TOTP secrets. Losing it orphans every enrolment, and MFA is mandatory in production. It is **no longer a lock-out**: §4.5a un-enrols an admin without decrypting anything, and single-use recovery codes are accepted at admin sign-in. Classified rotation: _never_ — a rotation still orphans every enrolment, it just no longer strands you. |
+| `POSTGRES_PASSWORD` | Postgres applies it only at initdb. Once the cluster exists, the value in `.env.prod` must match `pg_authid` or every connection fails auth. Classified rotation: _never_ — changing it needs a coordinated `ALTER ROLE libriant PASSWORD …`.                                                                                                                                      |
+| origin cert + key   | `deploy-on-host.sh` says it outright: _no backup contains it_. A missing pair fails the deploy at `caddy validate` with the misleading message `Caddyfile is invalid`.                                                                                                                                                                                                             |
 
 **Recoverable but disruptive:**
 
@@ -1081,6 +1081,155 @@ dc logs migrate | grep -i admin
 ```
 
 Good looks like: a line naming the admin email, not `ADMIN_BOOTSTRAP_* not set - skipping`.
+
+Since `launch-readiness-13`, every run of this script also prints the roster of
+active admins and shouts if there is only one owner. Read that output.
+
+### 4.5a The lost authenticator — getting back into the admin panel
+
+`ADMIN_MFA_REQUIRED` defaults to on in production, so `admin.libriant.com`
+refuses a correct password without a code from the authenticator. That surface
+is where library edit-requests are approved, plans are set, billing is flipped,
+support access is granted and the applications CSV is served. **One lost or
+wiped phone used to end that access permanently**: `/admin/mfa/*` all sit behind
+a live admin session, `EMAIL_DRIVER=console` delivers nothing, and re-running
+`bootstrap-admin.ts` deliberately does not touch the second factor.
+
+There are now three ways back, in order of preference. Only the first two
+require you to have prepared.
+
+#### Before you need it — do these now
+
+1. **Hold recovery codes.** Enrolling issues ten single-use codes; a
+   pre-existing enrolment can be given a set from the box without proving
+   anything to the browser:
+
+   ```bash
+   dc run --rm --no-deps \
+     -e ADMIN_BOOTSTRAP_EMAIL=owner@libriant.com \
+     -e ADMIN_BOOTSTRAP_ISSUE_RECOVERY_CODES=owner@libriant.com \
+     migrate sh -lc 'cd /app && pnpm admin:bootstrap'
+   ```
+
+   Ten `ABCDE-FGHJK-MNPQR-STVWX` codes are printed **once**. Put them in the
+   password manager beside `MFA_MASTER_KEY` and clear the terminal — until used,
+   each is as good as the authenticator. Re-running this invalidates the
+   previous set.
+
+2. **Keep a second owner admin, on a different device.** The server handbook
+   already says to keep two SSH keys authorized; the same argument applies to
+   the surface you use to respond to an incident, and never did.
+
+   ```bash
+   dc run --rm --no-deps \
+     -e ADMIN_BOOTSTRAP_EMAIL=second-owner@libriant.com \
+     -e ADMIN_BOOTSTRAP_PASSWORD='<a fresh 20+ char passphrase>' \
+     -e ADMIN_BOOTSTRAP_ROLE=owner \
+     migrate sh -lc 'cd /app && pnpm admin:bootstrap'
+   ```
+
+   Then sign in as that admin on the second device and enrol its authenticator.
+   Store both TOTP seeds and both recovery-code sets.
+
+#### On the day — signing in with a recovery code
+
+At the admin sign-in, send a code in place of the six-digit one. It is consumed
+on use; a wrong or already-used code counts as a failed attempt and can trip the
+lockout, so do not guess.
+
+#### On the day — no codes, no second admin
+
+The reset below is the last resort and the reason a lost phone is no longer
+terminal. **It decrypts nothing**, so it works even if `MFA_MASTER_KEY` has been
+lost or rotated. It leaves the password alone.
+
+1. Un-enrol the second factor. The value **must** be that admin's own email — a
+   bare `1` is refused, so a stray variable cannot disarm MFA by accident.
+
+   ```bash
+   dc run --rm --no-deps \
+     -e ADMIN_BOOTSTRAP_EMAIL=owner@libriant.com \
+     -e ADMIN_BOOTSTRAP_RESET_MFA=owner@libriant.com \
+     migrate sh -lc 'cd /app && pnpm admin:bootstrap'
+   ```
+
+   Good looks like `Reset the second factor for owner@libriant.com. The password
+is UNCHANGED.` followed by the admin roster.
+
+2. Open `https://admin.libriant.com` and sign in with the email and password.
+   No code is asked for.
+3. The console refuses every page except the enrolment screen. Enrol the new
+   authenticator **now** — that is the guard doing its job, not a fault.
+4. Store the new TOTP seed and the freshly issued recovery codes.
+5. Verify: `dc logs api | grep -i mfa`, and confirm in the admin panel that the
+   account shows MFA enabled.
+
+What the reset does, so nothing is a surprise:
+
+|                                  |                                                                                                                                                                                                            |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mfaEnabled`                     | → `false`; the stored ciphertext is overwritten with fresh random bytes (the columns are `NOT NULL`)                                                                                                       |
+| recovery codes                   | deleted — a set printed against a factor that no longer exists must not remain a bypass                                                                                                                    |
+| `sessionsValidAfter`             | stamped, rounded up to the next whole second, so **every** live admin cookie for that account dies, including one on the lost handset. A sign-in completing inside that same second is refused once; retry |
+| `passwordHash`                   | **untouched**                                                                                                                                                                                              |
+| `failedAttempts` / `lockedUntil` | cleared                                                                                                                                                                                                    |
+| `audit_log`                      | one `admin.mfa.reset_by_operator` row, so an out-of-band reset is never invisible                                                                                                                          |
+
+> **Do not put `ADMIN_BOOTSTRAP_RESET_MFA` or
+> `ADMIN_BOOTSTRAP_ISSUE_RECOVERY_CODES` in `.env.prod`.** `prod-bootstrap.sh`
+> runs `pnpm admin:bootstrap` on **every deploy** — this is the same footgun
+> §4.5 describes for `ADMIN_BOOTSTRAP_PASSWORD`, except here it would silently
+> disarm the second factor, or reprint and invalidate the recovery codes, on
+> every deploy forever. Pass them with `-e` as above, one shot, and they are
+> never written to disk.
+
+#### If even that is unavailable
+
+Straight SQL against the control plane, which is what the two commands above do:
+
+```sql
+-- un-enrol; the columns are NOT NULL, so overwrite rather than NULL them
+UPDATE admin_users
+   SET "mfaEnabled" = false,
+       "mfaSecretCipher" = gen_random_bytes(32),
+       "mfaNonce" = gen_random_bytes(12),
+       "mfaKeyId" = 'reset',
+       "sessionsValidAfter" = date_trunc('second', now()) + interval '1 second',
+       "failedAttempts" = 0,
+       "lockedUntil" = NULL
+ WHERE email = 'owner@libriant.com';
+DELETE FROM platform_settings WHERE key = 'admin.mfa.recovery:' || (
+  SELECT id FROM admin_users WHERE email = 'owner@libriant.com');
+```
+
+Prefer the script: it writes the audit row, it refuses a mis-aimed reset, and it
+tells you afterwards how many owner admins you have left.
+
+### 4.5b Freezing — and un-freezing — a library account
+
+`users.lockedUntil` is now read on the tenant sign-in path (`authn-authz-10`),
+which it was not before. Two consequences worth knowing:
+
+- **Freezing an account by hand works.** `UPDATE users SET "lockedUntil" =
+now() + interval '1 hour' WHERE email = '…';` refuses that account's sign-ins
+  for the hour, correct password included, and no distinct message is returned
+  (a "locked" message is an account-existence oracle).
+- **Five wrong passwords now leave a durable lock too**, expiring after
+  `LOGIN_LOCKOUT_MS`. It is scoped to the address that armed it while Redis
+  still remembers, so an attacker cannot lock a librarian out of their own
+  connection — but if Redis has been flushed or restarted, the scope marker is
+  gone with it and the lock applies to every address until it expires. That is
+  deliberate: a Redis outage is exactly when the account has no other
+  protection.
+
+To release either, by hand:
+
+```sql
+UPDATE users SET "lockedUntil" = NULL, "failedLogins" = 0
+ WHERE "tenantId" = '<tenant id>' AND email = '…';
+```
+
+A successful sign-in does the same thing by itself.
 
 ### 4.6 Host-shaped variables worth knowing
 

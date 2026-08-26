@@ -1294,6 +1294,42 @@ model ImportBatch {
   @@map("import_batches")
 }
 
+// ---------------------------------------------------------------------------
+// Legal document archive (privacy-legal-09).
+//
+// Acceptance used to be a bare version string on `tenants` / `users` pointing
+// at `locales/<locale>/legal/<slug>.md`, a file rewritten in place on every
+// revision and absent from any database backup — so nothing could produce the
+// text a library was actually shown. These rows ARE that text: one immutable
+// body per (version, locale, slug), written by the control-plane seed and by
+// the API before it records any acceptance, and read back by
+// `GET /t/:slug/legal/consent/evidence`.
+// ---------------------------------------------------------------------------
+
+model LegalDocumentVersion {
+  id         String   @id @default(cuid())
+  /// The LEGAL_VERSION stamp (ISO date) this body was published under.
+  version    String
+  /// 'el' | 'en' — the corpus the visitor was actually served.
+  locale     String
+  /// 'terms' | 'privacy' | 'cookies' | 'dpa' | 'subprocessors' |
+  /// 'acceptable-use' | 'legal-notice'
+  slug       String
+  /// SHA-256 (hex) of `body`, so an acceptance record's digest can be checked
+  /// against the archived text instead of trusted.
+  sha256     String
+  /// The published markdown, verbatim (leading author blockquote stripped,
+  /// exactly as apps/web/lib/legal.ts strips it before rendering).
+  body       String
+  /// Repo-relative path of the frozen copy this row was loaded from.
+  sourcePath String
+  archivedAt DateTime @default(now())
+
+  @@unique([version, locale, slug])
+  @@index([version, locale])
+  @@map("legal_document_versions")
+}
+
 model ImportRowIssue {
   id        String   @id @default(cuid())
   batchId   String

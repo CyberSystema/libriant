@@ -170,11 +170,12 @@ export class FakeStripeDriver implements StripeDriver {
   }
 
   /**
-   * The fake keeps no Price catalogue, so it says so: `null` means "Stripe has
-   * no such Price" to the caller, and the catalogue audit (billing-10) reports
-   * every row as unverified when it runs against this driver rather than
-   * claiming the seeded `price_seed_*` ids check out. Reporting a green
-   * catalogue in dev is exactly the vacuous check the finding is about.
+   * The fake keeps no Price catalogue, so every id comes back `null` — "Stripe
+   * has no such Price". The catalogue audit (billing-10) therefore reports a
+   * PROBLEM per configured id under this driver, not a green catalogue and not
+   * a distinct "unverified" state, which the code has never had. That is
+   * deliberate: a stand-in that invented a matching Price would reproduce in
+   * dev exactly the vacuous check the finding is about.
    */
   async getPrice(_priceId: string): Promise<StripePriceState | null> {
     return null;

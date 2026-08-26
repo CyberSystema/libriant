@@ -35,15 +35,21 @@ import type { LegalDocSlug } from '@libriant/shared';
  * document and the suite tells you, with the new digest, that you owe a
  * `LEGAL_VERSION` bump and a new frozen directory.
  *
- * ## Why a compiled-in table rather than reading the markdown at runtime
+ * ## Why a compiled-in table of digests
  *
- * The API container has no reliable copy of `locales/` to read — boot-and-config
- * found that `LOCALES_ROOT` is set for the API, which reads nothing, and NOT set
- * for the web app, which serves the documents from the copy baked into its image
- * at build time. A runtime file read would therefore be recording a file that
- * may not exist next to the process, while the bytes the visitor actually saw
- * came from the build. Compiling the digests in records the build, which is the
- * same thing the visitor was served, and cannot fail at runtime.
+ * A digest cannot be wrong at runtime the way a file read can: it records what
+ * the image was BUILT from, which is the same thing the visitor was served.
+ *
+ * ## What a digest still cannot do, and where the rest of the fix lives
+ *
+ * It cannot PRODUCE the text. Asked "what did this library agree to?", a hash
+ * answers with 64 hex characters — which is why this file alone was not enough
+ * and the finding was reopened. The bytes now live in the control database,
+ * one immutable row per (version, locale, slug) in `legal_document_versions`,
+ * written from the frozen directory above and read back over HTTP at
+ * `GET /t/:slug/legal/consent/evidence`. See `consent.service.ts`; the digests
+ * here are what lets that archived body be CHECKED against what was recorded at
+ * acceptance time rather than merely believed.
  */
 
 /**
@@ -79,10 +85,25 @@ export const LEGAL_CORPUS: Readonly<Record<string, Readonly<Record<LegalDocSlug,
   },
 } as const;
 
-/** Locale whose documents were shown, falling back the way the web app does. */
+/**
+ * Interpret a locale string that was ALREADY STORED, falling back the way the
+ * web app does.
+ *
+ * READ PATH ONLY. This used to be on the write path too, and that was the
+ * second half of why attempt one at privacy-legal-09 was refuted: the signup
+ * DTO's `defaultLocale` is optional, so an API signup that omitted it recorded
+ * the GREEK corpus as the text presented — regardless of what the caller had
+ * actually shown. Guessing is fine when re-reading a row whose locale we once
+ * knew; it is not fine when minting the evidence. The write path now takes
+ * {@link LegalLocaleStrict} and the DTO refuses a signup that will not say
+ * which language of the Terms it displayed.
+ */
 export function acceptanceLocale(requested: string | undefined): 'el' | 'en' {
   return requested === 'en' ? 'en' : 'el';
 }
+
+/** The locales the legal corpus is actually published in. */
+export type LegalLocaleStrict = 'el' | 'en';
 
 /** Repo-relative path of the frozen copy — quotable in a dispute or a DSAR. */
 export function archivePath(locale: string, slug: LegalDocSlug): string {
@@ -113,11 +134,18 @@ export type LegalAcceptanceEvidence = {
  * said on that day. `presented` marks which two were actually shown, so the
  * record does not overclaim.
  */
-export function legalAcceptanceEvidence(
-  requestedLocale: string | undefined,
-): LegalAcceptanceEvidence {
-  const locale = acceptanceLocale(requestedLocale);
-  const digests = LEGAL_CORPUS[locale]!;
+export function legalAcceptanceEvidence(locale: LegalLocaleStrict): LegalAcceptanceEvidence {
+  const digests = LEGAL_CORPUS[locale];
+  // Defence in depth behind the type. The failure this replaces was silent: an
+  // unrecognised locale used to resolve to the Greek corpus and the acceptance
+  // was written naming documents the person had never seen. A throw is the only
+  // safe behaviour here — there is no correct guess.
+  if (!digests) {
+    throw new Error(
+      `No frozen legal corpus for locale "${String(locale)}" at version ${LEGAL_VERSION}. ` +
+        'Refusing to record an acceptance against a corpus that was not published.',
+    );
+  }
   return {
     version: LEGAL_VERSION,
     locale,
@@ -151,9 +179,20 @@ export function legalAcceptanceAuditData(input: {
   tenantId: string;
   actor: AcceptanceActor;
   acceptedAt: Date;
-  requestedLocale: string | undefined;
+  /** The corpus that was ON SCREEN. */
+  presentedLocale: LegalLocaleStrict;
+  /**
+   * Did the caller actually TELL us that, or is `presentedLocale` the default?
+   *
+   * privacy-legal-09: the old code could not tell the difference, so a signup
+   * that omitted the locale produced a record indistinguishable from one that
+   * declared Greek. Recording the distinction is the difference between
+   * evidence and a plausible-looking assertion — and both translations of the
+   * version are archived either way, so nothing is unrecoverable.
+   */
+  localeAsserted: boolean;
 }): Prisma.AuditEventUncheckedCreateInput {
-  const evidence = legalAcceptanceEvidence(input.requestedLocale);
+  const evidence = legalAcceptanceEvidence(input.presentedLocale);
   return {
     tenantId: input.tenantId,
     actorType: 'user',
@@ -164,6 +203,7 @@ export function legalAcceptanceAuditData(input: {
     afterJson: {
       version: evidence.version,
       locale: evidence.locale,
+      localeAsserted: input.localeAsserted,
       acceptedAt: input.acceptedAt.toISOString(),
       // WHO accepted, in what capacity (Terms §2.4 — the public-body
       // authority-to-bind warranty is worth exactly as much as the record of
@@ -189,15 +229,13 @@ export function legalAcceptanceAuditData(input: {
  * returns who accepted, when, from where, and the digest + frozen path of every
  * document, which is what an HDPA file or a contract dispute needs.
  *
- * ⚠️ **No HTTP route mounts this yet, and that is a known gap, not an
- * oversight.** The two remaining pieces of privacy-legal-09 are both `apps/web`
- * work and are tracked separately: an admin screen showing a library's
- * acceptance record, and the re-acceptance prompt that compares
- * `user.legalAcceptedVersion` against `LEGAL_VERSION` at sign-in. Until the
- * screen exists the evidence is reachable from a Node console or a psql query
- * against `audit_log WHERE action = 'tenant.legal_accepted'`, and
- * `test/integration/legal-acceptance.spec.ts` drives this function to prove the
- * record it would show is actually there and actually correct.
+ * This is the low-level reader over `audit_log`. The MOUNTED read path is
+ * `ConsentController` (`GET /t/:slug/legal/consent` and `…/consent/evidence`),
+ * which additionally joins the archived bodies so the answer is the text and
+ * not just its fingerprint. Shipping this function with nothing calling it was
+ * half of why the first attempt was refuted; it is kept because the integration
+ * test uses it as an INDEPENDENT second view of the same row, and a fixture
+ * that reads the same code path it asserts proves nothing.
  */
 export async function readLegalAcceptance(tenantId: string) {
   const rows = await controlDb.auditEvent.findMany({

@@ -63,6 +63,28 @@ class AdminLoginDto {
  *
  * A single-use `recoveryCode` is accepted in place of `totp` (launch-readiness-13)
  * for the admin whose authenticator is gone. It is consumed on use.
+ *
+ * ## Two things the browser does not do yet, and where the gap is covered
+ *
+ * This endpoint accepts `recoveryCode`, but **no screen sends one**:
+ * `apps/web/app/[locale]/admin/login/AdminLoginForm.tsx` only ever posts
+ * `totp`, and `apps/web/app/[locale]/admin/(authed)/mfa/MfaEnrollForm.tsx:58`
+ * awaits `POST /admin/mfa/verify` and discards the body — so the ten codes that
+ * call issues are minted and thrown away, and an admin enrolling through the
+ * browser never sees one. Both files are outside this change's remit and both
+ * are named in the remediation report.
+ *
+ * Until they are wired, the operator path in `docs/RUNBOOK.md` §4.5a is the
+ * supported recovery, and it needs neither of them: `pnpm admin:bootstrap` with
+ * `ADMIN_BOOTSTRAP_ISSUE_RECOVERY_CODES` prints a set for an already-enrolled
+ * admin, and `ADMIN_BOOTSTRAP_RESET_MFA` un-enrols one whose phone is already
+ * gone without decrypting anything (so it survives a lost `MFA_MASTER_KEY`).
+ *
+ * Note also that signing in WITH a recovery code is not yet a complete
+ * recovery: replacing the authenticator afterwards goes through
+ * `MfaController.assertStepUp`, which demands a live code from the factor being
+ * replaced (authn-authz-09). Someone whose phone is gone can therefore get in
+ * ten times and never re-enrol. §4.5a's reset is what actually ends that state.
  */
 @Controller('admin/auth')
 export class AdminAuthController {

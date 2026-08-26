@@ -40,6 +40,17 @@ details. The key ones:
   `tenant.legal_accepted` control-plane audit row carrying the locale, the
   person who accepted, and a SHA-256 per document (privacy-legal-09). See
   `apps/api/src/auth/legal-acceptance.ts` and `docs/legal/README.md`.
+- And because a digest still cannot PRODUCE the text, the bodies themselves are
+  copied into the control-plane table `legal_document_versions` — one immutable
+  row per (version, locale, slug), loaded from the frozen directory below before
+  any acceptance is recorded. That is what makes the record answerable: given a
+  library, `GET /t/:slug/legal/consent/evidence` returns who accepted, when,
+  from which IP, and the exact words of every document in the version they were
+  shown. It comes back with a control-plane restore, so it outlives the repo.
+- `defaultLocale` at signup is what the record calls the presented locale. It is
+  optional, so an acceptance made without it is flagged `localeAsserted: false`
+  and does not claim which translation was read; both translations of the
+  version are archived regardless. Send it.
 
 ### ⚠️ Editing a document is a two-file change
 
@@ -54,9 +65,19 @@ body, bump `LEGAL_VERSION`, re-freeze `docs/legal/accepted/<new version>/`,
 update `LEGAL_CORPUS`, and update the `legal.json` strings if needed. The exact
 steps are in `docs/legal/README.md`.
 
-Existing libraries are still not prompted to re-accept — nothing reads
-`legalAcceptedVersion` at sign-in and there is no re-acceptance screen. Until
-that UI exists, a version bump means asking the live libraries to re-accept.
+After a version bump, every library that accepted the old text is stale, and
+the API now says so: `GET /t/:slug/legal/consent` compares
+`tenants.legalAcceptedVersion` against `LEGAL_VERSION` and returns
+`reacceptanceRequired: true`, and `POST /t/:slug/legal/consent/accept`
+(owner-only, body `{ "locale": "el" | "en" }`) records the new acceptance with
+full evidence. That comparison is the first code in the repo to READ the column
+— the audit's "nothing ever reads them" was true until it existed.
+
+**Still missing, and it is `apps/web` work this change did not own:** the banner
+that surfaces `reacceptanceRequired` to the owner and the screen that shows the
+acceptance record. Until those exist a version bump means telling the live
+libraries to re-accept out of band — the API can record it, but nothing in the
+product asks.
 
 ## Translations
 

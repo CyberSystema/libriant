@@ -9,6 +9,8 @@ import {
 import { controlDb, Prisma } from '@libriant/db-control';
 import { LEGAL_VERSION, type LibraryType } from '@libriant/shared';
 import { legalAcceptanceAuditData } from './legal-acceptance.js';
+import { ensureLegalArchive } from './consent.service.js';
+import type { LegalLocale } from './consent-locales.js';
 import { PasswordService } from './password.service.js';
 import { JwtSessionService } from './jwt-session.service.js';
 import { EmailVerificationService } from './email-verification.service.js';
@@ -20,8 +22,13 @@ export type SignupInput = {
   fullName: string;
   email: string;
   password: string;
-  /** Optional override for the library's default locale. */
-  defaultLocale?: string;
+  /**
+   * The locale the signup form was rendered in — i.e. WHICH LANGUAGE of the
+   * Terms + Privacy Policy the owner actually read. Narrowed to the published
+   * legal locales by the DTO. When absent, the acceptance record says so
+   * (`localeAsserted: false`) rather than inventing one.
+   */
+  defaultLocale?: LegalLocale;
   /** Source IP, recorded with the legal-consent acceptance (GDPR accountability). */
   ip?: string;
   // Library profile collected at signup (location + type required; rest optional).
@@ -129,6 +136,16 @@ export class SignupService {
         'No "starter" plan configured. Run the control-plane seed first.',
       );
     }
+    // privacy-legal-09: put the EXACT TEXT of this version into
+    // `legal_document_versions` BEFORE anything is stamped with the version.
+    // The audit row below records digests; digests prove a document has not
+    // changed but cannot produce it, and the markdown they point at lives in a
+    // git tree that a running deployment does not have. Ordering matters: if
+    // the archive cannot be written, the correct outcome is a failed signup,
+    // not a library carrying a version stamp whose text nobody can ever show
+    // it. Cached per version per process, so this is one query after the first
+    // signup.
+    await ensureLegalArchive();
     const passwordHash = await this.passwords.hash(input.password);
     // Record the legal acceptance (the DTO already enforced acceptLegal === true)
     // with the version the owner saw, on both the tenant + the owner user.
@@ -192,7 +209,11 @@ export class SignupService {
               ip: input.ip,
             },
             acceptedAt,
-            requestedLocale: input.defaultLocale,
+            // Never inferred silently: when the caller did not say, the record
+            // carries `localeAsserted: false` and stops short of claiming which
+            // translation was on screen.
+            presentedLocale: input.defaultLocale ?? 'el',
+            localeAsserted: input.defaultLocale != null,
           }),
         });
         await tx.subscription.create({

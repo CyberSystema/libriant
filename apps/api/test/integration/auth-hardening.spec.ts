@@ -3,7 +3,10 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import bcrypt from 'bcryptjs';
+import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { generateSync } from 'otplib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
@@ -121,6 +124,9 @@ beforeAll(async () => {
       email: `owner@${slug}.test`,
       password: ownerPassword,
       acceptLegal: true,
+      // privacy-legal-09 made this REQUIRED: it records which language of the
+      // Terms the owner was shown, and the API will not infer it.
+      defaultLocale: 'el',
       libraryType: 'public',
       addressStreet: '1 Library St',
       addressCity: 'Athens',
@@ -427,6 +433,135 @@ describe('authn-authz-10: the database lockout backstop exists', () => {
       await controlDb.user.deleteMany({ where: { id: victim.id } }).catch(() => undefined);
     }
   });
+
+  /** A librarian account with a known password, cleaned up by the caller. */
+  async function makeVictim(password: string) {
+    return controlDb.user.create({
+      data: {
+        tenantId,
+        fullName: 'Lockout Probe User',
+        username: `lockout_${randomBytes(3).toString('hex')}`,
+        role: 'librarian',
+        status: 'active',
+        passwordHash: bcrypt.hashSync(password, 8),
+      },
+      select: { id: true, username: true },
+    });
+  }
+
+  async function failLogin(username: string, ip: string) {
+    await request(app.getHttpServer())
+      .post('/auth/login')
+      .set('X-Real-IP', ip)
+      .send({ slug, identifier: username, password: 'definitely-not-the-password' })
+      .expect(401);
+  }
+
+  it('refuses the correct password after the Redis keys are deleted mid-lockout', async () => {
+    // THE AUDITED BYPASS, VERBATIM. The probe ran six wrong logins for one
+    // account from one IP with Redis HEALTHY, confirmed the Redis lock key,
+    // read `{"failedLogins":5,"lockedUntil":null}` off the row, then
+    // `redis-cli del` d the two keys — a flush or a restart — and signed
+    // straight in with the correct password: 200.
+    //
+    // The first remediation made `lockedUntil` READ but only ever WROTE it when
+    // Redis threw, so this exact sequence still ended in 200 with the column
+    // still NULL. The threshold write is on the normal path now.
+    const password = 'lockout-probe-password-1';
+    const victim = await makeVictim(password);
+    const attackerIp = '203.0.113.10';
+    const redis = app.get(RedisService);
+    try {
+      for (let i = 0; i <= env.maxFailedLogins; i++) await failLogin(victim.username!, attackerIp);
+
+      expect(await redis.client.get(`login:lock:${victim.id}:${attackerIp}`)).not.toBeNull();
+      const locked = await controlDb.user.findUnique({
+        where: { id: victim.id },
+        select: { failedLogins: true, lockedUntil: true },
+      });
+      expect(locked!.failedLogins).toBeGreaterThanOrEqual(env.maxFailedLogins);
+      // The half the verifier measured as still missing.
+      expect(locked!.lockedUntil).toBeInstanceOf(Date);
+      expect(locked!.lockedUntil!.getTime()).toBeGreaterThan(Date.now());
+
+      // Redis loses its memory. Delete the scope marker too — a real flush or
+      // restart takes every key, and leaving it would make this test easier
+      // than the incident it stands for.
+      await redis.client.del(
+        `login:fail:${victim.id}:${attackerIp}`,
+        `login:lock:${victim.id}:${attackerIp}`,
+        `login:lock-scope:${victim.id}`,
+      );
+      expect(await redis.client.get(`login:lock:${victim.id}:${attackerIp}`)).toBeNull();
+
+      // Was 200. The durable lock now has nothing left to scope by, so it is
+      // enforced account-wide.
+      await request(app.getHttpServer())
+        .post('/auth/login')
+        .set('X-Real-IP', attackerIp)
+        .send({ slug, identifier: victim.username, password })
+        .expect(401);
+
+      // …and it really is the lock: clear the column and the identical request
+      // succeeds. Without this the 401 above could be a broken fixture.
+      await controlDb.user.update({
+        where: { id: victim.id },
+        data: { failedLogins: 0, lockedUntil: null },
+      });
+      await request(app.getHttpServer())
+        .post('/auth/login')
+        .set('X-Real-IP', attackerIp)
+        .send({ slug, identifier: victim.username, password })
+        .expect(200);
+    } finally {
+      await controlDb.user.deleteMany({ where: { id: victim.id } }).catch(() => undefined);
+      await redis.client.del(`login:lock-scope:${victim.id}`).catch(() => undefined);
+    }
+  });
+
+  it('still lets the real user in from their own address while the lock is live (A1-01)', async () => {
+    // The durable lock is on the ACCOUNT, and a bare-account lock is the
+    // remotely triggerable outage authn-authz-03 removed from the admin login:
+    // five wrong passwords from a stranger who knows an email would lock the
+    // librarian out of their own library, renewably. So while Redis can still
+    // tell one client from another, the durable lock only bars the address that
+    // armed it. If this test ever fails, the fix above has become a new defect.
+    const password = 'lockout-probe-password-2';
+    const victim = await makeVictim(password);
+    const attackerIp = '203.0.113.11';
+    const victimIp = '198.51.100.22';
+    const redis = app.get(RedisService);
+    try {
+      for (let i = 0; i <= env.maxFailedLogins; i++) await failLogin(victim.username!, attackerIp);
+
+      const locked = await controlDb.user.findUnique({
+        where: { id: victim.id },
+        select: { lockedUntil: true },
+      });
+      expect(locked!.lockedUntil!.getTime()).toBeGreaterThan(Date.now());
+      expect(await redis.client.get(`login:lock-scope:${victim.id}`)).toBe(attackerIp);
+
+      // Same live lock, different address: in.
+      await request(app.getHttpServer())
+        .post('/auth/login')
+        .set('X-Real-IP', victimIp)
+        .send({ slug, identifier: victim.username, password })
+        .expect(200);
+
+      // The attacker's own address stays barred, and the successful sign-in
+      // above cleared the lock — so re-trip it to prove the refusal is the
+      // scope and not a stale key.
+      for (let i = 0; i <= env.maxFailedLogins; i++) await failLogin(victim.username!, attackerIp);
+      await request(app.getHttpServer())
+        .post('/auth/login')
+        .set('X-Real-IP', attackerIp)
+        .send({ slug, identifier: victim.username, password })
+        .expect(401);
+    } finally {
+      await controlDb.user.deleteMany({ where: { id: victim.id } }).catch(() => undefined);
+      await redis.client.del(`login:lock-scope:${victim.id}`).catch(() => undefined);
+    }
+  });
 });
 
 // --------------------------------------------------------------------------
@@ -558,6 +693,211 @@ describe('authn-authz-09 + launch-readiness-13: the admin second factor', () => 
       .post('/admin/auth/login')
       .send({ email: adminEmail, password: adminPassword, recoveryCode: recoveryCodes[1]! })
       .expect(200);
+  });
+});
+
+// --------------------------------------------------------------------------
+/**
+ * The half of launch-readiness-13 that recovery codes do not reach.
+ *
+ * Issuing codes needs `POST /admin/mfa/verify` (a live enrollment) or
+ * `POST /admin/mfa/recovery-codes` (password AND a code from the CURRENT
+ * authenticator). Both require the working second factor, so neither is
+ * available to the person the finding is about: one admin, TOTP mandatory in
+ * production, phone already lost. `EMAIL_DRIVER` is `console`, so it cannot be
+ * an emailed code either. What is left is the operator on the box, and these
+ * tests drive that path as a real subprocess — the same `pnpm admin:bootstrap`
+ * entry point `prod-bootstrap.sh` uses, not an exported function nothing calls.
+ *
+ * Procedure: docs/RUNBOOK.md §4.5a.
+ */
+describe('launch-readiness-13: the operator path back in when the phone is gone', () => {
+  const run = promisify(execFile);
+  const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+  const script = `${repoRoot}scripts/bootstrap-admin.ts`;
+  const tsx = `${repoRoot}node_modules/.bin/tsx`;
+
+  const lostEmail = `authh-lost-${randomBytes(3).toString('hex')}@test.local`;
+  const lostPassword = 'lost-phone-admin-password-1';
+  let lostId = '';
+  let secret = '';
+
+  /** Run the real CLI with only the env an operator would pass on the day. */
+  async function bootstrap(extra: Record<string, string>) {
+    return run(tsx, [script], {
+      cwd: repoRoot,
+      env: { ...process.env, ADMIN_BOOTSTRAP_EMAIL: lostEmail, ...extra },
+    });
+  }
+
+  /** Enroll a fresh authenticator through the real endpoints. */
+  async function enroll(cookie: string) {
+    const http = app.getHttpServer();
+    const setup = await request(http).post('/admin/mfa/setup').set('Cookie', cookie).expect(200);
+    const s = setup.body.secret as string;
+    await request(http)
+      .post('/admin/mfa/verify')
+      .set('Cookie', cookie)
+      .send({ code: generateSync({ secret: s }) })
+      .expect(200);
+    return s;
+  }
+
+  beforeAll(async () => {
+    lostId = (
+      await controlDb.adminUser.create({
+        data: {
+          email: lostEmail,
+          fullName: 'Admin Who Lost The Phone',
+          role: 'owner',
+          status: 'active',
+          passwordHash: bcrypt.hashSync(lostPassword, 8),
+          mfaSecretCipher: randomBytes(32),
+          mfaNonce: randomBytes(12),
+          mfaKeyId: 'test',
+        },
+        select: { id: true },
+      })
+    ).id;
+    const login = await request(app.getHttpServer())
+      .post('/admin/auth/login')
+      .send({ email: lostEmail, password: lostPassword })
+      .expect(200);
+    secret = await enroll(cookieMatching(login, ADMIN_RE));
+  }, 60_000);
+
+  afterAll(async () => {
+    await controlDb.platformSetting
+      .deleteMany({ where: { key: `admin.mfa.recovery:${lostId}` } })
+      .catch(() => undefined);
+    await controlDb.adminUser.deleteMany({ where: { email: lostEmail } }).catch(() => undefined);
+  });
+
+  it('refuses to touch the second factor without the account named as confirmation', async () => {
+    // `prod-bootstrap.sh` runs this script on EVERY deploy. A truthy `=1` left
+    // in .env.prod would silently disarm MFA forever after, so the switch
+    // carries the address of the account it is aimed at or it does nothing.
+    await expect(bootstrap({ ADMIN_BOOTSTRAP_RESET_MFA: '1' })).rejects.toThrow();
+    const row = await controlDb.adminUser.findUnique({
+      where: { id: lostId },
+      select: { mfaEnabled: true },
+    });
+    expect(row!.mfaEnabled).toBe(true);
+  });
+
+  it('leaves the second factor alone on an ordinary create/update run', async () => {
+    // The same reason: a routine deploy that re-applies ADMIN_BOOTSTRAP_PASSWORD
+    // must not un-enroll anybody. This is the property that makes the reset safe
+    // to have at all.
+    await bootstrap({ ADMIN_BOOTSTRAP_PASSWORD: lostPassword, ADMIN_BOOTSTRAP_ROLE: 'owner' });
+    const row = await controlDb.adminUser.findUnique({
+      where: { id: lostId },
+      select: { mfaEnabled: true },
+    });
+    expect(row!.mfaEnabled).toBe(true);
+    // …and the enrolled admin still cannot sign in on the password alone.
+    await request(app.getHttpServer())
+      .post('/admin/auth/login')
+      .send({ email: lostEmail, password: lostPassword })
+      .expect(401);
+  });
+
+  it('mints usable recovery codes from the shell for an ALREADY-enrolled admin', async () => {
+    // The gap this closes: the admin enrolled before recovery codes existed (or
+    // through a screen that never showed them) can otherwise only obtain a set
+    // by proving the authenticator they are about to lose.
+    //
+    // The assertion is deliberately end-to-end rather than "the row looks
+    // right": a private copy of the digest format in the script would pass a
+    // shape check and still hand the operator ten codes the login refuses.
+    const { stdout } = await bootstrap({ ADMIN_BOOTSTRAP_ISSUE_RECOVERY_CODES: lostEmail });
+    const codes = [...stdout.matchAll(/^\s{4}([A-Z0-9]{5}(?:-[A-Z0-9]{5}){3})$/gm)].map(
+      (m) => m[1]!,
+    );
+    expect(codes).toHaveLength(10);
+
+    const http = app.getHttpServer();
+    // Still not enough on its own.
+    await request(http)
+      .post('/admin/auth/login')
+      .send({ email: lostEmail, password: lostPassword })
+      .expect(401);
+
+    await request(http)
+      .post('/admin/auth/login')
+      .send({ email: lostEmail, password: lostPassword, recoveryCode: codes[0] })
+      .expect(200);
+    // Single-use…
+    await request(http)
+      .post('/admin/auth/login')
+      .send({ email: lostEmail, password: lostPassword, recoveryCode: codes[0] })
+      .expect(401);
+    // …and a second one still works, so that refusal was about that code.
+    await request(http)
+      .post('/admin/auth/login')
+      .send({ email: lostEmail, password: lostPassword, recoveryCode: codes[1] })
+      .expect(200);
+  });
+
+  it('un-enrolls a lost authenticator and hands the account back on the password alone', async () => {
+    const http = app.getHttpServer();
+    // A cookie minted while the second factor was still in force. The person
+    // holding the lost phone may have one of these.
+    const stale = cookieMatching(
+      await request(http)
+        .post('/admin/auth/login')
+        .send({ email: lostEmail, password: lostPassword, totp: generateSync({ secret }) })
+        .expect(200),
+      ADMIN_RE,
+    );
+    await request(http).get('/admin/auth/me').set('Cookie', stale).expect(200);
+
+    // The phone is gone. This is the whole recovery, and it decrypts nothing —
+    // so it works with MFA_MASTER_KEY lost or rotated, which is the corner
+    // §4.4 of the runbook calls irrecoverable.
+    const { stdout } = await bootstrap({ ADMIN_BOOTSTRAP_RESET_MFA: lostEmail });
+    expect(stdout).toMatch(/password is UNCHANGED/i);
+
+    const row = await controlDb.adminUser.findUnique({
+      where: { id: lostId },
+      select: { mfaEnabled: true, sessionsValidAfter: true },
+    });
+    expect(row!.mfaEnabled).toBe(false);
+    expect(row!.sessionsValidAfter).toBeInstanceOf(Date);
+    // Codes printed against a factor that no longer exists are not a bypass.
+    expect(
+      await controlDb.platformSetting.findUnique({
+        where: { key: `admin.mfa.recovery:${lostId}` },
+      }),
+    ).toBeNull();
+
+    // The cookie from before the reset is dead — recovering an account must not
+    // leave whoever has the lost handset signed in.
+    await request(http).get('/admin/auth/me').set('Cookie', stale).expect(401);
+
+    // `sessionsValidAfter` is rounded up to a whole second because a JWT `iat`
+    // is only second-resolution; wait past it rather than racing it, which is
+    // what an operator opening a browser after running a shell command does
+    // anyway. Without the wait this asserts nothing about the NEW cookie.
+    const validFrom = row!.sessionsValidAfter!.getTime();
+    if (Date.now() <= validFrom) {
+      await new Promise((r) => setTimeout(r, validFrom - Date.now() + 50));
+    }
+
+    // THE POINT: in, with nothing but the password.
+    const back = await request(http)
+      .post('/admin/auth/login')
+      .send({ email: lostEmail, password: lostPassword })
+      .expect(200);
+    await request(http)
+      .get('/admin/auth/me')
+      .set('Cookie', cookieMatching(back, ADMIN_RE))
+      .expect(200);
+
+    // From here the normal enrollment flow works, which is what the guard
+    // pushes the operator into under ADMIN_MFA_REQUIRED.
+    const fresh = await enroll(cookieMatching(back, ADMIN_RE));
+    expect(fresh).not.toBe(secret);
   });
 });
 

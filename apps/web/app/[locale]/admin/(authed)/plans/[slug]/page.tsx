@@ -4,6 +4,7 @@ import { Banner, Card, CardBody, CardHeader, PageHeader } from '@libriant/ui';
 import { isLocale } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
 import { requestCookieHeader } from '@/lib/admin-session';
+import { type PriceCatalogue, priceCatalogueFor, stripeStateBanner } from '../price-catalogue';
 import { PlanFeatureEditor } from './PlanFeatureEditor';
 
 export const dynamic = 'force-dynamic';
@@ -63,6 +64,14 @@ export default async function AdminPlanDetailPage(props: {
     () => ({ features: [] as Feature[] }),
   );
 
+  // billing-10 / billing-14: the price columns on this page are exactly the two
+  // that `PATCH /admin/plans/:slug` used to accept any string into. Show what
+  // Stripe actually says about them, next to them, and say up front when this
+  // host cannot ask.
+  const catalogue = await api<PriceCatalogue>('/admin/billing/price-catalogue', { cookie }).catch(
+    () => null,
+  );
+
   if (!plan) {
     return (
       <>
@@ -75,6 +84,9 @@ export default async function AdminPlanDetailPage(props: {
   const fmtMoney = (cents: number, currency: string) =>
     new Intl.NumberFormat(params.locale, { style: 'currency', currency }).format(cents / 100);
 
+  const audit = priceCatalogueFor(catalogue, plan.slug);
+  const stripeState = stripeStateBanner(catalogue);
+
   return (
     <>
       <PageHeader
@@ -86,6 +98,36 @@ export default async function AdminPlanDetailPage(props: {
           </Link>
         }
       />
+
+      {stripeState ? (
+        <Banner
+          severity={stripeState.severity}
+          title={stripeState.title}
+          style={{ marginBottom: 'var(--sp-4)' }}
+        >
+          {stripeState.body}
+        </Banner>
+      ) : null}
+
+      {audit && audit.problems.length ? (
+        <Banner
+          severity="critical"
+          title="This plan cannot be sold as configured"
+          style={{ marginBottom: 'var(--sp-4)' }}
+        >
+          <ul style={{ margin: 'var(--sp-2) 0 0 var(--sp-4)', padding: 0 }}>
+            {audit.problems.map((problem) => (
+              <li key={problem}>{problem}</li>
+            ))}
+          </ul>
+        </Banner>
+      ) : null}
+
+      {audit && !audit.problems.length && audit.notes.length ? (
+        <Banner severity="info" style={{ marginBottom: 'var(--sp-4)' }}>
+          {audit.notes.join(' ')}
+        </Banner>
+      ) : null}
 
       <div className="lbr-split">
         <Card>

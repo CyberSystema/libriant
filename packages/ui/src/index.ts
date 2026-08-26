@@ -3,6 +3,7 @@ export type { AssetManifest, AssetSlot, AssetName } from './asset-manifest';
 export { Barcode, encodeCode128 } from './Barcode';
 export { Button } from './Button';
 export { Banner } from './Banner';
+export { FormError } from './FormError';
 export { Card, CardHeader, CardBody } from './Card';
 // NOTE: there is no Combobox here on purpose. One was added during the
 // frontend remediation as a corrected copy of apps/web/components/Combobox.tsx,

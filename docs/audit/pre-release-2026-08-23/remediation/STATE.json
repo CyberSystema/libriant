@@ -623,8 +623,8 @@
         "scripts/restore.sh"
       ],
       "status": "verified",
-      "wave": 6,
-      "note": "refuted then closed: the tenant:create command silently dropped every flag after --, req.query was logged verbatim, and restore.sh still wrote uploads to the in-container path. All three fixed and each pinned by a test that fails when reverted.",
+      "wave": 8,
+      "note": "restore.sh now sources the shared storage library, resolves the bind device, and refuses when fewer files land than the archive holds; the DR drill asserts it in both directions",
       "commit": "ce7a28d"
     },
     {
@@ -723,10 +723,10 @@
         "apps/api/src/members/photos.controller.ts",
         "apps/api/src/storage/storage-demo.controller.ts"
       ],
-      "status": "in-progress",
-      "wave": 7,
-      "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
-      "commit": null
+      "status": "verified",
+      "wave": 8,
+      "note": "re-fixed after refutation and proved by execution: volunteer 403 on all three write surfaces (owner still 201); duplicate author create returns the same row, rename 409; 20 concurrent uploads -> exactly 3 staged",
+      "commit": "636136f"
     },
     {
       "id": "authn-authz-07",
@@ -971,10 +971,10 @@
         "apps/api/src/import/engine/import-engine.ts",
         "packages/db-tenant/prisma/schema.prisma"
       ],
-      "status": "in-progress",
-      "wave": 7,
-      "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
-      "commit": null
+      "status": "verified",
+      "wave": 8,
+      "note": "re-fixed after refutation and proved by execution: volunteer 403 on all three write surfaces (owner still 201); duplicate author create returns the same row, rename 409; 20 concurrent uploads -> exactly 3 staged",
+      "commit": "636136f"
     },
     {
       "id": "frontend-02",
@@ -1153,10 +1153,10 @@
         "apps/api/src/import/import-staging.ts",
         "apps/api/src/import/import.service.ts"
       ],
-      "status": "in-progress",
-      "wave": 7,
-      "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
-      "commit": null
+      "status": "verified",
+      "wave": 8,
+      "note": "re-fixed after refutation and proved by execution: volunteer 403 on all three write surfaces (owner still 201); duplicate author create returns the same row, rename 409; 20 concurrent uploads -> exactly 3 staged",
+      "commit": "636136f"
     },
     {
       "id": "launch-readiness-02",

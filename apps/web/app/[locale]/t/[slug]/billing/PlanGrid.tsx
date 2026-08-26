@@ -88,6 +88,24 @@ type Props = {
   slug: string;
   catalog: Catalog;
   locale: Locale;
+  /**
+   * How THIS library is billed — not how a card's plan is billed.
+   *
+   * billing-11, round 2. The action chain tests `isManual` on the TARGET plan,
+   * which says nothing about the tenant, and `page.tsx` renders this grid for
+   * everyone. So a contract library (`billingMode='manual'`, the state
+   * `scripts/tenant-create.ts --billing-mode=manual` and, since billing-12,
+   * `applyAdminPlanChange` both leave) saw a live "Switch to Starter" button on
+   * a plan an operator had set for it. Round 1's free-plan branch made that
+   * button WORK: it posted to `/billing/select`, the tenant had no Stripe
+   * subscription, and the direct-update branch rewrote billingMode from
+   * 'manual' to 'stripe' and dropped the plan — one click, no admin, no audit
+   * row, twelve prepaid months of the launch offer gone.
+   *
+   * `selectPlan` now refuses that server-side; this is the half that stops the
+   * library being offered it in the first place.
+   */
+  tenantBillingMode: 'stripe' | 'manual';
 };
 
 /**
@@ -97,7 +115,7 @@ type Props = {
  * Manual plans show "Contact us" — the librarian leaves the self-serve
  * flow and we (admin) flip them on via `/admin/billing/.../set-plan`.
  */
-export function PlanGrid({ plans, slug, catalog, locale }: Props) {
+export function PlanGrid({ plans, slug, catalog, locale, tenantBillingMode }: Props) {
   const t = createTranslator(catalog, locale);
   const router = useRouter();
   const toast = useToast();
@@ -177,7 +195,10 @@ export function PlanGrid({ plans, slug, catalog, locale }: Props) {
       >
         {plans.map((plan) => {
           const isFree = plan.monthlyPriceCents === 0;
+          // billing-11 round 2: `isManual` is about the CARD, `contractBilled`
+          // is about the LIBRARY. Only the second one may disable self-serve.
           const isManual = plan.billingMode === 'manual';
+          const contractBilled = tenantBillingMode === 'manual';
           const isCurrent = plan.isCurrent;
           // Not `cadence` directly: a plan with no annual price stays monthly
           // however the toggle is set, and its card must say so.
@@ -263,7 +284,10 @@ export function PlanGrid({ plans, slug, catalog, locale }: Props) {
                   <Button variant="ghost" disabled style={{ width: '100%' }}>
                     ✓ {t('billing.actions.youAreHere')}
                   </Button>
-                ) : isManual ? (
+                ) : isManual || contractBilled ? (
+                  // A contract library gets the same "talk to us" affordance for
+                  // every card, because moving it between tiers is an operator
+                  // action with an audit row — never a button in the tenant UI.
                   <a
                     href="mailto:hello@libriant.com"
                     className="lbr-btn lbr-btn--secondary lbr-btn--md"

@@ -2,6 +2,7 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { SEARCH_MIN_CHARS } from '@libriant/shared/search';
 import { Banner, Button, Card, CardBody, FormField, Textarea, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
@@ -98,6 +99,8 @@ export function PlaceHoldForm({ slug, catalog, locale }: Props) {
               value={book}
               onChange={setBook}
               endpoint={(q) => `/t/${slug}/catalog/books?q=${encodeURIComponent(q)}&limit=8`}
+              minQueryChars={SEARCH_MIN_CHARS}
+              minCharsText={t('common.search.minChars', { count: SEARCH_MIN_CHARS })}
               renderOption={(b) => (
                 <div>
                   <div style={{ fontWeight: 500 }}>{b.title}</div>

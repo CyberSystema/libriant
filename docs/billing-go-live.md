@@ -97,10 +97,75 @@ Two things changed in the software, and one of them replaces the instruction:
    which Postgres accepts, because both unique indexes are satisfied.
 
    Go live only when `.ok` is `true`. On a host with `STRIPE_DRIVER` anything
-   but `real` the endpoint reports `driver` accordingly and every row comes
-   back unverified; that is the honest answer, not a pass.
+   but `real` there is no "unverified" verdict — every configured id comes back
+   as a PROBLEM, worded for the driver: `Stripe has no Price price_…` under the
+   in-memory stand-in, `Stripe could not be asked about the monthly price
+price_…` under `disabled`. `.ok` is `false` either way, which is the honest
+   answer and not a pass.
 
-Two related facts an operator needs, neither of which this document can fix:
+## What refuses a bad price id now, and where you will see it (billing-10)
+
+Round 1 of this fix was the endpoint above and nothing else, and it was refuted
+for the right reason: `PATCH /admin/plans/:slug` still accepted
+`{"stripeAnnualPriceId":"price_monthly_39"}`. The audit reported it afterwards —
+but only if somebody ran the audit. Two things changed.
+
+1. **The write is refused.** `PlanPriceWriteInterceptor` (registered by
+   `BillingModule` as an `APP_INTERCEPTOR`, so it runs on the real route after
+   the admin guards) checks the row the PATCH would produce and answers 400
+   before anything is stored. It refuses:
+
+   - an id that is not a Stripe Price id (`prod_…`, an empty string, one with
+     copy-paste whitespace);
+   - a `price_seed_*` placeholder being written back in;
+   - the same id in both columns, or an id that already backs another plan;
+   - a Price Stripe has never heard of, an archived one, one in the wrong
+     currency, one whose **integer minor-unit** amount differs from the plan's,
+     and one whose recurring interval does not match the column — which is the
+     `€39 a month billed to a library that clicked "390 € a year"` case;
+   - an amount or currency edit that would leave an already-configured Price
+     charging the old number;
+   - and a price id on a host where `STRIPE_DRIVER` is not `real`, because a
+     price id this server cannot check is a price id it cannot charge with.
+
+   It costs nothing on a PATCH that carries no price id and no amount, and it
+   never touches any other route. Proof it is actually mounted rather than
+   merely written: `apps/api/test/integration/admin-plan-price-write.spec.ts`
+   boots the real app and sends the refutation's own request over HTTP.
+
+2. **The reconciliation is on a screen, not in a runbook.** `/admin/plans` and
+   `/admin/plans/:slug` call `GET /admin/billing/price-catalogue` on every visit
+   and render the verdict: a per-plan "reconciled / N problems" column, and the
+   problems themselves in full. The `curl` above still works and is still the
+   thing to script; nobody has to remember it any more.
+
+## Whether this host can charge is now written on the screen (billing-14)
+
+`subscriptionsStatus()` has returned `stripeReady` for a long time, with a
+comment saying the admin UI could warn about it, and **no page in `apps/web`
+read it**. So an operator on a host that cannot charge saw a completely normal
+admin panel and learned the truth when the Subscriptions toggle threw at them.
+
+`GET /admin/billing/price-catalogue` now also returns `stripeReady`,
+`billingEnabled`, `subscriptionsCanBeEnabled` and a plain-language
+`blockReason`, resolved from the same live `STRIPE_DRIVER` posture
+`setBillingEnabled` consults — so the banner predicts the refusal rather than
+merely correlating with it. `/admin/plans` renders it as a blocking banner:
+
+- **Subscriptions OFF and nothing can charge** → a warning that names
+  `STRIPE_DRIVER` and says the master switch will refuse.
+- **Subscriptions ON and nothing can charge** → a critical banner, because
+  every library is being gated behind a purchase this server cannot complete.
+
+**Still missing, and it is the screen the decision is made on.** The admin
+_Subscriptions_ page (`apps/web/app/[locale]/admin/(authed)/subscriptions/`)
+renders only `billingEnabled`, `source` and `awaitingChoice`. It needs the same
+banner and a disabled enable-button while `stripeReady` is false. That component
+is owned by another package; the exact change is in this package's report under
+`out_of_scope_files_needed`. Until it lands, read `/admin/plans` **before** you
+open Subscriptions.
+
+## Two related facts an operator needs, neither of which this document can fix
 
 - **Starter must keep a fake price id.** `plans_stripe_price_matches_mode`
   forces it: `UPDATE plans SET "stripePriceId"=NULL WHERE slug='starter'` is
@@ -110,24 +175,18 @@ Two related facts an operator needs, neither of which this document can fix:
   check becomes one nobody reads. The row still carries a fabricated id that no
   `SELECT` on `plans` can tell from a real one. Letting Starter be honest about
   having no Price needs a migration in `packages/db-control` to relax that
-  constraint for `monthlyPriceCents = 0`.
-- **`PATCH /admin/plans/:slug` still accepts any string** into either price
-  column. The audit above catches a bad id after the fact; nothing yet
-  refuses it at write time. That change belongs in
-  `apps/api/src/admin/admin-plans.controller.ts`.
+  constraint for `monthlyPriceCents = 0`; the SQL is in this package's report.
+  Two things now blunt it in the meantime: nothing in the API treats a
+  `price_seed_*` id as configured (`isUsableStripePriceId`), and trying to clear
+  it through the admin API returns a 400 that names the constraint instead of
+  the Prisma 500 it used to.
 
-## Enabling subscriptions from the admin panel now refuses without Stripe (billing-14)
-
-The superseded text told the operator to flip the Subscriptions toggle. That
-flip now **throws** unless `STRIPE_DRIVER` resolves to `real` (or the host is a
-declared `NODE_ENV=development`/`test` box running the in-memory stand-in), and
-the API refuses to boot at all with `BILLING_ENABLED=true` and no driver that
-can transact. So "subscriptions enabled while nothing can take a payment" is no
-longer reachable in production.
-
-What is still missing is the _warning_: `subscriptionsStatus()` returns
-`stripeReady`, and no page reads it, so the admin Subscriptions screen looks
-completely normal on a host that cannot charge. The toggle refuses when
-pressed, which is the loud half; the quiet half — showing the operator why
-before they press it — needs
-`apps/web/app/[locale]/admin/(authed)/subscriptions/SubscriptionsToggle.tsx`.
+- **A library on a contract cannot change its own plan.** `billingMode='manual'`
+  is an operator decision — it is how the launch offer is provisioned
+  (`scripts/tenant-create.ts --billing-mode=manual --paid-until=<+12mo>`). Both
+  self-serve routes now refuse to move such a library: `POST /billing/select`
+  and `POST /billing/checkout` answer 400 and point at us, and the billing page
+  shows "contact us" on every card instead of a switch button. The one thing
+  they may do is CONFIRM the plan they are already on, which stamps
+  `planSelectedAt` and changes nothing else — without that, a contract library
+  held by the forced plan chooser would have no way out at all.

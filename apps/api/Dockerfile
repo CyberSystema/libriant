@@ -92,12 +92,66 @@ COPY locales locales
 COPY packages/db-control packages/db-control
 COPY packages/db-tenant packages/db-tenant
 COPY packages/shared packages/shared
+# privacy-legal-09: the frozen, version-addressed copies of the legal documents.
+# `legal_document_versions` is loaded from here before any acceptance is
+# recorded, so a library's consent record can produce the exact text it agreed
+# to years later. 148 KB, immutable, one directory per LEGAL_VERSION — never
+# prune old versions, they are the evidence.
+COPY docs/legal/accepted docs/legal/accepted
 
 # Generate Prisma clients. Both control + tenant schemas produce a client
 # under node_modules/.prisma — these stay in the image and are what the
 # API imports at runtime.
 RUN pnpm --filter @libriant/db-control prisma:generate \
  && pnpm --filter @libriant/db-tenant prisma:generate
+
+# ----- prune ---------------------------------------------------------------
+# supply-chain-03. The install above is the FULL tree: `--frozen-lockfile` has
+# no notion of "production", so every devDependency of the root manifest, of
+# apps/api and of the copied packages lands here — eslint, vitest, turbo,
+# prettier, typescript-eslint, supertest and every @types/* — and the runtime
+# stage below copies /app wholesale. A previous fix trimmed the manifest COPY
+# list (which did remove the entire Next.js tree) and was correctly refused as
+# incomplete, because the install line itself was untouched.
+#
+# It is done HERE rather than by `pnpm install --prod`, and that is not a style
+# choice: `tsx` is a devDependency of apps/api and is this image's CMD, `prisma`
+# is a devDependency of packages/db-control and is what the compose `migrate`
+# one-shot runs before api and worker are allowed to start, and `marked` is a
+# root devDependency that `pnpm ingest:help` imports in the same one-shot. A
+# prod install deletes all three and the stack never comes up — the same class
+# of silent, total, runtime-only breakage as the pnpm version pin
+# (scripts/check-pnpm-pins.mjs). Promoting them to `dependencies` would edit
+# pnpm-lock.yaml, which `--frozen-lockfile` then rejects.
+#
+# So: keep what the running processes can actually resolve, delete the rest,
+# and assert the entrypoint still exists before the layer is allowed to commit.
+# Measured on this repo's store: 599 package directories / 541 MiB → 447 / 449
+# MiB. The keep set was checked against a live module-resolution trace of a
+# NODE_ENV=production API serving a real signup, the BullMQ worker, `prisma
+# migrate deploy`, and every step of scripts/prod-bootstrap.sh; the intersection
+# of "loaded at runtime" with "deleted here" was empty.
+#
+# Not removed, and it is the bulk of what is left: the Prisma CLI and its
+# @prisma/studio-core / @prisma/dev / @electric-sql/pglite / mysql2 subtree
+# (~170 MiB). `prisma` is an AUTO-INSTALLED OPTIONAL PEER of @prisma/client, a
+# production dependency, so it is in the prod closure and no Dockerfile change
+# can drop it; and `prisma migrate deploy` was measured eagerly loading
+# @prisma/studio-core and @prisma/dev, so they cannot be carved out either.
+# Closing that needs a pnpm-lock.yaml change — see supply-chain-04.
+COPY scripts/docker-prune-dev-modules.mjs scripts/docker-prune-dev-modules.mjs
+RUN node scripts/docker-prune-dev-modules.mjs \
+      --root . \
+      --root apps/api \
+      --root packages/db-control \
+      --root packages/db-tenant \
+      --root packages/shared \
+      --root apps/site \
+      --keep tsx \
+      --keep prisma \
+      --keep marked \
+      --require-bin apps/api/node_modules/.bin/tsx \
+      --require-bin packages/db-control/node_modules/.bin/prisma
 
 # ----- runtime -------------------------------------------------------------
 FROM base AS runtime

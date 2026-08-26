@@ -17,6 +17,9 @@ const BODY = {
   addressCity: 'Athens',
   addressPostalCode: '10431',
   addressCountry: 'GR',
+  // privacy-legal-09: required — it names WHICH LANGUAGE of the Terms was on
+  // screen, and the acceptance record is minted from it.
+  defaultLocale: 'el',
   acceptLegal: true,
 };
 

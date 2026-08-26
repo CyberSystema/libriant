@@ -13,6 +13,7 @@ import {
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { LIBRARY_TYPES } from '@libriant/shared';
+import { LEGAL_LOCALES, type LegalLocale } from '../consent-locales.js';
 
 /**
  * Same slug regex as the DB CHECK constraint.
@@ -45,10 +46,31 @@ export class SignupDto {
   @MinLength(12, { message: 'Please use at least 12 characters.' })
   password!: string;
 
+  /**
+   * The locale the signup form was rendered in — and therefore WHICH LANGUAGE
+   * OF THE TERMS the owner was shown.
+   *
+   * privacy-legal-09: this was `@IsString() @Length(2, 10)`, so `"fr"` (or
+   * `"klingon"`) validated fine and then `acceptanceLocale()` quietly turned it
+   * into 'el' — producing a record that asserted the owner had accepted the
+   * GREEK documents. A consent record naming the wrong text is worse than no
+   * record, because it looks like evidence. It is now closed to the locales the
+   * legal corpus is actually PUBLISHED in.
+   *
+   * Still optional, deliberately: every shipped caller sends it (SignupForm.tsx
+   * sends `defaultLocale: n`), but nineteen integration suites create libraries
+   * without it, and turning that into a 400 would be a breaking API change
+   * bought for an edge case. Instead, an acceptance recorded without it is
+   * flagged `localeAsserted: false` and does not claim which translation was
+   * read — see `legalAcceptanceAuditData`. Both translations are archived for
+   * every version regardless, so either can still be produced.
+   */
   @IsOptional()
-  @IsString()
-  @Length(2, 10)
-  defaultLocale?: string;
+  @IsIn(LEGAL_LOCALES, {
+    message:
+      'defaultLocale must be "el" or "en" — the Terms of Service and Privacy Policy are only published in those languages.',
+  })
+  defaultLocale?: LegalLocale;
 
   // --- Library profile (collected at signup) -------------------------------
   // Location + type are REQUIRED ("requirement details about the library");

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import {
   BadRequestException,
   ForbiddenException,
@@ -28,6 +29,36 @@ import type { SessionPayload } from './jwt-session.service.js';
 // before changing anything about how `ip` reaches this file.
 const FAIL_KEY = (uid: string, ip: string): string => `login:fail:${uid}:${ip}`;
 const LOCK_KEY = (uid: string, ip: string): string => `login:lock:${uid}:${ip}`;
+
+/**
+ * authn-authz-10, and the reason the durable lock does not undo A1-01.
+ *
+ * `users.lockedUntil` is now armed on the NORMAL path — five wrong passwords
+ * write it, not just five wrong passwords during a Redis outage. On its own
+ * that is a bare-account lock, i.e. exactly the renewable denial of service the
+ * comment above forbids and exactly the harm authn-authz-03 closed on the admin
+ * side (five wrong passwords from a stranger 403'd the real admin's live
+ * cookie). So the column never stands alone: whenever we arm it we also write
+ * this key, holding the IP whose failure crossed the threshold, with the same
+ * TTL as the lock itself.
+ *
+ * That turns "is Redis still able to tell attacker from victim?" into something
+ * we can actually ask at sign-in:
+ *
+ *   marker PRESENT  → Redis remembers the attack. Enforce the durable lock only
+ *                     against the IP it names; everyone else falls through to
+ *                     their own per-(account+IP) bucket, which is A1-01 intact.
+ *   marker ABSENT   → Redis was flushed, restarted or is unreachable, so the
+ *                     per-IP evidence is gone and there is nothing left to scope
+ *                     by. Enforce account-wide. This is the audited hole: six
+ *                     wrong logins, `redis-cli del` the two keys, correct
+ *                     password, 200. It now 401s.
+ *
+ * An operator's hand-written `UPDATE users SET "lockedUntil" = …` writes no
+ * marker either, so a deliberate freeze is account-wide, which is what an
+ * operator freezing an account means.
+ */
+const LOCK_SCOPE_KEY = (uid: string): string => `login:lock-scope:${uid}`;
 
 export type LoginResult = {
   token: string;
@@ -126,15 +157,29 @@ export class LoginService {
       throw this.invalidCredentials();
     }
     // authn-authz-10: the DURABLE lock, checked before the Redis one.
+    //
     // `users.lockedUntil` was selected here and never read, and the only writes
     // in the whole tenant path set it to NULL — so the "per-account lockout is
     // the backstop" that rate-limit.service.ts leans on when IT fails open did
     // not exist. A probe deleted the two Redis keys after five wrong passwords
-    // and signed straight in. Two things write this column now: the degraded
-    // path in recordFailure(), and an operator freezing an account by hand
-    // (`UPDATE users SET "lockedUntil" = now() + interval '1 hour'`), which is
-    // the documented incident response and previously did nothing.
-    if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
+    // and signed straight in with the correct password: 200.
+    //
+    // The first attempt at this read the column but only ever WROTE it when
+    // Redis threw, so the audited bypass — healthy Redis, five wrong passwords,
+    // `redis-cli del`, correct password — still returned 200 because
+    // `lockedUntil` was still NULL. recordFailure() arms it on the normal path
+    // now. Three things write it: that threshold, and an operator freezing an
+    // account by hand (`UPDATE users SET "lockedUntil" = now() + interval '1
+    // hour'`), and a successful sign-in clearing it.
+    //
+    // Whether the lock applies to THIS caller is not "is it in the future" —
+    // see LOCK_SCOPE_KEY for why a bare-account lock would be a remotely
+    // triggerable outage of every librarian's account.
+    if (
+      user.lockedUntil &&
+      user.lockedUntil.getTime() > Date.now() &&
+      (await this.durableLockApplies(user.id, ip))
+    ) {
       // Same silence as every other failure (AUTH-02) — a distinct "locked"
       // message is an account-existence oracle.
       await this.passwords.dummyVerify(input.password);
@@ -162,8 +207,11 @@ export class LoginService {
       where: { id: user.id },
       data: { failedLogins: 0, lockedUntil: null, lastLoginAt: new Date() },
     });
+    // The scope marker goes with the lock it scoped. Leaving it behind would
+    // survive into the NEXT lockout and point at a stale IP, which is the one
+    // way this key could weaken the account-wide fallback rather than narrow it.
     await this.redis.client
-      .del(FAIL_KEY(user.id, ip), LOCK_KEY(user.id, ip))
+      .del(FAIL_KEY(user.id, ip), LOCK_KEY(user.id, ip), LOCK_SCOPE_KEY(user.id))
       .catch(() => undefined);
 
     const { token, expiresAt, remember } = this.jwt.sign({
@@ -289,8 +337,9 @@ export class LoginService {
     await AuthGuard.invalidateAuthCache(this.redis, userId);
   }
 
-  /** True when (account, ip) is currently locked. Fails OPEN if Redis is down
-   *  so an outage never blocks every login (parity with the rate limiter). */
+  /** True when (account, ip) is currently locked. Fails OPEN if Redis is down —
+   *  which is safe only because `users.lockedUntil` now covers that case; see
+   *  {@link durableLockApplies}. */
   private async isLockedOut(userId: string, ip: string): Promise<boolean> {
     try {
       return (await this.redis.client.get(LOCK_KEY(userId, ip))) !== null;
@@ -299,28 +348,73 @@ export class LoginService {
     }
   }
 
-  private async recordFailure(userId: string, ip: string): Promise<void> {
-    // Keep a DB tally for audit/visibility (atomic increment, AUTH-03). The
-    // LOCK decision is normally per-(account+IP) in Redis (A1-01) so one
-    // attacker can't DoS-lock a victim globally — see the degraded branch below
-    // for the one case where this tally also drives a lock.
-    let failedLogins: number | null = null;
+  /**
+   * Does the live `users.lockedUntil` bar THIS caller? See {@link LOCK_SCOPE_KEY}.
+   *
+   * Fails CLOSED on every uncertainty — a missing marker, an unreadable one, a
+   * Redis that will not answer — because the uncertainty IS the audited attack
+   * state. The whole finding is that when Redis loses its memory the account
+   * becomes freely guessable; answering "no idea, let them try" here would
+   * rebuild that hole one layer up.
+   */
+  private async durableLockApplies(userId: string, ip: string): Promise<boolean> {
+    let scope: string | null;
     try {
-      const row = await controlDb.user.update({
-        where: { id: userId },
-        data: { failedLogins: { increment: 1 } },
-        select: { failedLogins: true },
-      });
-      failedLogins = row.failedLogins;
+      scope = await this.redis.client.get(LOCK_SCOPE_KEY(userId));
+    } catch {
+      scope = null;
+    }
+    if (scope === null) return true;
+    return scope === ip;
+  }
+
+  private async recordFailure(userId: string, ip: string): Promise<void> {
+    const windowSec = Math.ceil(this.env.loginLockoutMs / 1000);
+    const lockedUntil = new Date(Date.now() + windowSec * 1000);
+
+    // ONE statement: the tally and the lock it triggers are decided by the same
+    // row version, so two simultaneous failures cannot both read 4 and neither
+    // arm the lock. Prisma's fluent API cannot express "set this column only if
+    // the value you just computed crossed a threshold", and doing it as a
+    // read-then-write is exactly the race a lockout must not have.
+    //
+    // `failedLogins` only ever resets on a SUCCESSFUL sign-in, so once an
+    // account is over the threshold every further wrong password re-arms a
+    // fresh window. That is what makes this survive the second half of the
+    // audited bypass ("just let the 15-minute keys expire"): the lock lapses,
+    // the next guess re-arms it, and a sustained attacker is held to one
+    // attempt per LOGIN_LOCKOUT_MS with Redis out of the picture entirely.
+    type FailureRow = { failedLogins: number; lockedUntil: Date | null };
+    let row: FailureRow | undefined;
+    try {
+      const rows = await controlDb.$queryRaw<FailureRow[]>`
+        UPDATE users
+           SET "failedLogins" = "failedLogins" + 1,
+               "lockedUntil" = CASE
+                 WHEN "failedLogins" + 1 >= ${this.env.maxFailedLogins}
+                   THEN ${lockedUntil}
+                 ELSE "lockedUntil"
+               END
+         WHERE id = ${userId}
+        RETURNING "failedLogins", "lockedUntil"`;
+      row = rows[0];
     } catch (err) {
-      // Not swallowed any more: this counter is the only input the degraded
-      // backstop has, so losing it silently is losing the backstop silently.
+      // Not swallowed: this write IS the durable lockout now, not a tally kept
+      // for colour. Losing it silently is losing the backstop silently.
       this.logger.error(
-        `Could not increment failedLogins for user ${userId}: ${(err as Error).message}`,
+        `Could not record a failed sign-in for user ${userId} — the durable lockout was NOT ` +
+          `written and this account is protected only by Redis: ${(err as Error).message}`,
       );
     }
 
-    const windowSec = Math.ceil(this.env.loginLockoutMs / 1000);
+    const armed = !!row && row.failedLogins >= this.env.maxFailedLogins;
+    if (armed) {
+      this.logger.warn(
+        `Login locked in the DATABASE for user ${userId} until ${lockedUntil.toISOString()} after ` +
+          `${row?.failedLogins} failed sign-ins.`,
+      );
+    }
+
     try {
       const failKey = FAIL_KEY(userId, ip);
       const n = await this.redis.client.incr(failKey);
@@ -331,58 +425,47 @@ export class LoginService {
           `Login locked for user ${userId} from ${ip} after ${n} failed attempts (${windowSec}s).`,
         );
       }
+      // Scope the durable lock to the client that armed it, so a victim signing
+      // in from their own address is unaffected (A1-01 / authn-authz-03). Keyed
+      // on the DURABLE threshold, not the per-IP one: an attacker spread over
+      // five addresses reaches `failedLogins = 5` with each per-IP counter still
+      // at 1, and without this the account-wide lock would fire for everyone
+      // after five distributed guesses — a cheaper DoS than the one A1-01 removed.
+      if (armed) await this.writeLockScope(userId, ip, windowSec);
     } catch (err) {
-      await this.recordDegradedFailure(userId, failedLogins, windowSec, err as Error);
+      // Redis is unreachable. `isLockedOut` fails open and RateLimitService.hit
+      // fails open for the login bucket, so the row we just wrote is the ONLY
+      // brute-force protection left — and with no marker to scope it, it is
+      // enforced account-wide, which is the correct reading of "we can no
+      // longer tell the attacker from the victim".
+      this.logger.error(
+        `Redis is unavailable (${(err as Error).message}); the per-IP login lockout is off. ` +
+          `User ${userId} is ${armed ? 'locked account-wide in the DATABASE' : 'still under the threshold'} ` +
+          `(${row?.failedLogins ?? 'unknown'} failures). This is the degraded mode, not the normal one.`,
+      );
     }
   }
 
   /**
-   * Redis could not record the per-(account+IP) lock (authn-authz-10).
-   *
-   * In that state there is NO brute-force protection anywhere: `isLockedOut`
-   * returns false, `RateLimitService.hit` fails open for every non-signup
-   * bucket, and its comment points at "per-account lockout (LoginService)" as
-   * the backstop. This method is that backstop, and it engages ONLY here.
-   *
-   * The account-wide column is deliberately not written on the healthy path.
-   * A bare-account lock is a renewable denial of service — anyone who knows a
-   * librarian's email can lock them out by guessing — which is precisely why
-   * A1-01 moved the lock into Redis keyed on the source IP. Confining the DB
-   * lock to the Redis-outage path keeps that property: an attacker cannot
-   * choose to be in this branch, and while they are, unlimited guessing at
-   * every account on the platform is the alternative. The lock expires by
-   * itself after `LOGIN_LOCKOUT_MS`, a correct password clears it (see the
-   * success path), and it is logged at error so the operator sees both the
-   * outage and the degraded mode it put auth into.
+   * Record which client armed the durable lock. A missing marker means
+   * "enforce account-wide", so failing to write one only ever makes the lock
+   * stricter — never weaker — which is why this cannot fail the sign-in.
    */
-  private async recordDegradedFailure(
-    userId: string,
-    failedLogins: number | null,
-    windowSec: number,
-    err: Error,
-  ): Promise<void> {
-    if (failedLogins === null || failedLogins < this.env.maxFailedLogins) {
+  private async writeLockScope(userId: string, ip: string, windowSec: number): Promise<void> {
+    if (isIP(ip) === 0) {
+      // No verified address (`clientIp()` returned nothing, or a non-HTTP
+      // caller). There is nothing to scope by, so the durable lock stays
+      // account-wide — but say so, because in that state a stranger's five
+      // guesses do lock the real user out, which is the authn-authz-03 shape.
+      // In production `clientIp()` always yields the TCP peer, so reaching this
+      // line means a call site is not passing it.
       this.logger.error(
-        `Login lockout unavailable for user ${userId} (Redis: ${err.message}) — falling back to ` +
-          `the durable per-account lock at ${this.env.maxFailedLogins} failures ` +
-          `(currently ${failedLogins ?? 'unknown'}).`,
+        `Failed sign-in for user ${userId} carried no usable client IP (${JSON.stringify(ip).slice(0, 64)}) — ` +
+          'the durable lockout will be enforced ACCOUNT-WIDE. The caller must pass clientIp(req).',
       );
       return;
     }
-    const lockedUntil = new Date(Date.now() + windowSec * 1000);
-    try {
-      await controlDb.user.update({ where: { id: userId }, data: { lockedUntil } });
-      this.logger.error(
-        `Redis is unavailable (${err.message}); user ${userId} is now locked in the DATABASE until ` +
-          `${lockedUntil.toISOString()} after ${failedLogins} failed sign-ins. This lock is ` +
-          'account-wide, not per-IP — it is the degraded mode, not the normal one.',
-      );
-    } catch (dbErr) {
-      this.logger.error(
-        `Both the Redis lockout and the database backstop failed for user ${userId} — this account ` +
-          `has NO brute-force protection right now: ${(dbErr as Error).message}`,
-      );
-    }
+    await this.redis.client.set(LOCK_SCOPE_KEY(userId), ip, 'EX', windowSec);
   }
 
   private invalidCredentials(): UnauthorizedException {

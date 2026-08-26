@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { LEGAL_DOCUMENTS, LEGAL_VERSION, SIGNUP_CONSENT_DOCS } from '@libriant/shared';
 import type { LegalDocSlug } from '@libriant/shared';
 import {
+  acceptanceLocale,
   LEGAL_CORPUS,
   archivePath,
   legalAcceptanceAuditData,
@@ -135,11 +136,31 @@ describe('legal acceptance evidence', () => {
     expect(dpa?.archivePath).toBe(`docs/legal/accepted/${LEGAL_VERSION}/el/dpa.md`);
   });
 
-  it('falls back to Greek for an unknown locale, matching the web app', () => {
-    expect(legalAcceptanceEvidence(undefined).locale).toBe('el');
-    expect(legalAcceptanceEvidence('fr').locale).toBe('el');
+  it('will not mint evidence for a locale it was not told about', () => {
+    // The refutation of the first attempt: `defaultLocale` was optional and the
+    // locale helper fell back to 'el', so an API signup that omitted it recorded
+    // the GREEK corpus as the text presented, whatever had been on screen. The
+    // write path no longer guesses — it takes 'el' | 'en' and the DTO enforces
+    // it (see dto/signup-consent.spec.ts). These two calls are what the type
+    // system now refuses, kept as a runtime witness that the OLD behaviour is
+    // gone rather than merely discouraged.
+    // Reached through an `unknown` cast because the signature no longer admits
+    // these values at all — which is the fix. If someone widens the parameter
+    // back to `string | undefined`, the two assertions below start failing
+    // (they would return 'el') and this test says why that matters.
+    const loose = legalAcceptanceEvidence as unknown as (l: unknown) => { locale: string } | never;
+    expect(() => loose(undefined)).toThrow();
+    expect(() => loose('fr')).toThrow();
+
     expect(legalAcceptanceEvidence('en').locale).toBe('en');
     expect(legalAcceptanceEvidence('en').documents[0]!.sha256).toBe(liveDigest('en', 'terms'));
+    expect(legalAcceptanceEvidence('el').locale).toBe('el');
+
+    // …while the READ helper stays lenient, because it interprets locales that
+    // were already stored and a historic row must still be readable.
+    expect(acceptanceLocale(undefined)).toBe('el');
+    expect(acceptanceLocale('fr')).toBe('el');
+    expect(acceptanceLocale('en')).toBe('en');
   });
 
   it('builds an audit row naming who accepted and the exact bytes', () => {
@@ -153,7 +174,8 @@ describe('legal acceptance evidence', () => {
         ip: '198.51.100.9',
       },
       acceptedAt,
-      requestedLocale: 'el',
+      presentedLocale: 'el',
+      localeAsserted: true,
     });
 
     expect(data.action).toBe('tenant.legal_accepted');

@@ -1,5 +1,6 @@
 'use client';
 import * as React from 'react';
+import { SEARCH_MIN_CHARS } from '@libriant/shared/search';
 import { Button, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
@@ -131,14 +132,14 @@ export function AuthorPicker({ slug, catalog, locale, value, onChange }: Props) 
             setPendingName('');
           }
         }}
-        endpoint={(q) => {
-          setPendingName(q);
-          return `/t/${slug}/catalog/authors?q=${encodeURIComponent(q)}&limit=8`;
-        }}
+        minQueryChars={SEARCH_MIN_CHARS}
+        minCharsText={t('common.search.minChars', { count: SEARCH_MIN_CHARS })}
+        onQueryChange={setPendingName}
+        endpoint={(q) => `/t/${slug}/catalog/authors?q=${encodeURIComponent(q)}&limit=8`}
         renderOption={(a) => <div>{a.fullName}</div>}
         renderSelected={(a) => <div>{a.fullName}</div>}
       />
-      {pendingName.trim().length >= 2 ? (
+      {pendingName.trim().length >= SEARCH_MIN_CHARS ? (
         <Button
           type="button"
           variant="ghost"

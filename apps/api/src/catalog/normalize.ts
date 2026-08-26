@@ -1,3 +1,5 @@
+import { SEARCH_MIN_CHARS } from '@libriant/shared';
+
 /**
  * Lowercase + accent-fold helper used to compute `sortTitle` / `searchText`
  * across catalog entities (and replicated in `collection-records.service.ts`).
@@ -60,7 +62,10 @@ export function buildSearchText(parts: Array<string | number | null | undefined>
  * 128 MB of shared_buffers for EVERY library on the box, so one librarian
  * leaning on the search box evicts every other library's cache.
  */
-export const SEARCH_MIN_CHARS = 3;
+// Defined in @libriant/shared because the web pickers have to honour the same
+// floor; see the note there. Re-exported so this module stays the one import
+// site for everything search-normalisation in the API.
+export { SEARCH_MIN_CHARS };
 
 /**
  * Normalize a user-supplied search term and classify it for a list endpoint.

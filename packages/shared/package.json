@@ -9,7 +9,8 @@
     ".": "./src/index.ts",
     "./features": "./src/features.ts",
     "./legal": "./src/legal.ts",
-    "./library": "./src/library.ts"
+    "./library": "./src/library.ts",
+    "./search": "./src/search.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

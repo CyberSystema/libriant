@@ -34,6 +34,22 @@ type Props<T extends { id: string }> = {
   clearLabel?: string;
   /** Localized text shown when a query returns no rows. */
   noMatchesText?: string;
+  /**
+   * Localized hint for a query that is too short to send, e.g. "Type at least
+   * 3 characters". Required in practice wherever `minQueryChars` > 1: without
+   * it the picker simply says nothing while the reader waits for results that
+   * are never coming.
+   */
+  minCharsText?: string;
+  /**
+   * Called with the trimmed query on every keystroke, whether or not it is long
+   * enough to search. AuthorPicker needs the text to offer "create «X»", and
+   * used to scrape it out of `endpoint()` — a callback that only runs when a
+   * request actually fires. Raising the search floor to three characters would
+   * have frozen that name at the last query long enough to send, so the button
+   * offered to create an author the reader had already finished deleting.
+   */
+  onQueryChange?: (query: string) => void;
 };
 
 /**
@@ -58,6 +74,8 @@ export function Combobox<T extends { id: string }>({
   disabled,
   clearLabel = 'Clear selection',
   noMatchesText = 'No matches.',
+  minCharsText,
+  onQueryChange,
 }: Props<T>) {
   const [query, setQuery] = React.useState('');
   const [open, setOpen] = React.useState(false);
@@ -70,7 +88,14 @@ export function Combobox<T extends { id: string }>({
   // ACTUALLY RENDERED. They used to be `open` and an unconditional id, so an
   // idle combobox advertised an expanded popup that did not exist and pointed
   // aria-controls at a missing element (finding frontend-25).
-  const querying = open && query.trim().length >= minQueryChars;
+  const trimmed = query.trim();
+  const typed = trimmed.length;
+  const querying = open && typed >= minQueryChars;
+  // Typed something, but not yet enough to search. This state used to render
+  // nothing at all, which is the worst of the three options: the reader has
+  // typed "Πα", the dropdown is blank, and the only available reading is that
+  // the library does not hold the book. Say what is actually true instead.
+  const tooShort = open && typed > 0 && typed < minQueryChars && Boolean(minCharsText);
   const listboxVisible = querying && !loading && !error && items.length > 0;
   // Every caller of this picker sits under /[locale]/t/[slug], so the locale is
   // in the route. Reading it here rather than adding an `errorText` prop keeps
@@ -79,6 +104,15 @@ export function Combobox<T extends { id: string }>({
   const params = useParams();
   const t = staticTranslator(safeLocale(params?.locale));
   const wrapperRef = React.useRef<HTMLDivElement>(null);
+
+  // Held in a ref so the effect below depends only on the query. Callers pass
+  // an inline arrow, which is a new function on every render — depending on it
+  // directly would fire the notification on renders where nothing was typed.
+  const onQueryChangeRef = React.useRef(onQueryChange);
+  onQueryChangeRef.current = onQueryChange;
+  React.useEffect(() => {
+    onQueryChangeRef.current?.(trimmed);
+  }, [trimmed]);
 
   // Debounce queries so we don't hammer the API on every keystroke.
   React.useEffect(() => {
@@ -216,6 +250,8 @@ export function Combobox<T extends { id: string }>({
             (error ?? noMatchesText)
           )}
         </div>
+      ) : tooShort ? (
+        <div className="lbr-combobox__status">{minCharsText}</div>
       ) : null}
     </div>
   );

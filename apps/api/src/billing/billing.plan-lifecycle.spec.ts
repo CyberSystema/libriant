@@ -403,6 +403,92 @@ describe('billing-11: the downgrade-to-free path does not go through Stripe', ()
     expect(driver.cancelSubscriptionAtPeriodEnd).not.toHaveBeenCalled();
     expect(lastUpdate()).toMatchObject({ planId: STARTER.id, status: 'active' });
   });
+
+  /**
+   * Round 2. The free-plan branch round 1 added to PlanGrid was correct AND it
+   * handed a CONTRACTED library a working one-click self-downgrade it never
+   * had. That is the state `applyAdminPlanChange` now leaves behind
+   * (billingMode='manual', stripeSubscriptionId=null, per billing-12), and it
+   * is how the launch-offer cohort is provisioned
+   * (`tenant-create.ts --billing-mode=manual --paid-until=<+12mo>`), so the
+   * click would have thrown away twelve prepaid months.
+   */
+  it('selectPlan REFUSES a contracted library trying to move itself off its plan', async () => {
+    subFindUnique.mockResolvedValue(
+      subRow({ billingMode: 'manual', stripeSubscriptionId: null, planId: COMMUNITY.id }),
+    );
+    const { svc } = makeService();
+
+    await expect(svc.selectPlan(TENANT, { planSlug: 'starter' })).rejects.toThrow(
+      /billed by contract/,
+    );
+    // The specific damage: the direct-update branch rewrote billingMode from
+    // 'manual' to the target plan's 'stripe', with no admin involvement and no
+    // audit row. Nothing may be written at all.
+    expect(subUpdate).not.toHaveBeenCalled();
+    expect(subUpdateMany).not.toHaveBeenCalled();
+  });
+
+  /**
+   * …but it must not become a dead end. With subscriptions on, a contracted
+   * library that has never stamped `planSelectedAt` is held by the full-page
+   * chooser until it picks something. Confirming the plan it is already on is
+   * the way out, and it must change nothing else.
+   */
+  /**
+   * The other self-serve route. `startCheckout` only ever inspected the PLAN's
+   * billingMode, so a contract library could open Stripe Checkout for itself
+   * and be charged a card on top of the invoice it has already paid — the
+   * completed-session handlers copy the plan's 'stripe' mode over the contract.
+   * The forced chooser sends every PAID card here, so closing selectPlan alone
+   * would only have moved the hole.
+   */
+  it('startCheckout REFUSES a contracted library trying to buy a different plan', async () => {
+    subFindUnique.mockResolvedValue(
+      subRow({ billingMode: 'manual', stripeSubscriptionId: null, planId: STARTER.id }),
+    );
+    const { svc, driver } = makeService();
+
+    await expect(svc.startCheckout(TENANT, { planSlug: 'community' })).rejects.toThrow(
+      /billed by contract/,
+    );
+    expect(driver.createCheckoutSession).not.toHaveBeenCalled();
+    expect(subUpdate).not.toHaveBeenCalled();
+  });
+
+  it('startCheckout lets a contracted library confirm its own plan without paying', async () => {
+    subFindUnique.mockResolvedValue(
+      subRow({ billingMode: 'manual', stripeSubscriptionId: null, planSelectedAt: null }),
+    );
+    const { svc, driver } = makeService();
+
+    const result = await svc.startCheckout(TENANT, { planSlug: 'community' });
+
+    // No Stripe, no plan move — just the stamp the chooser is waiting for.
+    expect(driver.createCheckoutSession).not.toHaveBeenCalled();
+    expect(result.outcome).toBe('plan_changed');
+    expect(result.sessionId).toBeNull();
+    expect(subUpdate).not.toHaveBeenCalled();
+    expect(subUpdateMany).toHaveBeenCalledWith({
+      where: { tenantId: TENANT, planSelectedAt: null },
+      data: { planSelectedAt: expect.any(Date) },
+    });
+  });
+
+  it('selectPlan lets a contracted library confirm the plan it is already on', async () => {
+    subFindUnique.mockResolvedValue(
+      subRow({ billingMode: 'manual', stripeSubscriptionId: null, planSelectedAt: null }),
+    );
+    const { svc } = makeService();
+
+    await svc.selectPlan(TENANT, { planSlug: 'community' });
+
+    expect(subUpdate).not.toHaveBeenCalled();
+    expect(subUpdateMany).toHaveBeenCalledWith({
+      where: { tenantId: TENANT, planSelectedAt: null },
+      data: { planSelectedAt: expect.any(Date) },
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

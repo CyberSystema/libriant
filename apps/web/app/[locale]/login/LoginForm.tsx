@@ -1,7 +1,7 @@
 'use client';
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Banner, Button, FormField, Input } from '@libriant/ui';
+import { FormError, Button, FormField, Input } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { ApiError, api } from '@/lib/api';
@@ -88,11 +88,10 @@ export function LoginForm({ catalog, locale, initialSlug = '' }: Props) {
 
   return (
     <form onSubmit={handleSubmit} noValidate>
-      {errors.form ? (
-        <Banner severity="critical" style={{ marginBottom: 'var(--sp-4)' }}>
-          {errors.form}
-        </Banner>
-      ) : null}
+      {/* Always mounted — see FormError. */}
+      <FormError style={{ marginBottom: 'var(--sp-4)' }}>
+        {errors.form ? errors.form : null}
+      </FormError>
 
       <FormField
         id="login-slug"

@@ -314,9 +314,15 @@ export interface StripeDriver {
    * request path a library waits on.
    *
    * A driver that has no Price catalogue to consult (the in-memory stand-in)
-   * returns `null` and the audit reports "unverified" rather than "missing":
-   * the distinction is the whole point of the check, and a fake that invented
-   * a matching Price would teach dev the wrong lesson.
+   * returns `null`, and the `disabled` driver THROWS. The two are reported
+   * differently — "Stripe has no Price X" versus "Stripe could not be asked
+   * about X" — because "it does not exist" and "we do not know" call for
+   * different words in front of an operator about to take money. Neither is a
+   * pass; a fake that invented a matching Price would teach dev the wrong
+   * lesson.
+   *
+   * Since billing-10 round 2 this is no longer audit-only: the write-time guard
+   * on `PATCH /admin/plans/:slug` calls it too, on the real driver only.
    */
   getPrice(priceId: string): Promise<StripePriceState | null>;
   /**

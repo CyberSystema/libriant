@@ -119,12 +119,25 @@ export class DashboardService {
       cachedForSeconds: 0,
     };
 
-    // Do NOT cache the empty state. The home page decides whether to show the
-    // onboarding welcome from `books === 0 && members === 0`, so a cached zero
-    // would keep telling a library that has just catalogued its first book to
-    // go and catalogue its first book, for the whole TTL. A library at zero is
-    // also the one case where computing this costs nothing.
-    if (summary.books > 0 && summary.members > 0) {
+    // Do NOT cache the BRAND-NEW-LIBRARY state, and cache everything else.
+    //
+    // The home page decides whether to show the onboarding welcome from
+    // `books === 0 && members === 0`, so a cached zero would keep telling a
+    // library that has just catalogued its first book to go and catalogue its
+    // first book, for the whole TTL. A library at literal zero is also the one
+    // case where computing this costs nothing — every subquery is an empty
+    // table.
+    //
+    // The condition used to be `books > 0 && members > 0` (AND, not OR), which
+    // made the exact tenant this exists to protect the one it never cached: a
+    // library that has imported its 400,000-title catalogue but has not
+    // enrolled a member yet re-ran the whole statement on every render.
+    // Re-measured 2026-08-26 on the audit's Institutional fixture: 17,107
+    // shared buffers, 13,333 of them the `books` count that no index can
+    // answer. Never caching that tenant is the worst outcome of the three.
+    // The onboarding NUDGE (books === 0 XOR members === 0) can be up to 30 s
+    // stale; it is a banner suggesting a next step, not a gate.
+    if (summary.books > 0 || summary.members > 0) {
       await this.writeCache(tenant.id, summary);
     }
     return summary;

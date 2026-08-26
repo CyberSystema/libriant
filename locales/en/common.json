@@ -52,6 +52,7 @@
   "language.el": "Ελληνικά",
   "table.noMatches": "No matches",
   "table.noMatchesHint": "Nothing matches your search. Try a different word — searches are accent-insensitive.",
+  "search.minChars": "Type at least {count} characters to search.",
   "table.loadFailed": "Couldn't load more. Try again.",
   "combobox.clear": "Clear selection",
   "combobox.noMatches": "No matches.",

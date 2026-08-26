@@ -20,6 +20,7 @@ vi.mock('@libriant/db-control', () => ({
 }));
 
 import { QuotaInterceptor } from './quota.interceptor.js';
+import { UNLIMITED_INT } from './effective-plan.service.js';
 
 function makeCtx(req: object): ExecutionContext {
   return {
@@ -134,5 +135,48 @@ describe('QuotaInterceptor.intercept', () => {
     await expect(interceptor.intercept(ctx, next)).rejects.toMatchObject({
       status: HttpStatus.PAYMENT_REQUIRED,
     });
+  });
+
+  // performance-05. The counters are not cheap — `max_books` is
+  // `book.count({ where: { archivedAt: null } })`, a full scan of the
+  // catalogue (13,333 shared buffers on the audit's 400,000-title fixture).
+  // With subscriptions off — the configuration the product SHIPS in —
+  // `unlimitedPlan()` rewrites every int feature to UNLIMITED_INT, so every
+  // quota'd create used to pay that scan to compare the answer against
+  // Number.MAX_SAFE_INTEGER. `countUsage` must not be reached at all.
+  it('does not count anything when the limit is the unlimited sentinel', async () => {
+    const interceptor = makeInterceptor({ type: 'int', value: UNLIMITED_INT });
+    const ctx = makeCtx({ tenant: { id: 'tnt-1' } });
+
+    const result = await lastValueFrom(await interceptor.intercept(ctx, next));
+
+    expect(result).toBe('handler-result');
+    expect(countUsage).not.toHaveBeenCalled();
+  });
+
+  // `isUnlimitedInt` is `>=`, not `===`, so a value at or above the sentinel
+  // reads as "no ceiling" instead of overflowing whatever it is compared or
+  // multiplied into next (data-integrity-01). Prove the interceptor inherits
+  // that, rather than only matching the exact sentinel.
+  it('treats a value above the sentinel as unlimited too', async () => {
+    const interceptor = makeInterceptor({ type: 'int', value: UNLIMITED_INT + 1000 });
+    const ctx = makeCtx({ tenant: { id: 'tnt-1' } });
+
+    await lastValueFrom(await interceptor.intercept(ctx, next));
+
+    expect(countUsage).not.toHaveBeenCalled();
+  });
+
+  // The short-circuit must not swallow the bug guard: an unregistered counter
+  // is still a 500, whether or not the ceiling is finite. Otherwise a typo'd
+  // feature key would silently become "no quota" in the shipped posture.
+  it('still 500s on an unregistered counter even when the limit is unlimited', async () => {
+    const reflector = new Reflector();
+    vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue('max_widgets');
+    const interceptor = new QuotaInterceptor(reflector, {} as never, {} as never);
+
+    await expect(
+      interceptor.intercept(makeCtx({ tenant: { id: 'tnt-1' } }), next),
+    ).rejects.toMatchObject({ status: HttpStatus.INTERNAL_SERVER_ERROR });
   });
 });

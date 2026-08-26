@@ -66,6 +66,32 @@ COPY locales locales
 ENV NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production
 RUN pnpm --filter @libriant/web build
 
+# ----- prune ---------------------------------------------------------------
+# supply-chain-03, the web half. Trimming the manifest COPY list above stopped
+# the SERVER tree being installed here, but `pnpm install --frozen-lockfile`
+# still has no notion of "production", so the root manifest's devDependencies —
+# eslint, turbo, prettier, typescript-eslint, typescript — plus apps/web's own
+# @types/* still land in the image, and the runtime stage copies /app wholesale.
+#
+# Safe to prune AFTER `next build`: everything `next start` needs is either
+# compiled into .next/ or a real `dependency` of @libriant/web (next, react,
+# react-dom, marked). Verified, not assumed — a NODE_ENV=production `next start`
+# against this repo's build was traced serving /el, /el/legal/terms, /el/login
+# and /el/signup, and none of the packages this deletes was resolved. The
+# --require-bin assertion fails the build if `next` itself goes missing, because
+# an image that builds clean and cannot start is the worse outcome.
+#
+# Measured on this repo's store: 126 package directories / 398 MiB → 25 / 293
+# MiB.
+COPY scripts/docker-prune-dev-modules.mjs scripts/docker-prune-dev-modules.mjs
+RUN node scripts/docker-prune-dev-modules.mjs \
+      --root . \
+      --root apps/web \
+      --root packages/shared \
+      --root packages/i18n \
+      --root packages/ui \
+      --require-bin apps/web/node_modules/.bin/next
+
 # ----- runtime -------------------------------------------------------------
 FROM base AS runtime
 

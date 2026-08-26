@@ -5,6 +5,10 @@ import { AdminMiddleware } from './admin/admin.middleware.js';
 import { AdminModule } from './admin/admin.module.js';
 import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AuthModule } from './auth/auth.module.js';
+// privacy-legal-09: the legal-consent record (evidence + re-acceptance). Its own
+// module so the wiring is one line here; the previous attempt at that finding
+// shipped a reader nothing mounted, and the defect survived because of it.
+import { ConsentModule } from './auth/consent.module.js';
 import { SessionMiddleware } from './auth/session.middleware.js';
 import { HttpMetricsMiddleware } from './platform/http-metrics.js';
 import { OriginCheckMiddleware } from './platform/origin-check.middleware.js';
@@ -60,6 +64,7 @@ import { ApplicationsModule } from './applications/applications.module.js';
     PlatformModule,
     TenantModule,
     AuthModule,
+    ConsentModule,
     PlansModule,
     CustomizationModule,
     StorageModule,

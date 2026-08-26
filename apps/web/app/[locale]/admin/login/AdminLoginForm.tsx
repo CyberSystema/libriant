@@ -1,7 +1,7 @@
 'use client';
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Banner, Button, FormField, Input } from '@libriant/ui';
+import { FormError, Button, FormField, Input } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -64,11 +64,10 @@ export function AdminLoginForm() {
 
   return (
     <form onSubmit={onSubmit} noValidate>
-      {errors.form ? (
-        <Banner severity="critical" style={{ marginBottom: 'var(--sp-4)' }}>
-          {errors.form}
-        </Banner>
-      ) : null}
+      {/* Always mounted — see FormError. */}
+      <FormError style={{ marginBottom: 'var(--sp-4)' }}>
+        {errors.form ? errors.form : null}
+      </FormError>
       <FormField id="admin-email" label="Email" required error={errors.email}>
         <Input
           type="email"
