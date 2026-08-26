@@ -17,6 +17,65 @@ type Entry = {
 };
 
 /**
+ * The database name a tenant id MUST map to.
+ *
+ * Kept byte-identical to `TenantProvisioningService.dbNameFor()` and to
+ * `dbNameForTenant()` in scripts/_lib/cli.ts — the only three places a tenant
+ * database is ever named, and `tenant-relocate.ts` moves the HOST while keeping
+ * this name, so the mapping is a pure function of the id on every path in the
+ * repo. Verified against the audit control plane: 47 of 47 tenant rows satisfy
+ * it.
+ */
+function expectedDbName(tenantId: string): string {
+  return `tenant_${tenantId.replace(/[^a-z0-9_]/gi, '_').toLowerCase()}`;
+}
+
+/**
+ * tenant-isolation-02, the half that can be closed from here.
+ *
+ * Every tenant database is opened with the SAME Postgres superuser role — the
+ * URL is built by swapping only the database name on `PG_SUPERUSER_URL`. The
+ * audit demonstrated the consequence by connecting to library B's database with
+ * the connection string held for library A and reading its members: the
+ * separation between libraries is a physically separate database, enforced
+ * ONLY by which connection string the application picks.
+ *
+ * The full fix (a per-tenant role, GRANTed to one database, with the secret in
+ * the already-modelled `TenantDbCredential`) has to happen in provisioning and
+ * needs a control-plane migration. What can be done HERE, on the hot path, is
+ * to stop "which connection string the application picks" being unchecked: a
+ * context that names tenant A but carries a URL pointing at any other database
+ * is a bug or a poisoned cache, and it must not be allowed to quietly open and
+ * read the wrong library's data.
+ *
+ * Fail CLOSED. A 500 for one tenant is recoverable; silently serving another
+ * library's records is not, and it is the kind of defect nobody reports because
+ * it looks like data that is simply there.
+ *
+ * The thrown message deliberately carries only the two database NAMES and the
+ * tenant id — never the URL, which is a live superuser credential
+ * (tenant-isolation-03) and would land in the log this error is written to.
+ */
+function assertUrlBelongsToTenant(tenantId: string, dbUrl: string): void {
+  let dbName: string;
+  try {
+    dbName = new URL(dbUrl).pathname.replace(/^\//, '');
+  } catch {
+    throw new Error(
+      `Refusing to open a tenant connection for ${tenantId}: its stored dbUrl is not a valid URL.`,
+    );
+  }
+  const want = expectedDbName(tenantId);
+  if (dbName !== want) {
+    throw new Error(
+      `Refusing to open a tenant connection for ${tenantId}: expected database "${want}" ` +
+        `but the resolved context points at "${dbName}". This is a cross-tenant routing bug — ` +
+        'the connection is NOT being opened.',
+    );
+  }
+}
+
+/**
  * Per-tenant Prisma client pool.
  *
  * Each tenant has its own database. Opening a fresh connection on every
@@ -87,6 +146,11 @@ export class TenantPrismaService implements OnModuleDestroy {
    * happens after a tenant relocation.
    */
   getClient(ctx: Pick<TenantContext, 'id' | 'dbUrl'>): TenantPrismaClient {
+    // Checked on EVERY call, not only on construction (tenant-isolation-02).
+    // Gating it on the cache-miss path would make the guard's coverage depend
+    // on cache state, which is exactly the kind of reasoning a cross-tenant
+    // check should not require. One `new URL()` per request is microseconds.
+    assertUrlBelongsToTenant(ctx.id, ctx.dbUrl);
     const existing = this.cache.get(ctx.id);
     if (existing && existing.dbUrl === ctx.dbUrl) {
       return existing.client;

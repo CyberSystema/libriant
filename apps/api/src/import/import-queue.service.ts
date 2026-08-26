@@ -4,10 +4,17 @@
  * EmailService BullMQ setup — its own connection derived from the shared
  * RedisService options, with the `lbr-bull` prefix.
  *
- * It also owns the crash-recovery sweep the worker docstring promises: on
- * boot (and periodically) it reconciles batches the DB still believes are
- * running against the live BullMQ queue, so a worker crash mid-run can't leave
- * an import wedged in `validating`/`committing` forever (IMP-02).
+ * It also owns the two periodic sweeps imports need — both driven from the one
+ * timer in `onModuleInit`, via `runSweeps`:
+ *
+ *   - `sweepStuckBatches` (IMP-02): reconciles batches the DB still believes
+ *     are running against the live BullMQ queue, so a worker crash mid-run
+ *     can't leave an import wedged in `validating`/`committing` forever. It
+ *     KEEPS the staged file, on purpose — a reclaimed batch is re-runnable.
+ *   - `sweepAbandonedStaging` (input-and-files-06): deletes staged upload files
+ *     nobody is going to run. It is the only thing in the codebase that ever
+ *     removes bytes from `STORAGE_ROOT/_imports`, which until it existed grew
+ *     without bound on the volume shared by every tenant.
  */
 import {
   Inject,
@@ -19,10 +26,12 @@ import {
 import { Queue } from 'bullmq';
 import { controlDb } from '@libriant/db-control';
 import { RedisService } from '../platform/redis.service.js';
+import { deleteStaged, listStagedFiles } from './import-staging.js';
 import {
   IMPORT_JOB_NAME,
   IMPORT_QUEUE_NAME,
   IMPORT_QUEUE_PREFIX,
+  IMPORT_STAGING_TTL_MS,
   type ImportPhase,
 } from './import.constants.js';
 
@@ -67,16 +76,28 @@ export class ImportQueueService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit(): Promise<void> {
     // Cold-start recovery: reclaim anything wedged by a previous crash before
     // the periodic timer takes over.
-    await this.sweepStuckBatches().catch((err) => {
-      this.logger.warn(`startup import sweep failed: ${(err as Error).message}`);
-    });
+    await this.runSweeps();
     this.sweepTimer = setInterval(() => {
-      void this.sweepStuckBatches().catch((err) => {
-        this.logger.warn(`periodic import sweep failed: ${(err as Error).message}`);
-      });
+      void this.runSweeps();
     }, SWEEP_EVERY_MS);
     // Don't keep the event loop alive purely for the sweep.
     this.sweepTimer.unref?.();
+  }
+
+  /**
+   * Both periodic reconciliations, each isolated so one failing does not stop
+   * the other. `sweepStuckBatches` reclaims wedged RUNS; `sweepAbandonedStaging`
+   * reclaims abandoned DISK — deliberately separate concerns, because the first
+   * one keeps staged files on purpose (a reclaimed batch is re-runnable) and
+   * only the second is allowed to delete them.
+   */
+  private async runSweeps(): Promise<void> {
+    await this.sweepStuckBatches().catch((err) => {
+      this.logger.warn(`import stuck-batch sweep failed: ${(err as Error).message}`);
+    });
+    await this.sweepAbandonedStaging().catch((err) => {
+      this.logger.warn(`import staging sweep failed: ${(err as Error).message}`);
+    });
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -156,5 +177,93 @@ export class ImportQueueService implements OnModuleInit, OnModuleDestroy {
       }
     }
     return reclaimed;
+  }
+
+  /**
+   * input-and-files-06: delete staged upload files nobody is going to run.
+   *
+   * WHY THIS EXISTS. A staged upload is up to 64 MB and lives on
+   * `STORAGE_ROOT/_imports`, the shared volume that also holds every tenant's
+   * covers and photos and every export artifact. Exports have had
+   * `sweepExpiredExports` since day one; imports had NOTHING. The only job that
+   * visited abandoned batches — `sweepStuckBatches` above — deliberately KEEPS
+   * their file so a reclaimed run can be re-run, and `storage-temp-cleanup`
+   * only walks per-tenant storage, never `_imports`. So a batch a librarian
+   * uploaded and never ran held its bytes forever, and twenty retries of a file
+   * that cannot parse held twenty times that.
+   *
+   * TWO PASSES, because neither alone is complete:
+   *   1. BY ROW — batches that still point at a file and have sat untouched
+   *      past the TTL. The file goes and `stagingPath` is blanked, which is how
+   *      the staging budget and `requireRunnable` learn the bytes are gone. The
+   *      batch row and its issue report stay: the librarian keeps the history,
+   *      they just have to upload the file again to re-run it.
+   *   2. BY DIRECTORY — files no row points at. `createBatch` writes the file
+   *      before it records `stagingPath`, and `remove()` deletes the row; a
+   *      crash in either window leaves bytes that pass 1 can never see. Only
+   *      files older than the TTL AND with no batch row at all are removed, so
+   *      an upload in flight is never yanked out from under itself.
+   *
+   * Returns how many files it deleted (the unit test asserts on this).
+   */
+  async sweepAbandonedStaging(): Promise<number> {
+    const cutoff = new Date(Date.now() - IMPORT_STAGING_TTL_MS);
+    let deleted = 0;
+
+    // --- pass 1: batches that still hold a file and have gone quiet ---------
+    const stale = await controlDb.importBatch.findMany({
+      where: {
+        NOT: { stagingPath: '' },
+        // Never touch a batch a worker may be reading right now, whatever its
+        // timestamps say — `sweepStuckBatches` is what reclaims those.
+        status: { in: ['uploaded', 'validated', 'failed', 'canceled'] },
+        updatedAt: { lt: cutoff },
+      },
+      select: { id: true, stagingPath: true, tenantId: true },
+    });
+    for (const batch of stale) {
+      try {
+        await deleteStaged(batch.stagingPath);
+        // Guarded on the path we observed: if the tenant re-uploaded or the
+        // worker rewrote the row in the meantime, leave the new value alone.
+        await controlDb.importBatch.updateMany({
+          where: { id: batch.id, stagingPath: batch.stagingPath },
+          data: { stagingPath: '' },
+        });
+        deleted++;
+      } catch (err) {
+        this.logger.warn(
+          `could not clear staged file for batch ${batch.id}: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    // --- pass 2: files on disk that no batch row claims ---------------------
+    const files = await listStagedFiles();
+    const orphanCandidates = files.filter((f) => f.modifiedAtMs < cutoff.getTime());
+    if (orphanCandidates.length > 0) {
+      const known = await controlDb.importBatch.findMany({
+        where: { id: { in: orphanCandidates.map((f) => f.batchId) } },
+        select: { id: true },
+      });
+      const knownIds = new Set(known.map((b) => b.id));
+      for (const file of orphanCandidates) {
+        if (knownIds.has(file.batchId)) continue;
+        try {
+          await deleteStaged(file.absolutePath);
+          deleted++;
+          this.logger.warn(
+            `deleted orphaned import staging file ${file.absolutePath} (${file.sizeBytes} bytes, no batch row)`,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `could not delete orphaned staging file ${file.absolutePath}: ${(err as Error).message}`,
+          );
+        }
+      }
+    }
+
+    if (deleted > 0) this.logger.log(`import staging sweep removed ${deleted} file(s)`);
+    return deleted;
   }
 }

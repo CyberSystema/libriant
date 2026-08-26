@@ -11,9 +11,10 @@ import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { FieldDefinitionsService } from '../customization/field-definitions.service.js';
 import { QuotaService } from '../customization/quota.service.js';
+import { EffectivePlanService, isUnlimitedInt } from '../plans/effective-plan.service.js';
 import { validateRecordOrThrow } from '../customization/dynamic-validator.js';
 import { AuthorsService } from './authors.service.js';
-import { buildSearchText, digitsOnly, normalizeText } from './normalize.js';
+import { buildSearchText, classifySearchTerm, digitsOnly, normalizeText } from './normalize.js';
 
 export type BookAuthorLink = { authorId: string; order: number; role: string | null };
 
@@ -66,6 +67,18 @@ export type ListBooksOptions = {
   includeArchived?: boolean;
 };
 
+export type ListBooksResult = {
+  items: BookDto[];
+  nextCursor: string | null;
+  /**
+   * Present ONLY when the caller's `q` was too short to be indexed and the
+   * page was therefore answered empty without querying (performance-12).
+   * Additive: every existing consumer reads `items` / `nextCursor` and is
+   * unaffected.
+   */
+  minQueryChars?: number;
+};
+
 @Injectable()
 export class BooksService {
   constructor(
@@ -73,17 +86,59 @@ export class BooksService {
     @Inject(AuthorsService) private readonly authors: AuthorsService,
     @Inject(FieldDefinitionsService) private readonly fieldDefs: FieldDefinitionsService,
     @Inject(QuotaService) private readonly quota: QuotaService,
+    @Inject(EffectivePlanService) private readonly plans: EffectivePlanService,
   ) {}
 
-  async list(
-    tenant: TenantContext,
-    opts: ListBooksOptions = {},
-  ): Promise<{ items: BookDto[]; nextCursor: string | null }> {
+  /**
+   * Is there a real `max_books` ceiling to enforce for this tenant, or is the
+   * limit the "no ceiling" sentinel?
+   *
+   * performance-05. `QuotaService.enforceWithinTx` takes
+   * `pg_advisory_xact_lock('quota:<tenant>:max_books:')` and THEN runs
+   * `count(*) FROM books WHERE "archivedAt" IS NULL` — a full scan, because
+   * nothing indexes that predicate. Measured on a 400,000-title catalogue
+   * (audit Postgres), on the literal statement Prisma emits for `book.count`:
+   *
+   *   Aggregate … Seq Scan on books  Buffers: shared hit=1594 read=11739
+   *                                  Execution Time: 59.142 ms
+   *
+   * 13,333 buffers — 104 MB of traffic through a 128 MB shared_buffers pool
+   * that every library on the box shares — per book created, held under a lock
+   * that serialises the whole library's cataloguing session behind it.
+   *
+   * In the SHIPPED configuration (`BILLING_ENABLED=false`) every int feature
+   * resolves to `UNLIMITED_INT`, so that scan and that lock were being paid to
+   * compare a number against `Number.MAX_SAFE_INTEGER`. There is no ceiling to
+   * race for, so there is nothing to serialise and nothing to count: skip both.
+   *
+   * Read BEFORE the transaction opens, deliberately: `getEffectivePlan` is a
+   * Redis-cached read, and doing it inside would put a network round trip
+   * inside the lock window this exists to shrink. When the limit IS finite the
+   * enforcement path below is untouched — the count still runs inside the
+   * lock, and it is still a full scan until `books_active_idx` exists (see the
+   * out-of-scope note in the remediation report).
+   */
+  private async maxBooksCeilingApplies(tenantId: string): Promise<boolean> {
+    return !isUnlimitedInt(await this.plans.getInt(tenantId, 'max_books'));
+  }
+
+  async list(tenant: TenantContext, opts: ListBooksOptions = {}): Promise<ListBooksResult> {
     const client = this.tenantPrisma.getClient(tenant);
     const limit = Math.max(1, Math.min(100, opts.limit ?? 25));
     const where: Prisma.BookWhereInput = {};
     if (!opts.includeArchived) where.archivedAt = null;
-    if (opts.q) where.searchText = { contains: normalizeText(opts.q) };
+    // performance-12: the server-side floor on search-term length. The client
+    // used to be the only thing standing between a two-letter term and a full
+    // scan of the catalogue, and only the Combobox had one — the catalogue
+    // screen goes through DataTable's URL-driven search, which does not. An
+    // empty page (with `minQueryChars` so the UI can say "keep typing") is
+    // returned rather than an unfiltered one: handing back the whole catalogue
+    // for "ab" reads as a broken filter.
+    const term = classifySearchTerm(opts.q);
+    if (term.kind === 'short') {
+      return { items: [], nextCursor: null, minQueryChars: term.minChars };
+    }
+    if (term.kind === 'term') where.searchText = { contains: term.value };
     if (opts.authorId) where.authors = { some: { authorId: opts.authorId } };
     if (opts.yearFrom !== undefined)
       where.publicationYear = { ...(where.publicationYear as object), gte: opts.yearFrom };
@@ -192,17 +247,29 @@ export class BooksService {
     ]);
 
     const client = this.tenantPrisma.getClient(tenant);
+    const ceilingApplies = await this.maxBooksCeilingApplies(tenant.id);
     try {
       // Enforce `max_books` and insert in ONE transaction, serialized by a
       // per-tenant advisory lock, so parallel creates can't both pass the
-      // quota check and push the tenant past its plan ceiling. (The route's
-      // QuotaInterceptor is a fast pre-check; this is the race-safe authority.)
+      // quota check and push the tenant past its plan ceiling. This is the
+      // race-safe authority; the route's QuotaInterceptor is the pre-check.
+      //
+      // That pre-check is NOT cheap, and the comment here used to claim it was:
+      // QUOTA_COUNTERS.max_books (plans/quota-counters.ts) runs the SAME
+      // `book.count({ where: { archivedAt: null } })` full scan, unconditionally,
+      // before this method is even entered. So a book create still pays one
+      // 13,333-buffer scan even when the ceiling is unlimited. The one-line fix
+      // — `if (isUnlimitedInt(limit)) return next.handle();` in
+      // QuotaInterceptor, right after it resolves `limit` — is outside this
+      // change's ownership and is reported with the remediation.
       const created = await client.$transaction(async (tx) => {
-        await this.quota.enforceWithinTx(tx, {
-          tenantId: tenant.id,
-          featureKey: 'max_books',
-          count: () => tx.book.count({ where: { archivedAt: null } }),
-        });
+        if (ceilingApplies) {
+          await this.quota.enforceWithinTx(tx, {
+            tenantId: tenant.id,
+            featureKey: 'max_books',
+            count: () => tx.book.count({ where: { archivedAt: null } }),
+          });
+        }
         return tx.book.create({
           data: {
             title: input.title,
@@ -350,10 +417,14 @@ export class BooksService {
     // Un-archiving consumes a max_books seat just like a create — enforce it
     // (otherwise archive → create → un-archive is an unlimited bypass).
     const restoring = input.archived === false && existing.archivedAt != null;
+    // Same reasoning as `create` — see maxBooksCeilingApplies. Resolved before
+    // the transaction opens so an un-archive under an unlimited ceiling never
+    // takes the lock or runs the count.
+    const enforceOnRestore = restoring && (await this.maxBooksCeilingApplies(tenant.id));
 
     try {
       const updated = await client.$transaction(async (tx) => {
-        if (restoring) {
+        if (enforceOnRestore) {
           await this.quota.enforceWithinTx(tx, {
             tenantId: tenant.id,
             featureKey: 'max_books',

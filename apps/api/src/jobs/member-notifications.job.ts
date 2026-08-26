@@ -1,5 +1,6 @@
 import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
+import { Prisma, type TenantPrismaClient } from '@libriant/db-tenant';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { RedisService } from '../platform/redis.service.js';
@@ -223,80 +224,60 @@ async function notifyOneTenant(
 
   if (settings.notifyDueSoon) {
     const horizon = new Date(now.getTime() + Math.max(1, settings.dueSoonDays) * MS_PER_DAY);
-    const loans = await client.loan.findMany({
-      where: {
-        status: 'active',
-        dueAt: { gt: now, lte: horizon },
-        member: { email: { not: null }, archivedAt: null },
-      },
-      select: {
-        id: true,
-        dueAt: true,
-        member: { select: { fullName: true, email: true } },
-        copy: { select: { book: { select: { title: true } } } },
+    dueSoon = await sweepLoanNotices(client, emails, {
+      // Due-soon is a forward window: strictly after now, up to the horizon.
+      lower: now,
+      upper: horizon,
+      run: async (loan) => {
+        const vars = {
+          member: loan.memberName,
+          book: loan.bookTitle,
+          due: fmtDate(loan.dueAt, loc),
+          library: ctx.name,
+        };
+        const tpl = pickTemplate(templates.dueSoon, dueSoonTpl(loc, vars), vars);
+        return {
+          kind: 'member_due_soon',
+          toEmail: loan.memberEmail,
+          subject: tpl.subject,
+          bodyMarkdown: tpl.body,
+          tenantId: ctx.id,
+          idempotencyKey: `due-soon:${ctx.id}:${loan.id}:${dayKey(loan.dueAt)}`,
+          metadata: { loanId: loan.id },
+        };
       },
     });
-    for (const loan of loans) {
-      if (!loan.member.email) continue;
-      const vars = {
-        member: loan.member.fullName,
-        book: loan.copy.book.title,
-        due: fmtDate(loan.dueAt, loc),
-        library: ctx.name,
-      };
-      const tpl = pickTemplate(templates.dueSoon, dueSoonTpl(loc, vars), vars);
-      const res = await emails.enqueue({
-        kind: 'member_due_soon',
-        toEmail: loan.member.email,
-        subject: tpl.subject,
-        bodyMarkdown: tpl.body,
-        tenantId: ctx.id,
-        idempotencyKey: `due-soon:${ctx.id}:${loan.id}:${dayKey(loan.dueAt)}`,
-        metadata: { loanId: loan.id },
-      });
-      if (!res.alreadyExisted) dueSoon++;
-    }
   }
 
   if (settings.notifyOverdue) {
-    const loans = await client.loan.findMany({
-      where: {
-        status: 'active',
-        dueAt: { lt: now },
-        member: { email: { not: null }, archivedAt: null },
-      },
-      select: {
-        id: true,
-        dueAt: true,
-        member: { select: { fullName: true, email: true } },
-        copy: { select: { book: { select: { title: true } } } },
+    overdue = await sweepLoanNotices(client, emails, {
+      // Overdue is everything already past due.
+      lower: null,
+      upper: now,
+      run: async (loan) => {
+        const vars = {
+          member: loan.memberName,
+          book: loan.bookTitle,
+          due: fmtDate(loan.dueAt, loc),
+          library: ctx.name,
+        };
+        const tpl = pickTemplate(templates.overdue, overdueTpl(loc, vars), vars);
+        return {
+          kind: 'member_overdue',
+          toEmail: loan.memberEmail,
+          subject: tpl.subject,
+          bodyMarkdown: tpl.body,
+          tenantId: ctx.id,
+          // OVERDUE-REMINDER-ONCE-EVER: key on TODAY, not the loan's fixed dueAt.
+          // Keying on dueAt sent exactly one overdue nag ever per loan, defeating
+          // the recovery purpose of the reminder. `dayKey(now)` re-reminds at most
+          // once per calendar day (re-runs within a day still dedup as the
+          // registry comment promises) until the book comes back.
+          idempotencyKey: `overdue:${ctx.id}:${loan.id}:${dayKey(now)}`,
+          metadata: { loanId: loan.id },
+        };
       },
     });
-    for (const loan of loans) {
-      if (!loan.member.email) continue;
-      const vars = {
-        member: loan.member.fullName,
-        book: loan.copy.book.title,
-        due: fmtDate(loan.dueAt, loc),
-        library: ctx.name,
-      };
-      const tpl = pickTemplate(templates.overdue, overdueTpl(loc, vars), vars);
-      const res = await emails.enqueue({
-        kind: 'member_overdue',
-        toEmail: loan.member.email,
-        subject: tpl.subject,
-        bodyMarkdown: tpl.body,
-        tenantId: ctx.id,
-        // OVERDUE-REMINDER-ONCE-EVER: key on TODAY, not the loan's fixed dueAt.
-        // Keying on dueAt sent exactly one overdue nag ever per loan, defeating
-        // the recovery purpose of the reminder. `dayKey(now)` re-reminds at most
-        // once per calendar day (re-runs within a day still dedup as the
-        // registry comment promises) until the book comes back.
-        idempotencyKey: `overdue:${ctx.id}:${loan.id}:${dayKey(now)}`,
-        metadata: { loanId: loan.id },
-      });
-      if (!res.alreadyExisted) overdue++;
-    }
   }
 
   if (settings.notifyHoldReady) {
@@ -313,8 +294,17 @@ async function notifyOneTenant(
         book: { select: { title: true } },
       },
     });
-    for (const hold of holds) {
-      if (!hold.member.email) continue;
+    // Deliberately NOT keyset-paged, unlike the two loan sweeps above. No
+    // reservations index leads with `status`, so paging this would turn one seq
+    // scan into one seq scan PER PAGE. The ready set is also bounded by the
+    // pickup window rather than by library size — reservation-pickup-expiry
+    // drains it every 60 s — so there is nothing here to bound. What this DOES
+    // get is the batched dedup pre-filter, which is where the cost was.
+    const pending = holds.filter((h) => h.member.email);
+    const queued = await alreadyQueued(pending.map((h) => `hold-ready:${ctx.id}:${h.id}`));
+    for (const hold of pending) {
+      const key = `hold-ready:${ctx.id}:${hold.id}`;
+      if (queued.has(key)) continue;
       const by = hold.expiresAt ? fmtDate(hold.expiresAt, loc) : '';
       const vars = { member: hold.member.fullName, book: hold.book.title, library: ctx.name, by };
       const tpl = pickTemplate(
@@ -324,11 +314,11 @@ async function notifyOneTenant(
       );
       const res = await emails.enqueue({
         kind: 'member_hold_ready',
-        toEmail: hold.member.email,
+        toEmail: hold.member.email!,
         subject: tpl.subject,
         bodyMarkdown: tpl.body,
         tenantId: ctx.id,
-        idempotencyKey: `hold-ready:${ctx.id}:${hold.id}`,
+        idempotencyKey: key,
         metadata: { reservationId: hold.id },
       });
       if (!res.alreadyExisted) holdReady++;
@@ -337,3 +327,137 @@ async function notifyOneTenant(
 
   return { dueSoon, overdue, holdReady };
 }
+
+/** One page of loans-with-member-and-title, ready to render into a notice. */
+type LoanNotice = {
+  id: string;
+  dueAt: Date;
+  memberName: string;
+  memberEmail: string;
+  bookTitle: string;
+};
+
+/**
+ * Page size for the two loan-notice sweeps (performance-08).
+ *
+ * The old sweeps had no `take` at all: an Institutional library with 15,000
+ * overdue loans pulled 15,000 rows — each carrying the member's name, e-mail
+ * and the book title — into one JS array in the worker, which is the same
+ * process that runs the export, import and every other cron.
+ */
+const NOTICE_PAGE_SIZE = 500;
+
+/**
+ * Which of these idempotency keys are already in the outbox (performance-08).
+ *
+ * `EmailService.enqueue` deduplicates by INSERTing and swallowing the P2002,
+ * then re-reading the row to return its id. That is the right design for a
+ * producer sending one message; it is the wrong one for a sweep that re-offers
+ * the SAME 15,000 messages every hour, because 14 of every 15 attempts are a
+ * failed INSERT (carrying the full rendered body) plus a `findUniqueOrThrow`,
+ * against the control database every library shares. One indexed `IN` per page
+ * replaces the whole failed-insert storm; `idempotencyKey` is `@unique`, so
+ * this is an index scan.
+ *
+ * This does NOT move the dedup lever — enqueue still owns it, and still
+ * absorbs the residual race between this read and the insert. It only stops
+ * the sweep from re-offering what it can already see is there.
+ */
+async function alreadyQueued(keys: string[]): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  const rows = await controlDb.emailOutbox.findMany({
+    where: { idempotencyKey: { in: keys } },
+    select: { idempotencyKey: true },
+  });
+  const out = new Set<string>();
+  for (const r of rows) if (r.idempotencyKey) out.add(r.idempotencyKey);
+  return out;
+}
+
+/**
+ * Keyset-paged sweep over active loans in a `dueAt` window, joined to the
+ * member and the book title, skipping anything already in the outbox.
+ *
+ * Raw, and with a row-value `("dueAt","id") > ($1,$2)` predicate, for the
+ * reason measured in fine-accrual.job.ts: the equivalent Prisma-expressible
+ * form `dueAt > x OR (dueAt = x AND id > y)` is NOT a btree start key. On the
+ * audit's 2M-row loans table the OR form re-walked the range from the
+ * beginning on every page — `Index Scan using loans_status_dueAt_id_idx …
+ * Rows Removed by Filter: 14500, Buffers: shared hit=9094` for page 30 — so
+ * paging that way would have been slower than the unbounded query it replaced.
+ * The row-value form seeks: `Buffers: shared hit=2239` for a 500-row page,
+ * flat with depth.
+ *
+ * The relation predicates are an INNER JOIN rather than Prisma's
+ * `member: { email: { not: null }, archivedAt: null }`, which is the same set
+ * (`memberId`/`copyId` are NOT NULL FKs) in one round trip instead of one plus
+ * a relation batch per level.
+ */
+async function sweepLoanNotices(
+  client: TenantPrismaClient,
+  emails: EmailService,
+  opts: {
+    /** Exclusive lower bound on dueAt, or null for "no lower bound". */
+    lower: Date | null;
+    /** Exclusive-below/inclusive-at upper bound on dueAt. */
+    upper: Date;
+    run: (loan: LoanNotice) => Promise<EnqueueSpec>;
+  },
+): Promise<number> {
+  let sent = 0;
+  let cursor: { dueAt: Date; id: string } | null = null;
+  for (;;) {
+    const lower: Prisma.Sql = opts.lower ? Prisma.sql`AND l."dueAt" > ${opts.lower}` : Prisma.empty;
+    const upper: Prisma.Sql = opts.lower
+      ? Prisma.sql`AND l."dueAt" <= ${opts.upper}`
+      : Prisma.sql`AND l."dueAt" < ${opts.upper}`;
+    const after: Prisma.Sql = cursor
+      ? Prisma.sql`AND (l."dueAt", l."id") > (${cursor.dueAt}, ${cursor.id})`
+      : Prisma.empty;
+    const page = await client.$queryRaw<LoanNotice[]>(
+      Prisma.sql`SELECT l."id",
+                        l."dueAt",
+                        m."fullName" AS "memberName",
+                        m."email"::text AS "memberEmail",
+                        b."title"   AS "bookTitle"
+                   FROM "loans" l
+                   JOIN "members" m     ON m."id" = l."memberId"
+                   JOIN "book_copies" c ON c."id" = l."copyId"
+                   JOIN "books" b       ON b."id" = c."bookId"
+                  WHERE l."status" = 'active'::"LoanStatus"
+                    ${lower}
+                    ${upper}
+                    AND m."email" IS NOT NULL
+                    AND m."archivedAt" IS NULL
+                    ${after}
+                  ORDER BY l."dueAt" ASC, l."id" ASC
+                  LIMIT ${NOTICE_PAGE_SIZE}`,
+    );
+    if (page.length === 0) break;
+
+    const specs: EnqueueSpec[] = [];
+    for (const loan of page) specs.push(await opts.run(loan));
+    const queued = await alreadyQueued(specs.map((s) => s.idempotencyKey));
+    for (const spec of specs) {
+      if (queued.has(spec.idempotencyKey)) continue;
+      const res = await emails.enqueue(spec);
+      if (!res.alreadyExisted) sent++;
+    }
+
+    if (page.length < NOTICE_PAGE_SIZE) break;
+    const last = page[page.length - 1]!;
+    cursor = { dueAt: last.dueAt, id: last.id };
+  }
+  return sent;
+}
+
+/** What `sweepLoanNotices` hands to {@link EmailService.enqueue}. */
+type EnqueueSpec = {
+  kind: 'member_due_soon' | 'member_overdue';
+  toEmail: string;
+  subject: string;
+  bodyMarkdown: string;
+  tenantId: string;
+  idempotencyKey: string;
+  metadata: Record<string, unknown>;
+};

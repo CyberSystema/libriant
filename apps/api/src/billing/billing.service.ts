@@ -26,6 +26,7 @@ import {
   STRIPE_LIVE_STATUSES,
   type StripeCheckoutSessionShape,
   type StripeDriver,
+  type StripeEventContext,
   type StripeInvoiceShape,
   type StripeSubscriptionShape,
   type StripeSubscriptionState,
@@ -33,6 +34,52 @@ import {
 import { buildWebReturnUrl, resolveWebLocale } from './return-url.js';
 
 const MS_PER_DAY = 86_400_000;
+
+/**
+ * Prefix of the Stripe price ids the SEED writes so the
+ * `plans_stripe_price_matches_mode` CHECK constraint can be satisfied before
+ * anyone has a Stripe account (`price_seed_starter`, `price_seed_community`,
+ * `price_seed_community_annual`, …).
+ *
+ * billing-10: `hasStripePrice` was `!!plan.stripePriceId`, which is TRUE for
+ * every one of these — so a completely unconfigured control plane reported a
+ * fully configured price catalogue, the operator's go-live check passed on
+ * seed data, and the UI rendered a Subscribe button that Stripe answers with
+ * `No such price: price_seed_community`.
+ */
+const SEED_PRICE_PREFIX = 'price_seed_';
+
+/**
+ * Whether a stored Stripe price id could plausibly BUY something.
+ *
+ * Deliberately narrower than "non-null": a real Stripe Price id starts
+ * `price_`, and anything under `price_seed_` is a placeholder this repository
+ * wrote itself. This is not a substitute for asking Stripe (see
+ * `auditPriceCatalogue`) — it is the cheap check that keeps the product from
+ * offering a purchase it cannot complete, on every read path.
+ */
+export function isUsableStripePriceId(id: string | null | undefined): id is string {
+  return typeof id === 'string' && id.startsWith('price_') && !id.startsWith(SEED_PRICE_PREFIX);
+}
+
+/**
+ * Redis key holding `event.created` (ms) of the newest subscription event we
+ * have APPLIED for one Stripe subscription id — the stale-replay ordering key
+ * (billing-06).
+ *
+ * WHY REDIS AND NOT THE ROW: the natural home is a column on `subscriptions`,
+ * which this package is not allowed to add. Losing the key degrades the guard
+ * to the pre-existing period-start comparison, i.e. to today's behaviour —
+ * never to something worse — so a Redis flush costs protection, not
+ * correctness.
+ */
+const SUB_EVENT_KEY = (subscriptionId: string) => `billing:subevent:${subscriptionId}`;
+/**
+ * Long enough to outlast every Stripe redelivery window (3 days) and the retry
+ * sweep's give-up budget (24h) many times over, short enough that dead
+ * subscriptions do not accumulate keys forever.
+ */
+const SUB_EVENT_TTL_SEC = 90 * 24 * 60 * 60;
 
 /**
  * Redis key holding the Checkout session a tenant currently has open.
@@ -95,6 +142,37 @@ function parseCheckoutMarker(raw: string | null): CheckoutMarker | null {
  */
 function epochSecsToDate(secs: number | null | undefined): Date | null {
   return typeof secs === 'number' && Number.isFinite(secs) ? new Date(secs * 1000) : null;
+}
+
+/**
+ * Stripe `billing_reason` values that can only appear on an invoice raised for
+ * a subscription that ALREADY EXISTS — i.e. one whose first invoice settled.
+ *
+ * billing-05. The grace window keeps the full paid tier alive for a week, and
+ * it is meant for an established payer whose card lapsed at renewal. The one
+ * reason that is NOT in this set — `subscription_create` — is the first invoice
+ * of a brand-new subscription, whose failure means nobody has ever paid us.
+ */
+const SETTLED_INVOICE_REASONS: ReadonlySet<string> = new Set([
+  'subscription_cycle', // a renewal
+  'subscription_update', // a proration after a plan change
+  'subscription_threshold', // usage threshold billing
+]);
+
+/**
+ * Does this failed invoice prove the library has paid us before?
+ *
+ * Answers FALSE for anything it cannot read — an absent or unrecognised
+ * `billing_reason`, a `subscription_create`. That direction is deliberate:
+ * being wrong towards "no grace" costs a paying library up to a week of
+ * gated features it can end by paying, while being wrong towards "grace"
+ * hands the top tier to a subscription that never settled a single invoice,
+ * which is the finding.
+ */
+function hasSettledInvoiceBefore(payload: StripeInvoiceShape): boolean {
+  return typeof payload.billing_reason === 'string'
+    ? SETTLED_INVOICE_REASONS.has(payload.billing_reason)
+    : false;
 }
 
 /**
@@ -215,8 +293,13 @@ export class BillingService {
       monthlyPriceCents: p.monthlyPriceCents,
       annualPriceCents: p.annualPriceCents,
       currency: p.currency,
-      hasStripePrice: !!p.stripePriceId,
-      hasStripeAnnualPrice: !!p.stripeAnnualPriceId,
+      // billing-10: NOT `!!p.stripePriceId`. Every paid plan ships a
+      // `price_seed_*` placeholder to satisfy the CHECK constraint, so the
+      // non-null test reported every plan bookable on a database where none of
+      // them were — which is what made both the UI button and the operator's
+      // go-live verification vacuous. See `isUsableStripePriceId`.
+      hasStripePrice: isUsableStripePriceId(p.stripePriceId),
+      hasStripeAnnualPrice: isUsableStripePriceId(p.stripeAnnualPriceId),
       isCurrent: p.id === sub?.planId,
       sortOrder: p.sortOrder,
     }));
@@ -312,10 +395,16 @@ export class BillingService {
   }
 
   /**
-   * Record the library's explicit choice of a FREE plan (the chooser path).
-   * Paid plans never reach here — the chooser routes those to Stripe Checkout,
-   * and `startCheckout` stamps the choice. Stamping `planSelectedAt` is what
-   * clears the forced full-page chooser.
+   * Record the library's explicit choice of a FREE plan.
+   *
+   * Two callers, and they are in different situations:
+   *   - the full-page chooser, for a library that has never picked anything;
+   *   - the billing page's "Switch to Starter" card (billing-11), for a
+   *     library that may be PAYING right now.
+   *
+   * Paid plans never reach here — both surfaces route those to Checkout, and
+   * `startCheckout` stamps the choice. Stamping `planSelectedAt` is what clears
+   * the forced full-page chooser.
    */
   async selectPlan(tenantId: string, input: { planSlug: string }): Promise<BillingSnapshot> {
     await this.assertBillingEnabled();
@@ -330,6 +419,28 @@ export class BillingService {
         'That plan requires payment — start checkout to add a payment method.',
       );
     }
+
+    // billing-11. A library that is PAYING and picks the free tier is asking to
+    // stop being charged. Writing planId=starter locally and saying nothing to
+    // Stripe would do the opposite of what they asked twice over: the card
+    // keeps being charged every month, AND they lose the features they are
+    // still paying for the moment the row moves. So this is a cancellation, and
+    // it takes the same route the Cancel button does — Stripe stops the renewal
+    // at period end, they keep what they paid for until then, and
+    // `customer.subscription.deleted` moves the row to Starter when the period
+    // actually ends.
+    if (sub.stripeSubscriptionId) {
+      // Stamp the choice first: the plan itself does not move until the webhook
+      // lands, and until it does the tenant must not be bounced to the chooser.
+      await controlDb.subscription.updateMany({
+        where: { tenantId, planSelectedAt: null },
+        data: { planSelectedAt: new Date() },
+      });
+      // Throws for a manually-billed tenant, which is correct: there is nothing
+      // self-serve to cancel and the message says who to contact.
+      return this.cancelAtPeriodEnd(tenantId);
+    }
+
     await controlDb.subscription.update({
       where: { tenantId },
       data: {
@@ -380,6 +491,21 @@ export class BillingService {
         "That plan is billed manually — contact us and we'll set it up by invoice.",
       );
     }
+    // billing-11: a FREE plan has nothing to check out, and Checkout in
+    // `mode:'subscription'` cannot express "charge nothing". Starter is
+    // `billingMode='stripe'` with `monthlyPriceCents=0` only because the
+    // `plans_stripe_price_matches_mode` CHECK constraint forces a stripe-mode
+    // plan to carry a price id — so it reaches here looking bookable. The
+    // billing page's "Switch to Starter" button used to post straight into this
+    // method and get Stripe's `No such price: price_seed_starter` back as a
+    // 500. Free choices belong to `selectPlan`, which also stops the live
+    // subscription first.
+    if (plan.monthlyPriceCents <= 0) {
+      throw new BadRequestException(
+        `Plan "${input.planSlug}" is free — there is nothing to check out. ` +
+          'Choose it directly instead; any paid subscription is cancelled at period end.',
+      );
+    }
     const wantsAnnual = input.interval === 'year';
     const priceId = wantsAnnual ? plan.stripeAnnualPriceId : plan.stripePriceId;
     if (!priceId) {
@@ -387,6 +513,22 @@ export class BillingService {
         wantsAnnual
           ? `Plan "${input.planSlug}" is not offered annually.`
           : `Plan "${input.planSlug}" has no Stripe price configured. Ask an admin to fix the plan.`,
+      );
+    }
+    // billing-10: "configured" has to mean more than "not null". The seed ships
+    // `price_seed_*` on every paid plan, so this check used to pass on a
+    // database where no Stripe Product exists at all — the tenant reached
+    // Stripe and got `No such price` after the UI had promised them a purchase.
+    // Refuse here, where the message can name the fix, rather than at Stripe.
+    if (!isUsableStripePriceId(priceId)) {
+      this.logger.error(
+        `Tenant ${tenantId} tried to buy ${plan.slug} (${wantsAnnual ? 'annual' : 'monthly'}) but ` +
+          `its Stripe price id is the seeded placeholder "${priceId}". Run the catalogue audit ` +
+          '(GET /admin/billing/price-catalogue) and set the real Price ids before selling anything.',
+      );
+      throw new BadRequestException(
+        `Plan "${input.planSlug}" is not connected to Stripe yet — its price is still a ` +
+          'placeholder. Nothing has been charged. Please contact us so we can finish setting it up.',
       );
     }
     if (plan.id === sub.planId && sub.status === 'active') {
@@ -727,10 +869,50 @@ export class BillingService {
     const plan = await controlDb.plan.findUnique({ where: { slug: input.planSlug } });
     if (!plan || plan.archivedAt) throw new NotFoundException(`Plan "${input.planSlug}" missing.`);
     // Snapshot the prior plan/status for the audit diff before we overwrite it.
+    // `stripeSubscriptionId` is in the select for two reasons: the cancellation
+    // below needs it, and once we null it the audit row is the ONLY remaining
+    // record of which Stripe subscription this tenant was on.
     const before = await controlDb.subscription.findUnique({
       where: { tenantId },
-      select: { planId: true, billingMode: true, status: true, plan: { select: { slug: true } } },
+      select: {
+        planId: true,
+        billingMode: true,
+        status: true,
+        stripeSubscriptionId: true,
+        plan: { select: { slug: true } },
+      },
     });
+
+    // billing-12. This used to write the new plan and deliberately leave
+    // `stripeSubscriptionId` alone, under a comment saying Stripe stays the
+    // source of truth for that subscription's lifecycle — but no code ever
+    // ended it. Moving a paying library onto a contract/on-prem plan is the
+    // normal reason an operator touches this endpoint, and it left the card
+    // being charged every month WHILE removing the library's own stop button:
+    // once billingMode is `manual`, `cancelAtPeriodEnd` refuses ("your library
+    // is billed manually"), `openCustomerPortal` refuses, and the billing page
+    // renders a static notice instead of BillingActions. The same trap applies
+    // to a move onto the free tier, which is also "you are no longer buying a
+    // paid Stripe plan".
+    //
+    // Cancel at PERIOD END, not immediately: the current period is already
+    // paid for and clawing it back is not ours to decide. The cancel happens
+    // BEFORE the local write and its failure propagates, so the change cannot
+    // half-apply into "moved off Stripe in our database, still billing at
+    // Stripe" — which is the exact state this finding describes.
+    const leavingPaidStripe = plan.billingMode !== 'stripe' || plan.monthlyPriceCents <= 0;
+    const liveSubscriptionId = before?.stripeSubscriptionId ?? null;
+    const stoppingStripe = Boolean(liveSubscriptionId) && leavingPaidStripe;
+    if (stoppingStripe && liveSubscriptionId) {
+      await this.stripe.cancelSubscriptionAtPeriodEnd(liveSubscriptionId);
+      this.logger.warn(
+        `Admin moved tenant ${tenantId} onto ${plan.slug} (${plan.billingMode}, ` +
+          `${plan.monthlyPriceCents} cents) — cancelled Stripe subscription ${liveSubscriptionId} ` +
+          'at period end so the card stops being charged. Refund the remainder in Stripe if the ' +
+          'contract starts sooner.',
+      );
+    }
+
     await controlDb.subscription.update({
       where: { tenantId },
       data: {
@@ -738,8 +920,11 @@ export class BillingService {
         billingMode: plan.billingMode,
         status: 'active',
         graceUntil: null,
-        // We don't touch stripeSubscriptionId here — if it's set, Stripe is
-        // still the source of truth for that subscription's lifecycle.
+        // Only when we actually stopped it. Otherwise Stripe remains the source
+        // of truth for a subscription that is still live and still ours.
+        ...(stoppingStripe
+          ? { stripeSubscriptionId: null, cancelAtPeriodEnd: false, canceledAt: new Date() }
+          : {}),
       },
     });
     await this.effectivePlan.invalidate(tenantId);
@@ -754,6 +939,7 @@ export class BillingService {
             planId: before.planId,
             billingMode: before.billingMode,
             status: before.status,
+            stripeSubscriptionId: before.stripeSubscriptionId,
           }
         : undefined,
       after: {
@@ -761,6 +947,10 @@ export class BillingService {
         planId: plan.id,
         billingMode: plan.billingMode,
         status: 'active',
+        stripeSubscriptionId: stoppingStripe ? null : (before?.stripeSubscriptionId ?? null),
+        // Named in the audit row so "was the card stopped?" is answerable from
+        // the log, not only from the Stripe dashboard (billing-12).
+        stripeSubscriptionCancelledAtPeriodEnd: stoppingStripe,
       },
     });
     return this.getSnapshot(tenantId);
@@ -813,7 +1003,18 @@ export class BillingService {
    * past_due (or when no future grace window is already set), and otherwise
    * leave the existing deadline untouched.
    */
-  async recordPaymentFailure(tenantId: string): Promise<BillingSnapshot> {
+  async recordPaymentFailure(
+    tenantId: string,
+    /**
+     * billing-05. REQUIRED, not defaulted: a grace window handed out by
+     * accident is a paid tier handed out for free, and the whole finding is
+     * about a default nobody thought about. `hasSettledInvoice` is the
+     * caller's evidence that this library has actually paid us at least once —
+     * see `handleStripeInvoiceFailed`, which derives it from the invoice's
+     * `billing_reason`.
+     */
+    evidence: { hasSettledInvoice: boolean },
+  ): Promise<BillingSnapshot> {
     const env = loadEnv();
     const sub = await controlDb.subscription.findUnique({
       where: { tenantId },
@@ -825,9 +1026,35 @@ export class BillingService {
     // first failure (or if a stale/elapsed window left graceUntil unset).
     const graceStillRunning =
       sub.status === 'past_due' && sub.graceUntil != null && sub.graceUntil.getTime() > now;
-    const graceUntil = graceStillRunning
-      ? sub.graceUntil
-      : new Date(now + env.billingGracePeriodDays * MS_PER_DAY);
+
+    // billing-05. The grace window keeps FULL paid entitlement alive for
+    // BILLING_GRACE_PERIOD_DAYS (effective-plan.service.ts admits
+    // `past_due AND graceUntil > now()`), and it exists to protect an
+    // established payer whose card lapsed between renewals. Arming it on the
+    // failure of a subscription's FIRST invoice grants the top tier to someone
+    // who has never paid a cent — the auditor executed exactly that and got
+    // `institutional past_due grace=+7d` on a subscription with no settled
+    // invoice. So: no settled invoice, no grace. The status still moves to
+    // past_due, which is true and which gates them, and a later
+    // `invoice.payment_succeeded` clears it the normal way.
+    const graceUntil = evidence.hasSettledInvoice
+      ? graceStillRunning
+        ? sub.graceUntil
+        : new Date(now + env.billingGracePeriodDays * MS_PER_DAY)
+      : // Never EXTEND on an unproven failure, but do not tear down a window a
+        // genuine renewal failure already armed either.
+        graceStillRunning
+        ? sub.graceUntil
+        : null;
+
+    if (!evidence.hasSettledInvoice && !graceStillRunning) {
+      this.logger.warn(
+        `Payment failed for tenant ${tenantId} on a subscription with no settled invoice — ` +
+          'marking past_due WITHOUT a grace window. Grace is for a renewal that failed, not for a ' +
+          'first payment that never succeeded.',
+      );
+    }
+
     await controlDb.subscription.update({
       where: { tenantId },
       data: { status: 'past_due', graceUntil },
@@ -854,15 +1081,23 @@ export class BillingService {
    * Sync a `customer.subscription.created|updated` payload into our local
    * `subscriptions` row. Resolves the local plan from `items[0].price.id`.
    */
-  async syncStripeSubscription(payload: StripeSubscriptionShape): Promise<void> {
-    const billing = await controlDb.billingAccount.findFirst({
-      where: { stripeCustomerId: payload.customer },
-      select: { tenantId: true },
-    });
-    if (!billing) {
-      this.logger.warn(`Webhook: no BillingAccount for customer ${payload.customer}`);
-      return;
-    }
+  async syncStripeSubscription(
+    payload: StripeSubscriptionShape,
+    /**
+     * The envelope this payload arrived in (billing-06). Optional ONLY because
+     * the retry sweep re-dispatches a stored `data.object` without it; every
+     * live delivery carries it. Absence is not silent — see
+     * `isStaleSubscriptionEvent`, which falls back to asking Stripe.
+     */
+    event?: StripeEventContext,
+  ): Promise<void> {
+    const tenantId = await this.tenantForStripeCustomer(
+      payload.customer,
+      `subscription ${payload.id}`,
+    );
+    if (!tenantId) return;
+    /** Kept as an object so the rest of this long method reads unchanged. */
+    const billing = { tenantId };
     const priceId = payload.items.data[0]?.price.id;
     if (!priceId) {
       this.logger.warn(`Webhook: subscription ${payload.id} has no price`);
@@ -910,6 +1145,10 @@ export class BillingService {
         graceUntil: true,
         stripeSubscriptionId: true,
         currentPeriodStart: true,
+        // Only read for the stale-replay guard (billing-06): "would this event
+        // MOVE the plan?" is what decides whether an un-orderable replay is
+        // worth verifying against Stripe.
+        planId: true,
       },
     });
 
@@ -934,6 +1173,16 @@ export class BillingService {
       );
       return;
     }
+
+    // billing-06: the guard above is INERT for exactly the events that matter.
+    // A mid-cycle plan change does not move the billing period — Stripe keeps
+    // `current_period_start` and prorates — so the upgrade event and the older
+    // event it supersedes carry an identical period start and the `<`
+    // comparison is false for both. Executed by the auditor: community →
+    // municipal → replay of the community event left the row on community
+    // while Stripe billed municipal, and nothing was logged. Order by the
+    // envelope instead.
+    if (await this.isStaleSubscriptionEvent(payload, priceId, plan.id, existing, event)) return;
 
     // Events about a subscription that is NOT the one we track.
     //
@@ -1006,6 +1255,11 @@ export class BillingService {
             : null,
       },
     });
+    // billing-06: remember how new this event was, so a later replay of an
+    // OLDER one is refused. Written after the row, never before: a marker
+    // ahead of the state it describes would reject the very event that still
+    // has to be applied.
+    await this.recordAppliedSubscriptionEvent(payload.id, event);
     // An active Stripe subscription is an explicit choice — stamp it if it
     // wasn't already (covers subs created outside our checkout flow, e.g. the
     // Stripe dashboard). `updateMany` keeps the original timestamp intact.
@@ -1047,16 +1301,32 @@ export class BillingService {
    * (`incomplete`) is cleared rather than becoming a lockout.
    */
   async handleCheckoutSessionCompleted(payload: StripeCheckoutSessionShape): Promise<void> {
+    // `client_reference_id` is the tenant id we set on every session we open
+    // (stripe-real.driver.ts). Prefer it: it NAMES the library, where the
+    // customer lookup only infers one — and billing-07 is what a lookup that
+    // matches the wrong row costs. Both are validated as non-empty strings
+    // before they reach Prisma.
+    const referenced =
+      typeof payload.client_reference_id === 'string' && payload.client_reference_id.length > 0
+        ? payload.client_reference_id
+        : null;
     const tenantId =
-      payload.client_reference_id ??
-      (
-        await controlDb.billingAccount.findFirst({
-          where: { stripeCustomerId: payload.customer },
-          select: { tenantId: true },
-        })
-      )?.tenantId ??
-      null;
+      referenced ??
+      (await this.tenantForStripeCustomer(payload.customer, `checkout session ${payload.id}`));
     if (!tenantId) return;
+
+    // billing-09, repair half. `ensureStripeCustomer` was read-then-create with
+    // no lock, so two concurrent purchase starts could each create a Stripe
+    // customer and the second local write won. If the library then paid on the
+    // LOSER, every later webhook for it failed the `stripeCustomerId` lookup
+    // and returned after a warn line — a live subscription charging a card that
+    // our database cannot connect to any tenant. The session we are holding
+    // names both sides of that mismatch, so it is the one place we can repair
+    // it. Only ever fills a NULL: overwriting a customer id we already track
+    // would be the same erasure in the other direction.
+    if (referenced && typeof payload.customer === 'string' && payload.customer.length > 0) {
+      await this.adoptCheckoutCustomer(referenced, payload.customer, payload.id);
+    }
 
     if (!payload.subscription) {
       // `mode:'subscription'` sessions carry one; a session that completed
@@ -1103,11 +1373,12 @@ export class BillingService {
 
   /** Stripe killed the subscription (final cancellation). Downgrade to Starter. */
   async handleStripeSubscriptionDeleted(payload: StripeSubscriptionShape): Promise<void> {
-    const billing = await controlDb.billingAccount.findFirst({
-      where: { stripeCustomerId: payload.customer },
-      select: { tenantId: true },
-    });
-    if (!billing) return;
+    const tenantId = await this.tenantForStripeCustomer(
+      payload.customer,
+      `subscription.deleted ${payload.id}`,
+    );
+    if (!tenantId) return;
+    const billing = { tenantId };
     // STRIPE-RETRY-STALE-REPLAY (delete path): only act on a delete for the
     // subscription we currently track. A customer can churn and re-subscribe on
     // a NEW subscription id; the retry sweep (or out-of-order delivery) may then
@@ -1117,12 +1388,30 @@ export class BillingService {
     // track none (or the same id), the downgrade is legitimate.
     const existing = await controlDb.subscription.findUnique({
       where: { tenantId: billing.tenantId },
-      select: { stripeSubscriptionId: true },
+      select: { stripeSubscriptionId: true, billingMode: true },
     });
     if (existing?.stripeSubscriptionId != null && existing.stripeSubscriptionId !== payload.id) {
       this.logger.warn(
         `Webhook: ignoring stale subscription.deleted for ${payload.id} ` +
           `(tenant now on ${existing.stripeSubscriptionId})`,
+      );
+      return;
+    }
+    // billing-12, second half. A tenant an operator moved onto a manual /
+    // contract plan is no longer governed by Stripe — `cancelAtPeriodEnd` and
+    // `openCustomerPortal` both already refuse for `manual`, and the billing
+    // page hides the actions entirely. The admin path now cancels the leftover
+    // Stripe subscription and clears the pointer, which means the cancellation
+    // Stripe delivers weeks later arrives at a row with
+    // `stripeSubscriptionId = null` — and the stale-delete guard above passes
+    // trivially for that. Without this the delete would drag a contracted
+    // library back to Starter, silently undoing the plan an operator set by
+    // hand. Stripe deleting a subscription we deliberately ended is expected,
+    // not news.
+    if (existing?.billingMode === 'manual') {
+      this.logger.log(
+        `Webhook: ignoring subscription.deleted for ${payload.id} — tenant ${billing.tenantId} is ` +
+          'billed manually and its plan is not governed by Stripe.',
       );
       return;
     }
@@ -1157,7 +1446,9 @@ export class BillingService {
   async handleStripeInvoiceFailed(payload: StripeInvoiceShape): Promise<void> {
     const tenantId = await this.tenantForSubscriptionInvoice(payload);
     if (!tenantId) return;
-    await this.recordPaymentFailure(tenantId);
+    await this.recordPaymentFailure(tenantId, {
+      hasSettledInvoice: hasSettledInvoiceBefore(payload),
+    });
   }
 
   /**
@@ -1174,19 +1465,108 @@ export class BillingService {
    */
   private async tenantForSubscriptionInvoice(payload: StripeInvoiceShape): Promise<string | null> {
     if (!payload.subscription) return null;
-    const billing = await controlDb.billingAccount.findFirst({
-      where: { stripeCustomerId: payload.customer },
-      select: { tenantId: true },
-    });
-    if (!billing) return null;
+    const tenantId = await this.tenantForStripeCustomer(payload.customer, `invoice ${payload.id}`);
+    if (!tenantId) return null;
     const sub = await controlDb.subscription.findUnique({
-      where: { tenantId: billing.tenantId },
+      where: { tenantId },
       select: { stripeSubscriptionId: true },
     });
     if (!sub?.stripeSubscriptionId || sub.stripeSubscriptionId !== payload.subscription) {
       return null;
     }
+    return tenantId;
+  }
+
+  /**
+   * Resolve the library a webhook payload is about from its Stripe CUSTOMER
+   * id, refusing a payload that does not name one.
+   *
+   * billing-07, executed by the auditor. Every call site used to pass
+   * `payload.customer` straight into
+   * `billingAccount.findFirst({ where: { stripeCustomerId } })` with no check
+   * that it was a string. Prisma renders a null filter value as
+   * `stripeCustomerId IS NULL`, and `signup.service.ts` creates a
+   * `billing_accounts` row with a NULL customer id for EVERY tenant — 44 of the
+   * 46 rows on the audit control plane. So a payload with `customer: null` did
+   * not fail to match; it matched an arbitrary library and the handler rewrote
+   * that library's plan, billingMode and subscription id. The proof run moved
+   * an unrelated tenant to `institutional / sub_nullcustomer` from a payload
+   * that never named it, over HTTP 200.
+   *
+   * Stripe never emits a subscription or invoice event without a customer, so a
+   * payload that reaches here without one is malformed or forged. Log at error
+   * level and refuse — guessing a victim is strictly worse than doing nothing.
+   */
+  private async tenantForStripeCustomer(
+    customer: unknown,
+    context: string,
+  ): Promise<string | null> {
+    if (typeof customer !== 'string' || customer.length === 0) {
+      this.logger.error(
+        `Webhook (${context}): payload carries no Stripe customer id (${JSON.stringify(customer)}) ` +
+          '— refusing to guess which library it is about. Stripe never sends this; the delivery is ' +
+          'malformed or forged.',
+      );
+      return null;
+    }
+    const billing = await controlDb.billingAccount.findFirst({
+      where: { stripeCustomerId: customer },
+      select: { tenantId: true },
+    });
+    if (!billing) {
+      this.logger.warn(`Webhook (${context}): no BillingAccount for customer ${customer}`);
+      return null;
+    }
     return billing.tenantId;
+  }
+
+  /**
+   * Fill in a `billing_accounts.stripeCustomerId` that is still NULL from the
+   * Checkout session that just completed (billing-09).
+   *
+   * Only ever fills a null — never overwrites — and reports a genuine mismatch
+   * loudly instead: two different customer ids for one tenant means a duplicate
+   * exists at Stripe and a human has to merge them. The unique index on
+   * `stripeCustomerId` can also reject this write (the id already belongs to
+   * another tenant, which would be a `client_reference_id` that does not match
+   * the customer); that is caught and reported rather than failing the webhook,
+   * because the subscription pointer below is the part that must land.
+   */
+  private async adoptCheckoutCustomer(
+    tenantId: string,
+    customerId: string,
+    sessionId: string,
+  ): Promise<void> {
+    try {
+      const claimed = await controlDb.billingAccount.updateMany({
+        where: { tenantId, stripeCustomerId: null },
+        data: { stripeCustomerId: customerId },
+      });
+      if (claimed.count > 0) {
+        this.logger.warn(
+          `Tenant ${tenantId} had no Stripe customer id on file; adopting ${customerId} from ` +
+            `completed Checkout session ${sessionId}. Without this every later webhook for that ` +
+            'customer would have found no library and been dropped.',
+        );
+        return;
+      }
+      const account = await controlDb.billingAccount.findUnique({
+        where: { tenantId },
+        select: { stripeCustomerId: true },
+      });
+      if (account && account.stripeCustomerId !== customerId) {
+        this.logger.error(
+          `Tenant ${tenantId} paid on Stripe customer ${customerId} (session ${sessionId}) while ` +
+            `we track ${account.stripeCustomerId}. Two customers exist for one library — merge ` +
+            'them in Stripe, or webhooks for the other one will be dropped.',
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `Could not reconcile the Stripe customer for tenant ${tenantId} from session ` +
+          `${sessionId}: ${(err as Error).message}`,
+      );
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1389,8 +1769,361 @@ export class BillingService {
   }
 
   /**
+   * Reconcile the local price catalogue against Stripe (billing-10).
+   *
+   * NOTHING did this. `PATCH /admin/plans/:slug` takes `stripePriceId` and
+   * `stripeAnnualPriceId` as bare optional strings — no format check, no call
+   * to Stripe, no check that the amount or the currency or the RECURRING
+   * INTERVAL match the column the id is being written into, and no guard
+   * against the same id landing in both columns. A monthly id pasted into the
+   * annual column bills €39 a month to a library that clicked "390 € a year",
+   * and nothing in the product can tell. Meanwhile the go-live check the
+   * operator was told to run asked only whether `hasStripeAnnualPrice` was
+   * true, which was `!!stripeAnnualPriceId` — true for every `price_seed_*`
+   * placeholder the seed ships. The single mechanical safeguard reported
+   * success on the seed data it existed to catch.
+   *
+   * This is the check that can fail. It is read-only, it names every problem in
+   * plain language, and it is what `docs/billing-go-live.md` now points the
+   * operator at.
+   *
+   * Amounts are compared as integers throughout — Stripe reports minor units
+   * and `plans.monthlyPriceCents` stores minor units. No float ever appears.
+   */
+  async auditPriceCatalogue(): Promise<{
+    driver: 'real' | 'fake' | 'disabled';
+    ok: boolean;
+    checkedAt: string;
+    plans: Array<{
+      slug: string;
+      billingMode: BillingMode;
+      currency: string;
+      monthlyPriceCents: number;
+      annualPriceCents: number | null;
+      stripePriceId: string | null;
+      stripeAnnualPriceId: string | null;
+      /** Empty when this plan is ready to sell. */
+      problems: string[];
+      /** Things worth knowing that are NOT defects. */
+      notes: string[];
+    }>;
+  }> {
+    const plans = await controlDb.plan.findMany({
+      where: { archivedAt: null, isActive: true },
+      orderBy: { sortOrder: 'asc' },
+    });
+    /** Memoised so two plans sharing an id cost one Stripe call, not two. */
+    const priceCache = new Map<string, Awaited<ReturnType<StripeDriver['getPrice']>> | 'error'>();
+    const lookup = async (id: string) => {
+      const hit = priceCache.get(id);
+      if (hit !== undefined) return hit;
+      let result: Awaited<ReturnType<StripeDriver['getPrice']>> | 'error';
+      try {
+        result = await this.stripe.getPrice(id);
+      } catch (err) {
+        this.logger.warn(`Catalogue audit: Stripe refused price ${id}: ${(err as Error).message}`);
+        result = 'error';
+      }
+      priceCache.set(id, result);
+      return result;
+    };
+
+    const rows: Array<{
+      slug: string;
+      billingMode: BillingMode;
+      currency: string;
+      monthlyPriceCents: number;
+      annualPriceCents: number | null;
+      stripePriceId: string | null;
+      stripeAnnualPriceId: string | null;
+      problems: string[];
+      notes: string[];
+    }> = [];
+
+    for (const plan of plans) {
+      const problems: string[] = [];
+      const notes: string[] = [];
+      const paidStripe = plan.billingMode === 'stripe' && plan.monthlyPriceCents > 0;
+
+      if (
+        plan.stripePriceId != null &&
+        plan.stripeAnnualPriceId != null &&
+        plan.stripePriceId === plan.stripeAnnualPriceId
+      ) {
+        // Both unique indexes are satisfied by this, so the database accepts it
+        // (executed by the auditor). One of the two cadences is then charged at
+        // the other's interval.
+        problems.push(
+          `the monthly and annual columns hold the SAME price id (${plan.stripePriceId}) — ` +
+            'one of the two cadences will charge the wrong interval',
+        );
+      }
+
+      const columns: Array<{
+        label: string;
+        id: string | null;
+        expectedCents: number | null;
+        expectedInterval: 'month' | 'year';
+        required: boolean;
+      }> = [
+        {
+          label: 'monthly',
+          id: plan.stripePriceId,
+          expectedCents: plan.monthlyPriceCents,
+          expectedInterval: 'month',
+          required: paidStripe,
+        },
+        {
+          label: 'annual',
+          id: plan.stripeAnnualPriceId,
+          expectedCents: plan.annualPriceCents,
+          expectedInterval: 'year',
+          // An annual price is only required once the plan advertises one.
+          required: paidStripe && plan.annualPriceCents != null,
+        },
+      ];
+
+      // A plan nobody can buy through Checkout cannot mis-bill anybody, and its
+      // price id is never read: `startCheckout` refuses a plan priced at zero
+      // (billing-11) and refuses a non-stripe plan outright. Starter is the
+      // case that matters — the `plans_stripe_price_matches_mode` CHECK
+      // constraint FORCES a stripe-mode plan to carry a price id, and
+      // `UPDATE plans SET "stripePriceId"=NULL WHERE slug='starter'` is
+      // rejected with 23514, so its `price_seed_starter` can never be removed
+      // without a migration. Reporting it as a problem every single time would
+      // make `ok` permanently false, and a check that can never go green is a
+      // check people learn to ignore. Say it once, as a note.
+      if (!paidStripe) {
+        if (plan.stripePriceId != null || plan.stripeAnnualPriceId != null) {
+          notes.push(
+            `not sold through Checkout (${plan.billingMode}, ${plan.monthlyPriceCents} minor units) — ` +
+              `its price id ${plan.stripePriceId ?? plan.stripeAnnualPriceId} is never used and is not verified`,
+          );
+        }
+        rows.push({
+          slug: plan.slug,
+          billingMode: plan.billingMode,
+          currency: plan.currency,
+          monthlyPriceCents: plan.monthlyPriceCents,
+          annualPriceCents: plan.annualPriceCents,
+          stripePriceId: plan.stripePriceId,
+          stripeAnnualPriceId: plan.stripeAnnualPriceId,
+          problems,
+          notes,
+        });
+        continue;
+      }
+
+      for (const column of columns) {
+        if (column.id == null) {
+          if (column.required) problems.push(`no ${column.label} Stripe price id is set`);
+          continue;
+        }
+        if (!isUsableStripePriceId(column.id)) {
+          problems.push(
+            `the ${column.label} price id "${column.id}" is a seeded placeholder, not a Stripe ` +
+              'Price — replace it with the real id from the Stripe Dashboard',
+          );
+          continue;
+        }
+        const price = await lookup(column.id);
+        if (price === 'error') {
+          problems.push(`Stripe could not be asked about the ${column.label} price ${column.id}`);
+          continue;
+        }
+        if (price === null) {
+          problems.push(
+            `Stripe has no Price ${column.id} (${column.label}) — Checkout would fail on it`,
+          );
+          continue;
+        }
+        if (!price.active) problems.push(`the ${column.label} Price ${column.id} is archived`);
+        if (price.currency.toLowerCase() !== plan.currency.toLowerCase()) {
+          problems.push(
+            `the ${column.label} Price ${column.id} is in ${price.currency.toUpperCase()} but the ` +
+              `plan is priced in ${plan.currency.toUpperCase()}`,
+          );
+        }
+        if (column.expectedCents != null && price.unitAmount !== column.expectedCents) {
+          problems.push(
+            `the ${column.label} Price ${column.id} charges ${price.unitAmount ?? 'a variable amount'} ` +
+              `but the plan advertises ${column.expectedCents} (minor units) — the page and the ` +
+              'card would disagree',
+          );
+        }
+        if (price.interval !== column.expectedInterval || price.intervalCount !== 1) {
+          problems.push(
+            `the ${column.label} Price ${column.id} recurs every ${price.intervalCount ?? '?'} ` +
+              `${price.interval ?? 'one-off'} — the ${column.label} column must hold a ` +
+              `1-${column.expectedInterval} Price`,
+          );
+        }
+      }
+
+      rows.push({
+        slug: plan.slug,
+        billingMode: plan.billingMode,
+        currency: plan.currency,
+        monthlyPriceCents: plan.monthlyPriceCents,
+        annualPriceCents: plan.annualPriceCents,
+        stripePriceId: plan.stripePriceId,
+        stripeAnnualPriceId: plan.stripeAnnualPriceId,
+        problems,
+        notes,
+      });
+    }
+
+    return {
+      driver: this.stripe.kind,
+      ok: rows.every((r) => r.problems.length === 0),
+      checkedAt: new Date().toISOString(),
+      plans: rows,
+    };
+  }
+
+  /**
+   * Is this subscription event OLDER than the newest one we already applied for
+   * the same subscription (billing-06)?
+   *
+   * Two regimes, because the two dispatchers know different things:
+   *
+   *   LIVE DELIVERY (`event` present) — the webhook route hands us the
+   *   envelope's `created`, which is the only monotonic ordering key a
+   *   subscription event carries. Compare it with the newest we have applied
+   *   for this subscription id. This is the case the finding executed: two
+   *   `customer.subscription.updated` events whose delivery order Stripe does
+   *   not guarantee.
+   *
+   *   RETRY SWEEP (`event` absent) — the sweep re-dispatches a stored
+   *   `data.object` with no envelope, and that is exactly the second live path
+   *   the verifier named: an event whose first dispatch errored, re-dispatched
+   *   after a newer one has already been applied. With no timestamp to order
+   *   by, ask the authority instead — if Stripe says the subscription is on a
+   *   different price than this event claims, the event has been overtaken.
+   *   Fail SOFT: an unreachable Stripe here must not turn a webhook into an
+   *   error, it just leaves us where we were before this guard existed.
+   */
+  private async isStaleSubscriptionEvent(
+    payload: StripeSubscriptionShape,
+    eventPriceId: string,
+    eventPlanId: string,
+    existing: { stripeSubscriptionId: string | null; planId?: string } | null,
+    event: StripeEventContext | undefined,
+  ): Promise<boolean> {
+    if (event) {
+      const lastApplied = await this.lastAppliedSubscriptionEventMs(payload.id);
+      if (lastApplied != null && event.createdAt.getTime() < lastApplied) {
+        this.logger.warn(
+          `Webhook: ignoring stale subscription event ${event.id} for ${payload.id} — it was ` +
+            `created ${event.createdAt.toISOString()}, and we have already applied an event ` +
+            `created ${new Date(lastApplied).toISOString()} for the same subscription. Applying it ` +
+            'would revert the plan while Stripe keeps billing the newer one.',
+        );
+        return true;
+      }
+      return false;
+    }
+
+    // No envelope. Only worth a Stripe round trip when the event would MOVE the
+    // plan of a subscription we already track — a renewal that changes nothing
+    // is not worth a network call, and a brand-new subscription has nothing to
+    // be stale against.
+    if (existing?.stripeSubscriptionId !== payload.id) return false;
+    if (existing.planId != null && existing.planId === eventPlanId) return false;
+
+    let state: StripeSubscriptionState | null;
+    try {
+      state = await this.stripe.getSubscription(payload.id);
+    } catch (err) {
+      this.logger.warn(
+        `Could not ask Stripe whether the replayed event for ${payload.id} is still current ` +
+          `(${(err as Error).message}) — applying it as received.`,
+      );
+      return false;
+    }
+    // `priceId` is null when the driver has no opinion (the in-memory
+    // stand-in, or a multi-item subscription a human edited in the Dashboard).
+    // No opinion is not disagreement.
+    if (!state || state.priceId == null || state.priceId === eventPriceId) return false;
+
+    this.logger.warn(
+      `Webhook: ignoring replayed subscription event for ${payload.id} — it carries price ` +
+        `${eventPriceId} but Stripe now has the subscription on ${state.priceId}. The event has ` +
+        'been overtaken; applying it would revert the plan while Stripe bills the newer price.',
+    );
+    return true;
+  }
+
+  /** Newest applied `event.created` (ms) for a subscription id, or null. */
+  private async lastAppliedSubscriptionEventMs(subscriptionId: string): Promise<number | null> {
+    if (!this.redis) return null;
+    try {
+      const raw = await this.redis.client.get(SUB_EVENT_KEY(subscriptionId));
+      const ms = raw == null ? Number.NaN : Number(raw);
+      return Number.isFinite(ms) ? ms : null;
+    } catch (err) {
+      // Redis down → no ordering information → apply, which is what this code
+      // did before the guard existed. Degrading to the old behaviour is the
+      // right failure mode for a guard whose store is an optimisation; the
+      // durable period-start comparison in the caller still runs.
+      this.logger.warn(
+        `Could not read the applied-event marker for ${subscriptionId}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Record how new the event we just applied was. Read-then-write rather than a
+   * bare SET: two events for one subscription can be in flight at once (the
+   * controller serializes per EVENT id, not per subscription), and the marker
+   * must only ever move forwards.
+   *
+   * A sweep replay applies with no envelope and therefore does not move the
+   * marker — it cannot, it has no timestamp — which leaves the marker at the
+   * last live delivery. That is the conservative direction: the marker stays
+   * older, so it rejects less, never more.
+   */
+  private async recordAppliedSubscriptionEvent(
+    subscriptionId: string,
+    event: StripeEventContext | undefined,
+  ): Promise<void> {
+    if (!this.redis || !event) return;
+    try {
+      const current = await this.lastAppliedSubscriptionEventMs(subscriptionId);
+      const next = event.createdAt.getTime();
+      if (current != null && current >= next) return;
+      await this.redis.client.set(
+        SUB_EVENT_KEY(subscriptionId),
+        String(next),
+        'EX',
+        SUB_EVENT_TTL_SEC,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Could not record the applied-event marker for ${subscriptionId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
    * Get-or-create the tenant's Stripe Customer. The id is cached on the
    * `billing_accounts` row so we never create duplicates.
+   *
+   * billing-09. This was read → `stripe.customers.create` → write, with a
+   * network round trip and no lock, transaction or idempotency key in between.
+   * Two concurrent purchase starts for the same library — the billing page open
+   * in two tabs — both read "no customer", both created one, and the second
+   * write silently overwrote the first. Whichever customer the user's Checkout
+   * session had used then decided whether we would ever hear about the
+   * subscription: a session on the loser produces a live, charging subscription
+   * that every webhook drops, because `findFirst({stripeCustomerId})` cannot
+   * find it. The library stays on the free plan and is billed monthly anyway.
+   *
+   * Two changes close it. The Idempotency-Key means Stripe hands both racers
+   * the SAME customer, so the duplicate is never created; the conditional write
+   * means the loser ADOPTS the winner's id rather than clobbering it, so the
+   * row and Stripe agree either way.
    */
   private async ensureStripeCustomer(tenantId: string): Promise<string> {
     const account = await controlDb.billingAccount.findUnique({ where: { tenantId } });
@@ -1400,27 +2133,55 @@ export class BillingService {
       select: { id: true, slug: true, name: true, primaryEmail: true },
     });
     if (!tenant) throw new NotFoundException('Tenant not found.');
+    const billingEmail = tenant.primaryEmail ?? `billing@${tenant.slug}.libriant.com`;
     const { customerId } = await this.stripe.createCustomer({
       tenantId: tenant.id,
       tenantSlug: tenant.slug,
-      email: tenant.primaryEmail ?? `billing@${tenant.slug}.libriant.com`,
+      email: billingEmail,
       name: tenant.name,
+      // Stable per tenant, so a concurrent second call is answered with the
+      // first call's customer instead of a new one.
+      idempotencyKey: `libriant:customer:${tenant.id}`,
     });
-    if (account) {
-      await controlDb.billingAccount.update({
-        where: { tenantId },
-        data: { stripeCustomerId: customerId },
-      });
-    } else {
-      await controlDb.billingAccount.create({
-        data: {
-          tenantId,
-          stripeCustomerId: customerId,
-          billingEmail: tenant.primaryEmail ?? `billing@${tenant.slug}.libriant.com`,
-          billingName: tenant.name,
-        },
-      });
+
+    // Claim the column only while it is still empty. `updateMany` rather than
+    // `update` because the where-clause carries the condition: a racer that
+    // wrote first keeps its id and we adopt it below.
+    const claimed = await controlDb.billingAccount.updateMany({
+      where: { tenantId, stripeCustomerId: null },
+      data: { stripeCustomerId: customerId },
+    });
+    if (claimed.count > 0) return customerId;
+
+    // Nothing claimed: either another request won the race, or this tenant has
+    // no billing_accounts row at all (every signup writes one, so this is the
+    // rare path).
+    const winner = await controlDb.billingAccount.findUnique({
+      where: { tenantId },
+      select: { stripeCustomerId: true },
+    });
+    if (winner?.stripeCustomerId) {
+      if (winner.stripeCustomerId !== customerId) {
+        // Only reachable if the idempotency key did not apply — e.g. the two
+        // calls were more than 24h apart, which needs the first one's write to
+        // have failed. Loud, because two customers for one library splits its
+        // billing history and someone has to merge them.
+        this.logger.error(
+          `Tenant ${tenantId} raced itself into TWO Stripe customers: keeping ` +
+            `${winner.stripeCustomerId} (already on file) and abandoning ${customerId}. ` +
+            'Delete the abandoned one in Stripe before anything is charged on it.',
+        );
+      }
+      return winner.stripeCustomerId;
     }
+    await controlDb.billingAccount.create({
+      data: {
+        tenantId,
+        stripeCustomerId: customerId,
+        billingEmail,
+        billingName: tenant.name,
+      },
+    });
     return customerId;
   }
 }

@@ -42,6 +42,15 @@ function makeFakeRedis() {
   return { client, store };
 }
 
+/**
+ * tenant-isolation-03: the fixture carries a REAL-SHAPED superuser URL, with a
+ * password, on purpose. The previous `postgresql://x/y` had no credential in
+ * it, so a test asserting "the cache holds no password" would have passed
+ * against the very code that leaked one.
+ */
+const SUPERUSER_DB_URL = 'postgresql://libriant:s3cr3t-pg-pw@postgres:5432/tenant_tnt1';
+const TENANT_STORAGE_URL = 'file:///srv/libriant/storage/tnt-1';
+
 function tenantRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: 'tnt-1',
@@ -49,8 +58,8 @@ function tenantRow(overrides: Partial<Record<string, unknown>> = {}) {
     name: 'Acme Public Library',
     defaultLocale: 'el',
     status: 'active',
-    dbUrl: 'postgresql://x/y',
-    storageUrl: 'file:///srv/libriant/storage/tnt-1',
+    dbUrl: SUPERUSER_DB_URL,
+    storageUrl: TENANT_STORAGE_URL,
     customSubdomain: null,
     tags: [],
     ...overrides,
@@ -120,6 +129,73 @@ describe('TenantResolverService.resolveBySlug', () => {
     // Second lookup uses the cached row but reports the path it came in on.
     const second = await service.resolveBySlug('acme');
     expect(second?.resolvedFrom).toBe('path');
+  });
+
+  it('never writes dbUrl / storageUrl into the shared Redis cache', async () => {
+    findUnique.mockResolvedValue(tenantRow());
+
+    const result = await service.resolveBySlug('acme');
+
+    // The caller still gets the addresses — they come from the process-local map.
+    expect(result?.dbUrl).toBe(SUPERUSER_DB_URL);
+    expect(result?.storageUrl).toBe(TENANT_STORAGE_URL);
+
+    // …but the bytes that reached Redis carry neither the fields nor the secret.
+    const raw = redis.store.get('tenant:slug:acme') ?? '';
+    expect(raw).not.toBe('');
+    expect(raw).not.toContain('s3cr3t-pg-pw');
+    expect(raw).not.toContain('dbUrl');
+    expect(raw).not.toContain('storageUrl');
+    const cached = JSON.parse(raw);
+    expect(cached.tenant).not.toHaveProperty('dbUrl');
+    expect(cached.tenant).not.toHaveProperty('storageUrl');
+    // The routing/identity fields the middleware needs are still shared.
+    expect(cached.tenant.status).toBe('active');
+    expect(cached.tenant.slug).toBe('acme');
+  });
+
+  it('re-reads the control DB when another process warmed Redis but this one has no addresses', async () => {
+    // Exactly the cross-process case: the shared entry exists, the local
+    // address map does not. Returning the cached half alone would hand the
+    // middleware a context with `dbUrl: undefined` and every tenant query in
+    // the process would fail — so this MUST fall through to the DB.
+    redis.store.set(
+      'tenant:slug:acme',
+      JSON.stringify({
+        found: true,
+        tenant: {
+          id: 'tnt-1',
+          slug: 'acme',
+          name: 'Acme Public Library',
+          defaultLocale: 'el',
+          status: 'active',
+          customSubdomain: null,
+          tags: [],
+        },
+      }),
+    );
+    findUnique.mockResolvedValue(tenantRow());
+
+    const result = await service.resolveBySlug('acme');
+
+    expect(findUnique).toHaveBeenCalledTimes(1);
+    expect(result?.dbUrl).toBe(SUPERUSER_DB_URL);
+    // …and the second call is served entirely from cache again.
+    const again = await service.resolveBySlug('acme');
+    expect(findUnique).toHaveBeenCalledTimes(1);
+    expect(again?.dbUrl).toBe(SUPERUSER_DB_URL);
+  });
+
+  it('forgets the local addresses on invalidate, so a relocate is not served stale', async () => {
+    findUnique.mockResolvedValue(tenantRow());
+    await service.resolveBySlug('acme');
+
+    await service.invalidate({ slug: 'acme' });
+
+    const moved = tenantRow({ dbUrl: 'postgresql://libriant:s3cr3t-pg-pw@pg2:5432/tenant_tnt1' });
+    findUnique.mockResolvedValue(moved);
+    const after = await service.resolveBySlug('acme');
+    expect(after?.dbUrl).toBe('postgresql://libriant:s3cr3t-pg-pw@pg2:5432/tenant_tnt1');
   });
 
   it('drops + re-fetches when the cache value is garbage JSON', async () => {

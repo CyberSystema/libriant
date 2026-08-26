@@ -6,6 +6,7 @@ import { AdminModule } from './admin/admin.module.js';
 import { AnnouncementsModule } from './announcements/announcements.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { SessionMiddleware } from './auth/session.middleware.js';
+import { HttpMetricsMiddleware } from './platform/http-metrics.js';
 import { OriginCheckMiddleware } from './platform/origin-check.middleware.js';
 import { LOG_REDACT_CENSOR, logRedactPaths, serializeRes } from './platform/log-redaction.js';
 import { BillingModule } from './billing/billing.module.js';
@@ -123,8 +124,21 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     consumer
       .apply(
-        // A10-03: CSRF Origin check runs FIRST — reject a cross-site browser
-        // Origin on any state-changing request before it touches session/tenant.
+        // reliability-17: FIRST, ahead of even the CSRF check, because it must
+        // observe requests the rest of this chain REJECTS. It only starts a
+        // timer and registers a `res.on('finish')` hook, so it can never change
+        // the outcome of a request; but mounted anywhere later it stops
+        // counting the failures that matter most. Measured against a running
+        // API with it mounted in PlatformModule instead (an imported module's
+        // chain runs after the root's): `/t/<unknown-slug>/members` 404'd from
+        // TenantMiddleware and produced no series at all — so "one library
+        // whose every request errors", every maintenance-mode 503 and every
+        // CSRF 403 were invisible, which is the exact blind spot the metric
+        // exists to close.
+        HttpMetricsMiddleware,
+        // A10-03: CSRF Origin check runs FIRST among the REJECTING middleware —
+        // reject a cross-site browser Origin on any state-changing request
+        // before it touches session/tenant.
         OriginCheckMiddleware,
         SessionMiddleware,
         AdminMiddleware,

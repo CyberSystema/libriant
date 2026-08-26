@@ -98,6 +98,15 @@ x-app-env: &app-env
   # fine-grained PAT with `contents:read` on the repo (or a classic `repo` token).
   DESKTOP_RELEASE_REPO: ${DESKTOP_RELEASE_REPO:-CyberSystema/libriant}
   DESKTOP_RELEASE_TOKEN: ${DESKTOP_RELEASE_TOKEN:-}
+  # boot-and-config-02. `max_connections` used to be written TWICE in this repo
+  # — as a literal in the postgres `command:` below, and as a hard-coded default
+  # of 200 inside apps/api/src/platform/tenant-pool-budget.ts — with nothing
+  # keeping them equal. The planner sizes every tenant pool from its copy, so an
+  # operator who raised the server's ceiling for a bigger box got no extra
+  # capacity, and one who LOWERED it got a budget that overspends the server.
+  # Now one variable feeds both: the value below is what Postgres is started
+  # with AND what the API/worker plan against.
+  PG_MAX_CONNECTIONS: ${PG_MAX_CONNECTIONS:-200}
 
 # A12-01: per-container resource limits. On the single-host topology one runaway
 # or leaking process (a fork bomb, an OOM during a bad import) could otherwise
@@ -298,8 +307,18 @@ services:
       - ../../assets:/srv/libriant/assets:ro
       - ../../locales:/srv/libriant/locales:ro
     networks: [app]
+    # boot-and-config-08. This probed /api/healthz, which returns a constant
+    # `{status:'ok'}` and — by its own comment — "doesn't touch the API or any
+    # other dependency". The web container therefore could NOT become unhealthy
+    # no matter what happened behind it, and the deploy gate
+    # (.github/workflows/deploy.yml, scripts/deploy-on-host.sh) trusted that
+    # signal: a wrong API_INTERNAL_URL or a broken `app` network passed every
+    # check green while every page a librarian opened rendered an error.
+    # /api/readyz already existed and already fetches ${API_INTERNAL_URL}/readyz
+    # with a 3s timeout, returning 503 on failure — it was simply wired to
+    # nothing. /api/healthz stays as the pure liveness route.
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/api/healthz']
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/api/readyz']
       interval: 15s
       timeout: 5s
       retries: 8
@@ -346,7 +365,15 @@ services:
 
   # ----- data ----------------------------------------------------------
   postgres:
-    image: postgres:16-alpine
+    # supply-chain-05. Tag AND digest. `docker compose pull` runs on every
+    # deploy (.github/workflows/deploy.yml), so a floating tag meant two deploys
+    # of the same IMAGE_TAG could run different Postgres binaries and nothing
+    # would say so. The tag is kept for readability; the digest is what is
+    # actually resolved. To move to a new base image, re-resolve the digest
+    # deliberately (see infra/monitoring/../README or:
+    #   docker buildx imagetools inspect postgres:16-alpine
+    # ) and change both halves in the same commit.
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     <<: [*restart, *logging]
     # Keep Postgres's ceiling the highest of the app tier — it's the component
     # whose death takes the whole cell down. Tune shared_buffers/work_mem in the
@@ -363,8 +390,11 @@ services:
       - postgres
       - -c
       - shared_preload_libraries=pg_stat_statements
+      # boot-and-config-02: same variable the api/worker plan their tenant pools
+      # from (x-app-env PG_MAX_CONNECTIONS). Change it in ONE place or the pool
+      # budget and the server silently disagree again.
       - -c
-      - max_connections=200
+      - max_connections=${PG_MAX_CONNECTIONS:-200}
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ../compose/postgres-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
@@ -376,7 +406,13 @@ services:
       retries: 10
 
   pgbouncer:
-    image: edoburu/pgbouncer:v1.25.2-p0
+    # supply-chain-05, the softest link in this file: unlike postgres/redis/caddy
+    # this is NOT a Docker Official Image but a single-maintainer community one,
+    # and it sits in the credential path (POSTGRES_PASSWORD is in its
+    # environment). A hijacked tag would have landed in production on the next
+    # `docker compose pull` with no signal. Pinned to the digest of
+    # v1.25.2-p0 as published on 2026-08-26.
+    image: edoburu/pgbouncer:v1.25.2-p0@sha256:7d7a27d9e90985cab5cf42256f5c13a3120baa4b055b69df37beb272b89b2340
     <<: [*restart, *logging]
     mem_limit: ${PGBOUNCER_MEM_LIMIT:-256m}
     cpus: ${PGBOUNCER_CPUS:-0.5}
@@ -401,7 +437,8 @@ services:
       retries: 5
 
   redis:
-    image: redis:8-alpine
+    # supply-chain-05 — see the note on `postgres` above.
+    image: redis:8-alpine@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
     <<: [*restart, *logging]
     mem_limit: ${REDIS_MEM_LIMIT:-512m}
     cpus: ${REDIS_CPUS:-1}

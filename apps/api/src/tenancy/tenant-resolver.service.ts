@@ -1,11 +1,39 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { LRUCache } from 'lru-cache';
 import { controlDb } from '@libriant/db-control';
 import { FailOpenMemo, RedisService } from '../platform/redis.service.js';
 import { loadEnv } from '../config/env.js';
 import type { TenantContext } from './tenant-context.js';
 
+/**
+ * The half of a {@link TenantContext} that is safe to put in Redis.
+ *
+ * tenant-isolation-03. `resolveCached()` used to JSON-serialise the WHOLE
+ * context into `lbr:tenant:slug:<slug>` on every cache miss — `dbUrl` included.
+ * Because every tenant database is opened with the same Postgres SUPERUSER role
+ * (tenant-isolation-02), that string is the fleet's master database credential
+ * in plaintext, and the audit dumped it verbatim out of the running Redis:
+ *
+ *   {"found":true,"tenant":{…,"dbUrl":"postgresql://libriant:auditpw@…","…"}}
+ *
+ * The production Redis runs with `--appendonly yes` and no `requirepass`, so
+ * that credential also lands in the `redis_data` AOF on disk, in a store that
+ * needs no Postgres authentication to read.
+ *
+ * Nothing in the request path needs `dbUrl` to be SHARED between processes —
+ * only to be fast within one. So the cross-process cache now carries the
+ * routing/identity fields only, and the two address fields live in a
+ * process-local map (below). Omitting them from the type rather than deleting
+ * them at the call site is deliberate: a future field added to TenantContext
+ * cannot silently leak into Redis, because this type has to be widened by hand.
+ */
+type CachedTenant = Omit<TenantContext, 'dbUrl' | 'storageUrl' | 'resolvedFrom'>;
+
+/** The per-tenant addresses that must never leave this process. */
+type TenantAddresses = Pick<TenantContext, 'dbUrl' | 'storageUrl'>;
+
 type CacheValue =
-  | { found: true; tenant: TenantContext }
+  | { found: true; tenant: CachedTenant }
   /** Negative cache: prevents a tight-loop bcrypt-grade lookup against
    *  the control DB for a slug that doesn't exist. */
   | { found: false };
@@ -24,15 +52,36 @@ const NEGATIVE_TTL_SEC = 30;
  */
 const DEGRADED_MEMO_MS = 5_000;
 
+/**
+ * Ceiling on the process-local address map. Bounded because the key space is
+ * attacker-influenced (any slug in a URL), and an unbounded Map keyed on that
+ * is a memory-growth primitive. Comfortably above the fleet size for years.
+ */
+const ADDRESS_CACHE_MAX = 2_000;
+
 @Injectable()
 export class TenantResolverService {
   private readonly logger = new Logger(TenantResolverService.name);
   private readonly ttlSec: number;
   /** Populated only when Redis I/O throws — see FailOpenMemo. */
   private readonly degraded = new FailOpenMemo<CacheValue>(DEGRADED_MEMO_MS);
+  /**
+   * tenant-isolation-03: `dbUrl` / `storageUrl`, in memory, in THIS process
+   * only, keyed by the same cache key as the Redis entry so `invalidate()`
+   * clears both with one key list. Same TTL as the Redis entry, so the two
+   * expire together and a relocate cannot be served from here after the shared
+   * cache has already forgotten it.
+   */
+  private readonly addresses: LRUCache<string, TenantAddresses>;
 
   constructor(@Inject(RedisService) private readonly redis: RedisService) {
     this.ttlSec = loadEnv().tenantCacheTtlSec;
+    this.addresses = new LRUCache<string, TenantAddresses>({
+      max: ADDRESS_CACHE_MAX,
+      ttl: this.ttlSec * 1000,
+      ttlAutopurge: false,
+      updateAgeOnGet: false,
+    });
   }
 
   /**
@@ -70,6 +119,9 @@ export class TenantResolverService {
     if (opts.customSubdomain) keys.push(SUBDOMAIN_KEY(opts.customSubdomain));
     if (keys.length) {
       this.degraded.delete(...keys);
+      // The process-local address map is keyed the same way, so a relocate that
+      // moves `dbUrl` cannot be served from it after this call either.
+      for (const k of keys) this.addresses.delete(k);
       // Deliberately NOT fail-open: this is the call that stops a suspended or
       // relocated tenant being served from cache (TEN-03 / TEN-04), so the
       // caller must learn that the invalidation did not happen.
@@ -88,9 +140,18 @@ export class TenantResolverService {
     const cached = await this.readCache(cacheKey);
     if (cached) {
       if (!cached.found) return null;
-      // Always overwrite resolvedFrom with the access path actually used —
-      // a tenant might be reachable via both, but this request hit one of them.
-      return { ...cached.tenant, resolvedFrom };
+      const addresses = this.addresses.get(cacheKey);
+      // A positive shared entry with no local addresses means this process has
+      // never resolved (or has since forgotten) this tenant — another API
+      // container warmed Redis, or we restarted. That is a MISS here, not an
+      // error: fall through to the control-plane lookup, which repopulates
+      // both halves. It costs one control-DB read per tenant per process per
+      // TTL, which is the price of the credential not being in Redis.
+      if (addresses) {
+        // Always overwrite resolvedFrom with the access path actually used —
+        // a tenant might be reachable via both, but this request hit one of them.
+        return { ...cached.tenant, ...addresses, resolvedFrom };
+      }
     }
 
     const tenant = await lookup();
@@ -98,7 +159,18 @@ export class TenantResolverService {
       await this.writeCache(cacheKey, { found: false }, NEGATIVE_TTL_SEC);
       return null;
     }
-    await this.writeCache(cacheKey, { found: true, tenant }, this.ttlSec);
+    // Destructured rather than deleted so TypeScript, not vigilance, is what
+    // keeps `dbUrl`/`storageUrl` out of the value handed to Redis.
+    //
+    // Note the ordering property this gives every EXISTING invalidation path
+    // for free: the local map is consulted ONLY after a positive Redis hit, so
+    // a caller that deletes the Redis key directly — admin hard-delete
+    // (admin-tenants.controller.ts), tenant-relocate.ts, storage-migrate.ts —
+    // forces a control-plane lookup here, which overwrites the local entry.
+    // None of them needs to learn about this cache.
+    const { dbUrl, storageUrl, resolvedFrom: _ignored, ...shareable } = tenant;
+    this.addresses.set(cacheKey, { dbUrl, storageUrl });
+    await this.writeCache(cacheKey, { found: true, tenant: shareable }, this.ttlSec);
     return { ...tenant, resolvedFrom };
   }
 

@@ -161,7 +161,24 @@ if [ "$(getv STRIPE_DRIVER)" = "fake" ]; then
   echo "  migrated STRIPE_DRIVER=fake -> none (the stand-in driver is dev/test only)"
 fi
 ensure_default STRIPE_DRIVER none    # billing off; set 'real' + keys to charge
-ensure_default EMAIL_DRIVER console  # trial-safe: NOT delivered; body withheld from prod logs (A12-02). Set 'resend'+RESEND_API_KEY or 'smtp'+SMTP_URL to send.
+# boot-and-config-05. docker-compose.prod.yml passes EMAIL_DRIVER through UNSET
+# on purpose (`${EMAIL_DRIVER:-}`), so that env.ts's fail-fast makes an operator
+# choose. Writing `console` here fills that gap before they ever see it, and the
+# original line did so in one quiet `set EMAIL_DRIVER=console` among thirty
+# others. The default STAYS — console-only is the deliberate posture for this
+# launch, there is no mail provider yet, and refusing to boot would be refusing
+# the configuration the owner chose — but it is no longer silent.
+if [ -z "$(getv EMAIL_DRIVER)" ]; then
+  setv EMAIL_DRIVER console
+  echo
+  echo "  !! EMAIL_DRIVER=console — NOTHING IS DELIVERED."
+  echo "     Password resets, e-mail verification and staff invites compose a"
+  echo "     message and send it nowhere. That is recoverable: an owner admin can"
+  echo "     issue a reset link from /admin/account-recovery (RUNBOOK §4.3a)."
+  echo "     To actually send mail, set EMAIL_DRIVER=resend + RESEND_API_KEY (or"
+  echo "     smtp + SMTP_URL) in .env.prod and restart api + worker."
+  echo
+fi
 # PUBLIC_HOST is the APP host; the marketing site owns the apex. Changing this
 # default only affects a NEWLY provisioned host — an existing .env.prod keeps
 # whatever it already has, which is why the migration needs a manual edit there.

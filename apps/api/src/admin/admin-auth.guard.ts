@@ -68,14 +68,17 @@ export class AdminAuthGuard implements CanActivate {
       throw new ForbiddenException('Your admin account is temporarily locked.');
     }
     // A1-02 / AUTH-01: reject a session minted before a forced reset/disable.
-    // NOTE: today admins are seed-managed — there is NO in-app admin
-    // password-change/disable endpoint, so nothing WRITES sessionsValidAfter
-    // yet, and immediate revocation is handled by the status/disabledAt checks
-    // above (re-read from the DB on every request, admin sessions TTL = 1h).
-    // This read is the wired-and-ready hook: any FUTURE admin self-service
-    // credential change MUST set `adminUser.sessionsValidAfter = now()` to kill
-    // existing cookies. Keeping the check (rather than deleting it) means that
-    // path is one line away and can't be forgotten.
+    // This used to be a read with no writer. It has one now: enrolling or
+    // REPLACING an admin's second factor (`POST /admin/mfa/verify`,
+    // authn-authz-09) stamps `sessionsValidAfter`, so a stolen cookie that was
+    // used to re-point the authenticator dies here on its next request — and so
+    // does every other cookie for that account except the one the enrolling
+    // browser is re-issued. Any further admin self-service credential change
+    // MUST write this column for the same reason.
+    //
+    // The impersonation path enforces the same three columns as this guard;
+    // see `adminRevocationReason` in support/impersonation.middleware.ts. The
+    // two must not drift (authn-authz-04).
     const validAfterMs = admin.sessionsValidAfter ? admin.sessionsValidAfter.getTime() : 0;
     if (validAfterMs > 0 && session.iat && session.iat < Math.floor(validAfterMs / 1000)) {
       throw new UnauthorizedException('Your admin session has expired. Please sign in again.');

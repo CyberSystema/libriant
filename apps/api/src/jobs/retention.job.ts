@@ -23,7 +23,8 @@ import type { JobContext, JobResult } from './jobs.types.js';
  *
  * A retention job may only enforce a period somebody has actually promised;
  * inventing one is how you end up deleting a library's records on a schedule
- * nobody agreed to. There are exactly two written-down periods in this product:
+ * nobody agreed to. There are exactly three written-down periods in this
+ * product:
  *
  *   1. **Applications — 12 months.** apps/site/content/privacy.{el,en}.md §5,
  *      live on libriant.com: «διαγράφουμε τα στοιχεία σας το αργότερο 12 μήνες
@@ -43,6 +44,17 @@ import type { JobContext, JobResult } from './jobs.types.js';
  *      library's own audit history while the product tells them their retention
  *      is unlimited would be the same class of bug as not deleting at all.
  *
+ *   3. **Stripe webhook bodies — 30 days.** performance-07. Three places in the
+ *      tree assert this and none of them did it: schema.prisma on
+ *      `StripeWebhookEvent.payloadJson` ("Raw event body for replay / debug.
+ *      Pruned after 30 days."), and stripe-retry.job.ts twice ("Rows are
+ *      bounded: the table is cleaned at 30 days", and "a table that is pruned
+ *      at 30 days" — which is that job's stated justification for running an
+ *      unindexed COUNT over it every five minutes). The body is ~99% of a
+ *      row's bytes and it lands in the control database every library shares.
+ *      The period is stated on the BODY, and only the body is pruned — see
+ *      `pruneStripeWebhookPayloads` for why the row itself has to stay.
+ *
  * WHAT THIS DELIBERATELY DOES NOT TOUCH, AND WHY
  *
  * The finding also named the control-plane `audit_log`, `support_sessions` /
@@ -54,9 +66,9 @@ import type { JobContext, JobResult } from './jobs.types.js';
  * schedule into production that no document promises and no counsel has seen.
  * When §6 is filled in, add one limb per row below and cite the section in it.
  *
- * SAFE TO RE-RUN. Every limb is an age-bounded DELETE: running twice in a row
- * deletes nothing the second time, and a crash mid-sweep loses nothing but the
- * remainder of that tick.
+ * SAFE TO RE-RUN. Every limb is age-bounded and self-emptying: running twice in
+ * a row changes nothing the second time, and a crash mid-sweep loses nothing but
+ * the remainder of that tick.
  */
 const logger = new Logger('RetentionSweep');
 
@@ -103,6 +115,9 @@ export async function sweepRetention(ctx?: JobContext): Promise<JobResult> {
 
   // --- 1. Site applications (control plane) --------------------------------
   const applicationsPurged = await purgeExpiredApplications(now);
+
+  // --- 1b. Stripe webhook bodies (control plane) ---------------------------
+  const stripePayloadsPruned = await pruneStripeWebhookPayloads(now);
 
   // --- 2. Per-tenant audit log ---------------------------------------------
   const tenants = await controlDb.tenant.findMany({
@@ -162,6 +177,7 @@ export async function sweepRetention(ctx?: JobContext): Promise<JobResult> {
 
   const parts: string[] = [
     `applications: ${applicationsPurged} deleted past ${APPLICATION_RETENTION_MONTHS} months`,
+    `stripe payloads: ${stripePayloadsPruned} pruned past ${STRIPE_PAYLOAD_RETENTION_DAYS} days`,
     `audit_log: ${auditRowsDeleted} row(s) across ${tenants.length} tenant(s)`,
   ];
   if (tenantsUnlimited > 0) {
@@ -175,6 +191,7 @@ export async function sweepRetention(ctx?: JobContext): Promise<JobResult> {
     message: parts.join('; '),
     counts: {
       applicationsPurged,
+      stripePayloadsPruned,
       auditRowsDeleted,
       tenantsScanned: tenants.length,
       tenantsUnlimited,
@@ -211,6 +228,66 @@ async function purgeExpiredApplications(now: Date): Promise<number> {
     );
   }
   return res.count;
+}
+
+/**
+ * Clear the raw Stripe event body once the 30 days the schema promises have
+ * run out (performance-07).
+ *
+ * WHY THE BODY AND NOT THE ROW. `persistEvent` in stripe-webhook.controller.ts
+ * reads `processedAt` off this row as the durable "have we finished this one
+ * before?" guard — the one that still works when Redis is down, since the
+ * `stripe:event:<id>` lock expires at 30 days too. Delete the row and a
+ * >30-day-old redelivery (an operator's "Resend" from the Stripe Dashboard)
+ * would be dispatched a second time, writing a stale subscription payload over
+ * the current one. Keeping a ~100-byte ledger row forever is a much better
+ * trade than re-arming that, and it still removes the growth the finding is
+ * about: the body is the other ~2 KB.
+ *
+ * WHY ONLY PROCESSED ROWS. A row with `processedAt IS NULL` past the retry
+ * sweep's give-up budget is counted as `abandoned` — it is money work that
+ * never completed, sitting on an operator's to-do list, and its payload is the
+ * only thing they can replay from. Those keep their body until somebody deals
+ * with them. That means the table is bounded by its processed rows, not
+ * absolutely; the unprocessed ones are already surfaced by
+ * stripe-retry.job.ts's `abandoned` count.
+ *
+ * Batched and idempotent. The `payloadJson <> '{}'` term is what makes a second
+ * run a no-op, and it is also the partial-index predicate
+ * (`stripe_webhook_events_prunable_idx`, migration
+ * 20260826113000_stripe_webhook_payload_retention), so a pruned row leaves the
+ * work queue: steady state is a 2-buffer Bitmap Index Scan instead of a
+ * 12,902-buffer sequential scan of the shared control database.
+ */
+export const STRIPE_PAYLOAD_RETENTION_DAYS = 30;
+const STRIPE_PAYLOAD_BATCH = 5_000;
+const STRIPE_PAYLOAD_MAX_BATCHES = 40;
+
+async function pruneStripeWebhookPayloads(now: Date): Promise<number> {
+  const cutoff = new Date(now.getTime() - STRIPE_PAYLOAD_RETENTION_DAYS * MS_PER_DAY);
+  let pruned = 0;
+  for (let batch = 0; batch < STRIPE_PAYLOAD_MAX_BATCHES; batch++) {
+    const n = await controlDb.$executeRaw`
+      UPDATE "stripe_webhook_events"
+         SET "payloadJson" = '{}'::jsonb
+       WHERE "id" IN (
+         SELECT "id" FROM "stripe_webhook_events"
+          WHERE "receivedAt" < ${cutoff}
+            AND "processedAt" IS NOT NULL
+            AND "payloadJson" <> '{}'::jsonb
+          ORDER BY "receivedAt"
+          LIMIT ${STRIPE_PAYLOAD_BATCH}
+       )`;
+    pruned += n;
+    if (n < STRIPE_PAYLOAD_BATCH) break;
+  }
+  if (pruned > 0) {
+    logger.log(
+      `pruned the body of ${pruned} stripe webhook event(s) received before ` +
+        `${cutoff.toISOString().slice(0, 10)}`,
+    );
+  }
+  return pruned;
 }
 
 /**

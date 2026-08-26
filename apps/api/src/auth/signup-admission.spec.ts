@@ -42,6 +42,8 @@ function makeController(opts: { admitted?: number } = {}) {
     {} as never,
     {} as never,
     {} as never,
+    // authn-authz-02: SessionRevocationService — logout/revoke-all.
+    { revokeSession: vi.fn(), revokeAllForUser: vi.fn() } as never,
     { invalidate: vi.fn() } as never,
     { hit: vi.fn(async () => ({ allowed: true, count: 1, retryAfterSec: 0 })) } as never,
     redis as never,

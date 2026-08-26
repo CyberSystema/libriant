@@ -4,7 +4,7 @@
 
 # Terms of Service
 
-**Last updated: 2026-06-22**
+**Last updated: 2026-08-26**
 
 These Terms of Service ("**Terms**") are a binding agreement between
 `[COMPANY LEGAL NAME]`, `[REGISTERED ADDRESS]`, company reg. no.
@@ -15,7 +15,8 @@ CyberSystema company.
 
 By creating an account, or by accessing or using the Service, you agree to these
 Terms. If you are accepting on behalf of an organisation, you confirm you are
-authorised to bind it.
+authorised to bind it and that you have completed any internal step your
+organisation's own rules require. For public-sector bodies, see Section 2.4.
 
 ## 1. The Service
 
@@ -38,6 +39,16 @@ us promptly at `[CONTACT EMAIL]` of any suspected unauthorised use.
 
 2.3 You are responsible for your own users (staff/volunteers) and for assigning
 appropriate roles. Owners and admins can manage other staff accounts.
+
+2.4 **Accepting for a public body.** If you are a public authority, a
+municipality, a school, or another public-sector body, the person who accepts
+these Terms warrants that they hold the competence to bind that body. We record
+who accepted, when, from which IP address, in which language, and the exact
+version of the documents they were shown (Section 12). If your internal rules
+require a decision of a named organ or a signed contract, tell us before you go
+live: we will provide these Terms and the DPA as a document for signature by
+your legal representative, and that signed instrument governs in place of
+acceptance through the website. We may require it before processing begins.
 
 ## 3. Your content and data
 
@@ -118,18 +129,28 @@ consumer or other law that cannot be excluded.
 
 ## 10. Limitation of liability
 
-10.1 Nothing in these Terms limits liability for death or personal injury caused
-by negligence, fraud, or any liability that cannot be limited under applicable
-law (including, where relevant, liability under the GDPR).
+10.1 Nothing in these Terms limits or excludes liability that cannot be limited
+or excluded under applicable law. This includes: death or personal injury caused
+by negligence; fraud or fraudulent misrepresentation; wilful misconduct and
+gross negligence; and **any claim under Article 82 GDPR** — a data subject's
+right to compensation for damage caused by an infringement of the GDPR is a
+statutory right against the controller and the processor and is **not** capped,
+reduced, or apportioned by Sections 10.2 or 10.3, or by anything else in these
+Terms or the DPA.
 
 10.2 Subject to 10.1, neither party is liable for indirect, incidental, special,
 or consequential loss, loss of profits, revenue, goodwill, or data (beyond our
 data-restoration obligations).
 
 10.3 Subject to 10.1, each party's total aggregate liability arising out of or in
-connection with these Terms is capped at the **fees you paid or owed in the
-12 months** before the event giving rise to the claim (or `[EUR amount]` where no
-fees were paid).
+connection with these Terms is capped at the **greater of** (a) the fees you paid
+or owed in the 12 months before the event giving rise to the claim, and
+(b) `[EUR MINIMUM LIABILITY CAP]`.
+
+Limb (b) is a **floor, not a fallback**: it applies whenever it is the larger
+figure, including during any free trial or promotional period and any other
+period in which no fees were payable. Our liability cap can therefore never
+resolve to zero.
 
 ## 11. Term, suspension, and termination
 
@@ -149,6 +170,12 @@ and any legal retention requirement).
 We may update these Terms. For material changes we will give reasonable advance
 notice (e.g. by email or in-app) and, where appropriate, ask you to re-accept.
 Your continued use after the effective date constitutes acceptance.
+
+**What exactly you accepted.** Every published version of these Terms and of the
+documents they incorporate is kept frozen, and your acceptance is recorded
+against the exact text you were shown: the version, the language, and a SHA-256
+digest of each document. Either party can therefore establish later what was
+agreed, even after the published texts have moved on.
 
 ## 13. Governing law and disputes
 

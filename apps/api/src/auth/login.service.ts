@@ -1,4 +1,11 @@
-import { Inject, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Inject,
+  Injectable,
+  Logger,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
 import { RedisService } from '../platform/redis.service.js';
@@ -118,6 +125,21 @@ export class LoginService {
       await this.passwords.dummyVerify(input.password);
       throw this.invalidCredentials();
     }
+    // authn-authz-10: the DURABLE lock, checked before the Redis one.
+    // `users.lockedUntil` was selected here and never read, and the only writes
+    // in the whole tenant path set it to NULL — so the "per-account lockout is
+    // the backstop" that rate-limit.service.ts leans on when IT fails open did
+    // not exist. A probe deleted the two Redis keys after five wrong passwords
+    // and signed straight in. Two things write this column now: the degraded
+    // path in recordFailure(), and an operator freezing an account by hand
+    // (`UPDATE users SET "lockedUntil" = now() + interval '1 hour'`), which is
+    // the documented incident response and previously did nothing.
+    if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
+      // Same silence as every other failure (AUTH-02) — a distinct "locked"
+      // message is an account-existence oracle.
+      await this.passwords.dummyVerify(input.password);
+      throw this.invalidCredentials();
+    }
     if (await this.isLockedOut(user.id, ip)) {
       // Lockout is enforced server-side but NOT revealed: a distinct "locked /
       // try again in N min" message is both an account-existence oracle and a
@@ -172,31 +194,99 @@ export class LoginService {
   }
 
   /**
-   * One-time first-login setup for admin-created staff: optionally change the
-   * display name and/or password, then clear `mustChangeCredentials`. Either
-   * field may be omitted ("keep the same"); the flag is always cleared so the
-   * forced screen doesn't reappear until an admin resets the account.
+   * One-time first-login setup for admin-created staff: set a new password
+   * (and optionally a display name), then clear `mustChangeCredentials`.
+   *
+   * authn-authz-07: `newPassword` used to be optional and the flag was cleared
+   * unconditionally — `const data = { mustChangeCredentials: false }` ran
+   * whether or not a password was supplied. A probe signed in with the
+   * admin-generated temporary password, posted `{}` to `/auth/complete-setup`,
+   * got 200, and then signed in with that same temporary password again. The
+   * credential the creating admin generated, read in plaintext from the API
+   * response and very likely pasted into WhatsApp became the account's
+   * permanent password, while the UI showed the forced-change screen once and
+   * never again.
+   *
+   * So `newPassword` is a REQUIRED parameter — not an optional one with a
+   * server-side check that a future caller can forget — and the flag is only
+   * cleared in the same write that stores the new hash. Re-submitting the
+   * current password is refused too: the point is that the shared secret stops
+   * working, and "change it to itself" clears the gate without doing that.
    */
   async completeSetup(
     userId: string,
-    input: { fullName?: string; newPassword?: string },
+    input: { fullName?: string; newPassword: string },
   ): Promise<void> {
+    const newPassword = input.newPassword?.trim() ? input.newPassword : '';
+    if (!newPassword) {
+      // A machine `code` alongside the sentence: apps/web/lib/api-errors.ts
+      // translates by `code` when one arrives and otherwise falls back to a
+      // generic "bad request", which is not a useful thing to read on a forced
+      // password screen. The catalogue entry is `errors.api.auth.passwordRequired`.
+      throw new BadRequestException({
+        code: 'auth.passwordRequired',
+        message:
+          'Choose a new password to finish setting up your account. The temporary one your ' +
+          'administrator gave you stops working once you do.',
+      });
+    }
+
+    const user = await controlDb.user.findUnique({
+      where: { id: userId },
+      select: { passwordHash: true, mustChangeCredentials: true },
+    });
+    if (!user?.passwordHash) {
+      throw new BadRequestException('This account cannot be set up here.');
+    }
+
+    // THE GATE. This endpoint sets a new password WITHOUT asking for the old
+    // one, which is only defensible while the caller is in the forced-change
+    // state: they were handed a temporary password by an administrator and
+    // cannot be asked to prove knowledge of anything better.
+    //
+    // Without this check it was a full account takeover from a stolen cookie
+    // that locked the real owner out at the same time. POST /auth/complete-setup
+    // with ANY live session and {"newPassword":"..."} returned 200, after which
+    // the owner's real password 401'd — executed against a production-configured
+    // boot. It is the exact harm authn-authz-08 closed on change-email, still
+    // reachable in one request from the neighbouring route, and making
+    // `newPassword` mandatory turned it from an optional trick into a reliable
+    // one.
+    //
+    // Self-service password change belongs on an endpoint that requires the
+    // current password. This is not that endpoint.
+    if (!user.mustChangeCredentials) {
+      throw new ForbiddenException({
+        code: 'auth.setupAlreadyComplete',
+        message:
+          'This account is already set up. To change your password, use the password change in ' +
+          'your account settings, which asks for your current one.',
+      });
+    }
+    if (await this.passwords.verify(newPassword, user.passwordHash)) {
+      throw new BadRequestException({
+        code: 'auth.passwordUnchanged',
+        message:
+          'That is the password you were given. Choose a different one — the temporary password ' +
+          'is known to whoever created your account.',
+      });
+    }
+
     const data: {
       fullName?: string;
-      passwordHash?: string;
+      passwordHash: string;
       mustChangeCredentials: boolean;
-      sessionsValidAfter?: Date;
+      sessionsValidAfter: Date;
     } = {
+      passwordHash: await this.passwords.hash(newPassword),
+      // Only ever cleared alongside a real password write.
       mustChangeCredentials: false,
+      // Changing the password invalidates every existing session (AUTH-01).
+      sessionsValidAfter: new Date(),
     };
     if (input.fullName && input.fullName.trim()) data.fullName = input.fullName.trim();
-    if (input.newPassword) {
-      data.passwordHash = await this.passwords.hash(input.newPassword);
-      // Changing the password invalidates every existing session (AUTH-01).
-      data.sessionsValidAfter = new Date();
-    }
     await controlDb.user.update({ where: { id: userId }, data });
-    if (input.newPassword) await AuthGuard.invalidateAuthCache(this.redis, userId);
+    await AuthGuard.invalidateAuthCache(this.redis, userId);
   }
 
   /** True when (account, ip) is currently locked. Fails OPEN if Redis is down
@@ -210,19 +300,28 @@ export class LoginService {
   }
 
   private async recordFailure(userId: string, ip: string): Promise<void> {
-    // Keep a DB tally for audit/visibility (atomic increment, AUTH-03), but the
-    // LOCK decision is per-(account+IP) in Redis (A1-01) so one attacker can't
-    // DoS-lock a victim globally.
-    await controlDb.user
-      .update({
+    // Keep a DB tally for audit/visibility (atomic increment, AUTH-03). The
+    // LOCK decision is normally per-(account+IP) in Redis (A1-01) so one
+    // attacker can't DoS-lock a victim globally — see the degraded branch below
+    // for the one case where this tally also drives a lock.
+    let failedLogins: number | null = null;
+    try {
+      const row = await controlDb.user.update({
         where: { id: userId },
         data: { failedLogins: { increment: 1 } },
         select: { failedLogins: true },
-      })
-      .catch(() => undefined);
+      });
+      failedLogins = row.failedLogins;
+    } catch (err) {
+      // Not swallowed any more: this counter is the only input the degraded
+      // backstop has, so losing it silently is losing the backstop silently.
+      this.logger.error(
+        `Could not increment failedLogins for user ${userId}: ${(err as Error).message}`,
+      );
+    }
 
+    const windowSec = Math.ceil(this.env.loginLockoutMs / 1000);
     try {
-      const windowSec = Math.ceil(this.env.loginLockoutMs / 1000);
       const failKey = FAIL_KEY(userId, ip);
       const n = await this.redis.client.incr(failKey);
       if (n === 1) await this.redis.client.expire(failKey, windowSec);
@@ -232,9 +331,57 @@ export class LoginService {
           `Login locked for user ${userId} from ${ip} after ${n} failed attempts (${windowSec}s).`,
         );
       }
-    } catch {
-      // Redis down → no lockout this attempt (fail open); the per-IP edge rate
-      // limit (auth.controller) still bounds the attempt rate.
+    } catch (err) {
+      await this.recordDegradedFailure(userId, failedLogins, windowSec, err as Error);
+    }
+  }
+
+  /**
+   * Redis could not record the per-(account+IP) lock (authn-authz-10).
+   *
+   * In that state there is NO brute-force protection anywhere: `isLockedOut`
+   * returns false, `RateLimitService.hit` fails open for every non-signup
+   * bucket, and its comment points at "per-account lockout (LoginService)" as
+   * the backstop. This method is that backstop, and it engages ONLY here.
+   *
+   * The account-wide column is deliberately not written on the healthy path.
+   * A bare-account lock is a renewable denial of service — anyone who knows a
+   * librarian's email can lock them out by guessing — which is precisely why
+   * A1-01 moved the lock into Redis keyed on the source IP. Confining the DB
+   * lock to the Redis-outage path keeps that property: an attacker cannot
+   * choose to be in this branch, and while they are, unlimited guessing at
+   * every account on the platform is the alternative. The lock expires by
+   * itself after `LOGIN_LOCKOUT_MS`, a correct password clears it (see the
+   * success path), and it is logged at error so the operator sees both the
+   * outage and the degraded mode it put auth into.
+   */
+  private async recordDegradedFailure(
+    userId: string,
+    failedLogins: number | null,
+    windowSec: number,
+    err: Error,
+  ): Promise<void> {
+    if (failedLogins === null || failedLogins < this.env.maxFailedLogins) {
+      this.logger.error(
+        `Login lockout unavailable for user ${userId} (Redis: ${err.message}) — falling back to ` +
+          `the durable per-account lock at ${this.env.maxFailedLogins} failures ` +
+          `(currently ${failedLogins ?? 'unknown'}).`,
+      );
+      return;
+    }
+    const lockedUntil = new Date(Date.now() + windowSec * 1000);
+    try {
+      await controlDb.user.update({ where: { id: userId }, data: { lockedUntil } });
+      this.logger.error(
+        `Redis is unavailable (${err.message}); user ${userId} is now locked in the DATABASE until ` +
+          `${lockedUntil.toISOString()} after ${failedLogins} failed sign-ins. This lock is ` +
+          'account-wide, not per-IP — it is the degraded mode, not the normal one.',
+      );
+    } catch (dbErr) {
+      this.logger.error(
+        `Both the Redis lockout and the database backstop failed for user ${userId} — this account ` +
+          `has NO brute-force protection right now: ${(dbErr as Error).message}`,
+      );
     }
   }
 

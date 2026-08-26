@@ -349,6 +349,14 @@ jobs:
           ssh -o StrictHostKeyChecking=yes "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<'REMOTE'
             set -euo pipefail
             proj=libriant
+            # boot-and-config-08: the app vhost's hostname, so the gate can ask
+            # for a page that is actually rendered by the web container rather
+            # than only asking Docker whether containers are alive. Matches the
+            # default in the caddy service's environment block.
+            if [ -f /srv/libriant/.env.prod ]; then
+              set -a; . /srv/libriant/.env.prod; set +a
+            fi
+            APP_HOST="${PUBLIC_HOST:-app.libriant.com}"
             # A12-03: the edge /healthz is a STATIC 200 (Caddy's :80 block) — it
             # stays green even if api/web/worker crashed after `up`, so it can't
             # be the only gate or a broken stack deploys "successfully" and never
@@ -364,7 +372,7 @@ jobs:
               docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$id" 2>/dev/null || echo "missing"
             }
             deadline=$(( $(date +%s) + 150 ))
-            edge=""; api=""; web=""; worker=""
+            edge=""; site=""; app=""; api=""; web=""; worker=""
             while [ "$(date +%s)" -lt "$deadline" ]; do
               # Require a real 200 — not a 3xx. The plaintext :80 /healthz block
               # answers 200; if Caddy were still on an old config it would 301 to
@@ -375,15 +383,32 @@ jobs:
               # explicit Host header bypasses Cloudflare and satisfies the origin
               # certificate's SNI.
               site="$(curl -sSk -o /dev/null -w '%{http_code}' --max-time 5 -H 'Host: libriant.com' https://localhost/ 2>/dev/null || true)"
+              # boot-and-config-08. Every signal above this line can be green
+              # while the product is unusable. `edge` is Caddy's own static
+              # `respond "ok" 200` and proves nothing about any app; `site` is
+              # the marketing vhost, served from files inside the edge image;
+              # `api`/`web`/`worker` are container healthchecks. NOT ONE of them
+              # crossed the web→api hop, so a wrong API_INTERNAL_URL or a broken
+              # `app` docker network passed the whole gate green while every
+              # page a librarian opened rendered an error.
+              #
+              # This one does cross it: Caddy's app vhost → web:3000 → the Next
+              # route handler → fetch(API_INTERNAL_URL/readyz) → api:3001. A 200
+              # means the edge routes the app host, the web container renders,
+              # and it can reach a ready API. `--resolve` rather than
+              # `-H 'Host: …'` so curl offers the right SNI — the origin
+              # certificate covers libriant.com and *.libriant.com, not
+              # `localhost`, and a wrong SNI reads as a dead stack.
+              app="$(curl -sSk --resolve "$APP_HOST:443:127.0.0.1" -o /dev/null -w '%{http_code}' --max-time 8 "https://$APP_HOST/api/readyz" 2>/dev/null || true)"
               api="$(svc_health api)"; web="$(svc_health web)"; worker="$(svc_health worker)"
-              if [ "$edge" = "200" ] && [ "$site" = "200" ] && [ "$api" = "healthy" ] && [ "$web" = "healthy" ] && [ "$worker" = "healthy" ]; then
-                echo "origin + marketing site + app containers healthy"
+              if [ "$edge" = "200" ] && [ "$site" = "200" ] && [ "$app" = "200" ] && [ "$api" = "healthy" ] && [ "$web" = "healthy" ] && [ "$worker" = "healthy" ]; then
+                echo "origin + marketing site + app page (web→api) + app containers healthy"
                 exit 0
               fi
-              echo "waiting for health… edge=$edge site=$site api=$api web=$web worker=$worker"
+              echo "waiting for health… edge=$edge site=$site app=$app api=$api web=$web worker=$worker"
               sleep 5
             done
-            echo "stack did not become healthy within 150s (edge=$edge api=$api web=$web worker=$worker)" >&2
+            echo "stack did not become healthy within 150s (edge=$edge site=${site:-?} app=${app:-?} api=$api web=$web worker=$worker)" >&2
             docker ps --format 'table {{.Names}}\t{{.Status}}' || true
             exit 1
           REMOTE

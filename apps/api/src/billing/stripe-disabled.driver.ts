@@ -5,6 +5,7 @@ import type {
   StripeDriver,
   StripePortalInput,
   StripePriceChangeInput,
+  StripePriceState,
   StripeSubscriptionState,
   StripeWebhookEvent,
 } from './stripe-driver.js';
@@ -86,6 +87,10 @@ export class DisabledStripeDriver implements StripeDriver {
 
   async listSubscriptions(_customerId: string): Promise<StripeSubscriptionState[]> {
     this.refuse('listSubscriptions');
+  }
+
+  async getPrice(_priceId: string): Promise<StripePriceState | null> {
+    this.refuse('getPrice');
   }
 
   verifyWebhookSignature(_rawBody: Buffer, _signatureHeader: string): StripeWebhookEvent {

@@ -67,9 +67,18 @@ function makeBilling() {
   } as unknown as BillingService;
 }
 
+/**
+ * Stripe stamps every envelope with `created` (epoch seconds). It is present
+ * here on purpose: billing-06's whole fix is that the controller must hand
+ * that value to `syncStripeSubscription`, and a fixture without the field
+ * cannot tell a wired dispatch from an unwired one.
+ */
+const SAMPLE_EVENT_CREATED = 1_787_000_000;
+
 const sampleEvent: StripeWebhookEvent = {
   id: 'evt_test_1',
   type: 'customer.subscription.updated',
+  created: SAMPLE_EVENT_CREATED,
   data: { object: { id: 'sub_1' } as never },
 } as StripeWebhookEvent;
 
@@ -131,6 +140,15 @@ describe('StripeWebhookController.handle', () => {
       'NX',
     );
     expect(billing.syncStripeSubscription).toHaveBeenCalledTimes(1);
+    // billing-06 WIRING. The stale-replay guard orders events by the
+    // ENVELOPE's `created`, because a mid-cycle plan change leaves
+    // `current_period_start` untouched and the old guard compared exactly
+    // that. The guard is only worth anything if this dispatch actually hands
+    // the timestamp over, so assert the second argument, not just the call.
+    expect(billing.syncStripeSubscription).toHaveBeenCalledWith(
+      { id: 'sub_1' },
+      { id: 'evt_test_1', createdAt: new Date(SAMPLE_EVENT_CREATED * 1000) },
+    );
     expect(stripeCreate).toHaveBeenCalledTimes(1);
     // processedAt + clear error
     expect(stripeUpdate).toHaveBeenCalledWith(

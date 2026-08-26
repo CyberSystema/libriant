@@ -718,7 +718,19 @@ model ExportJob {
 model StripeWebhookEvent {
   id          String    @id // Stripe event id (`evt_…`)
   type        String
-  /// Raw event body for replay / debug. Pruned after 30 days.
+  /// Raw event body for replay / debug. Pruned after 30 days — by the
+  /// `retention-sweep` job (apps/api/src/jobs/retention.job.ts), which replaces
+  /// the body with `{}` and leaves the row. performance-07: for a year nothing
+  /// did the pruning this line promised, and the body is ~99% of the row.
+  ///
+  /// The ROW is deliberately kept forever: `persistEvent` in
+  /// stripe-webhook.controller.ts reads `processedAt` off it as the durable
+  /// replay guard that survives a Redis outage, so deleting it would re-arm a
+  /// re-dispatch of a >30-day-old event — an operator's "Resend" from the
+  /// Stripe Dashboard replaying a stale subscription payload over a current
+  /// one. Rows that never processed keep their body too: those are the
+  /// `abandoned` backlog the retry sweep counts, and their payload is the only
+  /// thing an operator can replay from.
   payloadJson Json
   receivedAt  DateTime  @default(now())
   processedAt DateTime?
@@ -726,6 +738,10 @@ model StripeWebhookEvent {
   error       String?
 
   @@index([type, receivedAt])
+  // The prune's work-queue index — partial on
+  // `"processedAt" IS NOT NULL AND "payloadJson" <> '{}'` — is created in
+  // migration 20260826113000_stripe_webhook_payload_retention. Prisma cannot
+  // express a partial index, so it exists only in that SQL.
   @@map("stripe_webhook_events")
 }
 

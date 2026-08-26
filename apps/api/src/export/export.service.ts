@@ -1,16 +1,35 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import type { ExportFormat, ExportJob, ExportScope } from '@libriant/db-control';
+import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
+import { EmailService } from '../email/email.service.js';
 import { ExportQueueService } from './export-queue.service.js';
 import { EXPORT_TTL_HOURS } from './export.constants.js';
+import {
+  discloseAdminExport,
+  notifyLibraryOfExport,
+  requireTenantExportConsent,
+  type ExportConsent,
+  type ExportRequester,
+} from './export-consent.js';
 
-/** Response shape — never exposes the on-disk `filePath`. */
+/**
+ * Response shape — never exposes the on-disk `filePath`.
+ *
+ * `requestedByKind` is part of it (privacy-legal-07). A library's own export
+ * list at `GET /t/:slug/exports` selects on `targetTenantId` with no filter on
+ * the requester, so a Libriant-staff export of that library already appeared
+ * there — but stripped of every attribution, indistinguishable from an export a
+ * librarian started themselves. A detection channel that cannot tell you WHO is
+ * not a detection channel.
+ */
 export function publicExportJob(job: ExportJob) {
   return {
     id: job.id,
     format: job.format,
     scope: job.scope,
     targetTenantId: job.targetTenantId,
+    requestedByKind: job.requestedByKind,
     status: job.status,
     progressDone: job.progressDone,
     progressTotal: job.progressTotal,
@@ -25,7 +44,14 @@ export function publicExportJob(job: ExportJob) {
 
 @Injectable()
 export class ExportService {
-  constructor(@Inject(ExportQueueService) private readonly queue: ExportQueueService) {}
+  private readonly logger = new Logger(ExportService.name);
+
+  constructor(
+    @Inject(ExportQueueService) private readonly queue: ExportQueueService,
+    @Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService,
+    // EmailModule is @Global, so this needs no import in ExportModule.
+    @Inject(EmailService) private readonly emails: EmailService,
+  ) {}
 
   // EXP-004: control/all-scope dumps contain the whole platform's (redacted but
   // still highly sensitive) control data, so they live for a shorter window
@@ -74,33 +100,75 @@ export class ExportService {
     return job;
   }
 
+  /**
+   * Libriant-staff export: one library, the control DB, or everything.
+   *
+   * `requester` is a REQUIRED object rather than a bare `adminId` string on
+   * purpose. The ip / user-agent it carries are what make the control-plane
+   * audit row worth having, and an optional field on the end of the old
+   * signature is one the next caller forgets to pass — the whole endpoint would
+   * then compile, log, and record nothing about where the request came from.
+   *
+   * See `export-consent.ts` for the consent model and why a tenant-scoped
+   * export is held to the same bar as support impersonation (privacy-legal-07).
+   */
   async createForAdmin(
-    adminId: string,
+    requester: ExportRequester,
     input: { format: ExportFormat; scope: ExportScope; tenantId?: string },
   ): Promise<ExportJob> {
-    let targetTenantId: string | null = null;
+    let tenant: { id: string; slug: string; dbUrl: string } | null = null;
+    let consent: ExportConsent | null = null;
     if (input.scope === 'tenant') {
       if (!input.tenantId) {
         throw new BadRequestException('A tenant is required when scope is "tenant".');
       }
       const t = await controlDb.tenant.findUnique({
         where: { id: input.tenantId },
-        select: { id: true },
+        select: { id: true, slug: true, dbUrl: true },
       });
       if (!t) throw new NotFoundException('Tenant not found.');
-      targetTenantId = t.id;
+      tenant = t;
+      // Gate BEFORE the job row exists: a refused export must leave no trace of
+      // having been half-started.
+      consent = await requireTenantExportConsent(t.id, requester);
     }
     const job = await controlDb.exportJob.create({
       data: {
         format: input.format,
         scope: input.scope,
-        targetTenantId,
+        targetTenantId: tenant?.id ?? null,
         requestedByKind: 'admin',
-        requestedById: adminId,
+        requestedById: requester.adminId,
         status: 'queued',
         expiresAt: this.expiry(input.scope),
       },
     });
+
+    // Disclose, THEN enqueue. The whole finding is "the export leaves no trace
+    // the library can see", so an export that runs while its record failed to
+    // write would be the same defect wearing this function's clothes. If the
+    // disclosure throws, the job is deleted again and never reaches the queue —
+    // it has not started, so nothing is lost by refusing.
+    try {
+      await discloseAdminExport(this.tenantPrisma, job, requester, consent, tenant);
+    } catch (err) {
+      await controlDb.exportJob.delete({ where: { id: job.id } }).catch(() => undefined);
+      this.logger.error(
+        `refusing admin export (scope=${input.scope}, tenant=${tenant?.slug ?? '-'}): ` +
+          `could not record it — ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    }
+
+    // Third channel, best-effort by design: EMAIL_DRIVER ships as `console`, so
+    // nothing here may decide whether the export runs. See notifyLibraryOfExport.
+    await notifyLibraryOfExport(this.emails, job, requester, consent).catch((err: unknown) =>
+      this.logger.warn(
+        `export disclosure e-mail could not be enqueued for job ${job.id}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+
     await this.queue.enqueue(job.id);
     return job;
   }

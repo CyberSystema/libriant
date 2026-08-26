@@ -9,6 +9,7 @@ const {
   redisDestroy,
   redisReady,
   getBool,
+  outboxFindMany,
 } = vi.hoisted(() => ({
   tenantFindMany: vi.fn(),
   tenantGetClient: vi.fn(),
@@ -19,9 +20,17 @@ const {
   redisReady: vi.fn().mockResolvedValue(undefined),
   // Member notifications are a paid feature; the job asks the plan first.
   getBool: vi.fn().mockResolvedValue(true),
+  // performance-08: the sweep now pre-filters each page against the outbox
+  // instead of letting every already-queued message fail an INSERT.
+  outboxFindMany: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('@libriant/db-control', () => ({ controlDb: { tenant: { findMany: tenantFindMany } } }));
+vi.mock('@libriant/db-control', () => ({
+  controlDb: {
+    tenant: { findMany: tenantFindMany },
+    emailOutbox: { findMany: outboxFindMany },
+  },
+}));
 vi.mock('../config/env.js', () => ({
   loadEnv: () => ({ tenantClientCacheSize: 10, tenantClientIdleMs: 60_000 }),
 }));
@@ -76,20 +85,25 @@ function makeClient(opts: {
 }) {
   return {
     tenantSetting: { findUnique: vi.fn(async () => opts.settings) },
-    loan: {
-      findMany: vi.fn(async (args: { where: { dueAt?: { gt?: Date; lt?: Date } } }) =>
-        args.where.dueAt?.gt ? (opts.dueSoon ?? []) : (opts.overdue ?? []),
-      ),
-    },
+    // performance-08: the two loan sweeps are keyset-paged raw SQL now (the
+    // Prisma-expressible `dueAt > x OR (dueAt = x AND id > y)` form is not a
+    // btree start key, so paging that way was slower than not paging at all).
+    // The due-soon page carries a LOWER bound on dueAt; the overdue page does
+    // not — that is what tells the two apart here.
+    $queryRaw: vi.fn(async (sql: { text: string }) =>
+      sql.text.includes('"dueAt" >') ? (opts.dueSoon ?? []) : (opts.overdue ?? []),
+    ),
     reservation: { findMany: vi.fn(async () => opts.holds ?? []) },
   };
 }
 
+// The flat row shape the paged SELECT returns (loan JOIN member JOIN book).
 const loan = (id: string) => ({
   id,
   dueAt: new Date('2026-06-20'),
-  member: { fullName: 'Pat', email: 'pat@example.com' },
-  copy: { book: { title: 'Dune' } },
+  memberName: 'Pat',
+  memberEmail: 'pat@example.com',
+  bookTitle: 'Dune',
 });
 const hold = (id: string) => ({
   id,
@@ -105,6 +119,7 @@ describe('sendMemberNotifications', () => {
     getBool.mockResolvedValue(true);
     tenantFindMany.mockResolvedValue([TENANT]);
     enqueue.mockResolvedValue({ outboxId: 'o1', alreadyExisted: false });
+    outboxFindMany.mockResolvedValue([]);
   });
 
   it('does nothing when every notification switch is off', async () => {
@@ -194,6 +209,37 @@ describe('sendMemberNotifications', () => {
     );
     const res = await sendMemberNotifications();
     expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(res.counts?.dueSoon).toBe(0);
+  });
+
+  it('never re-offers a message the outbox already holds', async () => {
+    // performance-08. `EmailService.enqueue` dedups by INSERTing and swallowing
+    // the P2002, so an hourly sweep over 15,000 overdue loans spent ~14 of
+    // every 15 attempts on a failed INSERT (full body and all) plus a re-read,
+    // against the control database every library shares. The sweep now asks
+    // once per page which keys are already there.
+    //
+    // The key is spelled out here rather than read back from the job, so a
+    // change to how the job builds it fails this test instead of passing it.
+    outboxFindMany.mockResolvedValue([{ idempotencyKey: 'due-soon:t1:l1:2026-06-20' }]);
+    tenantGetClient.mockReturnValue(
+      makeClient({
+        settings: {
+          notifyDueSoon: true,
+          dueSoonDays: 2,
+          notifyOverdue: false,
+          notifyHoldReady: false,
+        },
+        dueSoon: [loan('l1')],
+      }),
+    );
+    const res = await sendMemberNotifications();
+    expect(outboxFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { idempotencyKey: { in: ['due-soon:t1:l1:2026-06-20'] } },
+      }),
+    );
+    expect(enqueue).not.toHaveBeenCalled();
     expect(res.counts?.dueSoon).toBe(0);
   });
 

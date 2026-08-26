@@ -7,6 +7,59 @@ export const IMPORT_QUEUE_PREFIX = 'lbr-bull';
 export const IMPORT_MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
 
 /**
+ * input-and-files-06 — THE STAGING BUDGET.
+ *
+ * A staged upload lives at `STORAGE_ROOT/_imports/<batchId>.<ext>` and is
+ * DELIBERATELY excluded from the tenant's `max_storage_mb` quota (see
+ * import-staging.ts) so a migration file doesn't eat the library's own storage
+ * allowance. That exclusion was the whole defence: nothing else bounded it.
+ * Any owner/admin — or an honest librarian retrying a failing import twenty
+ * times — could park 64 MB per attempt, forever, on the volume that also holds
+ * EVERY other tenant's covers and photos and every export artifact. Exports
+ * have had a cleanup sweeper since day one; imports had none, and the one job
+ * that visits abandoned batches (`sweepStuckBatches`) deliberately KEEPS the
+ * file so a re-run works.
+ *
+ * So: a per-tenant budget on upload, and a sweeper for what slips past it.
+ *
+ * The two limits bind in different places on purpose — the count stops a
+ * retry storm of small files, the byte budget stops a couple of huge ones.
+ */
+export const IMPORT_MAX_STAGED_BATCHES = 3;
+export const IMPORT_MAX_STAGED_BYTES = 128 * 1024 * 1024;
+
+/**
+ * How long an un-run staged upload survives before the sweeper deletes the
+ * FILE (the batch row and its issue report stay, so the history is intact).
+ * Comfortably longer than a librarian's coffee break and shorter than the
+ * overnight window in which an abandoned 64 MB file would otherwise become
+ * permanent.
+ */
+export const IMPORT_STAGING_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Batch states in which a staged file is expected to exist on disk. Everything
+ * else either never had one or had it deleted on finish — and since the
+ * deleting paths now blank `stagingPath` too, a non-empty `stagingPath` in one
+ * of these states means "bytes on the shared volume, right now".
+ */
+export const IMPORT_STAGED_STATUSES = [
+  'uploaded',
+  'validating',
+  'validated',
+  'committing',
+  'failed',
+  // `canceled` is here as a backstop, not because a cancelled batch should keep
+  // a file: `ImportService.cancel` deletes it when the batch was not running,
+  // and the worker deletes it when it was. But cancelling an `uploaded` batch
+  // used to be a silent bypass of every limit here — the row left the counted
+  // states while the 64 MB stayed on disk — so if a crash ever lands between
+  // the delete and the DB write, the tenant is charged for it rather than
+  // handed a free slot.
+  'canceled',
+] as const;
+
+/**
  * Hard ceiling on rows in a single import. The upload-byte cap bounds the
  * *compressed* input, but a spreadsheet (xlsx is a zip) can decompress to far
  * more rows than its file size suggests, and the worker holds every parsed row

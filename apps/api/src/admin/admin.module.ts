@@ -4,6 +4,7 @@ import { PlatformSettingsModule } from '../platform-settings/platform-settings.m
 import { AdminSubscriptionsController } from '../platform-settings/admin-subscriptions.controller.js';
 import { TenantProvisioningService } from '../provisioning/tenant-provisioning.service.js';
 import { PasswordService } from '../auth/password.service.js';
+import { MfaRecoveryService } from '../support/mfa-recovery.service.js';
 import { MfaService } from '../support/mfa.service.js';
 import { AdminAuthController } from './admin-auth.controller.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
@@ -49,6 +50,10 @@ import { FleetService } from './fleet.service.js';
     // a second instance alongside SupportModule's is harmless and avoids a
     // circular import (SupportModule already depends on AdminModule's guard).
     MfaService,
+    // launch-readiness-13: admin login accepts a single-use recovery code in
+    // place of a TOTP. Same reasoning as MfaService above — the state lives in
+    // the control DB, so a second instance is harmless.
+    MfaRecoveryService,
   ],
   controllers: [
     AdminAuthController,

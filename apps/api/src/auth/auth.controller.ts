@@ -21,6 +21,7 @@ import { CookieService } from './cookie.service.js';
 import { LoginService } from './login.service.js';
 import { PasswordResetService } from './password-reset.service.js';
 import { EmailVerificationService } from './email-verification.service.js';
+import { SessionRevocationService } from './session-revocation.service.js';
 import { Sess } from './session-context.js';
 import type { LibraryType } from '@libriant/shared';
 import { SignupService } from './signup.service.js';
@@ -167,6 +168,7 @@ export class AuthController {
     @Inject(LoginService) private readonly loginSvc: LoginService,
     @Inject(PasswordResetService) private readonly resetSvc: PasswordResetService,
     @Inject(EmailVerificationService) private readonly emailVerify: EmailVerificationService,
+    @Inject(SessionRevocationService) private readonly revocations: SessionRevocationService,
     @Inject(TenantResolverService) private readonly tenantResolver: TenantResolverService,
     @Inject(RateLimitService) private readonly rateLimit: RateLimitService,
     @Inject(RedisService) private readonly redis: RedisService,
@@ -379,8 +381,10 @@ export class AuthController {
   }
 
   /**
-   * First-login setup for admin-created staff: optionally set name + password,
-   * then clear the forced-change flag. Requires a live session.
+   * First-login setup for admin-created staff: set a NEW password (optionally a
+   * name too), then clear the forced-change flag. Requires a live session.
+   *
+   * authn-authz-07: the password is not optional. See CompleteSetupDto.
    */
   @Post('complete-setup')
   @HttpCode(HttpStatus.OK)
@@ -394,9 +398,45 @@ export class AuthController {
     return { ok: true };
   }
 
+  /**
+   * Sign out of THIS session.
+   *
+   * authn-authz-02: this used to clear the cookie and stop. The token is a
+   * stateless JWT, so a copy captured before the click kept working for the
+   * rest of its TTL — a probe logged out (204) and then read `GET /auth/me`
+   * with the same cookie (200). We now revoke the session server-side as well;
+   * `SessionRevocationService` escalates to an account-wide revocation if it
+   * cannot record the precise one, so "Sign out" is never a no-op.
+   *
+   * Deliberately NOT behind AuthGuard — signing out has to work even when the
+   * session is already unusable. `req.session` is only set for a cookie that
+   * verified, which is exactly the case where there is something to revoke.
+   */
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
-  logout(@Res({ passthrough: true }) res: Response) {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    if (req.session) await this.revocations.revokeSession(req.session);
+    this.cookies.clearSession(res);
+  }
+
+  /**
+   * Sign out of EVERY device ("sign out everywhere").
+   *
+   * authn-authz-02 named this as missing: the only account-wide revocation was
+   * a side effect of a password reset, so a librarian who suspected a shared
+   * desk machine still held their cookie had no action available that stopped
+   * it. Bumps `sessionsValidAfter`, which both AuthGuard and TenantGuard
+   * already enforce from the DB on every request — including the caller's own
+   * session, which is the point.
+   */
+  @Post('sessions/revoke-all')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(AuthGuard)
+  async revokeAllSessions(
+    @Sess() session: SessionPayload,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    await this.revocations.revokeAllForUser(session.sub, 'requested by the account holder');
     this.cookies.clearSession(res);
   }
 
@@ -505,8 +545,11 @@ export class AuthController {
   }
 
   /**
-   * Stage an email-address change: sends a verification link to the NEW address.
-   * The account email only changes once that link is confirmed.
+   * Stage an email-address change: re-prove the password, then send a
+   * verification link to the NEW address. The account email only changes once
+   * that link is confirmed.
+   *
+   * authn-authz-08: the password step-up is the point. See ChangeEmailDto.
    */
   @Post('change-email')
   @HttpCode(HttpStatus.ACCEPTED)
@@ -518,7 +561,7 @@ export class AuthController {
       'Too many requests. Please wait a few minutes and try again.',
     );
     const dto = await validateDto(ChangeEmailDto, raw);
-    await this.emailVerify.requestEmailChange(session.sub, dto.newEmail);
+    await this.emailVerify.requestEmailChange(session.sub, dto.newEmail, dto.currentPassword);
     return { ok: true };
   }
 }

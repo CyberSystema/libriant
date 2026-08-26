@@ -17,7 +17,13 @@
 # Cache hits: changes to source under apps/api/src only invalidate `build`;
 # everything below that re-fetches in seconds.
 
-FROM node:26-alpine AS base
+# supply-chain-05: tag AND digest. `node:26-alpine` moves whenever upstream
+# republishes, so two builds of the same commit could produce images with
+# different Node/OpenSSL/musl binaries and nothing in the repo would record it.
+# The tag stays for readability; the digest is what resolves. Re-resolve
+# deliberately when bumping (`docker buildx imagetools inspect node:26-alpine`)
+# and update apps/web/Dockerfile + infra/caddy/Dockerfile in the same commit.
+FROM node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019 AS base
 # postgresql-client provides pg_dump for the SQL-format database export.
 RUN apk add --no-cache openssl tini postgresql-client
 # Pin corepack's cache to a SHARED, world-readable location instead of the
@@ -37,14 +43,32 @@ FROM base AS deps
 # Copy workspace manifests first so the install layer is cached when only
 # source changes. Done verbosely (one COPY per workspace) so cache-bust
 # behaviour is predictable.
+#
+# supply-chain-03: copy ONLY the workspace manifests this image's runtime
+# actually needs. pnpm installs for the projects it can discover on disk, so a
+# manifest copied here is a whole dependency tree installed into the production
+# API image.
+#
+# `apps/web/package.json` used to be in this list, and nothing in the API image
+# imports the web app — the build stage below does not even copy apps/web. It
+# dragged the entire Next.js 16 tree (next 198 MB + @next/swc 84.8 MB, plus
+# sharp/libvips and lightningcss native binaries) into a container that holds
+# CONTROL_DATABASE_URL and every tenant credential, and made every future
+# Next.js advisory a production advisory for the API. Same for
+# packages/i18n and packages/ui: neither is a dependency of @libriant/api or of
+# anything it imports (checked against every package.json in the workspace), and
+# neither has its source copied into the build stage, so they were unreachable
+# code with an install cost.
+#
+# Omitting a workspace member is safe with `--frozen-lockfile`: pnpm only
+# validates the projects it finds. `apps/desktop` is a workspace member and has
+# never been copied into ANY of the three Dockerfiles, which is the standing
+# proof that this works in this repo.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY apps/api/package.json apps/api/package.json
-COPY apps/web/package.json apps/web/package.json
 COPY packages/db-control/package.json packages/db-control/package.json
 COPY packages/db-tenant/package.json packages/db-tenant/package.json
 COPY packages/shared/package.json packages/shared/package.json
-COPY packages/i18n/package.json packages/i18n/package.json
-COPY packages/ui/package.json packages/ui/package.json
 # The API renders the marketing site's home page when the application form
 # fails validation, so @libriant/site is a real runtime dependency.
 COPY apps/site/package.json apps/site/package.json

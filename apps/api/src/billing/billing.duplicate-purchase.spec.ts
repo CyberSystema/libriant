@@ -41,6 +41,7 @@ const {
   accountFindUnique,
   accountFindFirst,
   accountCreate,
+  accountUpdateMany,
   tenantFindUnique,
   createCustomer,
   createCheckoutSession,
@@ -56,6 +57,10 @@ const {
   accountFindUnique: vi.fn(),
   accountFindFirst: vi.fn(),
   accountCreate: vi.fn(),
+  // billing-09: `ensureStripeCustomer` claims the customer column with a
+  // conditional updateMany instead of a blind update, so a racer that lost
+  // adopts the winner's id rather than overwriting it.
+  accountUpdateMany: vi.fn(),
   tenantFindUnique: vi.fn(),
   createCustomer: vi.fn(),
   createCheckoutSession: vi.fn(),
@@ -73,6 +78,7 @@ vi.mock('@libriant/db-control', () => ({
       findUnique: accountFindUnique,
       findFirst: accountFindFirst,
       create: accountCreate,
+      updateMany: accountUpdateMany,
     },
     tenant: { findUnique: tenantFindUnique },
   },
@@ -85,7 +91,7 @@ import { BillingService } from './billing.service.js';
 
 const TENANT = 't1';
 
-function plan(slug: string, id: string, priceId: string) {
+function plan(slug: string, id: string, priceId: string, monthlyPriceCents: number) {
   return {
     id,
     slug,
@@ -96,11 +102,16 @@ function plan(slug: string, id: string, priceId: string) {
     archivedAt: null,
     stripePriceId: priceId,
     stripeAnnualPriceId: `${priceId}_annual`,
+    // Integer minor units, and present on purpose: `startCheckout` now refuses
+    // a plan priced at zero (billing-11), so a fixture without this field would
+    // exercise a branch no real plan takes.
+    monthlyPriceCents,
+    annualPriceCents: monthlyPriceCents * 10,
   };
 }
 const PLANS: Record<string, ReturnType<typeof plan>> = {
-  community: plan('community', 'p-comm', 'price_community'),
-  municipal: plan('municipal', 'p-muni', 'price_municipal'),
+  community: plan('community', 'p-comm', 'price_community', 3900),
+  municipal: plan('municipal', 'p-muni', 'price_municipal', 7900),
 };
 
 /**
@@ -178,6 +189,8 @@ beforeEach(() => {
   accountFindUnique.mockResolvedValue({ stripeCustomerId: 'cus_1' });
   accountFindFirst.mockResolvedValue({ tenantId: TENANT });
   accountCreate.mockResolvedValue({});
+  // The claim succeeds: no concurrent racer in these scenarios.
+  accountUpdateMany.mockResolvedValue({ count: 1 });
   tenantFindUnique.mockResolvedValue({
     id: TENANT,
     slug: 'acme',

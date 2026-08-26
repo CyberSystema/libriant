@@ -15,6 +15,7 @@ import { BillingService } from './billing.service.js';
 import { RedisService } from '../platform/redis.service.js';
 import {
   STRIPE_DRIVER,
+  stripeEventContext,
   type StripeCheckoutSessionShape,
   type StripeDriver,
   type StripeInvoiceShape,
@@ -267,7 +268,18 @@ export class StripeWebhookController {
     switch (event.type) {
       case 'customer.subscription.created':
       case 'customer.subscription.updated':
-        await this.billing.syncStripeSubscription(obj as unknown as StripeSubscriptionShape);
+        // billing-06: hand the SERVICE the envelope's `created`, not just the
+        // Subscription object. A mid-cycle plan change leaves
+        // `current_period_start` untouched — Stripe keeps the period and
+        // prorates — so the old stale-replay guard, which compared period
+        // starts, could not tell an upgrade from the older event it
+        // superseded, and whichever arrived last won. Stripe does not
+        // guarantee delivery order between two `customer.subscription.updated`
+        // events; `event.created` is the only thing that does.
+        await this.billing.syncStripeSubscription(
+          obj as unknown as StripeSubscriptionShape,
+          stripeEventContext(event) ?? undefined,
+        );
         return;
       case 'customer.subscription.deleted':
         await this.billing.handleStripeSubscriptionDeleted(

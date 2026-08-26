@@ -8,6 +8,7 @@ import type {
   StripeDriver,
   StripePortalInput,
   StripePriceChangeInput,
+  StripePriceState,
   StripeSubscriptionState,
   StripeWebhookEvent,
 } from './stripe-driver.js';
@@ -166,6 +167,17 @@ export class FakeStripeDriver implements StripeDriver {
    */
   async listSubscriptions(_customerId: string): Promise<StripeSubscriptionState[]> {
     return [];
+  }
+
+  /**
+   * The fake keeps no Price catalogue, so it says so: `null` means "Stripe has
+   * no such Price" to the caller, and the catalogue audit (billing-10) reports
+   * every row as unverified when it runs against this driver rather than
+   * claiming the seeded `price_seed_*` ids check out. Reporting a green
+   * catalogue in dev is exactly the vacuous check the finding is about.
+   */
+  async getPrice(_priceId: string): Promise<StripePriceState | null> {
+    return null;
   }
 
   verifyWebhookSignature(rawBody: Buffer, signatureHeader: string): StripeWebhookEvent {

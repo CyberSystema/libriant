@@ -8,6 +8,7 @@ import { PasswordService } from './password.service.js';
 import { PasswordResetService } from './password-reset.service.js';
 import { EmailVerificationService } from './email-verification.service.js';
 import { EmailVerifiedGuard } from './email-verified.guard.js';
+import { SessionRevocationService } from './session-revocation.service.js';
 import { SignupService } from './signup.service.js';
 import { TenantProvisioningService } from '../provisioning/tenant-provisioning.service.js';
 import { TenantModule } from '../tenancy/tenant.module.js';
@@ -23,6 +24,7 @@ import { TenantModule } from '../tenancy/tenant.module.js';
     PasswordResetService,
     EmailVerificationService,
     EmailVerifiedGuard,
+    SessionRevocationService,
     SignupService,
     TenantProvisioningService,
   ],
@@ -36,6 +38,7 @@ import { TenantModule } from '../tenancy/tenant.module.js';
     PasswordResetService,
     EmailVerificationService,
     EmailVerifiedGuard,
+    SessionRevocationService,
     SignupService,
   ],
 })

@@ -178,9 +178,24 @@ export async function processImportJob(
       // Leave status 'canceled'; record what we managed.
       await controlDb.importBatch.update({
         where: { id: batchId },
-        data: { ...finalCounts(tally, dryRun), issuesTruncated: truncated, finishedAt: new Date() },
+        data: {
+          ...finalCounts(tally, dryRun),
+          issuesTruncated: truncated,
+          finishedAt: new Date(),
+          // input-and-files-06: `stagingPath` is the record of "these bytes are
+          // on the shared volume". Blank it in the SAME write that deletes them
+          // or the staging budget keeps charging the tenant for a file that no
+          // longer exists — and `requireRunnable` keeps offering a re-run that
+          // can only die on ENOENT.
+          //
+          // A CANCELLED batch is terminal in both phases: `requireRunnable`
+          // rejects status `canceled`, so a cancelled DRY RUN's file could
+          // never be used again either, and leaving it behind was a 64 MB leak
+          // per cancelled validation.
+          stagingPath: '',
+        },
       });
-      if (!dryRun) await deleteStaged(batch.stagingPath);
+      await deleteStaged(batch.stagingPath);
       return;
     }
 
@@ -192,6 +207,7 @@ export async function processImportJob(
         issuesTruncated: truncated,
         finishedAt: new Date(),
         ...finalCounts(tally, dryRun),
+        ...(dryRun ? {} : { stagingPath: '' }),
       },
     });
     if (!dryRun) await deleteStaged(batch.stagingPath);

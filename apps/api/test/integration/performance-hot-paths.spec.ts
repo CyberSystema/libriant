@@ -10,6 +10,8 @@ import { makeTenantPrismaClient, type TenantPrismaClient } from '@libriant/db-te
 import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { RedisService } from '../../src/platform/redis.service.js';
+import { sweepFineAccrual } from '../../src/jobs/fine-accrual.job.js';
+import { sweepRetention } from '../../src/jobs/retention.job.js';
 import { listenOnce } from './listen-once.js';
 import { declareBillingPosture } from './billing-posture.js';
 
@@ -34,6 +36,10 @@ declareBillingPosture(
  *   - the overdue list comes back most-overdue-first, which only the `dueAt ASC`
  *     ordering produces;
  *   - the tenant database carries the index that ordering needs.
+ *
+ * The second wave (performance-05, -07, -08, -11, -12) follows the same rule:
+ * every assertion below is one that the AUDITED code fails and the remediated
+ * code passes, driven through the real HTTP route or the real job entry point.
  */
 let app: NestExpressApplication;
 let tenantCookie = '';
@@ -219,5 +225,279 @@ describe('performance-02 — the overdue list is ordered by how overdue it is', 
     // can never satisfy because `enum_in` is STABLE and so is never folded to a
     // constant for the predicate prover.
     expect(names).not.toContain('loans_active_dueAt_idx');
+  });
+});
+
+describe('performance-12 — a term shorter than a trigram is refused before Postgres sees it', () => {
+  const TITLE = 'Ομηρικά Έπη';
+
+  it('catalogues a book whose title a two-letter search would otherwise match', async () => {
+    await http()
+      .post(`/t/${slug}/catalog/books`)
+      .set('Cookie', tenantCookie)
+      .send({ title: TITLE })
+      .expect(201);
+  });
+
+  it('answers a two-character search with an empty page and a minQueryChars hint', async () => {
+    // `ομ` IS a substring of the normalised searchText, so the audited service
+    // returned this book — after a `searchText LIKE '%ομ%'` that no trigram
+    // index can serve. Measured on a 400,000-title catalogue: 13,407 shared
+    // buffers for the two-character term, 7 for the three-character one.
+    const res = await http()
+      .get(`/t/${slug}/catalog/books?q=${encodeURIComponent('ομ')}`)
+      .set('Cookie', tenantCookie)
+      .expect(200);
+    expect(res.body.items).toEqual([]);
+    expect(res.body.minQueryChars).toBe(3);
+  });
+
+  it('serves the same search from three characters, so the floor is length and not the term', async () => {
+    const res = await http()
+      .get(`/t/${slug}/catalog/books?q=${encodeURIComponent('ομη')}`)
+      .set('Cookie', tenantCookie)
+      .expect(200);
+    const titles = res.body.items.map((b: { title: string }) => b.title);
+    expect(titles).toContain(TITLE);
+    expect(res.body.minQueryChars).toBeUndefined();
+  });
+
+  it('accepts an accented three-character term, which is how a Greek user types it', async () => {
+    const res = await http()
+      .get(`/t/${slug}/catalog/books?q=${encodeURIComponent('Ομή')}`)
+      .set('Cookie', tenantCookie)
+      .expect(200);
+    expect(res.body.minQueryChars).toBeUndefined();
+  });
+});
+
+describe('performance-11 — the dashboard tiles are counts, not page sizes', () => {
+  it('reports the real catalogue size where the list tile reported its page size', async () => {
+    // What the tenant home did: `GET /catalog/books?limit=1` and render
+    // `items.length`. A 400,000-title library's tile therefore read "1".
+    const tile = await http()
+      .get(`/t/${slug}/catalog/books?limit=1`)
+      .set('Cookie', tenantCookie)
+      .expect(200);
+    expect(tile.body.items).toHaveLength(1);
+
+    const summary = await http().get(`/t/${slug}/summary`).set('Cookie', tenantCookie).expect(200);
+
+    const [books, members, active, overdue, holds] = await Promise.all([
+      tenantClient!.book.count({ where: { archivedAt: null } }),
+      tenantClient!.member.count({ where: { archivedAt: null } }),
+      tenantClient!.loan.count({ where: { status: 'active' } }),
+      tenantClient!.loan.count({ where: { status: 'active', dueAt: { lt: new Date() } } }),
+      tenantClient!.reservation.count({ where: { status: 'queued' } }),
+    ]);
+
+    expect(summary.body.books).toBe(books);
+    expect(summary.body.members).toBe(members);
+    expect(summary.body.activeLoans).toBe(active);
+    expect(summary.body.overdueLoans).toBe(overdue);
+    expect(summary.body.queuedHolds).toBe(holds);
+    // The defect in one line: same number, two different answers.
+    expect(summary.body.books).toBeGreaterThan(tile.body.items.length);
+    expect(summary.body.overdueLoans).toBeGreaterThan(0);
+  });
+
+  it('serves the second read from cache', async () => {
+    const first = await http().get(`/t/${slug}/summary`).set('Cookie', tenantCookie).expect(200);
+    const second = await http().get(`/t/${slug}/summary`).set('Cookie', tenantCookie).expect(200);
+    expect(second.body.cachedForSeconds).toBeGreaterThan(0);
+    expect(second.body.books).toBe(first.body.books);
+  });
+
+  it('refuses the route without a session, like every other tenant read', async () => {
+    await http().get(`/t/${slug}/summary`).expect(401);
+  });
+});
+
+describe('performance-08 — the overdue sweep pages and batches instead of N+1', () => {
+  // One page is 500 (OVERDUE_PAGE_SIZE), so 501 loans forces the keyset cursor
+  // to advance. The audited sweep pulled every row in one findMany and then did
+  // three round trips per row.
+  const BULK = 501;
+  const ids = Array.from({ length: BULK }, (_, i) => `perf08-loan-${tag}-${i}`);
+  let bulkMemberId = '';
+
+  it('backdates 501 overdue loans', async () => {
+    const member = await createMember({ fullName: 'Μαζικός Δανειζόμενος' }).expect(201);
+    bulkMemberId = member.body.id;
+    const book = await http()
+      .post(`/t/${slug}/catalog/books`)
+      .set('Cookie', tenantCookie)
+      .send({ title: 'Βιβλίο Μαζικού Δανεισμού' })
+      .expect(201);
+
+    const now = Date.now();
+    await tenantClient!.bookCopy.createMany({
+      data: ids.map((id, i) => ({
+        id: `perf08-copy-${tag}-${i}`,
+        bookId: book.body.id,
+        barcode: `PERF08-${tag}-${i}`,
+        status: 'on_loan' as const,
+      })),
+    });
+    await tenantClient!.loan.createMany({
+      data: ids.map((id, i) => ({
+        id,
+        copyId: `perf08-copy-${tag}-${i}`,
+        memberId: bulkMemberId,
+        // Between 1 and 10 days overdue; loanedAt safely before dueAt.
+        loanedAt: new Date(now - 40 * 86_400_000),
+        dueAt: new Date(now - ((i % 10) + 1) * 86_400_000),
+        status: 'active' as const,
+      })),
+    });
+
+    await tenantClient!.tenantSetting.update({
+      where: { id: 1 },
+      data: { overdueFinesEnabled: true, finePerDayCents: 10, fineCapCents: 0 },
+    });
+  }, 120_000);
+
+  it('opens one outstanding fine per overdue loan, across the page boundary', async () => {
+    await sweepFineAccrual();
+    const fines = await tenantClient!.fine.findMany({
+      where: { loanId: { in: ids }, status: 'outstanding' },
+      select: { loanId: true, amountCents: true },
+    });
+    expect(fines).toHaveLength(BULK);
+    // The loan at index 500 is on the SECOND page. If the keyset cursor did not
+    // advance, this one has no fine (or the sweep never terminated).
+    const last = fines.find((f) => f.loanId === ids[BULK - 1]);
+    expect(last).toBeDefined();
+    // 10 c/day, integer subunits throughout — the amount is days × rate.
+    for (const f of fines) {
+      expect(f.amountCents % 10).toBe(0);
+      expect(f.amountCents).toBeGreaterThan(0);
+    }
+  }, 120_000);
+
+  it('grows every existing fine through the batched UPDATE, keeping the status guard', async () => {
+    const before = await tenantClient!.fine.findMany({
+      where: { loanId: { in: ids }, status: 'outstanding' },
+      select: { id: true, loanId: true, amountCents: true, updatedAt: true },
+    });
+    const byLoan = new Map(before.map((f) => [f.loanId!, f]));
+
+    // A librarian waives one of them. The sweep must leave a resolved fine
+    // alone — that guard used to live in the per-row `updateMany` WHERE and now
+    // lives in the batched statement's WHERE.
+    const waived = byLoan.get(ids[0]!)!;
+    await tenantClient!.fine.update({
+      where: { id: waived.id },
+      data: { status: 'waived' },
+    });
+
+    // Age every loan by another 5 days so every remaining amount changes.
+    await tenantClient!.$executeRawUnsafe(
+      `UPDATE "loans" SET "dueAt" = "dueAt" - interval '5 day' WHERE "id" LIKE $1`,
+      `perf08-loan-${tag}-%`,
+    );
+
+    await sweepFineAccrual();
+
+    const after = await tenantClient!.fine.findMany({
+      where: { loanId: { in: ids }, status: 'outstanding' },
+      select: { id: true, loanId: true, amountCents: true, updatedAt: true },
+    });
+    expect(after.length).toBe(BULK);
+
+    for (const f of after) {
+      const was = byLoan.get(f.loanId!)!;
+      if (f.loanId === ids[0]) {
+        // The waived one. It is NOT resurrected — this is a new row — and the
+        // waived amount is netted off, so the member is billed only for the
+        // days that accrued AFTER the write-off: 6 days × 10 c − 10 c waived.
+        expect(f.id).not.toBe(was.id);
+        // 6 days overdue at 10 c/day, less the 10 c already written off.
+        expect(f.amountCents).toBe(60 - was.amountCents);
+        continue;
+      }
+      expect(f.id).toBe(was.id); // grown, not duplicated
+      expect(f.amountCents).toBe(was.amountCents + 50); // 5 more days × 10 c
+      // Raw SQL does not get Prisma's @updatedAt for free; the column is NOT
+      // NULL with no database default, so the batched statement has to set it.
+      expect(f.updatedAt.getTime()).toBeGreaterThan(was.updatedAt.getTime());
+    }
+
+    const stillWaived = await tenantClient!.fine.findUnique({ where: { id: waived.id } });
+    expect(stillWaived!.status).toBe('waived');
+    expect(stillWaived!.amountCents).toBe(waived.amountCents);
+  }, 180_000);
+});
+
+describe('performance-07 — the 30-day Stripe payload prune the schema promised', () => {
+  const evtOldProcessed = `evt_perf07_old_${tag}`;
+  const evtOldUnprocessed = `evt_perf07_stuck_${tag}`;
+  const evtRecent = `evt_perf07_recent_${tag}`;
+  const body = { id: 'evt', object: 'event', data: { object: { blob: 'x'.repeat(512) } } };
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
+
+  it('records three events: old+processed, old+stuck, recent+processed', async () => {
+    await controlDb.stripeWebhookEvent.createMany({
+      data: [
+        {
+          id: evtOldProcessed,
+          type: 'invoice.paid',
+          payloadJson: body,
+          receivedAt: daysAgo(45),
+          processedAt: daysAgo(45),
+        },
+        {
+          id: evtOldUnprocessed,
+          type: 'invoice.paid',
+          payloadJson: body,
+          receivedAt: daysAgo(45),
+          processedAt: null,
+        },
+        {
+          id: evtRecent,
+          type: 'invoice.paid',
+          payloadJson: body,
+          receivedAt: daysAgo(2),
+          processedAt: daysAgo(2),
+        },
+      ],
+    });
+  });
+
+  it('prunes only the processed body past 30 days, and leaves the ledger row', async () => {
+    const res = await sweepRetention({
+      emails: undefined as never,
+      redis: app.get(RedisService),
+    });
+    expect(res.counts?.stripePayloadsPruned).toBeGreaterThanOrEqual(1);
+
+    const rows = await controlDb.stripeWebhookEvent.findMany({
+      where: { id: { in: [evtOldProcessed, evtOldUnprocessed, evtRecent] } },
+      select: { id: true, payloadJson: true, processedAt: true },
+    });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    // The row survives: `persistEvent` reads processedAt off it as the durable
+    // replay guard, so deleting it would re-arm a >30-day-old redelivery.
+    expect(byId.size).toBe(3);
+    expect(byId.get(evtOldProcessed)!.payloadJson).toEqual({});
+    // Never processed = an operator's to-do list; the payload is the only thing
+    // they can replay from.
+    expect(byId.get(evtOldUnprocessed)!.payloadJson).toEqual(body);
+    expect(byId.get(evtRecent)!.payloadJson).toEqual(body);
+  }, 180_000);
+
+  it('is a no-op on the next run', async () => {
+    const res = await sweepRetention({
+      emails: undefined as never,
+      redis: app.get(RedisService),
+    });
+    expect(res.counts?.stripePayloadsPruned).toBe(0);
+  }, 180_000);
+
+  it('provisions the partial index that keeps the steady state off a full scan', async () => {
+    const idx = await controlDb.$queryRawUnsafe<{ indexname: string }[]>(
+      "SELECT indexname FROM pg_indexes WHERE tablename = 'stripe_webhook_events'",
+    );
+    expect(idx.map((r) => r.indexname)).toContain('stripe_webhook_events_prunable_idx');
   });
 });

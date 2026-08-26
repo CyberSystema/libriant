@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { userUpdateMany, userFindUnique, tenantFindUnique } = vi.hoisted(() => ({
+const { userUpdateMany, userFindUnique, userFindFirst, tenantFindUnique } = vi.hoisted(() => ({
   userUpdateMany: vi.fn(),
   userFindUnique: vi.fn(),
+  userFindFirst: vi.fn(),
   tenantFindUnique: vi.fn(),
 }));
 
 vi.mock('@libriant/db-control', () => ({
   controlDb: {
-    user: { updateMany: userUpdateMany, findUnique: userFindUnique },
+    user: { updateMany: userUpdateMany, findUnique: userFindUnique, findFirst: userFindFirst },
     tenant: { findUnique: tenantFindUnique },
   },
   // Re-export a Prisma stand-in so the `instanceof PrismaClientKnownRequestError`
@@ -29,8 +30,24 @@ function makeService() {
   };
   const rateLimit = { hit: vi.fn().mockResolvedValue({ allowed: true }) };
   const emails = { enqueue: vi.fn().mockResolvedValue({ outboxId: 'o1' }) };
-  const svc = new EmailVerificationService(redis as never, rateLimit as never, emails as never);
-  return { svc, redis, rateLimit, emails };
+  // authn-authz-08 added the step-up + notice collaborators. They are real
+  // dependencies of `requestEmailChange`, so they are stubbed here rather than
+  // omitted — a spec that constructs the service without them would stop
+  // compiling the moment anything in `send()` reached for one.
+  const passwords = { verify: vi.fn().mockResolvedValue(true), dummyVerify: vi.fn() };
+  const revocations = { revokeAllForUser: vi.fn().mockResolvedValue('account') };
+  const audit = { record: vi.fn() };
+  const tenants = { resolveBySlug: vi.fn().mockResolvedValue(null) };
+  const svc = new EmailVerificationService(
+    redis as never,
+    rateLimit as never,
+    emails as never,
+    passwords as never,
+    revocations as never,
+    audit as never,
+    tenants as never,
+  );
+  return { svc, redis, rateLimit, emails, passwords, revocations, audit, tenants };
 }
 
 const TENANT = { slug: 'acme', name: 'Acme Library', defaultLocale: 'en' };
@@ -134,10 +151,16 @@ describe('EmailVerificationService.verify', () => {
     expect(emails.enqueue).not.toHaveBeenCalled(); // no welcome
   });
 
-  it('applies a staged email change', async () => {
-    const { svc, redis } = makeService();
+  it('applies a staged email change, pinning the address it was staged against', async () => {
+    const { svc, redis, revocations } = makeService();
     redis.client.getdel.mockResolvedValue(
-      JSON.stringify({ uid: 'u1', tid: 't1', email: 'new@acme.test', mode: 'change' }),
+      JSON.stringify({
+        uid: 'u1',
+        tid: 't1',
+        email: 'new@acme.test',
+        mode: 'change',
+        prevEmail: 'owner@acme.test',
+      }),
     );
     userUpdateMany.mockResolvedValue({ count: 1 });
     tenantFindUnique.mockResolvedValue(TENANT);
@@ -145,10 +168,109 @@ describe('EmailVerificationService.verify', () => {
     const res = await svc.verify('tok');
 
     expect(res).toEqual({ ok: true, mode: 'change', slug: 'acme' });
+    // authn-authz-08: the where-clause carries the PRIOR address, so a token
+    // staged during a stolen session is inert once the owner has recovered.
+    // And `sessionsValidAfter` lands with the new address, which is what ends
+    // the attacker's borrowed cookie.
+    expect(userUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'u1', tenantId: 't1', email: 'owner@acme.test' },
+      data: {
+        email: 'new@acme.test',
+        emailVerifiedAt: expect.any(Date),
+        sessionsValidAfter: expect.any(Date),
+      },
+    });
+    expect(revocations.revokeAllForUser).toHaveBeenCalledWith('u1', expect.any(String));
+  });
+
+  it('reports failure (and revokes nothing) when the pinned address no longer matches', async () => {
+    const { svc, redis, revocations } = makeService();
+    redis.client.getdel.mockResolvedValue(
+      JSON.stringify({
+        uid: 'u1',
+        tid: 't1',
+        email: 'attacker@evil.test',
+        mode: 'change',
+        prevEmail: 'owner@acme.test',
+      }),
+    );
+    // The pinned where-clause matched no row — the account has since moved on.
+    userUpdateMany.mockResolvedValue({ count: 0 });
+    tenantFindUnique.mockResolvedValue(TENANT);
+
+    expect(await svc.verify('tok')).toEqual({ ok: false });
+    expect(revocations.revokeAllForUser).not.toHaveBeenCalled();
+  });
+
+  it('still applies a pre-authn-authz-08 token that carries no prevEmail', async () => {
+    // A change staged before the deploy has a live 24h token. Failing those
+    // would break every in-flight address change on release day, so an absent
+    // `prevEmail` keeps the old unpinned where-clause.
+    const { svc, redis } = makeService();
+    redis.client.getdel.mockResolvedValue(
+      JSON.stringify({ uid: 'u1', tid: 't1', email: 'new@acme.test', mode: 'change' }),
+    );
+    userUpdateMany.mockResolvedValue({ count: 1 });
+    tenantFindUnique.mockResolvedValue(TENANT);
+
+    expect(await svc.verify('tok')).toEqual({ ok: true, mode: 'change', slug: 'acme' });
     expect(userUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'u1', tenantId: 't1' } }),
+    );
+  });
+});
+
+describe('EmailVerificationService.requestEmailChange (authn-authz-08)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('refuses without the current password, before anything is staged', async () => {
+    const { svc, passwords, redis, emails } = makeService();
+    userFindUnique.mockResolvedValue({
+      email: 'owner@acme.test',
+      status: 'active',
+      tenantId: 't1',
+      passwordHash: '$2a$12$hash',
+    });
+    passwords.verify.mockResolvedValue(false);
+
+    await expect(svc.requestEmailChange('u1', 'attacker@evil.test', 'wrong')).rejects.toThrow(
+      /password is wrong/i,
+    );
+    // Nothing staged, nothing sent: the probe's one-request takeover ended here.
+    expect(redis.client.set).not.toHaveBeenCalled();
+    expect(emails.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('warns the OLD address and records the request in the library audit log', async () => {
+    const { svc, passwords, emails, audit, tenants } = makeService();
+    userFindUnique
+      .mockResolvedValueOnce({
+        email: 'owner@acme.test',
+        status: 'active',
+        tenantId: 't1',
+        passwordHash: '$2a$12$hash',
+      })
+      // uniqueness pre-check (findFirst is a separate mock; see below)
+      .mockResolvedValue(null);
+    passwords.verify.mockResolvedValue(true);
+    userFindFirst.mockResolvedValue(null);
+    tenantFindUnique.mockResolvedValue(TENANT);
+    tenants.resolveBySlug.mockResolvedValue({ id: 't1', slug: 'acme' });
+
+    await svc.requestEmailChange('u1', 'new@acme.test', 'correct-horse-battery');
+
+    // Two messages: the verify link to the NEW address, and the security
+    // notice to the OLD one. Nothing is delivered (EMAIL_DRIVER=console), which
+    // is exactly why the audit row below has to exist as well.
+    const recipients = emails.enqueue.mock.calls.map((c) => (c[0] as { toEmail: string }).toEmail);
+    expect(recipients).toContain('new@acme.test');
+    expect(recipients).toContain('owner@acme.test');
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ actorId: 'u1', actorType: 'user' }),
       expect.objectContaining({
-        where: { id: 'u1', tenantId: 't1' },
-        data: { email: 'new@acme.test', emailVerifiedAt: expect.any(Date) },
+        action: 'account.email_change_requested',
+        after: { from: 'owner@acme.test', to: 'new@acme.test' },
       }),
     );
   });

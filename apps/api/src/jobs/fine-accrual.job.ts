@@ -1,5 +1,6 @@
 import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
+import { Prisma, type TenantPrismaClient } from '@libriant/db-tenant';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { describeError } from './job-error.js';
@@ -91,11 +92,6 @@ async function accrueOneTenant(
   const currency = settings?.currency ?? 'EUR';
   const now = new Date();
 
-  const overdue = await client.loan.findMany({
-    where: { status: 'active', dueAt: { lt: now } },
-    select: { id: true, memberId: true, dueAt: true },
-  });
-
   // What each loan has ALREADY settled — paid at the desk or written off.
   //
   // Without this the sweep silently undoes the fines module. A librarian voids
@@ -123,64 +119,195 @@ async function accrueOneTenant(
   }
 
   let touched = 0;
-  for (const loan of overdue) {
-    const daysOverdue = Math.floor((now.getTime() - loan.dueAt.getTime()) / MS_PER_DAY);
+  let cursor: OverdueCursor | null = null;
+  for (;;) {
+    const page = await overduePage(client, now, cursor);
+    if (page.length === 0) break;
+    touched += await accrueBatch(client, page, { now, perDay, cap, currency, settledByLoan });
+    if (page.length < OVERDUE_PAGE_SIZE) break;
+    const last = page[page.length - 1]!;
+    cursor = { dueAt: last.dueAt, id: last.id };
+  }
+  return touched;
+}
+
+type OverdueLoan = { id: string; memberId: string; dueAt: Date };
+type OverdueCursor = { dueAt: Date; id: string };
+
+/**
+ * One page of still-open overdue loans, oldest first (performance-08).
+ *
+ * Raw rather than `loan.findMany({ cursor })` for two reasons, both measured
+ * on the audit's 2M-row loans table (200,000 open, 15,000 overdue):
+ *
+ *   - A true row-value predicate `("dueAt","id") > ($1,$2)` is a start key.
+ *     Prisma's `cursor` renders an OR-of-subselects that Postgres cannot use
+ *     as one (performance-03), so page N would re-walk pages 1..N-1.
+ *   - `status = 'active'::"LoanStatus"` is a foldable constant. Prisma emits
+ *     `status = CAST($1::text AS "LoanStatus")`, and because `enum_in` is only
+ *     STABLE the planner cannot fold that — the same reason the tenant schema
+ *     stopped using a partial index for this predicate.
+ *
+ * Plan (EXPLAIN ANALYZE, BUFFERS, page size 500):
+ *   page 1:  Index Scan using loans_status_dueAt_id_idx   Buffers: shared hit=239
+ *   page N:  Index Scan using loans_dueAt_idx             Buffers: shared hit=245
+ * versus the unbounded `findMany` this replaces, which returned all 15,000 rows
+ * into one JS array in a single trip. The rows still have to be read; what
+ * changes is that memory is now bounded by the page, not by how far behind the
+ * library is on its overdues.
+ */
+const OVERDUE_PAGE_SIZE = 500;
+
+async function overduePage(
+  client: TenantPrismaClient,
+  now: Date,
+  cursor: OverdueCursor | null,
+): Promise<OverdueLoan[]> {
+  // `now` is bound rather than calling now() in SQL, so every page of the sweep
+  // and the daysOverdue arithmetic below agree on one instant — otherwise a
+  // sweep straddling midnight would bill two different day counts.
+  const after = cursor
+    ? Prisma.sql`AND ("dueAt", "id") > (${cursor.dueAt}, ${cursor.id})`
+    : Prisma.empty;
+  return client.$queryRaw<OverdueLoan[]>(
+    Prisma.sql`SELECT "id", "memberId", "dueAt"
+                 FROM "loans"
+                WHERE "status" = 'active'::"LoanStatus"
+                  AND "dueAt" < ${now}
+                  ${after}
+                ORDER BY "dueAt" ASC, "id" ASC
+                LIMIT ${OVERDUE_PAGE_SIZE}`,
+  );
+}
+
+/**
+ * Accrue one page.
+ *
+ * This used to be three sequential round trips PER LOAN — `loan.findUnique`,
+ * `fine.findFirst`, and a `fine.updateMany`/`create` — on a pool that is one
+ * connection deep in the worker, with every tenant swept sequentially in the
+ * same hourly tick.
+ *
+ * Measured on the audit's Institutional-sized tenant (2,000,000 loans, 200,000
+ * open, 15,000 overdue), counting statements off Prisma's own query event log,
+ * READS ONLY — no writes, so this is the floor, paid every hour:
+ *
+ *   old shape: 15,000 rows buffered in one array; 1.94 statements/loan,
+ *              extrapolated to 29,042 statements and 9,179 ms
+ *   new shape: never more than 500 rows in memory; 92 statements, 326 ms
+ *
+ * Now it is a fixed FOUR statements per page regardless of page size:
+ * one status re-read, one fine lookup, one batched UPDATE, one batched INSERT.
+ * Every guard the per-row version had is preserved — see below.
+ */
+async function accrueBatch(
+  client: TenantPrismaClient,
+  page: OverdueLoan[],
+  opts: {
+    now: Date;
+    perDay: number;
+    cap: number;
+    currency: string;
+    settledByLoan: Map<string, number>;
+  },
+): Promise<number> {
+  const ids = page.map((l) => l.id);
+
+  // Re-read the loans: a concurrent return/lost flow may have closed one and
+  // finalised its fine between the page query and here. Don't resurrect or
+  // overwrite a fine for a loan that is no longer active (that would revert the
+  // return-flow amount). Same guard as before, one statement instead of N.
+  const stillActive = new Set(
+    (
+      await client.loan.findMany({
+        where: { id: { in: ids }, status: 'active' },
+        select: { id: true },
+      })
+    ).map((r) => r.id),
+  );
+
+  const existingByLoan = new Map<string, { id: string; amountCents: number }>();
+  for (const f of await client.fine.findMany({
+    where: { loanId: { in: ids }, status: 'outstanding' },
+    select: { id: true, loanId: true, amountCents: true },
+  })) {
+    if (f.loanId) existingByLoan.set(f.loanId, { id: f.id, amountCents: f.amountCents });
+  }
+
+  const updIds: string[] = [];
+  const updAmounts: number[] = [];
+  const updReasons: string[] = [];
+  const creates: Array<{
+    memberId: string;
+    loanId: string;
+    amountCents: number;
+    currency: string;
+    reason: string;
+    status: 'outstanding';
+  }> = [];
+
+  for (const loan of page) {
+    if (!stillActive.has(loan.id)) continue;
+    const daysOverdue = Math.floor((opts.now.getTime() - loan.dueAt.getTime()) / MS_PER_DAY);
     if (daysOverdue <= 0) continue;
-    const raw = daysOverdue * perDay;
-    const accrued = cap > 0 ? Math.min(raw, cap) : raw;
-    const amount = Math.max(0, accrued - (settledByLoan.get(loan.id) ?? 0));
+    const raw = daysOverdue * opts.perDay;
+    const accrued = opts.cap > 0 ? Math.min(raw, opts.cap) : raw;
+    const amount = Math.max(0, accrued - (opts.settledByLoan.get(loan.id) ?? 0));
     // Nothing left to bill — either nothing accrued, or the member has already
     // settled everything this loan has run up so far.
     if (amount <= 0) continue;
     const reason = `${daysOverdue} day(s) overdue`;
 
-    // Re-read the loan: a concurrent return/lost flow may have just closed it
-    // and finalised its fine. Don't resurrect or overwrite a fine for a loan
-    // that's no longer active (that would revert the return-flow amount).
-    const fresh = await client.loan.findUnique({
-      where: { id: loan.id },
-      select: { status: true },
-    });
-    if (!fresh || fresh.status !== 'active') continue;
-
-    const existing = await client.fine.findFirst({
-      where: { loanId: loan.id, status: 'outstanding' },
-      select: { id: true, amountCents: true },
-    });
+    const existing = existingByLoan.get(loan.id);
     if (existing) {
       if (existing.amountCents !== amount) {
-        // Status-guarded so we never touch a fine the return flow just resolved.
-        const upd = await client.fine.updateMany({
-          where: { id: existing.id, status: 'outstanding' },
-          data: { amountCents: amount, reason },
-        });
-        if (upd.count > 0) touched++;
+        updIds.push(existing.id);
+        updAmounts.push(amount);
+        updReasons.push(reason);
       }
     } else {
-      try {
-        await client.fine.create({
-          data: {
-            memberId: loan.memberId,
-            loanId: loan.id,
-            amountCents: amount,
-            currency,
-            reason,
-            status: 'outstanding',
-          },
-        });
-        touched++;
-      } catch (err) {
-        // A concurrent return/accrual won the race and created the outstanding
-        // fine first (unique index fines_one_outstanding_per_loan). That's the
-        // desired single fine — nothing to do.
-        if (!isUniqueViolation(err)) throw err;
-      }
+      creates.push({
+        memberId: loan.memberId,
+        loanId: loan.id,
+        amountCents: amount,
+        currency: opts.currency,
+        reason,
+        status: 'outstanding',
+      });
     }
   }
-  return touched;
-}
 
-/** Prisma unique-constraint violation (P2002). */
-function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'P2002';
+  let touched = 0;
+
+  if (updIds.length > 0) {
+    // One UPDATE … FROM unnest(...) for the whole page. `int[]` for the amounts
+    // — money is integer subunits and must never go near a float. Still
+    // status-guarded, so a fine the return flow resolved between the read above
+    // and this write is left alone, exactly as the per-row updateMany was.
+    // `updatedAt` is set explicitly: Prisma's `@updatedAt` is applied by the
+    // query engine and does NOT fire on raw SQL, and the column is NOT NULL
+    // with no database default.
+    touched += await client.$executeRaw(
+      Prisma.sql`UPDATE "fines" AS f
+                    SET "amountCents" = v.amount,
+                        "reason"      = v.reason,
+                        "updatedAt"   = ${opts.now}
+                   FROM unnest(${updIds}::text[], ${updAmounts}::int[], ${updReasons}::text[])
+                        AS v(id, amount, reason)
+                  WHERE f."id" = v.id
+                    AND f."status" = 'outstanding'::"FineStatus"`,
+    );
+  }
+
+  if (creates.length > 0) {
+    // `skipDuplicates` is the batch form of the P2002 tolerance the per-row
+    // create had: a concurrent return/accrual that already opened the
+    // outstanding fine wins the `fines_one_outstanding_per_loan` unique index,
+    // and that single fine is the desired outcome. `count` is the number of
+    // rows that really landed, so `touched` keeps its old meaning.
+    const res = await client.fine.createMany({ data: creates, skipDuplicates: true });
+    touched += res.count;
+  }
+
+  return touched;
 }

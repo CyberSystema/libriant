@@ -4,7 +4,9 @@
 # multi-stage Node build: install deps → next build → ship a minimal
 # runtime layer with .next/, public/, and prod deps.
 
-FROM node:26-alpine AS base
+# supply-chain-05: pinned by digest — see apps/api/Dockerfile for the why and
+# for how to re-resolve. All three Dockerfiles must move together.
+FROM node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019 AS base
 RUN apk add --no-cache tini
 # COREPACK_HOME is pinned to a shared, world-readable path for the same reason
 # as apps/api/Dockerfile: this image's CMD is `pnpm … start` running as the
@@ -20,11 +22,17 @@ WORKDIR /app
 # ----- deps ----------------------------------------------------------------
 FROM base AS deps
 
+# supply-chain-03, the web half of the same defect. @libriant/web depends on
+# exactly @libriant/i18n, @libriant/shared, @libriant/ui, marked, next, react
+# and react-dom — `grep -rn 'db-control|db-tenant|@libriant/api'` over apps/web
+# returns nothing. Copying the api/db-control/db-tenant manifests here installed
+# the whole server tree into the browser-facing image: @prisma/client (74.9 MB),
+# the Prisma CLI (41.9 MB), @prisma/studio-core (42.2 MB — a database-browsing
+# web UI), @electric-sql/pglite (23.2 MB — an embedded WASM Postgres), mysql2,
+# NestJS, Stripe. None of it is imported; all of it was a CVE and a foothold
+# toolkit on the tier that faces the internet.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
-COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
-COPY packages/db-control/package.json packages/db-control/package.json
-COPY packages/db-tenant/package.json packages/db-tenant/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/i18n/package.json packages/i18n/package.json
 COPY packages/ui/package.json packages/ui/package.json

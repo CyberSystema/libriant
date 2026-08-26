@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import jwt from 'jsonwebtoken';
 import { loadEnv } from '../config/env.js';
@@ -26,6 +27,27 @@ export type SessionPayload = {
    * (those fall back to `iat`).
    */
   ist?: number;
+  /**
+   * Session id — a random identifier minted once per LOGIN and, like `ist`,
+   * carried unchanged through every sliding re-issue.
+   *
+   * authn-authz-02: `POST /auth/logout` used to clear the cookie and nothing
+   * else, so a cookie captured before the click kept working for the token's
+   * full TTL (7d, or 30d for "remember me", extended by sliding up to the 90-day
+   * absolute cap). A probe proved it: logout → 204, then the SAME cookie on
+   * `GET /auth/me` → 200. This claim is what logout now denylists.
+   *
+   * It is deliberately per-SESSION and not per-TOKEN. A `jti` refreshed on each
+   * slide would let the two copies of a stolen cookie drift apart, so revoking
+   * the copy the browser holds would leave the attacker's copy alive. Both
+   * copies share this `sid` for the life of the session, so one logout kills
+   * the lineage.
+   *
+   * Optional for backward-compat with tokens minted before this claim existed:
+   * those cannot be revoked individually, so logout falls back to the
+   * account-wide `sessionsValidAfter` bump (see SessionRevocationService).
+   */
+  sid?: string;
   /** Issued-at, in seconds (refreshed on every sliding re-issue). */
   iat: number;
   /** Expires-at, in seconds. */
@@ -55,17 +77,25 @@ export class JwtSessionService {
    * revocation + the absolute cap depend on — is preserved.
    */
   sign(
-    input: Pick<SessionPayload, 'sub' | 'tid' | 'role'> & { remember?: boolean; ist?: number },
+    input: Pick<SessionPayload, 'sub' | 'tid' | 'role'> & {
+      remember?: boolean;
+      ist?: number;
+      /** Pass the CURRENT session's `sid` on a slide; omit for a fresh login. */
+      sid?: string;
+    },
   ): SignedSession {
     const remember = !!input.remember;
     const expiresInSec = remember ? this.rememberTtlSec : this.ttlSec;
     const ist = input.ist ?? Math.floor(Date.now() / 1000);
+    // 128 bits of randomness: the denylist is keyed on this value, so a
+    // guessable id would let anyone revoke a stranger's session.
+    const sid = input.sid ?? randomBytes(16).toString('base64url');
     // jsonwebtoken stamps `iat` itself and refuses to honor an explicit one
     // unless `noTimestamp` is set — and `noTimestamp` strips iat from the
     // payload entirely, which then trips our typed-claim guard on verify.
     // Easiest: let the library handle iat + expiresIn for us.
     const token = jwt.sign(
-      { sub: input.sub, tid: input.tid, role: input.role, rmb: remember, ist },
+      { sub: input.sub, tid: input.tid, role: input.role, rmb: remember, ist, sid },
       this.secret,
       { algorithm: 'HS256', expiresIn: expiresInSec },
     );
@@ -90,6 +120,10 @@ export class JwtSessionService {
       ) {
         return null;
       }
+      // `sid` is our own claim and the signature already proves authenticity,
+      // but it is used verbatim as a Redis key — so anything that is not a
+      // plain string is dropped rather than concatenated into one.
+      if (obj.sid !== undefined && typeof obj.sid !== 'string') delete obj.sid;
       return obj as unknown as SessionPayload;
     } catch {
       return null;

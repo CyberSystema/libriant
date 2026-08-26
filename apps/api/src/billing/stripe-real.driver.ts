@@ -7,6 +7,7 @@ import type {
   StripeDriver,
   StripePortalInput,
   StripePriceChangeInput,
+  StripePriceState,
   StripeSubscriptionState,
   StripeWebhookEvent,
 } from './stripe-driver.js';
@@ -56,12 +57,24 @@ export class RealStripeDriver implements StripeDriver {
     this.webhookSecret = env.stripeWebhookSecret;
   }
 
+  /**
+   * billing-09: the second argument is the fix. `ensureStripeCustomer` is
+   * read-then-create with a network call and no lock in between, so two
+   * concurrent purchase starts for the same library both created a customer —
+   * and the library then paid on whichever one its session used, which may be
+   * the one our row did not keep. Stripe replays the first response for a
+   * repeated Idempotency-Key, so both racers now receive the SAME customer and
+   * the duplicate is never created.
+   */
   async createCustomer(input: StripeCustomerInput): Promise<{ customerId: string }> {
-    const customer = await this.stripe.customers.create({
-      email: input.email,
-      name: input.name,
-      metadata: { tenantId: input.tenantId, tenantSlug: input.tenantSlug },
-    });
+    const customer = await this.stripe.customers.create(
+      {
+        email: input.email,
+        name: input.name,
+        metadata: { tenantId: input.tenantId, tenantSlug: input.tenantSlug },
+      },
+      { idempotencyKey: input.idempotencyKey },
+    );
     return { customerId: customer.id };
   }
 
@@ -205,6 +218,36 @@ export class RealStripeDriver implements StripeDriver {
       status: sub.status,
       priceId: sub.items.data.length === 1 ? (sub.items.data[0]?.price.id ?? null) : null,
     }));
+  }
+
+  /**
+   * billing-10: the catalogue audit's only source of truth. `resource_missing`
+   * is translated to `null` — "Stripe has no such Price" is an ANSWER, and the
+   * most important one the audit can get, because it is what a `price_seed_*`
+   * placeholder or a typo produces. Every other error propagates: "Stripe did
+   * not answer" must never be reported to an operator as "the id is fine".
+   */
+  async getPrice(priceId: string): Promise<StripePriceState | null> {
+    try {
+      const price = await this.stripe.prices.retrieve(priceId);
+      return {
+        id: price.id,
+        active: price.active,
+        currency: price.currency,
+        // Stripe reports minor units as an integer. Keep it one.
+        unitAmount: price.unit_amount ?? null,
+        interval: price.recurring?.interval ?? null,
+        intervalCount: price.recurring?.interval_count ?? null,
+      };
+    } catch (err) {
+      if (
+        err instanceof Stripe.errors.StripeInvalidRequestError &&
+        err.code === 'resource_missing'
+      ) {
+        return null;
+      }
+      throw err;
+    }
   }
 
   verifyWebhookSignature(rawBody: Buffer, signatureHeader: string): StripeWebhookEvent {

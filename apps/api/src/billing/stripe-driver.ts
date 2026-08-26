@@ -24,6 +24,25 @@ export type StripeCustomerInput = {
   tenantId: string;
   email: string;
   name: string;
+  /**
+   * Stripe `Idempotency-Key` for the create call. REQUIRED, not optional —
+   * billing-09 is precisely the defect a forgettable default produces.
+   *
+   * `ensureStripeCustomer` is read-then-create with a network round trip and no
+   * lock in between: two concurrent purchase starts for the same library (the
+   * billing page open in two tabs) both saw no customer and both created one.
+   * The second local write won, so the library completed Checkout against the
+   * LOSER — and every subsequent webhook for it failed the
+   * `findFirst({stripeCustomerId})` lookup and returned after a warn line
+   * nobody reads. The card is charged monthly by a subscription our database
+   * has never heard of, while the library sits on the free plan.
+   *
+   * A stable key (`libriant:customer:<tenantId>`) makes Stripe return the SAME
+   * customer to both racers, so the duplicate cannot be created in the first
+   * place. Keys are scoped to 24h at Stripe, which is far longer than the
+   * window this closes.
+   */
+  idempotencyKey: string;
 };
 
 export type StripeCheckoutInput = {
@@ -54,8 +73,48 @@ export type StripePriceChangeInput = {
 export type StripeWebhookEvent = {
   id: string;
   type: string;
+  /**
+   * Envelope creation time, Stripe epoch seconds. billing-06: this is the ONLY
+   * monotonic ordering key a subscription event carries — the Subscription
+   * object itself has no "updated" stamp, and a mid-cycle plan change does not
+   * move `current_period_start`, which is what the old stale-replay guard
+   * compared. Optional in the type because a payload captured before this field
+   * was read back still has to parse; `stripeEventContext` below is where the
+   * absence is handled.
+   */
+  created?: number;
   data: { object: Record<string, unknown> };
 };
+
+/**
+ * What the webhook route knows about the ENVELOPE it is dispatching, as
+ * distinct from the Stripe object inside it.
+ *
+ * billing-06. The stale-replay guard used to compare `current_period_start`,
+ * which is inert for exactly the events that matter: Stripe keeps the period
+ * and prorates when a subscription is re-priced mid-cycle, so an upgrade and
+ * the older event it supersedes carry the SAME period start. Executed by the
+ * auditor — community → municipal → replay of the community event left the
+ * library on community while Stripe billed municipal, with no warning logged.
+ * `created` is the value that orders them.
+ */
+export type StripeEventContext = {
+  /** The `evt_…` id, so a refusal names the event an operator can look up. */
+  id: string;
+  /** `event.created`, as a Date. */
+  createdAt: Date;
+};
+
+/**
+ * Lift the ordering context off a verified event, or null when the envelope
+ * did not carry a usable `created` (a hand-built payload, or a stored event
+ * from before we read the field). Null means "unknown age", which callers must
+ * treat as "cannot order this", never as "newest".
+ */
+export function stripeEventContext(event: StripeWebhookEvent): StripeEventContext | null {
+  if (typeof event.created !== 'number' || !Number.isFinite(event.created)) return null;
+  return { id: event.id, createdAt: new Date(event.created * 1000) };
+}
 
 /**
  * The shape of `customer.subscription.*` event payload bodies the
@@ -113,6 +172,41 @@ export type StripeInvoiceShape = {
   status: 'paid' | 'open' | 'void' | 'uncollectible' | 'draft' | string;
   amount_paid: number;
   amount_due: number;
+  /**
+   * Why Stripe raised this invoice. billing-05: `subscription_create` is the
+   * FIRST invoice of a subscription — the one whose failure means nobody has
+   * ever paid — while `subscription_cycle` / `subscription_update` are
+   * renewals and prorations on a subscription that has already settled at
+   * least once. The grace window exists for an established payer whose card
+   * lapsed, so it must be armed only for the second kind.
+   *
+   * Optional because a payload we cannot read the reason from must be treated
+   * as UNPROVEN, not as a renewal — see `hasSettledInvoice` in billing.service.
+   */
+  billing_reason?: string | null;
+};
+
+/**
+ * What Stripe currently says about one Price in our plan catalogue.
+ *
+ * billing-10: nothing reconciled `plans.stripePriceId` /
+ * `plans.stripeAnnualPriceId` with Stripe, so a monthly id pasted into the
+ * annual column billed €39 a month to a library that clicked "390 € a year",
+ * and the seeded `price_seed_*` placeholders were indistinguishable from
+ * configured ids. Amounts are integer minor units, exactly as Stripe reports
+ * them and exactly as `plans.monthlyPriceCents` stores them — never a float.
+ */
+export type StripePriceState = {
+  id: string;
+  active: boolean;
+  /** ISO-4217, lower-case, as Stripe returns it. */
+  currency: string;
+  /** Integer minor units (cents). Null for a tiered/metered price. */
+  unitAmount: number | null;
+  /** `month` / `year` / … Null when the Price is one-off rather than recurring. */
+  interval: string | null;
+  /** How many `interval`s per billing cycle. Anything but 1 is a mismatch for us. */
+  intervalCount: number | null;
 };
 
 export type StripeCheckoutSessionShape = {
@@ -214,6 +308,17 @@ export interface StripeDriver {
    * must be re-priced rather than re-bought.
    */
   listSubscriptions(customerId: string): Promise<StripeSubscriptionState[]>;
+  /**
+   * What Stripe says about one Price id, or `null` when Stripe has no such
+   * Price. Used only by the catalogue audit (billing-10) — never on a
+   * request path a library waits on.
+   *
+   * A driver that has no Price catalogue to consult (the in-memory stand-in)
+   * returns `null` and the audit reports "unverified" rather than "missing":
+   * the distinction is the whole point of the check, and a fake that invented
+   * a matching Price would teach dev the wrong lesson.
+   */
+  getPrice(priceId: string): Promise<StripePriceState | null>;
   /**
    * Verify the signature header against the *raw* request body. Stripe
    * signs the bytes, not the parsed JSON.

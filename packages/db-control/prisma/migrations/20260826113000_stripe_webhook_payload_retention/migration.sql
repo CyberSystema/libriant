@@ -1,0 +1,38 @@
+-- performance-07: make the 30-day prune of `stripe_webhook_events.payloadJson`
+-- cheap enough to run every day on the SHARED control database.
+--
+-- Three places in the tree state that this table is pruned at 30 days —
+-- schema.prisma ("Raw event body for replay / debug. Pruned after 30 days."),
+-- and stripe-retry.job.ts twice ("Rows are bounded: the table is cleaned at 30
+-- days", "over a table that is pruned at 30 days"). Nothing did the pruning.
+-- The retention sweep now does; this is the index it needs.
+--
+-- WHY PARTIAL, AND WHY THE PREDICATE IS THE WHOLE WHERE CLAUSE. The sweep asks
+-- exactly one question: "which processed rows older than the cutoff still
+-- carry a body?". Putting all three conditions in the index predicate makes it
+-- a self-emptying work queue — a row leaves the index the moment its payload
+-- is cleared — so the steady state (nothing to prune) is two buffers instead
+-- of a full scan of the table.
+--
+-- Measured on a 50,000-row / 100 MB replica of this table (2 KB payloads,
+-- three years of events, 2% never processed), on the statement the job issues,
+-- AFTER a full prune pass — i.e. the state every run but the first meets:
+--
+--   without this index:  Seq Scan …  Buffers: shared hit=9401 read=3501
+--                                    Execution Time: 15.476 ms
+--   with this index:     Bitmap Index Scan on stripe_webhook_events_prunable_idx
+--                                    Buffers: shared read=2
+--                                    Execution Time: 0.020 ms
+--
+-- 12,902 buffers versus 2. The control database is shared by every library on
+-- the box and Postgres runs 128 MB of shared_buffers, so the seq-scan version
+-- would evict most of that cache once a day for a query that finds nothing.
+--
+-- `payloadJson <> '{}'` is immutable (jsonb inequality) and the cast is a
+-- literal, so the predicate survives a pg_dump/restore with an empty
+-- search_path. Idempotent: IF NOT EXISTS, so a second apply is a no-op.
+-- Prisma cannot express a partial index, so this index lives only here; see
+-- the comment on `model StripeWebhookEvent` in schema.prisma.
+CREATE INDEX IF NOT EXISTS "stripe_webhook_events_prunable_idx"
+  ON "stripe_webhook_events" ("receivedAt")
+  WHERE "processedAt" IS NOT NULL AND "payloadJson" <> '{}'::jsonb;

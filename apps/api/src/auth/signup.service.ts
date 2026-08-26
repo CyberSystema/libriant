@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { controlDb, Prisma } from '@libriant/db-control';
 import { LEGAL_VERSION, type LibraryType } from '@libriant/shared';
+import { legalAcceptanceAuditData } from './legal-acceptance.js';
 import { PasswordService } from './password.service.js';
 import { JwtSessionService } from './jwt-session.service.js';
 import { EmailVerificationService } from './email-verification.service.js';
@@ -173,6 +174,26 @@ export class SignupService {
             legalAcceptedAt: acceptedAt,
             legalAcceptedIp: input.ip ?? null,
           },
+        });
+        // privacy-legal-09: the three columns above say WHEN and under which
+        // version stamp, and nothing at all about WHICH TEXT. This row does:
+        // the locale, the person, and a SHA-256 per document against the frozen
+        // copy under docs/legal/accepted/<version>/. It is written INSIDE this
+        // transaction on purpose — a library must not be able to exist without
+        // the evidence of what it agreed to, so the tenant row and the
+        // acceptance record land together or neither does.
+        await tx.auditEvent.create({
+          data: legalAcceptanceAuditData({
+            tenantId: tenant.id,
+            actor: {
+              userId: user.id,
+              fullName: user.fullName,
+              email: input.email,
+              ip: input.ip,
+            },
+            acceptedAt,
+            requestedLocale: input.defaultLocale,
+          }),
         });
         await tx.subscription.create({
           data: {

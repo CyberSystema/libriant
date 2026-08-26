@@ -98,6 +98,112 @@ groups:
           description: 'Working set is outgrowing RAM — queries are hitting disk. Add RAM (vertical) or shard tenants (horizontal).'
 
   # ───────────────────────────────────────────────────────────────────────────
+  # "Up but broken".
+  #
+  # reliability-17: every rule above this point is a liveness or a capacity
+  # rule. Not one of them could express an error rate, so the only availability
+  # signal was `up{job="libriant-api"}` — which requires /metrics ITSELF to stop
+  # answering. A regression that 500s one route, a tenant whose every request
+  # errors, or a latency cliff after a bad migration were all invisible.
+  # These fire on libriant_api_requests_total / _request_duration_seconds, which
+  # HttpMetricsMiddleware (apps/api/src/platform/http-metrics.ts) now emits.
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: libriant-app-errors
+    rules:
+      - alert: LibriantApi5xxRate
+        # Ratio, not a raw count: a fixed count alerts on a busy morning and
+        # stays quiet during a 3 a.m. outage with three requests in it. The
+        # `> 0.5` arm on the denominator keeps a single stray 500 on an idle
+        # night from reading as a 100% error rate.
+        expr: |
+          sum(rate(libriant_api_requests_total{status=~"5.."}[5m]))
+            / sum(rate(libriant_api_requests_total[5m])) > 0.05
+          and sum(rate(libriant_api_requests_total[5m])) > 0.5
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: '>5% of API requests are failing with a 5xx'
+          description: 'The API is up (it is still being scraped) but returning server errors. Break it down by route with `sum by (route, status) (rate(libriant_api_requests_total{status=~"5.."}[5m]))`, then read the api container logs for the supportCode.'
+
+      - alert: LibriantApiRouteErrors
+        # The narrower case the fleet-wide ratio hides: ONE broken route, or one
+        # tenant whose every request errors, while overall traffic looks fine.
+        expr: |
+          sum by (route) (rate(libriant_api_requests_total{status=~"5.."}[10m])) > 0.1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Route {{ $labels.route }} is returning sustained 5xx'
+          description: 'One endpoint is failing steadily even though the overall error ratio may look acceptable. This is what a regression on a single feature looks like.'
+
+      - alert: LibriantApiLatencyHigh
+        # p95 over the whole API. Route-level p95 is a dashboard question; a
+        # page should mean "the product feels broken to everyone".
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(libriant_api_request_duration_seconds_bucket[10m]))
+          ) > 2
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: 'API p95 latency above 2s'
+          description: 'Nineteen requests in twenty are still under 2s, but the twentieth is not — usually a missing index after a migration, a tenant with an outsized catalogue, or Postgres swapping. Check LibriantPgCacheHitLow and HostSwapping alongside this.'
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Mail that was owed and never sent.
+  #
+  # reliability-10: after `maxAttempts` the worker marks a row `dead` and gives
+  # up. Nothing read that status — no endpoint, no metric, no sweep, no alert —
+  # so a misconfigured or blocked provider permanently abandoned password-reset
+  # and e-mail-verification links with the user's "it never arrived" as the only
+  # signal. Dormant while EMAIL_DRIVER=console; live the day a real driver is.
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: libriant-email-outbox
+    rules:
+      - alert: LibriantEmailOutboxDeadLetters
+        # `> 0`, not a rate. One abandoned password reset is one person locked
+        # out of their library account, and the row is recoverable — but only if
+        # somebody knows it is there.
+        expr: libriant_email_outbox_rows{status="dead"} > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $value }} e-mail(s) permanently abandoned'
+          description: >-
+            The worker exhausted maxAttempts and gave up. Read the cause with
+            `SELECT id, kind, "toEmail", attempts, "lastError", "abandonedAt" FROM email_outbox WHERE status = 'dead' ORDER BY "abandonedAt" DESC LIMIT 50;`
+            After fixing the provider, re-drive them with
+            `UPDATE email_outbox SET status = 'pending', attempts = 0, "lastError" = NULL, "abandonedAt" = NULL WHERE status = 'dead' AND "abandonedAt" > now() - interval '7 days';`
+            — the worker's recovery scan re-enqueues owed rows every 5 minutes.
+            EXCEPTION: rows whose lastError mentions an expired one-time link
+            cannot be re-driven (the token is gone); ask the recipient to
+            request a new reset instead.
+
+      - alert: LibriantEmailOutboxStalled
+        # A backlog that is not draining. Distinct from dead letters: these rows
+        # have not been given up on, they are simply not moving — a wedged
+        # consumer, a Redis partition, or a worker that never started.
+        expr: libriant_email_outbox_oldest_pending_seconds > 1800
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Oldest owed e-mail is {{ $value | humanizeDuration }} old'
+          description: 'Mail is queued and not being sent. Check the worker container is up and its /readyz is 200, then the api/worker logs for `[email-worker]`. Password resets and hold-ready notices are in this queue.'
+
+      - alert: LibriantEmailOutboxCensusMissing
+        # The census runs on a timer inside the worker and keeps its last
+        # successful snapshot on failure, so the gauges vanishing entirely means
+        # the worker is not exporting them at all — and the two rules above have
+        # gone quiet without saying so.
+        expr: absent(libriant_email_outbox_rows)
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: 'The e-mail outbox census is not being exported'
+          description: 'libriant_email_outbox_rows is absent from every scrape target. Either the worker is down, or its first census pass has never completed (control DB unreachable). Until this clears, LibriantEmailOutboxDeadLetters and LibriantEmailOutboxStalled cannot fire.'
+
+  # ───────────────────────────────────────────────────────────────────────────
   # The alerts about the alerting, and about the backups.
   #
   # reliability-09: "a backup that never runs, or aborts every night, is

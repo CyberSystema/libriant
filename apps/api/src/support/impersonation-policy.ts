@@ -3,10 +3,10 @@
  *
  * ## The failure this exists to stop (authn-authz-05)
  *
- * `RolesGuard.canActivate` opens with `if (req.impersonation) return true;`, so
- * the impersonation cookie satisfies every `@Roles(...)` annotation on the
- * tenant API with no tenant session at all. An audit probe drove that with
- * nothing but the cookie and got:
+ * `RolesGuard.canActivate` used to open with `if (req.impersonation) return
+ * true;`, so the impersonation cookie satisfied every `@Roles(...)` annotation
+ * on the tenant API with no tenant session at all. An audit probe drove that
+ * with nothing but the cookie and got:
  *
  *   - `POST   /t/<slug>/staff/<id>/reset-password` → **200, plaintext temporary
  *     password in the response body**, and
@@ -32,11 +32,18 @@
  * write route under an already-fenced prefix is denied the day it is written,
  * without anyone remembering to come back here.
  *
- * ## Why this is not the whole fix
+ * ## What this is not
  *
- * The blanket `return true` in `RolesGuard` is still there — this narrows what
- * that bypass reaches, it does not remove the bypass. Replacing it with an
- * allowlist is the deeper repair and belongs in `apps/api/src/tenancy/roles.guard.ts`.
+ * It is not the role check. The blanket `if (req.impersonation) return true;`
+ * that used to sit at the top of `RolesGuard` is GONE (authn-authz-04/-05
+ * follow-up): support is now checked against a fixed effective library role
+ * (`admin`) by the same expression that judges a signed-in librarian, so an
+ * `@Roles('owner')` route is refused under impersonation without an entry here.
+ *
+ * The two controls answer different questions and both are needed. The guard
+ * asks "does this ROLE cover this route?"; these rules ask "may a support
+ * window touch this AREA at all?" — and the four areas below are refused to
+ * support even though the `admin` role covers every one of them.
  */
 
 /** Methods that cannot change state. Everything else is a write. */

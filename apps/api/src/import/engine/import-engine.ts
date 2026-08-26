@@ -8,7 +8,9 @@
  *   - references are resolved by natural key (book by ISBN/title, member by
  *     number/email, copy by barcode), with per-run caches;
  *   - authors are find-or-created by normalized name so a catalogue import
- *     doesn't spawn duplicate author rows;
+ *     doesn't spawn duplicate author rows — a promise that was pure prose
+ *     until data-integrity-06 put `authors_sortname_unique_active` behind it
+ *     (and `books_isbn13_unique_active` behind the book key, -03);
  *   - duplicates (matched on the entity's natural key) are skipped, updated,
  *     or flagged per the batch's `duplicateMode`;
  *   - integer quotas (`max_books`, `max_members`) are enforced against a
@@ -53,7 +55,12 @@
  * without a checkout-date or placed-date column duplicated anyway.
  */
 import type { ImportEntityKind } from '@libriant/db-control';
-import type { FieldEntityKind, Prisma, TenantPrismaClient } from '@libriant/db-tenant';
+import type {
+  FieldEntityKind,
+  Prisma,
+  ReservationStatus,
+  TenantPrismaClient,
+} from '@libriant/db-tenant';
 import type { FeatureKey } from '@libriant/shared';
 import { buildSearchText, normalizeText } from '../../catalog/normalize.js';
 import { validateRecord } from '../../customization/dynamic-validator.js';
@@ -114,12 +121,13 @@ const FIELD_ENTITY_KINDS = new Set<FieldEntityKind>([
  * predate this run.
  */
 export const IMPORT_NATURAL_KEYS: Record<ImportEntityKind, string> = {
-  author: 'strong: sortName (normalized full name)',
-  book: 'strong: isbn13 — weak: sortTitle + publicationYear',
+  author: 'strong: sortName (normalized full name) — DB-enforced by authors_sortname_unique_active',
+  book: 'strong: isbn13, DB-enforced by books_isbn13_unique_active — weak: sortTitle + publicationYear',
   book_copy: 'strong: barcode (required on every row)',
   member: 'strong: memberNumber, then email — weak: sortName + dateOfBirth',
   loan: 'weak: copyId + memberId + loanedAt — no checkout date: copyId + memberId + dueAt + status',
-  reservation: 'weak: bookId + memberId + placedAt — no placed date: bookId + memberId + status',
+  reservation:
+    'weak: bookId + memberId + placedAt — no placed date: bookId + memberId + live status (queued and ready are ONE slot, see findPriorReservation)',
   fine: 'weak: memberId + amountCents + currency + reason + status',
 };
 
@@ -139,11 +147,63 @@ function issue(
   return { field, code, message, severity };
 }
 
+/**
+ * The two partial unique indexes added by
+ * 20260826090000_catalog_natural_key_uniqueness (data-integrity-03 / -06). A
+ * P2002 naming one of them means "someone else created this exact record
+ * between our lookup and our write" — the duplicate path, not an error.
+ *
+ * Each key lists the INDEX name and the COLUMN name, because which of the two
+ * Prisma hands back is not something to guess at. MEASURED against the shipped
+ * Prisma 7.9.1 on the audit Postgres, by provoking a real violation of each
+ * index and printing the caught error:
+ *
+ *   book.isbn13      code=P2002  meta.target=undefined
+ *                    message="… Unique constraint failed on the fields: (`isbn13`)"
+ *   author.sortName  code=P2002  meta.target=undefined
+ *                    message="… Unique constraint failed on the fields: (`\"sortName\"`)"
+ *
+ * `meta.target` is UNDEFINED and the index name appears NOWHERE. A matcher
+ * written against the index name alone — which is what this was on its first
+ * pass, and it looked perfectly correct — silently never fires, so every lost
+ * race degrades into a failed row carrying the generic "(barcode/number)"
+ * message. The integration spec runs four concurrent imports of one row through
+ * this, which is what caught it.
+ */
+const BOOK_ISBN_UNIQUE = ['books_isbn13_unique_active', 'isbn13'] as const;
+const AUTHOR_SORTNAME_UNIQUE = ['authors_sortname_unique_active', 'sortName'] as const;
+
+/** True when `err` is a Prisma unique violation on one of `key`'s spellings. */
+function isUniqueViolationOn(err: unknown, key: readonly string[]): boolean {
+  if ((err as { code?: string }).code !== 'P2002') return false;
+  const target = (err as { meta?: { target?: unknown } }).meta?.target;
+  const targetText = Array.isArray(target) ? target.join(',') : String(target ?? '');
+  const haystack = `${targetText} ${(err as { message?: string }).message ?? ''}`.toLowerCase();
+  return key.some((token) => haystack.includes(token.toLowerCase()));
+}
+
 /** Map a raw Prisma write error to a row issue with a friendly message. */
 function dbIssue(err: unknown): RowIssue {
   const code = (err as { code?: string }).code;
   const message = (err as { message?: string }).message ?? String(err);
   if (code === 'P2002') {
+    // data-integrity-03 / -06: `books.isbn13` and `authors.sortName` are now
+    // unique too, so the old blanket "(barcode/number)" wording would send a
+    // librarian hunting the wrong column. Name the key that actually collided.
+    if (isUniqueViolationOn(err, BOOK_ISBN_UNIQUE)) {
+      return issue(
+        'isbn13',
+        'duplicate',
+        'Another book in the catalogue already has this ISBN-13.',
+      );
+    }
+    if (isUniqueViolationOn(err, AUTHOR_SORTNAME_UNIQUE)) {
+      return issue(
+        'fullName',
+        'duplicate',
+        'Another author with the same normalized name already exists.',
+      );
+    }
     return issue(
       null,
       'duplicate',
@@ -160,6 +220,15 @@ function dbIssue(err: unknown): RowIssue {
 export class ImportEngine {
   private fieldDefs: FieldDef[] = [];
   private currency = 'EUR';
+  /**
+   * The library's pickup window, in hours (`tenant_settings.holdPickupHours`).
+   * data-integrity-05: an imported `ready` hold whose file carried no expiry
+   * date got `expiresAt = NULL`, and `expiresAt < now` is never true for NULL,
+   * so the expiry sweep could never reach it — the hold was immortal. Every
+   * ready hold this engine writes now carries a deadline, from the same setting
+   * the live pickup path uses.
+   */
+  private holdPickupHours = 48;
 
   private quotaFeature: FeatureKey | null = null;
   private quotaUsed = 0;
@@ -183,6 +252,15 @@ export class ImportEngine {
   // one-active-loan-per-copy check during the dry-run too, where the would-be
   // loans aren't written to the DB yet.
   private readonly activeLoanCopies = new Set<string>();
+  /**
+   * data-integrity-05, dry-run only: how many copies of a book are still free
+   * for a `ready` hold to claim. The commit pass needs no such bookkeeping —
+   * claiming a copy flips it to `reserved` in the DB — but the validate pass
+   * writes nothing, so without this every ready row in a file would be told the
+   * same single copy is available and the report would promise more pickups
+   * than the commit can deliver.
+   */
+  private readonly dryRunFreeCopies = new Map<string, number>();
 
   constructor(
     private readonly kind: ImportEntityKind,
@@ -210,6 +288,9 @@ export class ImportEngine {
     }
     const settings = await this.ctx.client.tenantSetting.findUnique({ where: { id: 1 } });
     this.currency = settings?.currency ?? 'EUR';
+    if (settings?.holdPickupHours && settings.holdPickupHours > 0) {
+      this.holdPickupHours = settings.holdPickupHours;
+    }
 
     if (this.kind === 'book') {
       this.quotaFeature = 'max_books';
@@ -299,27 +380,51 @@ export class ImportEngine {
     const fullName = row.values.fullName as string;
     const sortName = normalizeText(fullName);
     const existing = await this.findAuthorId(sortName);
-    if (existing) {
-      if (this.ctx.duplicateMode === 'error') {
-        issues.push(issue('fullName', 'duplicate', `Author "${fullName}" already exists.`));
-        return this.result(row, 'error', issues);
-      }
-      if (this.ctx.duplicateMode === 'skip') return this.result(row, 'skipped', issues, existing);
-      if (!this.ctx.dryRun) {
-        await this.ctx.client.author.update({
-          where: { id: existing },
-          data: this.authorData(row),
-        });
-      }
-      return this.result(row, 'updated', issues, existing);
-    }
+    if (existing) return this.resolveAuthorDuplicate(row, issues, existing, fullName);
     if (this.ctx.dryRun) return this.result(row, 'imported', issues);
-    const created = await this.ctx.client.author.create({
-      data: { fullName, sortName, ...this.authorData(row) },
-      select: { id: true },
-    });
-    this.authorCache.set(sortName, created.id);
-    return this.result(row, 'imported', issues, created.id);
+    try {
+      const created = await this.ctx.client.author.create({
+        data: { fullName, sortName, ...this.authorData(row) },
+        select: { id: true },
+      });
+      this.authorCache.set(sortName, created.id);
+      return this.result(row, 'imported', issues, created.id);
+    } catch (err) {
+      // data-integrity-06: another writer (a concurrent import, or a librarian
+      // adding the author in the UI) won the race between our lookup above and
+      // this create. `authors_sortname_unique_active` refuses the second row —
+      // which is the point — so fold this row into the duplicate path it would
+      // have taken had the lookup been a moment later, instead of failing it.
+      if (!isUniqueViolationOn(err, AUTHOR_SORTNAME_UNIQUE)) throw err;
+      this.authorCache.delete(sortName);
+      const winner = await this.findAuthorId(sortName);
+      if (!winner) throw err;
+      return this.resolveAuthorDuplicate(row, issues, winner, fullName);
+    }
+  }
+
+  /**
+   * What `duplicateMode` means once we know an author already exists. Shared by
+   * the pre-write lookup and the lost-race recovery so the two cannot drift.
+   */
+  private async resolveAuthorDuplicate(
+    row: MappedRow,
+    issues: RowIssue[],
+    existing: string,
+    fullName: string,
+  ): Promise<EngineRowResult> {
+    if (this.ctx.duplicateMode === 'error') {
+      issues.push(issue('fullName', 'duplicate', `Author "${fullName}" already exists.`));
+      return this.result(row, 'error', issues);
+    }
+    if (this.ctx.duplicateMode === 'skip') return this.result(row, 'skipped', issues, existing);
+    if (!this.ctx.dryRun) {
+      await this.ctx.client.author.update({
+        where: { id: existing },
+        data: this.authorData(row),
+      });
+    }
+    return this.result(row, 'updated', issues, existing);
   }
 
   private authorData(row: MappedRow) {
@@ -349,34 +454,60 @@ export class ImportEngine {
           (v.publicationYear as number | undefined) ?? null,
         );
 
-    if (existingId) {
-      if (this.ctx.duplicateMode === 'error') {
-        // Name the key that actually matched. Since the ISBN-less weak key was
-        // added this branch is reachable with `isbn13 === null`, and the old
-        // message then read "A book with ISBN null already exists." — which
-        // sends the librarian looking for an ISBN column that isn't there.
-        issues.push(
-          isbn13
-            ? issue('isbn13', 'duplicate', `A book with ISBN ${isbn13} already exists.`)
-            : issue(
-                'title',
-                'duplicate',
-                `A book titled "${v.title as string}" from the same year already exists.`,
-              ),
-        );
-        return this.result(row, 'error', issues);
-      }
-      if (this.ctx.duplicateMode === 'skip') return this.result(row, 'skipped', issues, existingId);
-      if (!this.ctx.dryRun) await this.writeBook(row, existingId);
-      return this.result(row, 'updated', issues, existingId);
-    }
+    if (existingId) return this.resolveBookDuplicate(row, issues, existingId, isbn13);
 
     if (this.quotaBlocked(issues)) return this.result(row, 'error', issues);
     this.quotaUsed++;
     if (this.ctx.dryRun) return this.result(row, 'imported', issues);
-    const id = await this.writeBook(row, null);
-    if (isbn13) this.bookByIsbn.set(isbn13, id);
-    return this.result(row, 'imported', issues, id);
+    try {
+      const id = await this.writeBook(row, null);
+      if (isbn13) this.bookByIsbn.set(isbn13, id);
+      return this.result(row, 'imported', issues, id);
+    } catch (err) {
+      // data-integrity-03: `books_isbn13_unique_active` refuses the second
+      // record for an ISBN, so a writer that lost the lookup-then-create race
+      // lands here. That is exactly the duplicate case, so take the duplicate
+      // path rather than reporting a row error — and give back the quota slot
+      // we optimistically claimed above, or a 500-book plan would run out
+      // counting books it never created.
+      if (!isbn13 || !isUniqueViolationOn(err, BOOK_ISBN_UNIQUE)) throw err;
+      this.quotaUsed--;
+      this.bookByIsbn.delete(isbn13);
+      const winner = await this.findBookByIsbn(isbn13);
+      if (!winner) throw err;
+      return this.resolveBookDuplicate(row, issues, winner, isbn13);
+    }
+  }
+
+  /**
+   * What `duplicateMode` means once we know a book already exists. Shared by
+   * the pre-write lookup and the lost-race recovery so the two cannot drift.
+   */
+  private async resolveBookDuplicate(
+    row: MappedRow,
+    issues: RowIssue[],
+    existingId: string,
+    isbn13: string | null,
+  ): Promise<EngineRowResult> {
+    if (this.ctx.duplicateMode === 'error') {
+      // Name the key that actually matched. Since the ISBN-less weak key was
+      // added this branch is reachable with `isbn13 === null`, and the old
+      // message then read "A book with ISBN null already exists." — which
+      // sends the librarian looking for an ISBN column that isn't there.
+      issues.push(
+        isbn13
+          ? issue('isbn13', 'duplicate', `A book with ISBN ${isbn13} already exists.`)
+          : issue(
+              'title',
+              'duplicate',
+              `A book titled "${row.values.title as string}" from the same year already exists.`,
+            ),
+      );
+      return this.result(row, 'error', issues);
+    }
+    if (this.ctx.duplicateMode === 'skip') return this.result(row, 'skipped', issues, existingId);
+    if (!this.ctx.dryRun) await this.writeBook(row, existingId);
+    return this.result(row, 'updated', issues, existingId);
   }
 
   private async writeBook(row: MappedRow, existingId: string | null): Promise<string> {
@@ -420,38 +551,51 @@ export class ImportEngine {
     // client, so a failed book write rolls back any author rows it just created
     // (no orphan Author rows). Track sortNames created in this tx so we can drop
     // their (now rolled-back) cache entries if the transaction throws.
-    const createdSortNames: string[] = [];
-    try {
-      return await this.ctx.client.$transaction(async (tx) => {
-        const authorIds: string[] = [];
-        for (const name of authorNames) {
-          authorIds.push(await this.findOrCreateAuthor(name, tx, createdSortNames));
-        }
-        if (existingId) {
-          await tx.book.update({ where: { id: existingId }, data: scalar });
-          if (authorIds.length) {
-            await tx.bookAuthor.deleteMany({ where: { bookId: existingId } });
-            await tx.bookAuthor.createMany({
-              data: authorIds.map((authorId, i) => ({ bookId: existingId, authorId, order: i })),
-            });
+    //
+    // data-integrity-06: TWO attempts, not one. `authors_sortname_unique_active`
+    // makes a lost find-then-create race raise P2002 instead of writing a second
+    // author row, and that P2002 aborts this whole transaction — including the
+    // book write, which had nothing wrong with it. The winner's author row is
+    // committed by the time we get here, so a second attempt with the stale
+    // cache entries purged simply finds it. Without the retry, a librarian
+    // adding an author in the UI at the moment an import mentions them would
+    // lose the whole book row, which is a worse import than the duplicate this
+    // constraint exists to prevent.
+    for (let attempt = 0; ; attempt++) {
+      const createdSortNames: string[] = [];
+      try {
+        return await this.ctx.client.$transaction(async (tx) => {
+          const authorIds: string[] = [];
+          for (const name of authorNames) {
+            authorIds.push(await this.findOrCreateAuthor(name, tx, createdSortNames));
           }
-          return existingId;
-        }
-        const created = await tx.book.create({
-          data: {
-            ...scalar,
-            authors: { create: authorIds.map((authorId, i) => ({ authorId, order: i })) },
-          },
-          select: { id: true },
+          if (existingId) {
+            await tx.book.update({ where: { id: existingId }, data: scalar });
+            if (authorIds.length) {
+              await tx.bookAuthor.deleteMany({ where: { bookId: existingId } });
+              await tx.bookAuthor.createMany({
+                data: authorIds.map((authorId, i) => ({ bookId: existingId, authorId, order: i })),
+              });
+            }
+            return existingId;
+          }
+          const created = await tx.book.create({
+            data: {
+              ...scalar,
+              authors: { create: authorIds.map((authorId, i) => ({ authorId, order: i })) },
+            },
+            select: { id: true },
+          });
+          return created.id;
         });
-        return created.id;
-      });
-    } catch (err) {
-      // The transaction rolled back, so any author rows it created no longer
-      // exist — purge their cache entries or later rows would reference ids the
-      // DB doesn't have.
-      for (const sortName of createdSortNames) this.authorCache.delete(sortName);
-      throw err;
+      } catch (err) {
+        // The transaction rolled back, so any author rows it created no longer
+        // exist — purge their cache entries or later rows would reference ids the
+        // DB doesn't have.
+        for (const sortName of createdSortNames) this.authorCache.delete(sortName);
+        if (attempt === 0 && isUniqueViolationOn(err, AUTHOR_SORTNAME_UNIQUE)) continue;
+        throw err;
+      }
     }
   }
 
@@ -776,19 +920,56 @@ export class ImportEngine {
       return this.result(row, 'skipped', issues, priorHold);
     }
 
-    if (this.ctx.dryRun) return this.result(row, 'imported', issues);
-
     const baseData = {
       bookId,
       memberId,
       placedAt,
-      status,
-      readyAt: status === 'ready' ? (placedAt > now ? placedAt : now) : null,
-      expiresAt: v.expiresAt ? new Date(v.expiresAt as string) : null,
       canceledAt: status === 'canceled' ? now : null,
       notes: (v.notes as string | undefined) ?? null,
       customFields: row.customFields as Prisma.InputJsonValue,
-    } satisfies Omit<Prisma.ReservationUncheckedCreateInput, 'queuePosition'>;
+    } satisfies Omit<
+      Prisma.ReservationUncheckedCreateInput,
+      'queuePosition' | 'status' | 'readyAt' | 'expiresAt'
+    >;
+
+    // ---- data-integrity-05: a READY hold has to own a copy -----------------
+    //
+    // THE BUG. This branch used to write `status:'ready'` with `readyAt` set,
+    // `fulfilledByCopyId` left NULL and no copy flipped to `reserved`. Three
+    // downstream paths assume a ready hold owns a copy, and all three break:
+    //
+    //   - LoansService.checkout refuses the pickup, because it compares
+    //     `reservation.fulfilledByCopyId !== input.copyId` and NULL never
+    //     matches the copy the patron is standing there holding;
+    //   - ReservationsService.resolveReservation only frees a copy when
+    //     `fulfilledByCopyId` is set, so cancelling releases nothing;
+    //   - the expiry sweep filters `expiresAt: { lt: now }`, and a NULL
+    //     `expiresAt` — which is what a file with no expiry column produces —
+    //     is never `< now` in Postgres, so the sweep can never reach it.
+    //
+    // The hold was therefore IMMORTAL: it occupied the member's
+    // `reservations_one_active_per_book_member` slot forever, and
+    // `LoansService.renew` refuses every renewal of that title for every member
+    // while any queued/ready hold exists. Importing an existing library's hold
+    // list — the whole purpose of this importer — wedged renewals on each
+    // affected title until a staff member found and cancelled each hold by hand.
+    //
+    // THE FIX, mirroring the live allocation paths exactly: take the shared
+    // `book:<bookId>` advisory lock (A7-01 — placement, promote-on-return,
+    // promote-on-expiry, cancel-expire and this importer are one lock domain),
+    // claim a free copy with a CAS, and give the hold a real pickup deadline.
+    // If no copy is free, the honest answer is not "ready" — it is a QUEUED
+    // hold at the back of the line, reported as a warning on the row so the
+    // librarian sees which of their ready holds could not be honoured.
+    if (status === 'ready') {
+      return this.commitReadyHold(row, issues, baseData, {
+        bookId,
+        readyAt: placedAt > now ? placedAt : now,
+        fileExpiresAt: v.expiresAt ? new Date(v.expiresAt as string) : null,
+      });
+    }
+
+    if (this.ctx.dryRun) return this.result(row, 'imported', issues);
 
     // import-new-reservation: a queued hold's position used to come from a
     // per-run cache seeded once by an aggregate, which collides with positions
@@ -798,7 +979,13 @@ export class ImportEngine {
     // unique + contiguous. Non-queued holds carry no position, so they skip it.
     if (status !== 'queued') {
       const created = await this.ctx.client.reservation.create({
-        data: { ...baseData, queuePosition: null },
+        data: {
+          ...baseData,
+          status,
+          readyAt: null,
+          expiresAt: v.expiresAt ? new Date(v.expiresAt as string) : null,
+          queuePosition: null,
+        },
         select: { id: true },
       });
       return this.result(row, 'imported', issues, created.id);
@@ -817,11 +1004,159 @@ export class ImportEngine {
       });
       const queuePosition = (agg._max.queuePosition ?? 0) + 1;
       return tx.reservation.create({
-        data: { ...baseData, queuePosition },
+        data: {
+          ...baseData,
+          status: 'queued',
+          readyAt: null,
+          expiresAt: v.expiresAt ? new Date(v.expiresAt as string) : null,
+          queuePosition,
+        },
         select: { id: true },
       });
     });
     return this.result(row, 'imported', issues, created.id);
+  }
+
+  /**
+   * Write one imported `ready` hold, or honestly demote it (data-integrity-05).
+   *
+   * Everything that makes a ready hold real happens here: the per-book advisory
+   * lock, the CAS claim on an `available` copy, `fulfilledByCopyId`, and an
+   * `expiresAt` that the expiry sweep can actually match.
+   */
+  private async commitReadyHold(
+    row: MappedRow,
+    issues: RowIssue[],
+    baseData: Omit<
+      Prisma.ReservationUncheckedCreateInput,
+      'queuePosition' | 'status' | 'readyAt' | 'expiresAt'
+    >,
+    hold: { bookId: string; readyAt: Date; fileExpiresAt: Date | null },
+  ): Promise<EngineRowResult> {
+    const { bookId, readyAt, fileExpiresAt } = hold;
+
+    // `reservations_expires_after_ready` is a DB CHECK (`expiresAt > readyAt`),
+    // so a file whose expiry date is on/before the ready instant used to fail
+    // the row outright with an opaque db_rejected issue. Default it instead and
+    // say so — an unusable date is a data-quality problem in the source export,
+    // not a reason to drop the patron's hold.
+    const usable = fileExpiresAt !== null && fileExpiresAt.getTime() > readyAt.getTime();
+    const expiresAt = usable
+      ? fileExpiresAt!
+      : new Date(readyAt.getTime() + this.holdPickupHours * 3_600_000);
+    // Held, not pushed: a hold that ends up QUEUED has no pickup window at all,
+    // so "we defaulted your expiry date" would be noise stacked on top of the
+    // message that actually matters. The row's issue list is assembled once,
+    // after the outcome is known.
+    const expiryWarning = usable
+      ? null
+      : issue(
+          'expiresAt',
+          'defaulted',
+          fileExpiresAt
+            ? `The expiry date is not after the pickup-ready date; used the library's ${this.holdPickupHours}-hour pickup window instead.`
+            : `Hold had no expiry date; it will expire ${this.holdPickupHours} hours after it became ready, per the library's pickup window.`,
+          'warning',
+        );
+
+    if (this.ctx.dryRun) {
+      // The validate pass must predict the demotion, or the librarian only
+      // finds out after the commit. Copies claimed by earlier ready rows in
+      // THIS file are counted too, since nothing is written to make them
+      // unavailable to the next row.
+      if (await this.claimDryRunCopy(bookId)) {
+        if (expiryWarning) issues.push(expiryWarning);
+      } else {
+        issues.push(this.demotedIssue());
+      }
+      return this.result(row, 'imported', issues);
+    }
+
+    const outcome = await this.ctx.client.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`book:${bookId}`}, 0))`;
+      const candidate = await tx.bookCopy.findFirst({
+        where: { bookId, status: 'available', archivedAt: null },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true },
+      });
+      if (candidate) {
+        // CAS on status='available', exactly as promoteNextHoldInTx does. The
+        // advisory lock should already have made this uncontended; a zero count
+        // means an unlocked writer got in, and we must not strand the copy.
+        const claimed = await tx.bookCopy.updateMany({
+          where: { id: candidate.id, status: 'available' },
+          data: { status: 'reserved' },
+        });
+        if (claimed.count === 1) {
+          const created = await tx.reservation.create({
+            data: {
+              ...baseData,
+              status: 'ready',
+              readyAt,
+              expiresAt,
+              fulfilledByCopyId: candidate.id,
+              queuePosition: null,
+            },
+            select: { id: true },
+          });
+          return { id: created.id, demoted: false as const };
+        }
+      }
+      // No free copy: queue the hold at the back of the line rather than
+      // writing an orphan `ready` row nobody can ever hand over. Same locked
+      // max+1 the queued branch uses, so positions stay unique + contiguous.
+      const agg = await tx.reservation.aggregate({
+        where: { bookId, status: 'queued' },
+        _max: { queuePosition: true },
+      });
+      const queuePosition = (agg._max.queuePosition ?? 0) + 1;
+      const created = await tx.reservation.create({
+        data: {
+          ...baseData,
+          status: 'queued',
+          readyAt: null,
+          expiresAt: null,
+          queuePosition,
+        },
+        select: { id: true },
+      });
+      return { id: created.id, demoted: true as const, queuePosition };
+    });
+
+    if (outcome.demoted) issues.push(this.demotedIssue(outcome.queuePosition));
+    else if (expiryWarning) issues.push(expiryWarning);
+    return this.result(row, 'imported', issues, outcome.id);
+  }
+
+  private demotedIssue(queuePosition?: number): RowIssue {
+    return issue(
+      'status',
+      'downgraded_to_queued',
+      queuePosition === undefined
+        ? 'No copy of this book is free, so this hold will be imported as queued, not ready for pickup.'
+        : `No copy of this book was free, so this hold was imported as queued at position ${queuePosition} instead of ready for pickup.`,
+      'warning',
+    );
+  }
+
+  /**
+   * Dry-run accounting for `commitReadyHold`. Returns true when a copy would
+   * still be free for this book, and consumes it so a second ready row in the
+   * same file does not also claim it.
+   */
+  private async claimDryRunCopy(bookId: string): Promise<boolean> {
+    let free = this.dryRunFreeCopies.get(bookId);
+    if (free === undefined) {
+      free = await this.ctx.client.bookCopy.count({
+        where: { bookId, status: 'available', archivedAt: null },
+      });
+    }
+    if (free <= 0) {
+      this.dryRunFreeCopies.set(bookId, 0);
+      return false;
+    }
+    this.dryRunFreeCopies.set(bookId, free - 1);
+    return true;
   }
 
   // ---- fine --------------------------------------------------------------
@@ -1056,6 +1391,15 @@ export class ImportEngine {
    * the key unmatchable. Falls back to book + member + state, which is what
    * `reservations_one_active_per_book_member` already enforces for the
    * queued/ready half and nothing enforced for the resolved half.
+   *
+   * data-integrity-05 CHANGED THE FALLBACK for the live half, and this is not
+   * cosmetic. A `ready` row whose book has no free copy is now written as
+   * `queued`, so keying the second pass on the FILE's status would look for a
+   * ready hold, miss the queued row this importer wrote, and try to insert
+   * again — where `reservations_one_active_per_book_member` (a partial unique
+   * index over exactly `queued`+`ready`) would reject it and turn a clean skip
+   * into a mystifying row error. `queued` and `ready` are one slot to that
+   * index and one slot to the member, so they are one slot here too.
    */
   private async findPriorReservation(
     bookId: string,
@@ -1063,11 +1407,15 @@ export class ImportEngine {
     filePlacedAt: Date | null,
     status: 'queued' | 'ready' | 'expired' | 'canceled',
   ): Promise<string | null> {
+    const statusFallback =
+      status === 'queued' || status === 'ready'
+        ? { status: { in: ['queued', 'ready'] satisfies ReservationStatus[] } }
+        : { status };
     const hit = await this.ctx.client.reservation.findFirst({
       where: {
         bookId,
         memberId,
-        ...(filePlacedAt ? { placedAt: filePlacedAt } : { status }),
+        ...(filePlacedAt ? { placedAt: filePlacedAt } : statusFallback),
         createdAt: { lt: this.runStartedAt },
       },
       select: { id: true },
@@ -1108,6 +1456,16 @@ export class ImportEngine {
   }
 
   // ---- resolvers (cached) ------------------------------------------------
+  /**
+   * data-integrity-06: `authors_sortname_unique_active` now guarantees at most
+   * one live row per sortName, so this returns THE author rather than one of
+   * several. The explicit `orderBy` is still here on purpose: between deploying
+   * this code and applying the tenant migration — and for any database whose
+   * migration was refused pending a manual merge — duplicates can still exist,
+   * and "whichever row Postgres happened to return first" is what made the
+   * split invisible. Oldest-first, tie-broken by id, is stable across calls, so
+   * every row of an import at least attaches to the SAME author.
+   */
   private async findAuthorId(
     sortName: string,
     client: AuthorWriter = this.ctx.client,
@@ -1115,6 +1473,7 @@ export class ImportEngine {
     if (this.authorCache.has(sortName)) return this.authorCache.get(sortName)!;
     const row = await client.author.findFirst({
       where: { sortName, archivedAt: null },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: { id: true },
     });
     if (row) this.authorCache.set(sortName, row.id);
@@ -1135,6 +1494,14 @@ export class ImportEngine {
     const sortName = normalizeText(name);
     const existing = await this.findAuthorId(sortName, client);
     if (existing) return existing;
+    // data-integrity-06: find-then-create is NOT atomic, and now that
+    // `authors_sortname_unique_active` exists the loser of that race gets a
+    // P2002 instead of a second row. That is recovered by re-reading — but NOT
+    // here. This runs inside `writeBook`'s `$transaction`, and in Postgres a
+    // failed statement poisons the whole transaction: every later query in it
+    // returns 25P02 `current transaction is aborted`, so a re-read on `client`
+    // (which is the tx) could only fail. The recovery has to happen after the
+    // transaction unwinds; `writeBook` retries it once.
     const created = await client.author.create({
       data: { fullName: name.trim(), sortName },
       select: { id: true },
@@ -1144,10 +1511,19 @@ export class ImportEngine {
     return created.id;
   }
 
+  /**
+   * data-integrity-03: with `books_isbn13_unique_active` in place this returns
+   * THE book for an ISBN. The `orderBy` is deliberate for the same reason as
+   * `findAuthorId` — a database that still carries pre-migration duplicates
+   * must at least resolve them consistently instead of by coin flip, or one row
+   * of an import attaches its copies to one record and the next row attaches
+   * its holds to the other.
+   */
   private async findBookByIsbn(isbn13: string): Promise<string | null> {
     if (this.bookByIsbn.has(isbn13)) return this.bookByIsbn.get(isbn13) ?? null;
     const row = await this.ctx.client.book.findFirst({
       where: { isbn13, archivedAt: null },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: { id: true },
     });
     this.bookByIsbn.set(isbn13, row?.id ?? null);
@@ -1162,8 +1538,11 @@ export class ImportEngine {
     if (refs.bookTitle) {
       const sortTitle = normalizeText(refs.bookTitle);
       if (this.bookByTitle.has(sortTitle)) return this.bookByTitle.get(sortTitle) ?? null;
+      // Title has NO uniqueness and never will — two different works can share
+      // one — so ordering is the only thing that makes this resolution stable.
       const row = await this.ctx.client.book.findFirst({
         where: { sortTitle, archivedAt: null },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         select: { id: true },
       });
       this.bookByTitle.set(sortTitle, row?.id ?? null);

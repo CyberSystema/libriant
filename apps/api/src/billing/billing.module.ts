@@ -5,6 +5,7 @@ import { PlatformSettingsModule } from '../platform-settings/platform-settings.m
 import { RedisModule } from '../platform/redis.module.js';
 import { TenantModule } from '../tenancy/tenant.module.js';
 import { BillingAdminController } from './billing-admin.controller.js';
+import { BillingCatalogController } from './billing-catalog.controller.js';
 import { BillingController } from './billing.controller.js';
 import { BillingService } from './billing.service.js';
 import { createStripeDriver } from './stripe-driver.factory.js';
@@ -32,7 +33,15 @@ const stripeDriverProvider: Provider = {
 @Module({
   imports: [RedisModule, TenantModule, PlansModule, AdminModule, PlatformSettingsModule],
   providers: [BillingService, stripeDriverProvider],
-  controllers: [BillingController, BillingAdminController, StripeWebhookController],
+  controllers: [
+    BillingController,
+    BillingAdminController,
+    // billing-10: the catalogue reconciliation an operator runs before going
+    // live. Mounted here so it is a real, reachable route rather than a helper
+    // nothing calls.
+    BillingCatalogController,
+    StripeWebhookController,
+  ],
   exports: [BillingService, STRIPE_DRIVER],
 })
 export class BillingModule {}

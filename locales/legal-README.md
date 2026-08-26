@@ -30,14 +30,33 @@ details. The key ones:
 ## Versioning + consent
 
 - The canonical version is `LEGAL_VERSION` in `packages/shared/src/legal.ts`
-  (currently the ISO date of the revision).
+  (the ISO date of the revision). It stamps the WHOLE corpus — all seven
+  documents, both locales — not one file.
 - New library owners must accept the Terms + Privacy Policy at signup; the
   accepted version + timestamp (+ IP) is recorded on the `User` and `Tenant`
   rows (`legalAcceptedVersion` / `legalAcceptedAt` [/ `legalAcceptedIp`]).
-- **When you publish a material change:** update the `Last updated` line + the
-  body, bump `LEGAL_VERSION`, and update the `legal.json` strings if needed. A
-  future "please re-accept the updated terms" flow can compare a user's stored
-  version against `LEGAL_VERSION`.
+- Those three columns say WHEN and under which stamp, and nothing about WHICH
+  TEXT — the pages render whatever is at HEAD. So signup ALSO writes a
+  `tenant.legal_accepted` control-plane audit row carrying the locale, the
+  person who accepted, and a SHA-256 per document (privacy-legal-09). See
+  `apps/api/src/auth/legal-acceptance.ts` and `docs/legal/README.md`.
+
+### ⚠️ Editing a document is a two-file change
+
+Every published version has a frozen copy of all seven rendered documents at
+`docs/legal/accepted/<LEGAL_VERSION>/<locale>/<slug>.md`. Editing a file under
+`locales/*/legal/` without bumping the version and re-freezing **fails**
+`apps/api/src/auth/legal-acceptance.spec.ts`, on purpose: before that check
+existed, a one-word edit silently retargeted every acceptance already recorded.
+
+**When you publish a material change:** update the `Last updated` line + the
+body, bump `LEGAL_VERSION`, re-freeze `docs/legal/accepted/<new version>/`,
+update `LEGAL_CORPUS`, and update the `legal.json` strings if needed. The exact
+steps are in `docs/legal/README.md`.
+
+Existing libraries are still not prompted to re-accept — nothing reads
+`legalAcceptedVersion` at sign-in and there is no re-acceptance screen. Until
+that UI exists, a version bump means asking the live libraries to re-accept.
 
 ## Translations
 

@@ -186,7 +186,12 @@ model Author {
   id             String    @id @default(cuid())
   /// Display name as it appears on book covers (e.g. "Νίκος Καζαντζάκης").
   fullName       String
-  /// Sortable, accent-folded, lowercase form (app maintains).
+  /// Sortable, accent-folded, lowercase form (app maintains). This is the
+  /// importer's natural key for find-or-create, so it is UNIQUE among
+  /// non-archived authors — `authors_sortname_unique_active`, a partial unique
+  /// index in migration 20260826090000 (data-integrity-06). Prisma cannot
+  /// express a partial index, so it lives in migration SQL only; writers must
+  /// translate P2002 rather than assume the create always succeeds.
   sortName       String
   /// Some authors are known by a single mononym.
   isOrganization Boolean   @default(false)
@@ -217,6 +222,13 @@ model Book {
   /// and accent-folded, used for fuzzy search (GIN trigram index).
   searchText          String
   /// ISBN-13 with hyphens stripped. Stored even when missing for old books.
+  /// The importer treats this as a book's natural key, so it is UNIQUE among
+  /// non-archived records that HAVE one — `books_isbn13_unique_active`, a
+  /// partial unique index in migration 20260826090000 (data-integrity-03).
+  /// NULL is outside the constraint (pre-ISBN and locally-catalogued items are
+  /// the common row in a Greek library export), and archiving a record frees
+  /// its ISBN for re-use. Prisma cannot express a partial index, so it lives in
+  /// migration SQL only; writers must translate P2002.
   isbn13              String?
   /// Legacy ISBN-10, also normalized.
   isbn10              String?

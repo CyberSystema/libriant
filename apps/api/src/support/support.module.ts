@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AdminModule } from '../admin/admin.module.js';
+import { PasswordService } from '../auth/password.service.js';
 import { TenantModule } from '../tenancy/tenant.module.js';
 import { AdminSupportController } from './admin-support.controller.js';
 import { ImpersonationController } from './impersonation.controller.js';
@@ -7,6 +8,7 @@ import { ImpersonationCookieService } from './impersonation-cookie.service.js';
 import { ImpersonationSessionService } from './impersonation-session.service.js';
 import { LibrarySupportController } from './library-support.controller.js';
 import { MfaController } from './mfa.controller.js';
+import { MfaRecoveryService } from './mfa-recovery.service.js';
 import { MfaService } from './mfa.service.js';
 import { SupportAuditInterceptor } from './support-audit.interceptor.js';
 import { SupportKeyService } from './support-key.service.js';
@@ -26,6 +28,10 @@ import { SupportSessionService } from './support-session.service.js';
   imports: [AdminModule, TenantModule],
   providers: [
     MfaService,
+    MfaRecoveryService,
+    // Stateless bcrypt helper. AdminModule does not export it, and the MFA
+    // step-up (authn-authz-09) has to re-verify the admin's password.
+    PasswordService,
     SupportKeyService,
     SupportSessionService,
     SupportSessionGuard,
@@ -42,6 +48,7 @@ import { SupportSessionService } from './support-session.service.js';
   ],
   exports: [
     MfaService,
+    MfaRecoveryService,
     SupportSessionService,
     ImpersonationSessionService,
     ImpersonationCookieService,

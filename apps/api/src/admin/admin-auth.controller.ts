@@ -12,12 +12,13 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
-import { IsEmail, IsOptional, IsString, Matches, MinLength } from 'class-validator';
+import { IsEmail, IsOptional, IsString, Length, Matches, MinLength } from 'class-validator';
 import type { Request, Response } from 'express';
 import { controlDb } from '@libriant/db-control';
 import { validateDto } from '../auth/validate-dto.js';
 import { clientIp } from '../platform/client-ip.js';
 import { RateLimitService } from '../platform/rate-limit.service.js';
+import { MfaRecoveryService } from '../support/mfa-recovery.service.js';
 import { MfaService } from '../support/mfa.service.js';
 import { AdminAuthService } from './admin-auth.service.js';
 import { AdminAuthGuard, AdminSess } from './admin-auth.guard.js';
@@ -37,6 +38,17 @@ class AdminLoginDto {
   @IsString()
   @Matches(/^\d{6}$/, { message: 'Authenticator codes are 6 digits.' })
   totp?: string;
+
+  /**
+   * launch-readiness-13: a single-use recovery code, accepted INSTEAD of
+   * `totp` when the authenticator is gone. Length is generous because the code
+   * is grouped for transcription (`ABCDE-FGHJK-…`) and people re-type it by
+   * hand; MfaRecoveryService normalises separators away before comparing.
+   */
+  @IsOptional()
+  @IsString()
+  @Length(20, 40)
+  recoveryCode?: string;
 }
 
 /**
@@ -48,6 +60,9 @@ class AdminLoginDto {
  * a valid, single-use TOTP is required. A first attempt without a code returns
  * 401 `{ code: 'mfa_required' }` so the UI can prompt for it; a wrong code
  * returns 401 `{ code: 'mfa_invalid' }`.
+ *
+ * A single-use `recoveryCode` is accepted in place of `totp` (launch-readiness-13)
+ * for the admin whose authenticator is gone. It is consumed on use.
  */
 @Controller('admin/auth')
 export class AdminAuthController {
@@ -58,6 +73,7 @@ export class AdminAuthController {
     @Inject(AdminSessionService) private readonly jwt: AdminSessionService,
     @Inject(AdminCookieService) private readonly cookies: AdminCookieService,
     @Inject(MfaService) private readonly mfa: MfaService,
+    @Inject(MfaRecoveryService) private readonly recovery: MfaRecoveryService,
     @Inject(RateLimitService) private readonly rateLimit: RateLimitService,
   ) {}
 
@@ -97,7 +113,7 @@ export class AdminAuthController {
       select: { mfaEnabled: true, mfaSecretCipher: true, mfaNonce: true },
     });
     if (mfa?.mfaEnabled) {
-      if (!dto.totp) {
+      if (!dto.totp && !dto.recoveryCode) {
         // Incomplete login — leave the lockout counter untouched (neither
         // reset nor incremented) until a code is supplied.
         throw new UnauthorizedException({
@@ -105,15 +121,35 @@ export class AdminAuthController {
           message: 'Enter the code from your authenticator app.',
         });
       }
-      const secret = this.mfa.decrypt(mfa.mfaSecretCipher, mfa.mfaNonce);
-      if (!(await this.mfa.verifyTokenOnce(admin.id, secret, dto.totp))) {
-        // A wrong second factor is a failed attempt and can trip the lockout
-        // (ADM-5) — otherwise a known password makes TOTP brute force free.
-        await this.authSvc.recordFailure(admin.id, ip);
-        throw new UnauthorizedException({
-          code: 'mfa_invalid',
-          message: 'That authenticator code is wrong or has already been used.',
-        });
+      // launch-readiness-13: the way back in when the phone is gone. Without
+      // it, ADMIN_MFA_REQUIRED (default in production) plus a single seeded
+      // admin plus a seed encrypted under MFA_MASTER_KEY meant a lost handset
+      // locked the sole operator out of the control plane — the surface that
+      // approves edit-requests, sets plans, flips billing and grants support
+      // access — with SSH and a hand-written UPDATE as the only recovery.
+      // Single-use, burned on redemption, and logged loudly by the service.
+      if (dto.recoveryCode) {
+        if (!(await this.recovery.consume(admin.id, dto.recoveryCode))) {
+          // Counts as a failed attempt for exactly the ADM-5 reason a wrong
+          // TOTP does: otherwise a known password makes the recovery codes a
+          // free-to-guess second channel.
+          await this.authSvc.recordFailure(admin.id, ip);
+          throw new UnauthorizedException({
+            code: 'mfa_invalid',
+            message: 'That recovery code is wrong or has already been used.',
+          });
+        }
+      } else {
+        const secret = this.mfa.decrypt(mfa.mfaSecretCipher, mfa.mfaNonce);
+        if (!(await this.mfa.verifyTokenOnce(admin.id, secret, dto.totp!))) {
+          // A wrong second factor is a failed attempt and can trip the lockout
+          // (ADM-5) — otherwise a known password makes TOTP brute force free.
+          await this.authSvc.recordFailure(admin.id, ip);
+          throw new UnauthorizedException({
+            code: 'mfa_invalid',
+            message: 'That authenticator code is wrong or has already been used.',
+          });
+        }
       }
     }
 

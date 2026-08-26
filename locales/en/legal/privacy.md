@@ -4,7 +4,7 @@
 
 # Privacy Policy
 
-**Last updated: 2026-06-22**
+**Last updated: 2026-08-26**
 
 This Privacy Policy explains how `[COMPANY LEGAL NAME]` ("**Libriant**",
 "**we**") handles personal data in connection with the Libriant service (the
@@ -117,6 +117,16 @@ We share data only with: our **sub-processors** (Section 4 and the dedicated
 page); **professional advisers** under confidentiality; **authorities** where
 legally required; and a **successor** in a merger/acquisition (with notice). We
 do not otherwise disclose personal data.
+
+**Access by Libriant staff.** Our own staff have no standing access to a
+library's data. Access happens only through a time-limited support window that
+the library itself opens with a one-time key, or through a database export
+which — for a single named library — requires such a window. Both are recorded
+in the library's own audit log and notified to it by e-mail. The mechanism, its
+limits, what is logged and for how long are set out in Section 6 of the
+[Data Processing Agreement](/legal/dpa). If you are a library member, the
+library — not Libriant — is the controller of your data; ask your library for
+its own notice.
 
 ## 11. Changes to this Policy
 

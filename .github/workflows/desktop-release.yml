@@ -51,13 +51,19 @@ concurrency:
   group: desktop-release-${{ github.ref }}
   cancel-in-progress: false
 
+# supply-chain-02: default DENY. This was `contents: write` at the workflow
+# level, which handed a write-capable GITHUB_TOKEN to every job in the file —
+# including `verify`, which runs the whole test suite and needs nothing but
+# read. Write is now granted per job, to the three that genuinely publish.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # Same gate as CI + deploy — nothing builds unless the commit is sound.
   verify:
     name: Verify
+    permissions:
+      contents: read
     uses: ./.github/workflows/verify.yml
 
   # Resolve the auto-incrementing version and pre-create the release as a DRAFT
@@ -67,6 +73,9 @@ jobs:
     name: Resolve version + open draft
     needs: verify
     runs-on: ubuntu-latest
+    # Creates the draft release.
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
@@ -102,9 +111,79 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    # electron-builder `--publish always` uploads the installers to the draft
+    # release from inside this job, so it needs write. That is precisely the
+    # co-location the guard below refuses to widen any further.
+    permissions:
+      contents: write
     env:
       DESKTOP_VERSION: ${{ needs.version.outputs.version }}
     steps:
+      # ────────────────────────────────────────────────────────────────────────
+      # supply-chain-02 — FAIL CLOSED BEFORE ANY THIRD-PARTY CODE RUNS.
+      #
+      # This job installs 611 packages and then runs electron-builder. The audit
+      # enumerated four packages in that closure with arbitrary-code install
+      # hooks (@prisma/engines postinstall, prisma preinstall, esbuild
+      # postinstall, electron-winstaller install), and electron-builder itself
+      # downloads the Electron dist archive (and, on Windows, 7-Zip) from the
+      # network at package time. Any of that code runs in this job.
+      #
+      # Today that is survivable ONLY because every signing secret is unset: an
+      # unset GitHub secret interpolates to the empty string, so there is no
+      # Apple Developer ID certificate and no Azure service principal here to
+      # steal (the workflow's own `if [ -z "${CSC_LINK:-}" ]` branches are what
+      # actually execute, and commit 7d71e7e — "ad-hoc sign unsigned macOS
+      # builds" — exists because there is no cert). The moment someone populates
+      # MAC_CSC_LINK or AZURE_CLIENT_SECRET, one compromised npm package reads a
+      # code-signing identity that cannot be revoked without invalidating every
+      # installer already shipped, and can publish a signed installer that every
+      # desktop client auto-installs.
+      #
+      # So the audit's "until then, do not populate MAC_CSC_LINK /
+      # AZURE_CLIENT_SECRET" is enforced here instead of living in a document
+      # nobody reads at the moment they add the secret. No secret VALUE is put
+      # in this step's environment — only the booleans.
+      #
+      # TO LIFT THIS GUARD, split the pipeline; there is no other correct fix:
+      #   1. `release` (this job) keeps `permissions: contents: read`, no
+      #      secrets, and runs `electron-builder --publish never`, uploading its
+      #      output with actions/upload-artifact.
+      #   2. A new `sign-publish` job, gated on an `environment:` with required
+      #      reviewers, downloads that artifact, installs ONLY electron-builder
+      #      (`--ignore-scripts`, pinned), re-runs it `--prepackaged` with the
+      #      signing secrets, and publishes. Verify the generated latest*.yml
+      #      sha512 entries match the signed binaries — electron-updater
+      #      verifies them, so re-signing after the hashes are computed silently
+      #      breaks auto-update for the whole fleet.
+      #   3. Then set the repository variable DESKTOP_SIGNING_PIPELINE_SPLIT to
+      #      `true` (Settings → Secrets and variables → Actions → Variables).
+      - name: Refuse to hand signing secrets to a job that runs third-party code
+        env:
+          HAS_MAC_CERT: ${{ secrets.MAC_CSC_LINK != '' }}
+          HAS_APPLE_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+          HAS_AZURE_SECRET: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
+          PIPELINE_SPLIT: ${{ vars.DESKTOP_SIGNING_PIPELINE_SPLIT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${PIPELINE_SPLIT:-}" = "true" ]; then
+            echo "DESKTOP_SIGNING_PIPELINE_SPLIT=true — signing secrets are declared safe here."
+            exit 0
+          fi
+          # `if`, not `[ … ] && held=…`: under `set -e` a false `&&` list is the
+          # last command of the script line and exits 1, which would turn "no
+          # secrets configured" — the normal case — into a failed release.
+          held=""
+          if [ "${HAS_MAC_CERT:-}" = "true" ]; then held="$held MAC_CSC_LINK"; fi
+          if [ "${HAS_APPLE_KEY:-}" = "true" ]; then held="$held APPLE_API_KEY_P8"; fi
+          if [ "${HAS_AZURE_SECRET:-}" = "true" ]; then held="$held AZURE_CLIENT_SECRET"; fi
+          if [ -n "$held" ]; then
+            echo "::error::supply-chain-02: this job installs 611 packages (four with arbitrary-code install hooks) and then runs electron-builder, and it is now also holding:${held}. A code-signing identity stolen here cannot be revoked without invalidating every installer already shipped. Split the build and the signing job first — see the comment above this step — then set the repository variable DESKTOP_SIGNING_PIPELINE_SPLIT=true."
+            exit 1
+          fi
+          echo "No signing secrets are populated — building unsigned, as designed."
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
@@ -215,6 +294,9 @@ jobs:
     name: Publish release
     needs: [version, release]
     runs-on: ubuntu-latest
+    # Flips the draft live.
+    permissions:
+      contents: write
     # This step IS the auto-update feed: electron-updater installs whatever the
     # newest non-draft release contains, on every machine already running the
     # app. Until this gate existed, any push touching apps/desktop/** shipped

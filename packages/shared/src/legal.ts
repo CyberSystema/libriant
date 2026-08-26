@@ -14,8 +14,18 @@
  *   - new acceptances record the new version (GDPR/contract accountability), and
  *   - a future "please re-accept the updated terms" prompt can compare a user's
  *     stored `legalAcceptedVersion` against this.
+ *
+ * privacy-legal-09: bumping this is no longer optional politeness. Each version
+ * has a FROZEN copy of every published document under
+ * `docs/legal/accepted/<LEGAL_VERSION>/<locale>/<slug>.md`, and
+ * `apps/api/src/auth/legal-acceptance.ts` carries the SHA-256 of each of those
+ * files so an acceptance record names the exact bytes agreed to. Editing a
+ * document under `locales/*\/legal/` without bumping this and re-freezing the
+ * directory fails `apps/api/src/auth/legal-acceptance.spec.ts` — which is the
+ * whole point, because before that test existed such an edit silently
+ * invalidated every acceptance already recorded.
  */
-export const LEGAL_VERSION = '2026-06-22';
+export const LEGAL_VERSION = '2026-08-26';
 
 /** Published legal documents — one markdown file per locale per slug. */
 export const LEGAL_DOCUMENTS = [

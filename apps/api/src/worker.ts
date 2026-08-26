@@ -24,6 +24,11 @@ import { loadEnv } from './config/env.js';
 import { startEmailWorker, type EmailWorkerHandle } from './email/email-worker.js';
 import { EmailService } from './email/email.service.js';
 import {
+  CENSUS_INTERVAL_MS,
+  refreshOutboxCensus,
+  renderOutboxCensus,
+} from './email/outbox-census.js';
+import {
   makeImportWorkerDeps,
   startImportWorker,
   type ImportWorkerHandle,
@@ -135,6 +140,11 @@ const server = createServer((req, res) => {
         '# HELP libriant_worker_tenant_conn_budget Tenant DB connection budget for this worker.',
         '# TYPE libriant_worker_tenant_conn_budget gauge',
         `libriant_worker_tenant_conn_budget ${tenantPoolPlan.budget}`,
+        // reliability-10: abandoned ('dead') outbox rows had no surface
+        // anywhere — no endpoint, no metric, no alert, just one console.error
+        // in a rolling Docker log. These gauges are the surface, and
+        // infra/monitoring/alerts.yml turns them into a page.
+        ...renderOutboxCensus(),
         '',
       ].join('\n'),
     );
@@ -165,6 +175,17 @@ server.listen(port, () => {
   // eslint-disable-next-line no-console
   console.log(`[worker] ${describeTenantPoolPlan(tenantPoolPlan)}`);
 });
+
+/**
+ * reliability-10: keep the outbox head-count fresh so `/metrics` can answer
+ * synchronously. Started here rather than inside startEmailWorker() so the
+ * gauges exist even if the BullMQ consumer fails to connect — a worker that
+ * cannot reach Redis is EXACTLY when an operator needs to see the backlog
+ * growing. `unref` so it never holds the process open during a drain.
+ */
+void refreshOutboxCensus();
+const outboxCensusTimer = setInterval(() => void refreshOutboxCensus(), CENSUS_INTERVAL_MS);
+outboxCensusTimer.unref?.();
 
 // Boot the queue consumers alongside the HTTP server. If BullMQ fails to
 // connect we keep the HTTP surface alive (so the orchestrator sees the
@@ -236,6 +257,7 @@ async function shutdown(signal: NodeJS.Signals, exitCode = 0) {
   shuttingDown = true;
   // eslint-disable-next-line no-console
   console.log(`[worker] received ${signal}, draining…`);
+  clearInterval(outboxCensusTimer);
   server.close();
 
   // Race the drain against a hard deadline: whichever resolves first wins. If

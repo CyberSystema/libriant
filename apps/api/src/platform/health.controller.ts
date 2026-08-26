@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { controlDb } from '@libriant/db-control';
+import { httpMetrics } from './http-metrics.js';
 import { RedisService } from './redis.service.js';
 
 /**
@@ -84,6 +85,13 @@ export class HealthController {
       '# HELP libriant_api_build_info Build information.',
       '# TYPE libriant_api_build_info gauge',
       `libriant_api_build_info{node_env="${process.env.NODE_ENV ?? 'development'}"} 1`,
+      // reliability-17: request counts by method/route/status and a latency
+      // histogram, collected by HttpMetricsMiddleware (mounted in
+      // PlatformModule). Rendered BEFORE the capacity block on purpose — these
+      // are process-local and cannot fail, whereas capacityGauges() talks to
+      // Postgres and Redis. When the DB is the thing that is broken, the error
+      // rate is exactly what an operator needs the scrape to still carry.
+      ...httpMetrics.render(),
       ...(await this.capacityGauges()),
       '',
     ];

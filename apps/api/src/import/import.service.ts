@@ -9,7 +9,12 @@ import { controlDb, type ImportBatch, type ImportEntityKind } from '@libriant/db
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { ImportQueueService } from './import-queue.service.js';
 import { deleteStaged, stageFile } from './import-staging.js';
-import { stagingExtFor } from './import.constants.js';
+import {
+  IMPORT_MAX_STAGED_BATCHES,
+  IMPORT_MAX_STAGED_BYTES,
+  IMPORT_STAGED_STATUSES,
+  stagingExtFor,
+} from './import.constants.js';
 import { autoMap, type ColumnMapping } from './mapping/auto-map.js';
 import { IMPORT_ENTITY_KINDS, mappableFields } from './mapping/entity-fields.js';
 import { detectFormat, parseByFormat } from './parsers/index.js';
@@ -45,6 +50,12 @@ export class ImportService {
   // ---- upload ------------------------------------------------------------
   async createBatch(tenant: TenantContext, input: UploadInput) {
     const entityKind = this.requireEntityKind(input.entityKind);
+    // input-and-files-06: refuse BEFORE parsing a preview or writing a byte.
+    // The staging directory is excluded from the tenant's storage quota, so
+    // this is the only thing standing between a retry loop and a full shared
+    // volume — and the volume is shared with every other library's covers and
+    // with the export artifacts.
+    await this.assertStagingBudget(tenant, input.file.buffer.byteLength);
     const format = this.resolveFormat(input.format, input.file);
     const noHeader = input.hasHeader === false;
 
@@ -229,11 +240,26 @@ export class ImportService {
   // ---- lifecycle ---------------------------------------------------------
   async cancel(tenant: TenantContext, id: string) {
     const batch = await this.require(tenant, id);
+    // input-and-files-06: a cancelled batch is terminal — `requireRunnable`
+    // refuses to (re)start one — so its staged file serves nothing.
+    //
+    // Cancelling an `uploaded` batch used to be a free bypass of every staging
+    // limit: the row left the counted states, the worker never ran (so nothing
+    // ever deleted the file), and the 64 MB stayed on the shared volume
+    // forever. Delete it here, but ONLY when no job can be reading it right
+    // now — for a running batch the worker's own cancel path does the delete,
+    // and yanking the file out from under a live read would turn a clean
+    // "canceled" into a confusing "failed: ENOENT".
+    const running = batch.status === 'validating' || batch.status === 'committing';
+    if (!running) await deleteStaged(batch.stagingPath);
     const updated = await controlDb.importBatch.update({
       where: { id: batch.id },
-      data: { status: 'canceled', finishedAt: new Date() },
+      data: {
+        status: 'canceled',
+        finishedAt: new Date(),
+        ...(running ? {} : { stagingPath: '' }),
+      },
     });
-    // Running jobs poll status and abort; staging is cleared on next finish.
     return this.toDto(updated);
   }
 
@@ -248,6 +274,50 @@ export class ImportService {
   }
 
   // ---- helpers -----------------------------------------------------------
+  /**
+   * input-and-files-06: cap the disk one tenant may hold in import staging.
+   *
+   * Counts only batches that still HAVE a file — `stagingPath` is blanked by
+   * every path that deletes one (worker finish, cancel-mid-commit, the
+   * abandoned-staging sweeper), so a non-empty `stagingPath` in one of
+   * `IMPORT_STAGED_STATUSES` means bytes on the shared volume right now.
+   *
+   * `failed` counts deliberately, even though a failed batch is re-runnable and
+   * keeps its file on purpose: a file that fails to parse fails on every
+   * retry, and "retry the broken import twenty times" is the exact honest
+   * behaviour that fills the volume. The message tells the librarian which
+   * lever to pull.
+   */
+  private async assertStagingBudget(tenant: TenantContext, incomingBytes: number): Promise<void> {
+    const staged = await controlDb.importBatch.findMany({
+      where: {
+        tenantId: tenant.id,
+        status: { in: [...IMPORT_STAGED_STATUSES] },
+        NOT: { stagingPath: '' },
+      },
+      select: { sizeBytes: true },
+    });
+    const stagedBytes = staged.reduce((n, b) => n + b.sizeBytes, 0);
+    const mb = (bytes: number) => Math.max(1, Math.round(bytes / (1024 * 1024)));
+
+    if (staged.length >= IMPORT_MAX_STAGED_BATCHES) {
+      throw new ConflictException(
+        `This library already has ${staged.length} uploaded import${
+          staged.length === 1 ? '' : 's'
+        } waiting to run. Run or delete one before uploading another (at most ${IMPORT_MAX_STAGED_BATCHES} at a time).`,
+      );
+    }
+    if (stagedBytes + incomingBytes > IMPORT_MAX_STAGED_BYTES) {
+      throw new ConflictException(
+        `Uploaded import files for this library would total ${mb(
+          stagedBytes + incomingBytes,
+        )} MB, over the ${mb(
+          IMPORT_MAX_STAGED_BYTES,
+        )} MB staging limit. Run or delete an earlier upload before adding this one.`,
+      );
+    }
+  }
+
   private requireEntityKind(raw: string): ImportEntityKind {
     if (!(IMPORT_ENTITY_KINDS as readonly string[]).includes(raw)) {
       throw new BadRequestException(
@@ -354,6 +424,16 @@ export class ImportService {
     // from a run that wrote the WRONG rows is a delete, not a re-import.
     if (!['uploaded', 'validated', 'failed'].includes(batch.status)) {
       throw new ConflictException(`An import in "${batch.status}" can't be (re)started.`);
+    }
+    // input-and-files-06: the abandoned-staging sweeper deletes the uploaded
+    // file after IMPORT_STAGING_TTL_MS and blanks `stagingPath` to record that.
+    // Without this guard the run would be enqueued, the worker would fail on
+    // ENOENT, and the librarian would read a filesystem error path instead of
+    // "upload it again".
+    if (!batch.stagingPath) {
+      throw new ConflictException(
+        'The uploaded file for this import was cleaned up because it sat unused for too long. Upload it again to run it.',
+      );
     }
     return batch;
   }

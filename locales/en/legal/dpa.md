@@ -4,7 +4,7 @@
 
 # Data Processing Agreement (DPA)
 
-**Last updated: 2026-06-22**
+**Last updated: 2026-08-26**
 
 This Data Processing Agreement ("**DPA**") forms part of the
 [Terms of Service](/legal/terms) between `[COMPANY LEGAL NAME]` ("**Libriant**",
@@ -36,6 +36,12 @@ DPA flow down to them.
   special-category data unless you have a lawful basis and have informed us).
 - **Special categories:** not required by the Service; processed only if you
   choose to enter them, under your responsibility.
+- **Access by Libriant personnel:** our staff have **no standing access** to
+  your library's database. Two paths exist and both are described in Section 6:
+  a **support session**, which only you can open by issuing a one-time key, and
+  an **administrative database export**, which for a single named library
+  requires an open support session that you issued. Both are recorded in your
+  own audit log, and both are notified to your registered contact address.
 
 ## 3. Your instructions and obligations
 
@@ -76,15 +82,96 @@ protective than this DPA, and we remain liable for their performance.
 
 ## 6. Security measures (Annex II)
 
-Taking into account the state of the art and the risk, we implement appropriate
-technical and organisational measures, including: encryption of data in transit
-(TLS); **logical isolation of each Controller's data in a separate database**;
-password hashing (bcrypt) and encryption of authentication secrets at rest;
-mandatory MFA for platform administrators; role-based access control and
-least-privilege access; network segmentation; audit logging of sensitive actions;
-rate limiting and abuse protection; regular encrypted backups with restore
-testing; and vulnerability management. We review these measures and may update
-them provided protection is not materially reduced.
+6.1 Taking into account the state of the art and the risk, we implement
+appropriate technical and organisational measures, including: encryption of data
+in transit (TLS); **logical isolation of each Controller's data in a separate
+database**; password hashing (bcrypt) and encryption of authentication secrets
+at rest; mandatory MFA for platform administrators; role-based access control
+and least-privilege access; network segmentation; audit logging of sensitive
+actions; rate limiting and abuse protection; regular encrypted backups with
+restore testing; and vulnerability management. We review these measures and may
+update them provided protection is not materially reduced.
+
+### 6.2 Support access — Libriant staff acting inside your data
+
+Libriant staff have no standing access to your library's database. When you ask
+us for help that requires it, access works like this, and only like this:
+
+1. **You open the door.** An owner or admin in your library generates a one-time
+   support key from Settings → Support access. We cannot generate one for
+   ourselves. The key is stored only as a bcrypt hash, is valid for 60 minutes,
+   and can be redeemed once.
+1. **A named administrator redeems it.** Redemption requires a Libriant
+   administrator account with multi-factor authentication enabled. Failed
+   redemption attempts are recorded with their source IP address.
+1. **The window is time-boxed and yours to close.** A session lasts at most four
+   hours and then ends automatically. You can end it earlier at any moment, and
+   at most one session per library can be open at a time.
+1. **What we may do inside it is limited.** During a support session we cannot
+   create staff accounts, reset staff passwords, or change staff roles; cannot
+   change your plan or payment details; cannot start a data export in your name;
+   and cannot alter or revoke your own support keys and sessions. A refusal is
+   logged in the same places as an action.
+1. **Everything is recorded, on both sides.** Every request in the window is
+   written to our `support_action_log` with the method, the path, the record
+   touched and — for changes — a before/after snapshot of the changed fields.
+   Every change and every refusal is **also** written to your library's own
+   audit log, flagged as having happened through support, where you read it at
+   Settings → Activity. Reads stay in the support log rather than your activity
+   feed, and you can read that log yourself.
+1. **You are told by e-mail** when a key is generated, when it is redeemed (with
+   the administrator's name and source IP), and when the session ends.
+
+Those before/after snapshots capture the records we touched, so they may contain
+Controller Personal Data. We treat them as Controller Personal Data for every
+purpose of this DPA, including Sections 8 and 10. The support log, session
+records and redemption attempts live in Libriant's control-plane database in the
+EU/EEA and are retained for `[RETENTION PERIOD — SUPPORT LOGS]`.
+
+### 6.3 Administrative database exports
+
+The Service can produce a complete copy of a library's database as a file (CSV,
+JSON, XLSX or SQL). **You** can do this for yourself at any time from Settings →
+Export; that is your Article 20 tool and needs nothing from us.
+
+When **Libriant** initiates an export:
+
+1. An export of one named library requires an **open support session for that
+   library** — the same key you issued under 6.2. Without one the request is
+   refused.
+1. It is recorded in our control-plane audit log with the administrator, the
+   scope, the source IP address and the support session it was taken under; and
+   in **your** library's audit log, where it appears in your activity feed as
+   `tenant.exported`. It also appears in your own export list at Settings →
+   Export, marked as requested by Libriant rather than by your staff.
+1. We e-mail your registered contact address when it happens.
+1. A **platform-wide** export may cover every library at once. No single library
+   can consent on behalf of the others, so such an export is never taken under a
+   support session — but it is written to **every** affected library's audit log
+   and notified the same way, and our control-plane record lists the libraries
+   included and any that could not be told.
+1. The produced file is downloadable only by a Libriant owner-administrator, the
+   download is itself audit-logged, and the file is deleted automatically 24
+   hours after it is produced (2 hours for a platform-wide export).
+
+We remain able to reach the underlying databases as their operator; nothing
+above claims otherwise. What 6.2 and 6.3 do is ensure that the routine,
+one-click paths cannot be used without your consent and cannot be used without
+leaving a record you can read.
+
+### 6.4 Wording you can reuse in your own member notice
+
+You may need to describe the above in the privacy notice you give your members.
+You are free to adapt the following:
+
+> Our library-management system is operated for us by Libriant. Libriant staff
+> have no standing access to your data. If we ask them for technical help that
+> requires it, we issue a one-time key that opens a support window of at most
+> four hours, which we can close at any moment; everything done in that window
+> is recorded in our own activity log, which we can inspect. Libriant may also
+> produce a complete copy of our database at our request or during such a
+> window; every copy is recorded in our activity log and is deleted
+> automatically within 24 hours.
 
 ## 7. Assistance with data-subject rights
 

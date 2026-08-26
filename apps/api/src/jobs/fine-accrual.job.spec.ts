@@ -36,14 +36,33 @@ function makeClient(opts: {
   let seq = fines.length;
   const created: Fine[] = [];
   const updated: Array<{ id: string; amountCents: number }> = [];
+  // performance-08 turned the sweep's per-row work into set operations: the
+  // overdue page is a keyset $queryRaw, and the amount changes go out as one
+  // `UPDATE … FROM unnest(...)`. The fake therefore has to answer those two,
+  // and it reads the REAL bound parameters off the Prisma.Sql object rather
+  // than re-deriving them, so a bug in what the job binds still shows up here.
+  const overduePages = vi.fn(async () => opts.loans);
+  const batchUpdate = vi.fn(async (sql: { values: readonly unknown[] }) => {
+    const [, ids, amounts] = sql.values as [Date, string[], number[], string[]];
+    let count = 0;
+    for (let i = 0; i < ids.length; i++) {
+      const f = fines.find((x) => x.id === ids[i] && x.status === 'outstanding');
+      if (!f) continue; // the status guard in the SQL
+      f.amountCents = amounts[i]!;
+      updated.push({ id: f.id, amountCents: amounts[i]! });
+      count++;
+    }
+    return count;
+  });
   const client = {
+    $queryRaw: overduePages,
+    $executeRaw: batchUpdate,
     tenantSetting: { findUnique: vi.fn(async () => opts.settings) },
     loan: {
-      findMany: vi.fn(async () => opts.loans),
-      // Accrual re-reads the loan to skip ones a return just closed; all
-      // fixture loans are active overdue.
-      findUnique: vi.fn(async (args: { where: { id: string } }) =>
-        opts.loans.find((l) => l.id === args.where.id) ? { status: 'active' } : null,
+      // Accrual re-reads the page's loans to skip ones a return just closed;
+      // all fixture loans are active overdue.
+      findMany: vi.fn(async (args: { where: { id: { in: string[] } } }) =>
+        opts.loans.filter((l) => args.where.id.in.includes(l.id)).map((l) => ({ id: l.id })),
       ),
     },
     fine: {
@@ -60,34 +79,27 @@ function makeClient(opts: {
           _sum: { amountCents: sum },
         }));
       }),
-      findFirst: vi.fn(
-        async (args: { where: { loanId: string; status: string } }) =>
-          fines.find((f) => f.loanId === args.where.loanId && f.status === args.where.status) ??
-          null,
+      findMany: vi.fn(async (args: { where: { loanId: { in: string[] }; status: string } }) =>
+        fines
+          .filter((f) => args.where.loanId.in.includes(f.loanId) && f.status === args.where.status)
+          .map((f) => ({ id: f.id, loanId: f.loanId, amountCents: f.amountCents })),
       ),
-      create: vi.fn(
-        async (args: { data: { loanId: string; amountCents: number; reason: string } }) => {
-          const f: Fine = {
-            id: `fine-${++seq}`,
-            loanId: args.data.loanId,
-            amountCents: args.data.amountCents,
-            status: 'outstanding',
-            reason: args.data.reason,
-          };
-          fines.push(f);
-          created.push(f);
-          return f;
-        },
-      ),
-      updateMany: vi.fn(
-        async (args: { where: { id: string; status?: string }; data: { amountCents: number } }) => {
+      createMany: vi.fn(
+        async (args: { data: Array<{ loanId: string; amountCents: number; reason: string }> }) => {
           let count = 0;
-          for (const f of fines) {
-            if (f.id === args.where.id && (!args.where.status || f.status === args.where.status)) {
-              f.amountCents = args.data.amountCents;
-              updated.push({ id: f.id, amountCents: args.data.amountCents });
-              count++;
-            }
+          for (const d of args.data) {
+            // `skipDuplicates` against fines_one_outstanding_per_loan.
+            if (fines.some((f) => f.loanId === d.loanId && f.status === 'outstanding')) continue;
+            const f: Fine = {
+              id: `fine-${++seq}`,
+              loanId: d.loanId,
+              amountCents: d.amountCents,
+              status: 'outstanding',
+              reason: d.reason,
+            };
+            fines.push(f);
+            created.push(f);
+            count++;
           }
           return { count };
         },
@@ -224,7 +236,9 @@ describe('sweepFineAccrual', () => {
     tenantGetClient.mockReturnValue(client);
     await sweepFineAccrual();
     expect(created).toHaveLength(0);
-    expect(client.loan.findMany).not.toHaveBeenCalled();
+    // The scan itself must not happen — that is the whole point of the early
+    // return. `$queryRaw` is the overdue page query since performance-08.
+    expect(client.$queryRaw).not.toHaveBeenCalled();
   });
 
   it('skips libraries with overdue fines switched off, even with a rate set', async () => {
@@ -240,6 +254,6 @@ describe('sweepFineAccrual', () => {
     tenantGetClient.mockReturnValue(client);
     await sweepFineAccrual();
     expect(created).toHaveLength(0);
-    expect(client.loan.findMany).not.toHaveBeenCalled();
+    expect(client.$queryRaw).not.toHaveBeenCalled();
   });
 });

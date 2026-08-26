@@ -1,5 +1,6 @@
 'use client';
 import * as React from 'react';
+import { useRouter } from 'next/navigation';
 import { Button, Card, useToast } from '@libriant/ui';
 import type { Catalog, Locale, Translator } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
@@ -98,6 +99,7 @@ type Props = {
  */
 export function PlanGrid({ plans, slug, catalog, locale }: Props) {
   const t = createTranslator(catalog, locale);
+  const router = useRouter();
   const toast = useToast();
   const [busy, setBusy] = React.useState<string | null>(null);
   const [cadence, setCadence] = React.useState<Cadence>('year');
@@ -115,6 +117,41 @@ export function PlanGrid({ plans, slug, catalog, locale }: Props) {
         body: { planSlug: plan.slug, interval: bookableCadence(plan, cadence) },
       });
       window.location.href = url;
+    } catch (err) {
+      toast.show({
+        severity: 'critical',
+        title: translateApiError(err, t, t('common.states.error')),
+      });
+      setBusy(null);
+    }
+  }
+
+  /**
+   * billing-11. The free tier used to fall through this grid's action chain
+   * (isCurrent → isManual → !hasStripePrice → upgrade) into POST
+   * /billing/checkout, exactly like a paid plan — and it did so with a live
+   * button, because the `plans_stripe_price_matches_mode` CHECK constraint
+   * forces Starter to carry a price id and the seed fills it with
+   * `price_seed_starter`. Clicking "Switch to Starter" therefore posted a
+   * placeholder price to Stripe Checkout and came back a 500. ChoosePlanScreen
+   * has always had this branch; the billing page did not.
+   *
+   * `/billing/select` is the free-plan route: it records the choice, and for a
+   * library that is currently PAYING it cancels the Stripe subscription at
+   * period end rather than dropping their features while the card is still
+   * being charged. `router.refresh()` re-renders the page, where the existing
+   * "scheduled to cancel on {date}" banner reports what happened with the real
+   * date from the server — so this needs no new copy and cannot drift from it.
+   */
+  async function chooseFree(plan: AvailablePlan) {
+    setBusy(plan.slug);
+    try {
+      await api(`/t/${slug}/billing/select`, {
+        method: 'POST',
+        body: { planSlug: plan.slug },
+      });
+      router.refresh();
+      setBusy(null);
     } catch (err) {
       toast.show({
         severity: 'critical',
@@ -234,6 +271,21 @@ export function PlanGrid({ plans, slug, catalog, locale }: Props) {
                   >
                     {t('billing.actions.contactSales')}
                   </a>
+                ) : isFree ? (
+                  // billing-11: the free tier is chosen, never bought. This
+                  // branch must sit ABOVE the `hasStripePrice` test — Starter
+                  // has no real Stripe price and never will, so without it the
+                  // card renders either a dead "Not available yet" button or,
+                  // before that check tightened, a Checkout call that 500s.
+                  <Button
+                    variant="secondary"
+                    style={{ width: '100%' }}
+                    loading={busy === plan.slug}
+                    disabled={busy !== null && busy !== plan.slug}
+                    onClick={() => chooseFree(plan)}
+                  >
+                    {t('billing.actions.switchTo', { plan: plan.name })}
+                  </Button>
                 ) : !plan.hasStripePrice ? (
                   <Button variant="secondary" disabled style={{ width: '100%' }}>
                     {t('billing.chooser.notBookable')}
@@ -243,6 +295,7 @@ export function PlanGrid({ plans, slug, catalog, locale }: Props) {
                     variant="primary"
                     style={{ width: '100%' }}
                     loading={busy === plan.slug}
+                    disabled={busy !== null && busy !== plan.slug}
                     onClick={() => upgrade(plan)}
                   >
                     {t('billing.actions.switchTo', { plan: plan.name })}
