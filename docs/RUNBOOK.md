@@ -713,8 +713,27 @@ PEM
 sudo chmod 640 /mnt/libriant/caddy/origin/origin.crt
 sudo chmod 600 /mnt/libriant/caddy/origin/origin.key
 sudo chown root:root /mnt/libriant/caddy/origin/origin.*
-openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -subject -issuer -dates -ext subjectAltName
+sudo openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -subject -issuer -dates -ext subjectAltName
 ```
+
+`sudo` on that last line is not decoration, and it was missing here and in four
+other places in this document. The three lines above it make the cert
+`640 root:root`, so reading it as the deploy user fails with
+
+    Could not open file or uri for loading certificate from …/origin.crt
+    error:8000000D:system library:BIO_new_file:Permission denied
+
+which reads like a corrupt certificate and is not. Every documented `openssl
+x509 -in` against this path now carries `sudo`; keep it when you copy one.
+
+**`root:root` is load-bearing, not tidiness.** Caddy runs as uid 0 inside its
+container and, since supply-chain-07, holds no capabilities except
+NET_BIND_SERVICE. Reading a file whose permission bits deny you is exactly what
+CAP_DAC_OVERRIDE is for, and it is gone — so a key owned by `deploy` at mode 600
+would be unreadable, every HTTPS vhost would fail to load its certificate, and
+the edge would be down. Owned by root at 600 it is readable as the OWNER, no
+capability involved. `scripts/deploy-on-host.sh` refuses to deploy if the key is
+anything other than uid 0 and mode 600 or 400.
 
 Good looks like: issuer `CloudFlare Origin SSL Certificate Authority`, SANs
 `DNS:libriant.com, DNS:*.libriant.com`, `notAfter` roughly 15 years out.
@@ -1528,8 +1547,11 @@ locally. DNS is the **last** step.
 1. **Create the Origin CA certificate** for `libriant.com` **and**
    `*.libriant.com`. Store both PEMs in the password manager — nothing backs
    them up.
-2. **Place them on the box** at `/mnt/libriant/caddy/origin/`, `chmod 600` the
-   key. The deploy refuses to run without them.
+2. **Place them on the box** at `/mnt/libriant/caddy/origin/`, then
+   `sudo chown root:root` both and `chmod 600` the key / `640` the cert. The
+   ownership matters as much as the mode — see §3 — because Caddy reads the key
+   as the file's owner rather than by capability. The deploy refuses to run
+   without the files, and refuses again if the key is not root-owned 600 or 400.
 3. **Set the zone SSL/TLS mode to Full (strict)** and confirm Always Use HTTPS —
    _before_ any record moves. **UNVERIFIED**: the current mode.
 4. **Deploy and prove health locally**, still with zero DNS changes:
@@ -1853,7 +1875,7 @@ Note `migrate` showing `Exited (0)` is **correct**, not a fault.
 
 **Monthly:**
 
-- Origin certificate: `openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -checkend 2592000 -dates`
+- Origin certificate: `sudo openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -checkend 2592000 -dates`
   → good looks like `Certificate will not expire`.
 - External scan from your laptop: `nmap -Pn -p 22,80,443,5432,6379 195.201.13.95`
   and the `-6` equivalent → only 22, 80, 443.
@@ -2582,8 +2604,8 @@ nothing about validity.
 **Confirm.**
 
 ```bash
-openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -subject -issuer -dates -ext subjectAltName
-openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -checkend 0 && echo VALID || echo EXPIRED
+sudo openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -subject -issuer -dates -ext subjectAltName
+sudo openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -checkend 0 && echo VALID || echo EXPIRED
 echo | openssl s_client -connect 127.0.0.1:443 -servername libriant.com 2>/dev/null \
   | openssl x509 -noout -subject -dates
 ```
@@ -3075,7 +3097,7 @@ dc exec -T postgres pg_isready -U libriant -d libriant_control
 # TLS
 echo | openssl s_client -connect 127.0.0.1:443 -servername libriant.com 2>/dev/null \
   | openssl x509 -noout -subject -dates -ext subjectAltName
-openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -checkend 2592000 -dates
+sudo openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -checkend 2592000 -dates
 
 # backup / restore  (env prefix is NOT optional)
 set -a; . /srv/libriant/.env.prod; set +a
