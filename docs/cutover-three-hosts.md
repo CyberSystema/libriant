@@ -3,6 +3,16 @@
 This was the DNS cutover to three hosts. It has been replaced, in full, by **[docs/RUNBOOK.md](RUNBOOK.md)** —
 specifically §5.4 (cutover), gated on the launch blockers in §0.
 
+> **One fact from this file's subject that every version of it had wrong, so it
+> is repeated here where an old bookmark lands:** `admin.libriant.com` already
+> **exists** in DNS, proxied, pointing at an origin that has been released. It
+> is a **repoint**, not a create, and it must not move until the zone's SSL/TLS
+> mode is **Full (strict)** — otherwise the host that serves the admin login
+> proxies to whoever the released address is reassigned to, under a name the
+> origin certificate covers and HSTS `includeSubDomains` has already pinned.
+> RUNBOOK §5.1 inventories it; §5.4 puts it in the same single Cloudflare change
+> as `app`, after the mode is set.
+
 **Do not follow the old version.** It was written for a server that no longer
 exists and for CI-driven deploys that are switched off. A pre-release audit on
 2026-08-23 found **122 incorrect statements** across these five documents — not

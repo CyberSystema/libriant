@@ -12,6 +12,7 @@ import { FinesPanel, type FinesListResponse } from '@/components/FinesPanel';
 import { formatMoney } from '@/components/money';
 import { MemberForm, type MemberInitial } from '../new/MemberForm';
 import { PhotoUploader } from './PhotoUploader';
+import { AGE_OF_MAJORITY_YEARS, ageInCompletedYears, dsarStrings } from './dsar-strings';
 
 type Status = 'active' | 'suspended' | 'archived';
 
@@ -42,6 +43,13 @@ type Props = {
   canSettleFines: boolean;
   /** owner | admin — may write a fine off. */
   canWriteOffFines: boolean;
+  /**
+   * owner | admin | librarian — may produce this member's Art. 15 / Art. 20
+   * file. A volunteer may read the page but is refused the export by the API
+   * (privacy-legal-15); hiding the control keeps them out of a 403 rather than
+   * being the thing that stops them.
+   */
+  canExportSubjectData: boolean;
 };
 
 /**
@@ -65,6 +73,7 @@ export function MemberDetail({
   finesError,
   canSettleFines,
   canWriteOffFines,
+  canExportSubjectData,
 }: Props) {
   const t = createTranslator(catalog, locale);
   const router = useRouter();
@@ -91,6 +100,33 @@ export function MemberDetail({
   };
   const [statusBusy, setStatusBusy] = React.useState(false);
   const [archiveBusy, setArchiveBusy] = React.useState(false);
+  /**
+   * privacy-legal-15. The download is a plain link to the API rather than a
+   * fetch-then-Blob dance: the endpoint answers with
+   * `Content-Disposition: attachment`, `/lbr-api/*` is same-origin through the
+   * Next rewrite so the session cookie rides along, and a link that the browser
+   * saves straight to disk never puts a patron's whole record on a screen at
+   * the counter.
+   *
+   * It still sits behind a dialog. Producing this file is a disclosure to a
+   * person standing in front of the librarian, and the two things they have to
+   * get right — who is entitled to receive it, and whether the subject is a
+   * child — belong in front of them at that moment, not in a manual.
+   */
+  const [exportOpen, setExportOpen] = React.useState(false);
+  const dsar = dsarStrings(locale);
+  const exportHref = `/lbr-api/t/${slug}/members/${member.id}/data-export`;
+  /**
+   * Derived from the date of birth already on this page — no extra request.
+   *
+   * The school-library presumption (a `school` tenant with no date of birth on
+   * file) is deliberately NOT mirrored here: the library's type is owner/admin
+   * -only over the API, so fetching it would 403 for the librarian this control
+   * is for. It lives in the produced bundle's `handling` notice instead, which
+   * costs one lookup per export rather than one per page view.
+   */
+  const memberAge = member.dateOfBirth ? ageInCompletedYears(member.dateOfBirth, new Date()) : null;
+  const memberIsMinor = memberAge !== null && memberAge < AGE_OF_MAJORITY_YEARS;
 
   React.useEffect(() => {
     setMember(initial);
@@ -398,6 +434,11 @@ export function MemberDetail({
             <CardHeader title={t('members.detail.actions')} />
             <CardBody>
               <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+                {canExportSubjectData ? (
+                  <Button variant="secondary" onClick={() => setExportOpen(true)}>
+                    {dsar.action}
+                  </Button>
+                ) : null}
                 {member.archivedAt ? (
                   <Button variant="primary" loading={archiveBusy} onClick={restore}>
                     {t('members.actions.restore')}
@@ -450,6 +491,34 @@ export function MemberDetail({
         }
       >
         <p style={{ marginTop: 0 }}>{t('members.actions.archiveConfirmBody')}</p>
+      </Modal>
+
+      <Modal
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        title={dsar.title.replace('{name}', member.fullName)}
+        actions={
+          <>
+            <Button variant="ghost" onClick={() => setExportOpen(false)}>
+              {dsar.cancel}
+            </Button>
+            <a
+              className="lbr-btn lbr-btn--primary lbr-btn--md"
+              href={exportHref}
+              download
+              onClick={() => setExportOpen(false)}
+            >
+              {dsar.download}
+            </a>
+          </>
+        }
+      >
+        <p style={{ marginTop: 0 }}>{dsar.body}</p>
+        <p>{dsar.contains}</p>
+        {memberIsMinor ? (
+          <Banner severity="warning">{dsar.minor.replace('{age}', String(memberAge))}</Banner>
+        ) : null}
+        <p style={{ marginBottom: 0, color: 'var(--color-text-muted)' }}>{dsar.review}</p>
       </Modal>
     </>
   );

@@ -7,6 +7,7 @@ import { RedisService } from '../platform/redis.service.js';
 import { RateLimitService } from '../platform/rate-limit.service.js';
 import { AuthGuard } from './auth.guard.js';
 import { PasswordService } from './password.service.js';
+import { PASSWORD_RESET_TOKEN_TTL_SEC } from './one-time-link-ttl.js';
 import { tokenKey } from './token-digest.js';
 
 /**
@@ -26,7 +27,7 @@ import { tokenKey } from './token-digest.js';
 @Injectable()
 export class PasswordResetService {
   private readonly logger = new Logger(PasswordResetService.name);
-  private static readonly TOKEN_TTL_SEC = 60 * 60;
+  private static readonly TOKEN_TTL_SEC = PASSWORD_RESET_TOKEN_TTL_SEC;
 
   /** Per-target cap: at most this many reset emails per rolling window. */
   private static readonly PER_TARGET_LIMIT = 3;

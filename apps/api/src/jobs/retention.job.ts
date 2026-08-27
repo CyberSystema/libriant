@@ -4,6 +4,7 @@ import { applicationNotifyKey } from '../applications/applications.service.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { RedisService } from '../platform/redis.service.js';
+import { LONGEST_ONE_TIME_LINK_TTL_SEC } from '../auth/one-time-link-ttl.js';
 import { EffectivePlanService, isUnlimitedInt } from '../plans/effective-plan.service.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { describeError } from './job-error.js';
@@ -58,18 +59,36 @@ import type { JobContext, JobResult } from './jobs.types.js';
  *      The period is stated on the BODY, and only the body is pruned — see
  *      `pruneStripeWebhookPayloads` for why the row itself has to stay.
  *
+ *   4. **The three §6 tables — the period is an env var, and it is UNSET.**
+ *      performance-07 named six append-only tables. The three above cover half
+ *      of them; the rest are the control-plane `audit_log`, the `email_outbox`
+ *      body, and `support_redemption_attempts` (IP addresses). Those fall under
+ *      Privacy Policy §6, whose periods are still unresolved placeholders —
+ *      `[30]` days, `[14]`-day backups, `[up to 5–10]` years, `[a limited
+ *      period, e.g. 90 days]`.
+ *
+ *      A previous round left them out entirely on the grounds that inventing a
+ *      number is worse than unbounded growth. That is right about the NUMBER
+ *      and wrong about the SWEEP: a period nobody has published is the owner's
+ *      to supply, but the machinery that enforces it is ours, and "we could not
+ *      pick a number" is not a reason to ship a control database that grows
+ *      forever with no way to stop it. So each of those three limbs is written,
+ *      wired and tested here, governed by an environment variable that is unset
+ *      today. Unset means the limb does nothing and SAYS SO in the run message,
+ *      which is what turns "somebody must write §6" into something an operator
+ *      reading job output can see. When §6 is filled in, set the variable — no
+ *      deploy of new code, no migration.
+ *
  * WHAT THIS DELIBERATELY DOES NOT TOUCH, AND WHY
  *
- * The finding also named the control-plane `audit_log`, `support_sessions` /
- * `support_redemption_attempts` (IP addresses), `users.legalAcceptedIp` and the
- * `email_outbox` envelope AT LARGE — every message the platform has ever
- * composed, not just the application notifications limb 1 removes. Every one of
- * those falls under Privacy Policy §6,
- * whose four periods are still unresolved placeholders — `[30]` days, `[14]`-day
- * backups, `[up to 5–10]` years, `[a limited period, e.g. 90 days]`. There is
- * nothing to enforce there yet, and picking numbers here would put a deletion
- * schedule into production that no document promises and no counsel has seen.
- * When §6 is filled in, add one limb per row below and cite the section in it.
+ * `announcement_deliveries`: CASCADEs from announcement, tenant AND user and
+ * holds only ids plus four timestamps, so it is bounded by announcements ×
+ * users rather than unbounded. `stripe_webhook_events` ROWS: ~100 bytes each,
+ * and `processedAt` on them is the durable replay guard — see
+ * `pruneStripeWebhookPayloads`. `support_sessions`: bounded by admin activity,
+ * a handful of rows a month, and each one is the parent of the action log that
+ * evidences what support did inside a library. `users.legalAcceptedIp`: that is
+ * the Art. 7(1) evidence privacy-legal-09 exists to create, not spare data.
  *
  * SAFE TO RE-RUN. Every limb is age-bounded and self-emptying: running twice in
  * a row changes nothing the second time, and a crash mid-sweep loses nothing but
@@ -104,6 +123,84 @@ const MIN_ENFORCEABLE_RETENTION_DAYS = 1;
 const MS_PER_DAY = 86_400_000;
 
 /**
+ * The three periods Privacy Policy §6 has not yet fixed (performance-07).
+ *
+ * Read straight off `process.env` rather than through `loadEnv()`, which is the
+ * house pattern for an opt-in knob that has no default and no validation the
+ * app can do at boot (`SIGNUP_MAX_CONCURRENT_PROVISIONING` in
+ * auth.controller.ts, `TRUSTED_PROXY_CIDRS` in platform/client-ip.ts). Unset is
+ * the shipped state and is not an error: it means "nobody has published a
+ * period for this table yet", and the run message says exactly that.
+ */
+const CONTROL_AUDIT_RETENTION_ENV = 'CONTROL_AUDIT_RETENTION_DAYS';
+const EMAIL_BODY_RETENTION_ENV = 'EMAIL_OUTBOX_BODY_RETENTION_DAYS';
+const SUPPORT_ATTEMPT_RETENTION_ENV = 'SUPPORT_ATTEMPT_RETENTION_DAYS';
+
+/**
+ * Blanking an e-mail body destroys the only copy of whatever link it carried.
+ * With `EMAIL_DRIVER=console` — the shipped configuration — `AdminOutboxService`
+ * is the ONLY way a librarian ever receives a verification or reset link, so
+ * the body IS the delivery. Floor the period above the longest of those links
+ * so a typo'd `EMAIL_OUTBOX_BODY_RETENTION_DAYS=0` cannot strand somebody
+ * mid-verification. `+ 1` because the cutoff is measured from `createdAt` and a
+ * whole-day period must clear a whole-day TTL.
+ */
+const EMAIL_BODY_MIN_RETENTION_DAYS =
+  Math.ceil(LONGEST_ONE_TIME_LINK_TTL_SEC / (MS_PER_DAY / 1000)) + 1;
+
+/**
+ * Control-plane audit rows that are never swept, whatever the period says.
+ *
+ * `tenant.legal_accepted` is the Art. 7(1) evidence privacy-legal-09 exists to
+ * create — who accepted which documents, at which digests, from which address.
+ * Deleting it on a retention schedule would close one finding by re-opening
+ * another, and it is the one row a regulator or a contract dispute actually
+ * asks for. `tenant.deleted` is the same shape for the other direction: the
+ * schema comment on `AuditEvent.tenant` (a `BEFORE DELETE` trigger redacts its
+ * payload rather than cascading) calls it "the one event you most need to be
+ * able to prove". Both are single rows per library, so keeping them forever
+ * costs nothing the growth this limb is about.
+ */
+const CONTROL_AUDIT_KEEP_FOREVER = ['tenant.legal_accepted', 'tenant.deleted'];
+
+/**
+ * What a pruned `email_outbox` body is replaced with. `bodyMarkdown` is NOT
+ * NULL, and an empty string in the admin outbox viewer reads as "this message
+ * was blank", which is a different and wrong story.
+ */
+const EMAIL_BODY_PRUNED_MARKER = '_(Body removed by the retention sweep.)_';
+
+/**
+ * Resolve one of the §6 periods, or `null` for "not configured".
+ *
+ * Refuses anything that is not a whole number of days at or above `floorDays`,
+ * loudly, and treats the limb as unconfigured — the same posture
+ * `sweepTenantAuditLog` takes for a nonsense `audit_log_retention_days`. A
+ * retention job acting on a value it does not understand is the one way it can
+ * do more damage than not running at all.
+ */
+function configuredRetentionDays(envKey: string, floorDays: number): number | null {
+  const raw = process.env[envKey]?.trim();
+  if (!raw) return null;
+  const days = Number(raw);
+  if (!Number.isInteger(days) || days < floorDays) {
+    logger.error(
+      `refusing to enforce ${envKey}="${raw}": it must be a whole number of days, ` +
+        `at least ${floorDays}. Nothing was deleted for that limb.`,
+    );
+    return null;
+  }
+  return days;
+}
+
+/** "N deleted past D days" / "not configured — see Privacy Policy §6". */
+function limbReport(label: string, envKey: string, days: number | null, n: number): string {
+  return days === null
+    ? `${label}: not configured (${envKey} unset — Privacy Policy §6)`
+    : `${label}: ${n} past ${days} days`;
+}
+
+/**
  * `n` months before `from`, in UTC. Month arithmetic, not `n * 30 * DAY`: the
  * notice says "12 months", and a librarian checking our arithmetic against the
  * published sentence should get the same date we did.
@@ -123,6 +220,30 @@ export async function sweepRetention(ctx?: JobContext): Promise<JobResult> {
 
   // --- 1b. Stripe webhook bodies (control plane) ---------------------------
   const stripePayloadsPruned = await pruneStripeWebhookPayloads(now);
+
+  // --- 1c. The three §6 tables (control plane) -----------------------------
+  // Each resolves to `null` until the owner publishes a period; a null limb
+  // runs no statement at all and reports itself as unconfigured.
+  const controlAuditDays = configuredRetentionDays(
+    CONTROL_AUDIT_RETENTION_ENV,
+    MIN_ENFORCEABLE_RETENTION_DAYS,
+  );
+  const controlAuditRowsDeleted =
+    controlAuditDays === null ? 0 : await sweepControlAuditLog(now, controlAuditDays);
+
+  const emailBodyDays = configuredRetentionDays(
+    EMAIL_BODY_RETENTION_ENV,
+    EMAIL_BODY_MIN_RETENTION_DAYS,
+  );
+  const emailBodiesPruned =
+    emailBodyDays === null ? 0 : await pruneEmailOutboxBodies(now, emailBodyDays);
+
+  const supportAttemptDays = configuredRetentionDays(
+    SUPPORT_ATTEMPT_RETENTION_ENV,
+    MIN_ENFORCEABLE_RETENTION_DAYS,
+  );
+  const supportAttemptsDeleted =
+    supportAttemptDays === null ? 0 : await sweepSupportRedemptionAttempts(now, supportAttemptDays);
 
   // --- 2. Per-tenant audit log ---------------------------------------------
   const tenants = await controlDb.tenant.findMany({
@@ -184,6 +305,19 @@ export async function sweepRetention(ctx?: JobContext): Promise<JobResult> {
     `applications: ${applicationsPurged} deleted past ${APPLICATION_RETENTION_MONTHS} months`,
     `stripe payloads: ${stripePayloadsPruned} pruned past ${STRIPE_PAYLOAD_RETENTION_DAYS} days`,
     `audit_log: ${auditRowsDeleted} row(s) across ${tenants.length} tenant(s)`,
+    limbReport(
+      'control audit_log',
+      CONTROL_AUDIT_RETENTION_ENV,
+      controlAuditDays,
+      controlAuditRowsDeleted,
+    ),
+    limbReport('email bodies', EMAIL_BODY_RETENTION_ENV, emailBodyDays, emailBodiesPruned),
+    limbReport(
+      'support attempts',
+      SUPPORT_ATTEMPT_RETENTION_ENV,
+      supportAttemptDays,
+      supportAttemptsDeleted,
+    ),
   ];
   if (tenantsUnlimited > 0) {
     parts.push(`${tenantsUnlimited} tenant(s) on unlimited retention — nothing to enforce`);
@@ -198,12 +332,135 @@ export async function sweepRetention(ctx?: JobContext): Promise<JobResult> {
       applicationsPurged,
       stripePayloadsPruned,
       auditRowsDeleted,
+      controlAuditRowsDeleted,
+      emailBodiesPruned,
+      supportAttemptsDeleted,
       tenantsScanned: tenants.length,
       tenantsUnlimited,
       tenantsDeferred,
       tenantsFailed,
     },
   };
+}
+
+/**
+ * Enforce `CONTROL_AUDIT_RETENTION_DAYS` on the platform-wide `audit_log`
+ * (performance-07).
+ *
+ * This is the control-plane table, not the per-tenant one `sweepTenantAuditLog`
+ * handles — every library on the box writes into it, nothing ever removed a row,
+ * and it carries `ip` and `userAgent` on each. Batched raw DELETE for the same
+ * reason as the tenant sweep: Prisma cannot put a LIMIT on a delete, and the
+ * first run after a period is finally published could be the whole history.
+ *
+ * `CONTROL_AUDIT_KEEP_FOREVER` is subtracted in the statement rather than
+ * filtered afterwards, so the rows it names are never even selected as
+ * candidates.
+ */
+async function sweepControlAuditLog(now: Date, days: number): Promise<number> {
+  const cutoff = new Date(now.getTime() - days * MS_PER_DAY);
+  let deleted = 0;
+  for (let batch = 0; batch < AUDIT_MAX_BATCHES; batch++) {
+    const n = await controlDb.$executeRaw`
+      DELETE FROM "audit_log"
+       WHERE "id" IN (
+         SELECT "id" FROM "audit_log"
+          WHERE "occurredAt" < ${cutoff}
+            AND NOT ("action" = ANY (${CONTROL_AUDIT_KEEP_FOREVER}::text[]))
+          ORDER BY "occurredAt"
+          LIMIT ${AUDIT_DELETE_BATCH}
+       )`;
+    deleted += n;
+    if (n < AUDIT_DELETE_BATCH) break;
+  }
+  if (deleted > 0) {
+    logger.log(
+      `deleted ${deleted} control-plane audit row(s) older than ${days} day(s) ` +
+        `(before ${cutoff.toISOString()})`,
+    );
+  }
+  return deleted;
+}
+
+/**
+ * Enforce `EMAIL_OUTBOX_BODY_RETENTION_DAYS` (performance-07).
+ *
+ * THE BODY, NOT THE ROW — and this one is not a preference. `idempotencyKey` is
+ * `@unique` and IS the deduplication ledger: `member-notifications.job.ts` keys
+ * the overdue reminder on `dayKey(now)` and relies on the insert failing when
+ * the row already exists. Delete the row and the next hourly tick re-sends every
+ * notice it has ever sent, to real patrons. So the envelope stays and only
+ * `bodyMarkdown` — which is ~all of the bytes, and the reason this is the
+ * fastest-growing table in the control plane at one full-body row per overdue
+ * loan per day — is replaced.
+ *
+ * ONLY `delivered` AND `dead`. A `failed` row is one the worker will pick up
+ * again and the body is what it would send; a `pending` / `sending` row has not
+ * been sent at all. Blanking either would turn a retry into a delivery of the
+ * marker text.
+ *
+ * The `<> marker` term is what makes a second run a no-op.
+ */
+async function pruneEmailOutboxBodies(now: Date, days: number): Promise<number> {
+  const cutoff = new Date(now.getTime() - days * MS_PER_DAY);
+  let pruned = 0;
+  for (let batch = 0; batch < AUDIT_MAX_BATCHES; batch++) {
+    const n = await controlDb.$executeRaw`
+      UPDATE "email_outbox"
+         SET "bodyMarkdown" = ${EMAIL_BODY_PRUNED_MARKER}
+       WHERE "id" IN (
+         SELECT "id" FROM "email_outbox"
+          WHERE "createdAt" < ${cutoff}
+            AND "status" IN ('delivered', 'dead')
+            AND "bodyMarkdown" <> ${EMAIL_BODY_PRUNED_MARKER}
+          ORDER BY "createdAt"
+          LIMIT ${AUDIT_DELETE_BATCH}
+       )`;
+    pruned += n;
+    if (n < AUDIT_DELETE_BATCH) break;
+  }
+  if (pruned > 0) {
+    logger.log(
+      `removed the body of ${pruned} sent e-mail(s) created before ` +
+        `${cutoff.toISOString().slice(0, 10)}`,
+    );
+  }
+  return pruned;
+}
+
+/**
+ * Enforce `SUPPORT_ATTEMPT_RETENTION_DAYS` (performance-07).
+ *
+ * `support_redemption_attempts` records one row per support-key redemption
+ * attempt, successful or not, each carrying the admin's IP address. It exists so
+ * scanning behaviour is visible; once a period has passed it is personal data
+ * with no remaining purpose. Rows are tiny and the table only grows with
+ * operator activity, so this is the smallest of the three limbs — it is here
+ * because the finding named it and because an IP address with no purpose is a
+ * §6 matter, not because of disk.
+ */
+async function sweepSupportRedemptionAttempts(now: Date, days: number): Promise<number> {
+  const cutoff = new Date(now.getTime() - days * MS_PER_DAY);
+  let deleted = 0;
+  for (let batch = 0; batch < AUDIT_MAX_BATCHES; batch++) {
+    const n = await controlDb.$executeRaw`
+      DELETE FROM "support_redemption_attempts"
+       WHERE "id" IN (
+         SELECT "id" FROM "support_redemption_attempts"
+          WHERE "ts" < ${cutoff}
+          ORDER BY "ts"
+          LIMIT ${AUDIT_DELETE_BATCH}
+       )`;
+    deleted += n;
+    if (n < AUDIT_DELETE_BATCH) break;
+  }
+  if (deleted > 0) {
+    logger.log(
+      `deleted ${deleted} support redemption attempt(s) older than ${days} day(s) ` +
+        `(before ${cutoff.toISOString()})`,
+    );
+  }
+  return deleted;
 }
 
 /**

@@ -10,6 +10,7 @@ import type { TenantContext } from '../tenancy/tenant-context.js';
 import type { TenantActor } from '../tenancy/tenant-actor.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
+import { decodeCursor, encodeCursor } from '../platform/query.js';
 import type { FineStatusValue } from './fines.dto.js';
 
 /**
@@ -149,17 +150,47 @@ export class FinesService {
     if (opts.memberId) where.memberId = opts.memberId;
     if (opts.loanId) where.loanId = opts.loanId;
 
+    // performance-03, the same keyset predicate `BooksService.list` carries.
+    // This used to be `cursor: { id: opts.after }, skip: 1` (an OR of
+    // correlated subselects Postgres cannot seek with) and — worse — the
+    // comment that stood here claimed the missing (createdAt, id) index did not
+    // matter because the sort node was cheap. It was not cheap and it was not
+    // only paid at depth: with NO index on the sort key at all, EVERY page of
+    // the fines screen, page one included, was a parallel sequential scan of
+    // the whole table plus a top-N heapsort. Measured on 150,000 fines:
+    //   BEFORE  page 1     Parallel Seq Scan on fines (75,000 rows/worker),
+    //                      Buffers: shared hit=2213 read=70, 14.513 ms
+    //           depth 75k  Parallel Seq Scan + OR-of-subselects filter,
+    //                      Buffers: shared hit=45 read=2238, 21.187 ms
+    //   AFTER   page 1     Index Only Scan using "fines_createdAt_id_idx",
+    //                      Buffers: shared hit=1 read=3, 0.524 ms
+    //           depth 75k  same index, Index Cond: ("createdAt" <= …),
+    //                      Rows Removed by Filter: 1,
+    //                      Buffers: shared hit=2 read=2, 1.176 ms
+    // The index is added in `20260827090000_list_keyset_indexes`.
+    //
+    // `lte`/`lt`, not `gte`/`gt`: this list runs newest-first, so later in the
+    // page means EARLIER in time.
+    const after = await this.decodeListCursor(client, opts.after);
+    if (after) {
+      where.AND = [
+        { createdAt: { lte: after.createdAt } },
+        {
+          OR: [
+            { createdAt: { lt: after.createdAt } },
+            { createdAt: after.createdAt, id: { lt: after.id } },
+          ],
+        },
+      ];
+    }
+
     const [rows, currency, tenantTotals, memberTotals] = await Promise.all([
       client.fine.findMany({
         where,
-        // Newest first, `id` as the tiebreaker so cursor pagination is a total
-        // order and cannot drop or repeat a row. There is no (createdAt, id)
-        // index on `fines`; the table is orders of magnitude smaller than
-        // `loans` (only overdue/lost loans ever produce a row) so the sort node
-        // is cheap. Revisit if a library ever pages through six figures of them.
+        // Newest first, `id` as the tiebreaker so the keyset above is a total
+        // order and cannot drop or repeat a row.
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: limit + 1,
-        ...(opts.after ? { cursor: { id: opts.after }, skip: 1 } : {}),
         include: this.fullInclude,
       }),
       this.currencyOf(client),
@@ -178,10 +209,12 @@ export class FinesService {
     ]);
 
     const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map((r) => this.toJoinsDto(r));
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const items = page.map((r) => this.toJoinsDto(r));
+    const last = page[page.length - 1];
     return {
       items,
-      nextCursor: hasMore ? items[items.length - 1]!.id : null,
+      nextCursor: hasMore && last ? encodeCursor([last.createdAt.toISOString(), last.id]) : null,
       summary:
         opts.memberId && memberTotals
           ? {
@@ -197,6 +230,22 @@ export class FinesService {
         currency,
       },
     };
+  }
+
+  /** As `AuditService.decodeListCursor`, over `(createdAt, id)`. */
+  private async decodeListCursor(
+    client: TenantPrismaClient,
+    after: string | undefined,
+  ): Promise<{ createdAt: Date; id: string } | null> {
+    if (!after) return null;
+    const parts = decodeCursor(after, 2);
+    if (parts) {
+      const [iso, id] = parts;
+      if (typeof iso !== 'string' || typeof id !== 'string') return null;
+      const createdAt = new Date(iso);
+      return Number.isNaN(createdAt.getTime()) ? null : { createdAt, id };
+    }
+    return client.fine.findUnique({ where: { id: after }, select: { createdAt: true, id: true } });
   }
 
   async get(tenant: TenantContext, id: string): Promise<FineWithJoinsDto> {

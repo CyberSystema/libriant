@@ -11,8 +11,11 @@ export const dynamic = 'force-dynamic';
  * launch-readiness-01 — read what Libriant would have sent.
  *
  * Libriant launches with `EMAIL_DRIVER=console`: every message is composed,
- * queued, stored and marked delivered against a fabricated provider id, and
- * then goes nowhere. The console driver withholds the body from the container
+ * queued and stored, and then goes nowhere. The row says so — since
+ * privacy-legal-18 the driver reports `delivered: false` with a reason and no
+ * provider id, where it used to store the message as delivered against a
+ * fabricated `console-<hex>`. The console driver withholds the body from the
+ * container
  * log (it can carry a one-time link), so before this page the only way to get
  * a verification or reset link to the librarian who needed it was an
  * undocumented psql query against `email_outbox`, inside the token's TTL.

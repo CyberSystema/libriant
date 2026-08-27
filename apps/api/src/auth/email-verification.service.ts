@@ -16,6 +16,7 @@ import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import { TenantResolverService } from '../tenancy/tenant-resolver.service.js';
 import { PasswordService } from './password.service.js';
 import { SessionRevocationService } from './session-revocation.service.js';
+import { EMAIL_VERIFICATION_TOKEN_TTL_SEC } from './one-time-link-ttl.js';
 import { tokenKey } from './token-digest.js';
 
 /** What we stash in Redis under the one-time verification token. */
@@ -64,7 +65,7 @@ export type VerifyResult =
 @Injectable()
 export class EmailVerificationService {
   private readonly logger = new Logger(EmailVerificationService.name);
-  private static readonly TOKEN_TTL_SEC = 24 * 60 * 60;
+  private static readonly TOKEN_TTL_SEC = EMAIL_VERIFICATION_TOKEN_TTL_SEC;
   /** Per-account resend cap over a rolling window. */
   private static readonly PER_TARGET_LIMIT = 5;
   private static readonly PER_TARGET_WINDOW_SEC = 60 * 60;

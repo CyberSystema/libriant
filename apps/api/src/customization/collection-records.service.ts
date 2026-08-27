@@ -56,6 +56,22 @@ export class CollectionRecordsService {
       // accelerates the contains lookup.
       where.searchText = { contains: normalizeText(opts.q) };
     }
+    // performance-03 does NOT apply here, and this is the one list in the
+    // product that still pages with Prisma's own cursor. The finding is about
+    // what Prisma emits when the ORDER BY has more than one column: an OR of
+    // correlated subselects that Postgres cannot enter the index with. Sorted
+    // by the primary key alone there is no OR — the emitted SQL is
+    // `WHERE "collectionId" = $1 AND "archivedAt" IS NULL AND id >= (SELECT id
+    // FROM collection_records WHERE id = $2) ORDER BY id ASC LIMIT $3 OFFSET 1`
+    // — and that subselect is uncorrelated, so it becomes an InitPlan and
+    // `id >= $0` IS a btree start key. Captured from the query event log and
+    // then EXPLAIN'd on 400,000 records across five collections: `Index Scan
+    // using collection_records_pkey, Index Cond: (id >= $0)`, `Buffers: shared
+    // hit=11`, `Execution Time: 0.118 ms` at depth 150,000. The residual
+    // `Rows Removed by Filter: 81` scales with how many OTHER collections a
+    // library keeps, not with page depth, so it does not grow as you scroll.
+    // Rewriting this into the hand-built keyset the other lists carry would
+    // add a cursor format and a decode path and buy nothing.
     const rows = await client.collectionRecord.findMany({
       where,
       orderBy: { id: 'asc' },

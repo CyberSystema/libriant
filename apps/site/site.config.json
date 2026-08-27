@@ -12,8 +12,8 @@
     "countryEn": "Greece"
   },
   "offer": {
+    "_comment": "There is deliberately no `spotsRemaining` here any more (launch-readiness-11). It was a hand-maintained literal that gated the live form from a compiled-in constant, so closing the offer meant a commit, a full CI run and an on-box deploy — and the number on the page was wrong the moment a place was promised. How many places are left is now a question only the control plane can answer, and it answers it: the API counts accepted applications. `spotsTotal` stays because five is a promise, not a measurement.",
     "spotsTotal": 5,
-    "spotsRemaining": 5,
     "months": 12,
     "planName": "Municipal",
     "plannedMonthlyPriceEur": 79,

@@ -6,7 +6,15 @@ import { EmailService } from '../email/email.service.js';
 import { RateLimitService } from '../platform/rate-limit.service.js';
 import { RedisService } from '../platform/redis.service.js';
 import { loadEnv } from '../config/env.js';
-import { LIBRARY_TYPE_OPTIONS } from '@libriant/site';
+import { LIBRARY_TYPE_OPTIONS, type SiteConfig } from '@libriant/site';
+import siteConfigRaw from '@libriant/site/site.config.json' with { type: 'json' };
+
+/**
+ * How many places the offer has. The same file the marketing site builds from,
+ * so the page's promise and the server's gate cannot disagree — the count of
+ * places already given away is NOT in there any more; see {@link OfferState}.
+ */
+export const OFFER_TOTAL = (siteConfigRaw as unknown as SiteConfig).offer.spotsTotal;
 
 export type FieldErrors = Partial<Record<string, string>>;
 export type FieldValues = Partial<Record<string, string>>;
@@ -126,6 +134,25 @@ class ProcessWideCeiling {
 const NOTIFY_TIMEOUT_MS = 3_000;
 
 /**
+ * How many of the launch-offer places have been given away, and therefore
+ * whether the public form is still open.
+ *
+ * `taken` counts applications the operator has marked `accepted`. Three
+ * candidates were considered and rejected:
+ *   - the literal in site.config.json — that is the finding
+ *     (launch-readiness-11): nothing decremented it, so it advertised five
+ *     places that were already promised;
+ *   - the number of tenants — signup at app.libriant.com is self-serve, so
+ *     that pool counts every library that ever tried the product, not the ones
+ *     given a free year;
+ *   - `contacted` — answering an application is not a promise of a place, and
+ *     counting it would close the form on the strength of a reply.
+ * `accepted` is the exact moment a librarian is told "you have one of the
+ * five", which is the moment there is one fewer to advertise.
+ */
+export type OfferState = { total: number; taken: number; open: boolean };
+
+/**
  * `ip` — this visitor is over their own hourly budget.
  * `global` — the platform-wide ceiling tripped. Not the visitor's doing, and
  * the answer they get must not say it was.
@@ -156,6 +183,10 @@ export class ApplicationsService {
   private readonly logger = new Logger(ApplicationsService.name);
   private readonly pepper: string;
   private readonly notifyTo: string;
+  /** Named in the log line below so the operator can click it, not guess it. */
+  private readonly adminHost: string;
+  /** Read once so the log line can say whether the e-mail will reach anyone. */
+  private readonly emailDriver: string;
   private readonly localCeiling = new ProcessWideCeiling(
     GLOBAL_RATE_LIMIT,
     GLOBAL_RATE_WINDOW_SEC * 1000,
@@ -169,6 +200,8 @@ export class ApplicationsService {
     const env = loadEnv();
     this.pepper = env.applyHashPepper;
     this.notifyTo = env.applyNotifyTo;
+    this.adminHost = env.adminHost;
+    this.emailDriver = env.emailDriver;
   }
 
   /**
@@ -274,6 +307,35 @@ export class ApplicationsService {
   }
 
   /**
+   * How many places are left, asked of the only thing that knows.
+   *
+   * FAILS OPEN. If the count itself cannot be taken, the visitor is let
+   * through: refusing would tell a real library "the five places are gone" on
+   * the strength of a database blip, and that is a sentence they will believe
+   * and never come back from. If Postgres is genuinely down, `save()` fails a
+   * few lines later and they get the honest "write to us at this address"
+   * answer instead of a false one.
+   *
+   * No cache. This runs on the one unauthenticated write in the control plane,
+   * behind a 5/hour per-visitor bucket and a 60/hour platform ceiling, against
+   * an index on (status, createdAt) — the whole campaign is 277 mailboxes, so
+   * the query count here is not a number worth optimising away into staleness.
+   */
+  async offerState(): Promise<OfferState> {
+    const total = OFFER_TOTAL;
+    try {
+      const taken = await controlDb.application.count({ where: { status: 'accepted' } });
+      return { total, taken, open: taken < total };
+    } catch (err) {
+      this.logger.error(
+        `Could not count the accepted applications (${err instanceof Error ? err.message : String(err)}) — ` +
+          'treating the launch offer as OPEN so a database blip cannot turn a real applicant away.',
+      );
+      return { total, taken: 0, open: true };
+    }
+  }
+
+  /**
    * The commit point. Everything after the insert is best-effort; everything
    * before it can safely fail the request.
    */
@@ -303,9 +365,35 @@ export class ApplicationsService {
   /**
    * Queue the notification. Durable via EmailOutbox with a retry budget, where
    * the Worker sent inline and lost the message on any transient failure.
+   *
+   * "Durable" was doing a lot of work in that sentence (launch-readiness-03).
+   * Libriant launches with EMAIL_DRIVER=console: the message is composed and
+   * stored, the outbox row is honestly recorded as `failed` with a reason
+   * (ConsoleEmailDriver, privacy-legal-18), and nobody receives it — a durable
+   * record of a notification that never arrives is still not a notification.
+   * Meanwhile the site promises an answer within two working days
+   * and the campaign points 277 Greek libraries at the form. So the enqueue
+   * below is no longer the only thing that happens when a library applies —
+   * the log line is a second channel that works with the mail driver we
+   * actually run, and the admin panel's Applications page (with the unread
+   * count in the sidebar) is the one an operator will actually see.
    */
   async notify(id: string, parsed: Parsed): Promise<void> {
     const v = parsed.values;
+
+    // The library and the town, never the person. This line lands in the
+    // container log, which is rolled and archived into the nightly backup and
+    // is reached by no retention sweep — so the applicant's name, address and
+    // phone stay out of it, exactly as they stay out of cross-tenant audit
+    // rows (privacy-legal-04). A library's name is an institution's name.
+    this.logger.warn(
+      `NEW APPLICATION — ${v.libraryName || '—'} (${v.city || '—'}) · id ${id}. ` +
+        `Open ${this.adminHost ? `https://${this.adminHost}` : ''}/en/admin/applications to read and answer it.` +
+        (this.emailDriver === 'console'
+          ? ' EMAIL_DRIVER=console: the notification e-mail is composed and delivered to nobody, ' +
+            'so this line and the admin panel are the whole notification.'
+          : ''),
+    );
     const typeLabel =
       LIBRARY_TYPE_OPTIONS.el.find((o) => o.value === v.libraryType)?.label ?? v.libraryType ?? '—';
     const line = (label: string, value?: string): string => `- **${label}:** ${value || '—'}`;

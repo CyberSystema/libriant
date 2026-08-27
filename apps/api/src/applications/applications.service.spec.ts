@@ -5,11 +5,23 @@ vi.mock('../config/env.js', () => ({
   loadEnv: () => ({
     applyHashPepper: 'unit-test-pepper-0123456789abcdef0123',
     applyNotifyTo: 'info@example.test',
+    // Both are read for the operator-facing log line the offer's only working
+    // notification channel is made of; see the `notify` block at the bottom.
+    adminHost: 'admin.example.test',
+    emailDriver: 'console',
   }),
 }));
 
+// `offerState` counts accepted applications, which is the whole of
+// launch-readiness-11 — the unit suite has no database, so the count is the
+// thing under test's only collaborator here.
+const { applicationCount } = vi.hoisted(() => ({ applicationCount: vi.fn() }));
+vi.mock('@libriant/db-control', () => ({
+  controlDb: { application: { count: applicationCount, update: vi.fn() } },
+}));
+
 import { ERRORS } from '@libriant/site';
-import { ApplicationsService } from './applications.service.js';
+import { ApplicationsService, OFFER_TOTAL } from './applications.service.js';
 
 /**
  * Validation is ported verbatim from the Cloudflare Worker this replaces, and
@@ -281,5 +293,86 @@ describe('ApplicationsService.throttle', () => {
     const { svc } = makeService(hit);
     await svc.throttle('203.0.113.7');
     expect(hit).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * launch-readiness-11. The form's gate used to be
+ * `config.offer.spotsRemaining <= 0` — a literal compiled into the API, which
+ * nothing decremented and which took a commit, a CI run and an on-box deploy
+ * to change. These are the cases that matter to a real library: the sixth
+ * applicant must not be accepted by a form that should have shut, and the
+ * first must not be turned away because a query failed.
+ */
+describe('ApplicationsService.offerState', () => {
+  beforeEach(() => {
+    applicationCount.mockReset();
+  });
+
+  it('is open while fewer than the advertised places have been given', async () => {
+    applicationCount.mockResolvedValue(OFFER_TOTAL - 1);
+    const { svc } = makeService();
+    await expect(svc.offerState()).resolves.toEqual({
+      total: OFFER_TOTAL,
+      taken: OFFER_TOTAL - 1,
+      open: true,
+    });
+  });
+
+  it('closes the moment the last place is given, with no deploy', async () => {
+    applicationCount.mockResolvedValue(OFFER_TOTAL);
+    const { svc } = makeService();
+    await expect(svc.offerState()).resolves.toMatchObject({ taken: OFFER_TOTAL, open: false });
+  });
+
+  it('counts accepted applications only — a reply is not a promise of a place', async () => {
+    applicationCount.mockResolvedValue(0);
+    const { svc } = makeService();
+    await svc.offerState();
+    expect(applicationCount).toHaveBeenCalledWith({ where: { status: 'accepted' } });
+  });
+
+  it('FAILS OPEN: a database error must never tell a real library the places are gone', async () => {
+    applicationCount.mockRejectedValue(new Error('connection terminated'));
+    const { svc } = makeService();
+    const error = vi.spyOn(svc['logger'], 'error').mockImplementation(() => undefined);
+    await expect(svc.offerState()).resolves.toMatchObject({ open: true });
+    expect(error).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * launch-readiness-03. The enqueue below it is delivered by nobody under
+ * EMAIL_DRIVER=console, so this line is one of the two channels that actually
+ * reach the operator (the other is the admin panel). It must name the library
+ * — and it must NOT name the person: the container log is archived into the
+ * nightly backup and reached by no retention sweep.
+ */
+describe('ApplicationsService.notify', () => {
+  it('announces the application on a channel that works with the console driver', async () => {
+    const { svc, warn } = makeService();
+    await svc.notify('app-123', {
+      values: {
+        libraryName: 'Δημοτική Βιβλιοθήκη Λάρισας',
+        city: 'Λάρισα',
+        contactName: 'Μαρία Παπαδοπούλου',
+        contactEmail: 'library@example.gr',
+        phone: '2410000000',
+      },
+      errors: {},
+    });
+    expect(warn).toHaveBeenCalledOnce();
+    const line = String(warn.mock.calls[0]?.[0]);
+    expect(line).toContain('NEW APPLICATION');
+    expect(line).toContain('Δημοτική Βιβλιοθήκη Λάρισας');
+    expect(line).toContain('Λάρισα');
+    expect(line).toContain('app-123');
+    expect(line).toContain('https://admin.example.test/en/admin/applications');
+    expect(line).toContain('EMAIL_DRIVER=console');
+    // The applicant is a person. Their name, address and phone stay out of a
+    // log nothing ever erases (privacy-legal-04).
+    expect(line).not.toContain('Μαρία');
+    expect(line).not.toContain('library@example.gr');
+    expect(line).not.toContain('2410000000');
   });
 });

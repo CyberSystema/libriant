@@ -9,8 +9,14 @@
 groups:
   - name: availability
     rules:
+      # `optional!="true"` excludes targets that are opt-in by design — today
+      # only cAdvisor, which lives behind the `dashboards` compose profile that
+      # no deploy path passes. Without the qualifier this rule fires critical,
+      # permanently, from the first bring-up, and the one chance an alert
+      # channel gets to be believed is spent on a container nobody started.
+      # The label is set on the target in prometheus.yml, where the fact lives.
       - alert: TargetDown
-        expr: up == 0
+        expr: up{optional!="true"} == 0
         for: 2m
         labels: { severity: critical }
         annotations:

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { findMany, userFindMany, adminFindMany, getClient } = vi.hoisted(() => ({
+const { findMany, findUnique, userFindMany, adminFindMany, getClient } = vi.hoisted(() => ({
   findMany: vi.fn(),
+  findUnique: vi.fn(),
   userFindMany: vi.fn(),
   adminFindMany: vi.fn(),
   getClient: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock('../tenancy/tenant-prisma.service.js', () => ({
 }));
 
 import { AuditService } from './audit.service.js';
+import { decodeCursor, encodeCursor } from '../platform/query.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 
@@ -39,7 +41,7 @@ function row(over: Record<string, unknown>) {
 }
 
 function svc() {
-  getClient.mockReturnValue({ auditEvent: { findMany } });
+  getClient.mockReturnValue({ auditEvent: { findMany, findUnique } });
   return new AuditService(new TenantPrismaService() as never);
 }
 
@@ -79,11 +81,57 @@ describe('AuditService.list', () => {
     expect(res.items[0]!.actorLabel).toBeNull();
   });
 
-  it('returns a cursor when there is another page', async () => {
+  it('returns a cursor carrying BOTH sort keys when there is another page', async () => {
     // limit 2 → service fetches 3; 3 returned ⇒ hasMore
     findMany.mockResolvedValue([row({ id: 'a1' }), row({ id: 'a2' }), row({ id: 'a3' })]);
     const res = await svc().list(TENANT, { limit: 2 });
     expect(res.items).toHaveLength(2);
-    expect(res.nextCursor).toBe('a2');
+    // performance-03: the cursor used to be the bare id `a2`, which is why the
+    // next page had to be found with an OR of correlated subselects. It now
+    // carries `occurredAt` too, because that is the only way the next page can
+    // be asked for as a range the index can be entered at.
+    expect(decodeCursor(res.nextCursor!, 2)).toEqual(['2026-06-12T00:00:00.000Z', 'a2']);
+  });
+
+  it('turns that cursor into a range predicate, not a Prisma cursor', async () => {
+    findMany.mockResolvedValue([]);
+    const at = new Date('2026-06-12T00:00:00.000Z');
+    await svc().list(TENANT, { after: encodeCursor([at.toISOString(), 'a2']) });
+    const args = findMany.mock.calls[0]![0];
+    // The thing the finding is about: no `cursor`, no `skip`, and a `<=` start
+    // key the planner can seek `audit_log_occurredAt_id_idx` with.
+    expect(args.cursor).toBeUndefined();
+    expect(args.skip).toBeUndefined();
+    expect(args.where.AND).toEqual([
+      { occurredAt: { lte: at } },
+      { OR: [{ occurredAt: { lt: at } }, { occurredAt: at, id: { lt: 'a2' } }] },
+    ]);
+  });
+
+  it('still accepts a bare row id, the way the cursor used to look', async () => {
+    // A reader mid-scroll across a deploy hands back the old shape. It must
+    // land on the same page rather than restarting at the newest entry.
+    const at = new Date('2026-06-12T00:00:00.000Z');
+    findUnique.mockResolvedValue({ occurredAt: at, id: 'a2' });
+    findMany.mockResolvedValue([]);
+    await svc().list(TENANT, { after: 'a2' });
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { id: 'a2' },
+      select: { occurredAt: true, id: true },
+    });
+    expect(findMany.mock.calls[0]![0].where.AND).toEqual([
+      { occurredAt: { lte: at } },
+      { OR: [{ occurredAt: { lt: at } }, { occurredAt: at, id: { lt: 'a2' } }] },
+    ]);
+  });
+
+  it('restarts at page 1 rather than emptying the log on a corrupt timestamp', async () => {
+    // `new Date('not-a-date')` reaches Prisma as `Invalid Date`, which compares
+    // against NULL — every row filtered out, and an owner auditing a support
+    // session sees a blank page instead of an error.
+    findMany.mockResolvedValue([]);
+    await svc().list(TENANT, { after: encodeCursor(['not-a-date', 'a2']) });
+    expect(findMany.mock.calls[0]![0].where.AND).toBeUndefined();
+    expect(findUnique).not.toHaveBeenCalled();
   });
 });

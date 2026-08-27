@@ -140,6 +140,12 @@ ensure_rand IMPERSONATION_SECRET 32
 ensure_rand STORAGE_SIGNING_SECRET 32
 ensure_rand MFA_MASTER_KEY 32        # 32 bytes -> 64 hex chars (AES-256)
 ensure_rand POSTGRES_PASSWORD 24     # preserved if the DB already has one
+# Grafana's admin login, which reaches every metric this fleet produces. It has
+# to be generated HERE rather than left to the operator, because the monitoring
+# stack is now brought up by both deploy paths and grafana's compose entry has
+# no default for it (`:?`) - a host without this key would fail the monitoring
+# step on a value nobody had been asked for.
+ensure_rand GRAFANA_ADMIN_PASSWORD 24
 
 echo "Ensuring config defaults ..."
 ensure_default BILLING_ENABLED false # free launch: all tenants get every feature; set 'true' to enforce plans

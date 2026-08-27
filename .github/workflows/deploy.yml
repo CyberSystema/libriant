@@ -244,6 +244,38 @@ jobs:
             echo "No valid rollback target for ${{ matrix.host.name }} (got '$PREV_TAG') — auto-rollback disabled this run."
           fi
 
+      # supply-chain-07. The Cloudflare origin PRIVATE KEY must be root-owned and
+      # unreadable by anyone else, and this has to hold BEFORE the stack is
+      # recreated. `caddy` now runs with `cap_drop: [ALL]` — it keeps only
+      # NET_BIND_SERVICE — so it has no CAP_DAC_OVERRIDE to read around the
+      # permission bits. A key left owned by the deploy user, which is what an
+      # `scp` produces, would make every HTTPS vhost fail to load its
+      # certificate and take the whole edge down. Failing here instead leaves
+      # whatever is currently running untouched.
+      #
+      # The gate is worth having on its own terms too: a world-readable origin
+      # key on a box with more than one login is the Cloudflare Full-strict
+      # trust relationship handed to all of them, and nothing looked at it
+      # before. Same check, same message, as scripts/deploy-on-host.sh — the two
+      # deploy paths must not diverge.
+      - name: Pre-flight — the origin private key is root-owned
+        run: |
+          ssh -o StrictHostKeyChecking=yes "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<'REMOTE'
+            set -euo pipefail
+            KEY=/mnt/libriant/caddy/origin/origin.key
+            [ -f "$KEY" ] || { echo "$KEY is missing — it is in the password manager, no backup has it." >&2; exit 1; }
+            read -r KEY_UID KEY_MODE <<<"$(stat -L -c '%u %a' "$KEY")"
+            case "${KEY_UID}:${KEY_MODE}" in
+              0:600|0:400) echo "origin key ok (uid=$KEY_UID mode=$KEY_MODE)" ;;
+              *)
+                echo "$KEY is uid=$KEY_UID mode=$KEY_MODE; it must be root-owned and 600 (or 400)." >&2
+                echo "Caddy runs with cap_drop: [ALL] and cannot read around the permission bits." >&2
+                echo "Fix on the host:  sudo chown 0:0 $KEY && sudo chmod 600 $KEY" >&2
+                exit 1
+                ;;
+            esac
+          REMOTE
+
       - name: Deploy (git sync + compose up)
         env:
           # CFG-01: on a rollback (workflow_dispatch with image_tag set) the
@@ -372,7 +404,7 @@ jobs:
               docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$id" 2>/dev/null || echo "missing"
             }
             deadline=$(( $(date +%s) + 150 ))
-            edge=""; site=""; app=""; api=""; web=""; worker=""
+            edge=""; site=""; app=""; api=""; web=""; worker=""; pooler=""
             while [ "$(date +%s)" -lt "$deadline" ]; do
               # Require a real 200 — not a 3xx. The plaintext :80 /healthz block
               # answers 200; if Caddy were still on an old config it would 301 to
@@ -401,14 +433,42 @@ jobs:
               # `localhost`, and a wrong SNI reads as a dead stack.
               app="$(curl -sSk --resolve "$APP_HOST:443:127.0.0.1" -o /dev/null -w '%{http_code}' --max-time 8 "https://$APP_HOST/api/readyz" 2>/dev/null || true)"
               api="$(svc_health api)"; web="$(svc_health web)"; worker="$(svc_health worker)"
+              # boot-and-config-15. The pooler every control-plane query passes
+              # through. Its sidecar runs `psql -c 'select 1'` THROUGH pgbouncer
+              # — the only probe that separates "the pooler answers" from "the
+              # pooler can reach Postgres". The `pg_isready` it replaces was
+              # answered by pgbouncer's own startup-packet reply and stayed
+              # green with the backend gone, and nothing read the result anyway.
+              # This line is what reads it.
+              pooler="$(svc_health pgbouncer-probe)"
               if [ "$edge" = "200" ] && [ "$site" = "200" ] && [ "$app" = "200" ] && [ "$api" = "healthy" ] && [ "$web" = "healthy" ] && [ "$worker" = "healthy" ]; then
                 echo "origin + marketing site + app page (web→api) + app containers healthy"
+                # Reported, NOT a conjunct above. Two reasons, and the second is
+                # the one that matters. First, it is redundant as a gate: the
+                # API's CONTROL_DATABASE_URL points at pgbouncer:5432, so a
+                # pooler that cannot reach Postgres already fails `api=healthy`
+                # through /readyz. Second, this sidecar is new and has never
+                # executed anywhere — and this gate sits immediately before the
+                # `if: failure()` rollback step, so a probe that does not go
+                # healthy would roll a PERFECTLY HEALTHY production application
+                # back to its previous image on the word of a container that
+                # serves no traffic. The service's own comment says the API must
+                # not be gated on a diagnostic; gating the deploy on it is worse.
+                #
+                # So it is a signal, and a disagreement is worth saying out loud:
+                # everything healthy WHILE the probe is not means the probe is
+                # broken, which is a thing to fix, not a reason to roll back.
+                if [ "$pooler" = "healthy" ]; then
+                  echo "pooler path healthy (psql select 1 through pgbouncer)"
+                else
+                  echo "::warning::pgbouncer-probe is '${pooler:-missing}' while every other service is healthy. The pooler path itself is proven by api=healthy (the API reaches Postgres through pgbouncer), so this points at the probe, not the pooler. Check: docker compose logs pgbouncer-probe"
+                fi
                 exit 0
               fi
-              echo "waiting for health… edge=$edge site=$site app=$app api=$api web=$web worker=$worker"
+              echo "waiting for health… edge=$edge site=$site app=$app api=$api web=$web worker=$worker pooler=$pooler"
               sleep 5
             done
-            echo "stack did not become healthy within 150s (edge=$edge site=${site:-?} app=${app:-?} api=$api web=$web worker=$worker)" >&2
+            echo "stack did not become healthy within 150s (edge=$edge site=${site:-?} app=${app:-?} api=$api web=$web worker=$worker pooler=${pooler:-?})" >&2
             docker ps --format 'table {{.Names}}\t{{.Status}}' || true
             exit 1
           REMOTE
@@ -457,3 +517,90 @@ jobs:
             echo "rollback to ${PREV_TAG} did not become healthy within 120s — MANUAL INTERVENTION NEEDED" >&2
             exit 1
           EOF
+
+      # ---------------------------------------------------------------------
+      # The monitoring stack, which until now was in NO deploy path at all.
+      #
+      # Both compose invocations above — and the one in scripts/deploy-on-host.sh
+      # — listed exactly two files and never infra/monitoring. So the 25 rules in
+      # infra/monitoring/alerts.yml, including the backup dead-man's switches and
+      # the Watchdog whose entire job is to prove the alert pipeline is alive,
+      # were evaluated by nothing, while `pnpm check:alerts` printed a green line
+      # about them on every CI run. This step is what makes them real.
+      #
+      # A SEPARATE compose project rather than a third `-f`: the app deploy runs
+      # `up -d --remove-orphans` under project `libriant`, and the monitoring
+      # file declares the `app` network as external — the same network the prod
+      # file creates. One invocation cannot hold both.
+      #
+      # LAST IN THE JOB, AND THAT ORDER IS LOAD-BEARING. The rollback step above
+      # is `if: failure()`, evaluated when the job reaches it. Putting monitoring
+      # after it means a monitoring problem is reported as a failed deploy —
+      # which it is — without rolling a perfectly healthy application back to the
+      # previous image because Prometheus would not start.
+      # ---------------------------------------------------------------------
+      - name: Bring up the monitoring stack
+        run: |
+          # `set -o pipefail` is load-bearing, not decoration. GitHub runs this
+          # block under its default `bash -e {0}`, which does NOT set pipefail,
+          # so a pipeline reports the exit status of its LAST command — `tee`,
+          # which always succeeds. Without this line every gate below is inert:
+          # promtool refusing to parse a rule file, a missing alertmanager.yml,
+          # amtool rejecting the config, `up -d` failing, and the ten-second
+          # still-running assertion ALL report success, and the ALERTING=off
+          # banner is grepped out of the same log so a script that dies before
+          # echoing warns nobody either. A totally broken monitoring deploy was
+          # a green step. That is the exact failure this step was added to end,
+          # reproduced inside the fix for it.
+          set -o pipefail
+          ssh -o StrictHostKeyChecking=yes "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<'REMOTE' | tee /tmp/monitoring.log
+            set -euo pipefail
+            cd /srv/libriant/app
+            set -a; . /srv/libriant/.env.prod; set +a
+            MON="-p libriant-monitoring -f infra/monitoring/docker-compose.monitoring.yml"
+            # Same shape as the Caddyfile gate: a rule file that does not parse
+            # takes Prometheus down on start, and a Prometheus that is down is
+            # the thing that was supposed to tell you something is down.
+            docker compose $MON run --rm --no-deps --entrypoint promtool prometheus \
+              check rules /etc/prometheus/alerts.yml
+            # `grep -q` on a MISSING file exits 1, the same code as "no
+            # placeholders found" — so without this the file being gone would
+            # read as a fully configured one.
+            [ -f infra/monitoring/alertmanager.yml ] || {
+              echo "infra/monitoring/alertmanager.yml is missing — nowhere to deliver to." >&2; exit 1; }
+            # Comments stripped first: the file's own header explains what a
+            # [PLACEHOLDER: …] is, and matching that sentence would keep the
+            # profile off forever even after the receivers were filled in.
+            if sed 's/#.*//' infra/monitoring/alertmanager.yml | grep -q '\[PLACEHOLDER'; then
+              export COMPOSE_PROFILES=""
+              STATE=off
+            else
+              export COMPOSE_PROFILES="alerting"
+              STATE=on
+              docker compose $MON run --rm --no-deps --entrypoint amtool alertmanager \
+                check-config /etc/alertmanager/alertmanager.yml
+            fi
+            docker compose $MON up -d
+            # No healthcheck on these images — nothing here can verify what a
+            # third-party image ships to probe itself with, and an unverifiable
+            # probe that goes permanently red is worse than none. Container
+            # STATE needs no such assumption: Prometheus exits non-zero on a
+            # config it cannot load, so "still running ten seconds later" means
+            # something. It does not prove delivery; that is what ALERTING= is.
+            sleep 10
+            for svc in prometheus node-exporter; do
+              id="$(docker ps -aq --filter 'label=com.docker.compose.project=libriant-monitoring' \
+                                  --filter "label=com.docker.compose.service=$svc" | head -n1)"
+              state="$(docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null || echo missing)"
+              if [ "$state" != "running" ]; then
+                docker compose $MON logs --no-color --tail 50 "$svc" >&2 || true
+                echo "monitoring service '$svc' is '$state', not running." >&2
+                exit 1
+              fi
+            done
+            docker compose $MON ps
+            echo "ALERTING=$STATE"
+          REMOTE
+          if grep -q '^ALERTING=off' /tmp/monitoring.log; then
+            echo "::warning title=Alerts are not being delivered::infra/monitoring/alertmanager.yml still has [PLACEHOLDER] receivers, so Alertmanager was not started. Prometheus is evaluating all 25 rules and not one of them can reach a person — including BackupNeverRan, the disk-full alerts, and the Watchdog that exists to tell you alerting itself has broken. Put a real destination in that file."
+          fi

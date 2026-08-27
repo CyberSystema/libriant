@@ -52,7 +52,13 @@ type HomeCopy = {
   offerBadge: string;
   offerTitle: (spots: number) => string;
   offerLede: (spots: number, plan: string, months: number) => string;
-  statSpots: (remaining: number, total: number) => string;
+  /**
+   * Labels the size of the offer, not what is left of it. It used to take
+   * `(remaining, total)` and read «θέσεις διαθέσιμες» over a number nothing
+   * decremented (launch-readiness-11) — a static page cannot count places, and
+   * the one thing worse than no counter is a confident wrong one.
+   */
+  statSpots: string;
   statMonths: (months: number) => string;
   statMonthsLabel: string;
   statFree: string;
@@ -90,7 +96,7 @@ export const HOME: Record<Lang, HomeCopy> = {
     offerTitle: (s) => `Ο πρώτος χρόνος δωρεάν για τις ${s} πρώτες βιβλιοθήκες`,
     offerLede: (s, plan, m) =>
       `Το Libriant είναι ολοκληρωμένο και έτοιμο. Για την έναρξή του, οι ${s} πρώτες βιβλιοθήκες παίρνουν ολόκληρο το πακέτο ${plan} για ${m} μήνες, χωρίς χρέωση.`,
-    statSpots: (r, t) => `θέσεις διαθέσιμες${r !== t ? ` από ${t}` : ''}`,
+    statSpots: 'θέσεις συνολικά',
     statMonths: (m) => `${m} μήνες`,
     statMonthsLabel: 'πλήρους πρόσβασης',
     statFree: 'Δωρεάν',
@@ -166,7 +172,7 @@ export const HOME: Record<Lang, HomeCopy> = {
     offerTitle: (s) => `The first year free, for the first ${s} libraries`,
     offerLede: (s, plan, m) =>
       `Libriant is finished and ready. To launch it, the first ${s} libraries get the whole ${plan} plan for ${m} months at no charge.`,
-    statSpots: (r, t) => `places available${r !== t ? ` of ${t}` : ''}`,
+    statSpots: 'places in total',
     statMonths: (m) => `${m} months`,
     statMonthsLabel: 'of full access',
     statFree: 'Free',

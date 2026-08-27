@@ -91,13 +91,14 @@ instead of describing it anyway.
 **Read this first, before you promise anyone a start date.** Two things about
 the founding offer are not what you would guess:
 
-1. **`billingMode` can only be set when the tenant is created.** There is no
-   endpoint and no screen that sets it afterwards. Every write to
-   `subscriptions.billingMode` in the API copies it from the chosen _plan_
-   (`billing.service.ts:337`, `:738`, `:1138`; `auth/signup.service.ts:181`),
-   and the only plan whose mode is `manual` is `on-prem-enterprise`. So the free
-   year is configured by `pnpm tenant:create`, which takes `--billing-mode`
-   directly — **or it is not configured at all.**
+1. **Billing mode is set explicitly, not inherited.** A plan's `billingMode` is
+   the DEFAULT — how that plan is normally paid for — and `set-plan` accepts a
+   `billingModeOverride` for the case the founding offer is made of: a paid
+   Stripe plan granted on invoice terms. Signup still copies the plan's mode
+   (`auth/signup.service.ts:181`), so a library that signed up for itself
+   arrives as `stripe` and is moved with the one call in step 4. Configure a
+   brand-new library with `pnpm tenant:create --billing-mode` instead (step 1),
+   which sets it at provisioning time.
 2. **Nothing anywhere watches `paidUntil`.** No scheduled job
    (`apps/api/src/jobs/registry.ts` has ten; none is about billing terms), no
    email, no admin list of expiring terms. The one-month-ahead contact the
@@ -137,8 +138,11 @@ on the call instead of copying it out of a terminal.
 > container is the only place on the host with Node. Check it before the call,
 > not after:
 > `dc run --rm --no-deps migrate sh -lc 'pnpm --version'` → expect `11.22.0`.
-> There is no second way to set `billingMode`, so until that works the founding
-> offer cannot be provisioned on the server at all.
+> While it is broken there is exactly one way round it, and it is step 4: have
+> the library sign up for themselves at `app.libriant.com/signup` — which
+> provisions their database through the API rather than through `pnpm` — and
+> then convert that subscription to the offer's terms. It costs one unaudited
+> `UPDATE` and a note in the log. Nothing else on this box can set the mode.
 
 > **Set `--owner-password` and hand it over out of band.** `EMAIL_DRIVER=console`
 > means no verification mail is delivered, and `EmailVerifiedGuard` sits on
@@ -182,19 +186,45 @@ for manual subscriptions (`effective-plan.service.ts:260`) the twelve-month term
 stops meaning anything at all. Use the dropdown for ordinary customers; for a
 founding library, never.
 
-### 4. A library that signed itself up cannot be converted
+### 4. A library that signed itself up: the two-step, and what it costs
 
 If they went through `libriant.com` and created their own account, their
 subscription was written by signup with the Starter plan's mode — `stripe`
-(`auth/signup.service.ts:181`) — and **no endpoint, screen or script can move it
-to manual.** The only lever is an `UPDATE` on `subscriptions` by hand, which
-leaves no audit row, unlike every supported billing change.
+(`auth/signup.service.ts:181`). This used to require a two-step where the first
+step was an `UPDATE` typed against the production database by hand, recorded
+nowhere and audited by nothing. It does not any more: `set-plan` takes an
+explicit billing-mode override (launch-readiness-02), so the whole thing is one
+call through the same owner-only endpoint and the same audit trail as every
+other billing change.
 
-Avoid needing it: the funnel routes through the application form and a call, so
-provision them with `tenant:create` and send them credentials. If you do find
-yourself reaching for the `UPDATE`, that is the signal to build the admin flag
-(an explicit per-subscription billing mode, independent of the plan) rather than
-to keep doing it by hand.
+```bash
+# 1. The plan and the terms, together. `billingModeOverride` says "this library
+#    is on invoice terms even though Municipal is normally paid by card" — which
+#    IS the founding offer. If the library had a live Stripe subscription it is
+#    cancelled at period end in the same call, so no card keeps being charged
+#    behind a billing page that would then refuse to cancel it.
+curl -sS -b "$ADMIN_COOKIE" -H 'content-type: application/json' \
+  -H "Origin: https://admin.libriant.com" \
+  -d '{"planSlug":"municipal","billingModeOverride":"manual"}' \
+  https://admin.libriant.com/lbr-api/admin/billing/tenants/<tenantId>/set-plan
+
+# 2. The term. The Set paid-until button appears in the admin panel as soon as
+#    step 1 lands, or:
+curl -sS -b "$ADMIN_COOKIE" -H 'content-type: application/json' \
+  -H "Origin: https://admin.libriant.com" \
+  -d '{"paidUntil":"<today + 12 months>T23:59:59.000Z"}' \
+  https://admin.libriant.com/lbr-api/admin/billing/tenants/<tenantId>/set-paid-until
+```
+
+Both steps are recorded. Step 1 writes an admin audit row carrying
+`billingMode: 'manual'` and `overrodeBillingMode: true`, so a reader later can
+tell a deliberate invoice arrangement from a plan that simply happens to be
+manual; step 2 writes `subscription.paid_until_set` and invalidates the
+effective-plan cache. Nothing needs to go in a decision log by hand.
+
+Still prefer `tenant:create` for a library that does not have an account yet:
+one command instead of two, and it sets the mode at provisioning time rather
+than correcting it afterwards.
 
 ### 5. Never reach for On-prem / Enterprise to get manual billing
 
@@ -247,19 +277,32 @@ not after.
 2. **Run their import yourself.** Ask for whatever they have — CSV, Excel, MARC,
    a messy spreadsheet — and do it for them. This is the promise that makes the
    offer real, and it's where you'll learn the most about the product.
-3. **Decrement `offer.spotsRemaining`** in `apps/site/site.config.json`, commit
-   and push. The site is baked into the edge image, so this is a full CI run
-   rather than the quick deploy it used to be — there is no on-box shortcut.
+3. **Mark their application `accepted`** in the admin panel (Applications →
+   their card → _Give a place_). That is the whole of it — the count of places
+   is derived from those rows, so the fifth acceptance closes the public form
+   within the minute and no longer needs a commit, a CI run or a deploy
+   (launch-readiness-11).
 4. **Log it** in `prospects.csv` with the date.
 
 ## Keeping the count honest
 
-The site says N θέσεις and the email says 5. Both have to be true.
+It keeps itself now, and that is worth understanding rather than trusting.
 
-- 5 → 0 as you accept libraries
-- At 0, the site automatically swaps the form for a waiting-list message
-- Don't quietly raise the number to 7 because two more good ones turned up. Open
-  a **second cycle** and say so.
+- The page no longer advertises a **remaining** count. It says five places and
+  how the offer works, which stays true for as long as the offer exists. The
+  number that used to sit there was a literal in `site.config.json` that nothing
+  decremented, so the sixth applicant was told five places remained.
+- **The form is gated on accepted applications**, counted at the moment of
+  submission (`applications.service.ts` → `offerState()`). Accept the fifth and
+  the next applicant gets the waiting-list notice with your address on it
+  instead of the form; decline one and the form is open again. No deploy either
+  way.
+- **The Applications page is the count.** The banner at the top says «N of 5
+  launch places given» and whether the form is open. Trust that, not your memory
+  and not the marketing copy.
+- Don't quietly raise the number to 7 because two more good ones turned up. The
+  panel will let you — five is a promise to the public, not a lock on you — but
+  the published offer terms say five. Open a **second cycle** and say so.
 
 ## What to actually learn from the pilot
 

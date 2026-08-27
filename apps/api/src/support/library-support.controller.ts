@@ -123,14 +123,38 @@ export class LibrarySupportController {
   }
 
   @Get('sessions/log')
-  async log(
-    @TenantCtx() tenant: TenantContext,
-    @Query('limit') limitRaw?: string,
-    @Query('after') after?: string,
-  ) {
+  async log(@TenantCtx() tenant: TenantContext, @Query('limit') limitRaw?: string) {
     const limit = Math.max(1, Math.min(200, Number(limitRaw) || 50));
-    // Pull recent sessions for this tenant + their actions; tenant only
-    // sees their own logs.
+    // performance-03. This used to take an `?after=` cursor and hand it to the
+    // NESTED `actions` read as `cursor: { id: after }, skip: 1`. Two things
+    // were wrong with that, and neither is fixable while ONE cursor has to
+    // serve twenty-five different sessions' action lists.
+    //
+    // Reproduced on the identical Prisma code path — a parent `findMany(take:
+    // N)` whose included child relation is ordered DESC by a timestamp and
+    // carries `take` + `cursor` + `skip: 1` — with the query event log on:
+    //
+    //   1. NO LIMIT IS EMITTED. Prisma renders
+    //        SELECT … WHERE "sessionId" IN ($1…$25)
+    //          AND "ts" <= (SELECT "ts" FROM … WHERE id = $26)
+    //        ORDER BY "ts" DESC OFFSET $27
+    //      and trims each parent's rows in the client. Every "next page" pulls
+    //      the whole matching action history of all twenty-five sessions across
+    //      the wire to render `limit` rows — the same shape as performance-10
+    //      on the holds screen.
+    //   2. EVERY PARENT COMES BACK EMPTY. The cursor row belongs to one
+    //      session, so Prisma finds no cursor position in any of the others and
+    //      returns nothing for them — and in the reproduction, nothing for the
+    //      anchor's own parent either: all five parents returned zero children.
+    //      A library owner paging their support log would have watched every
+    //      session's worth of evidence disappear, which is the opposite of what
+    //      an audit log is for.
+    //
+    // Nothing ever sent it: the only caller is the support-access page
+    // (apps/web/app/[locale]/t/[slug]/settings/support-access/page.tsx), which
+    // requests `/support/sessions/log` with no query string at all. So the
+    // parameter is gone rather than reworked into a per-session pager with no
+    // caller. `limit` stays: it caps the actions returned per session.
     const sessions = await controlDb.supportSession.findMany({
       where: { tenantId: tenant.id },
       orderBy: { startedAt: 'desc' },
@@ -138,9 +162,11 @@ export class LibrarySupportController {
       include: {
         admin: { select: { email: true, fullName: true } },
         actions: {
-          orderBy: { ts: 'desc' },
+          // `ts` alone is not a total order — a support session fires several
+          // requests inside the same millisecond — so two page loads could
+          // order the same actions differently. `id` settles it.
+          orderBy: [{ ts: 'desc' }, { id: 'desc' }],
           take: limit,
-          ...(after ? { cursor: { id: after }, skip: 1 } : {}),
           select: {
             id: true,
             ts: true,

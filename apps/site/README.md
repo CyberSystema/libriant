@@ -77,12 +77,22 @@ the API on :3001; see `docs/RUNBOOK.md`.
 
 ## Changing the offer
 
-`site.config.json` → `offer.spotsRemaining`. Decrement it when a library is
-accepted and redeploy. At zero the form is replaced by a waiting-list notice and
-the API refuses submissions.
+Nothing here. `offer.spotsTotal` is how many places the offer has; how many are
+**left** is not in this file and must not come back to it.
 
-A claim of "the first five" has to actually be true, so this is a discipline,
-not a setting.
+It used to be `offer.spotsRemaining`, decremented by hand and redeployed. Two
+things were wrong with that (launch-readiness-11): nothing decremented it, so
+the page advertised places that were already promised; and the API's own gate
+was a compiled-in copy of the same literal, so closing the form was a commit, a
+CI run and an on-box deploy. The count now comes from the `applications` table
+at request time — the operator marks an application _accepted_ in the admin
+panel and the form closes itself — and these pages make only the claim a static
+file can keep: how many places there are in total.
+
+The pages still carry the closed-offer copy (`heroCtaClosed`, `closedTitle`,
+`closedBody`). The API renders it: when the places are gone, `POST /apply`
+answers with this page and the waiting-list notice where the form is, instead of
+the silent redirect it used to send.
 
 ## These legal pages are not the product's legal suite
 
@@ -106,13 +116,23 @@ in place until no browser could still hold the old registration.
 
 Nothing here is automatic — the site collects applications, a human decides.
 
-1. Export the applications: `admin.libriant.com/lbr-api/admin/applications.csv`
-   (admin session required).
-2. Create the tenant: `pnpm tenant:create`.
-3. Assign the **Municipal** plan with `billingMode = 'manual'` and `paidUntil`
-   set twelve months out. `effective-plan.service.ts` expires manual plans on
-   that date, so honouring the offer needs no code.
-4. Decrement `offer.spotsRemaining` and redeploy.
+1. Read them at `admin.libriant.com/admin/applications` (owner session
+   required). The same page exports the CSV, and the sidebar's unread count is
+   the only notification there is while `EMAIL_DRIVER=console`.
+2. Create the tenant **with the billing terms in the same command** —
+   `pnpm tenant:create --plan=municipal --billing-mode=manual --paid-until=<+12
+months>`. This is the only thing that can set `billingMode`; assigning the
+   plan in the admin panel afterwards copies the plan's own mode (`stripe`) and
+   `set-paid-until` then refuses, which leaves the free year with no end date.
+   `effective-plan.service.ts` expires **manual** subscriptions on `paidUntil`,
+   so honouring the offer needs no code — and only that state gets it.
+3. Mark the application _Give a place_ on the Applications page. The public
+   form's gate counts accepted applications, so this is what closes the offer
+   when the fifth is given.
+
+The full procedure, including the library that signed itself up before you got
+to it, is
+[`marketing/campaigns/launch-offer/reply-playbook.md`](../../marketing/campaigns/launch-offer/reply-playbook.md).
 
 ## DNS
 

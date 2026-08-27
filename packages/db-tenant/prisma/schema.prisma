@@ -372,7 +372,7 @@ model Member {
   reservations Reservation[]
   fines        Fine[]
 
-  @@index([sortName])
+  @@index([sortName, id], map: "members_sortName_id_idx")
   @@index([status])
   @@index([email])
   // `members_member_number_pattern_idx` (btree, text_pattern_ops) is added in
@@ -537,6 +537,9 @@ model Fine {
 
   @@index([memberId, status])
   @@index([loanId])
+  // Newest-first, with `id` settling the tie — the exact ORDER BY
+  // `FinesService.list` pages on (performance-03).
+  @@index([createdAt(sort: Desc), id(sort: Desc)], map: "fines_createdAt_id_idx")
   @@map("fines")
 }
 
@@ -686,7 +689,10 @@ model AuditEvent {
   supportSessionId String?
   occurredAt       DateTime       @default(now())
 
-  @@index([occurredAt])
+  // Newest-first, with `id` settling the tie — the exact ORDER BY
+  // `AuditService.list` pages on, and the index the retention sweep reads
+  // backwards to find its oldest rows (performance-03).
+  @@index([occurredAt(sort: Desc), id(sort: Desc)], map: "audit_log_occurredAt_id_idx")
   @@index([actorType, actorId, occurredAt])
   @@index([targetType, targetId])
   @@index([action, occurredAt])

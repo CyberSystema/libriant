@@ -50,4 +50,18 @@ RUN pnpm --filter @libriant/site build
 # TLS for every request, so "whatever the tag pointed at that minute" is the
 # least acceptable place for a floating reference.
 FROM caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+
+# supply-chain-07: THERE IS NO `USER` HERE AND THAT IS ON PURPOSE — this image
+# runs as uid 0, inheriting the upstream default. The audit found the absence
+# with `grep -n USER infra/caddy/Dockerfile` returning nothing and read it as an
+# oversight, which is fair: an unexplained absence is indistinguishable from one.
+#
+# The containment lives in infra/compose/docker-compose.prod.yml, on the `caddy`
+# service: `cap_drop: [ALL]` + `cap_add: [NET_BIND_SERVICE]` +
+# `no-new-privileges`, which leaves this uid 0 with exactly one capability. The
+# long note there records why the uid itself was not changed — briefly, adding
+# `USER` needs CAP_NET_BIND_SERVICE to survive the setuid, which depends on
+# whether the upstream image runs `setcap` on /usr/bin/caddy, and Docker is not
+# installed on the machine this was written on, so the image could not be pulled
+# and checked. `getcap /usr/bin/caddy` on the real image answers it.
 COPY --from=site /app/apps/site/dist /srv/libriant/site

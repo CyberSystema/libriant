@@ -129,6 +129,25 @@ export class AdminPlansController {
     return { plan };
   }
 
+  /**
+   * billing-10 — THE PRICE-ID VALIDATION FOR THIS ROUTE IS NOT IN THIS FILE.
+   *
+   * `stripePriceId` / `stripeAnnualPriceId` are written below as bare strings,
+   * and reading only this handler you would conclude — as the audit did — that
+   * nothing stops a `prod_…`, a `price_seed_*` placeholder, the monthly id
+   * pasted into the annual column, or an id whose Stripe amount is not the one
+   * the plan advertises. Something does: `PlanPriceWriteInterceptor`
+   * (apps/api/src/billing/plan-price-write.interceptor.ts), registered as an
+   * `APP_INTERCEPTOR` by `BillingModule`, keys on
+   * `context.getClass() === AdminPlansController` and refuses the PATCH before
+   * this method runs.
+   *
+   * It lives there and not here because `BillingModule` already imports
+   * `AdminModule` for the guards, so injecting a billing validator into this
+   * controller would close a module cycle. If you move the guard, move this
+   * note with it — a validator nobody can find from the route it protects is
+   * one refactor away from being deleted as dead code.
+   */
   @Patch('plans/:slug')
   @AdminRoles('owner')
   async update(

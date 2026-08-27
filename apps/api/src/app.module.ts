@@ -27,6 +27,10 @@ import { MaintenanceModule } from './maintenance/maintenance.module.js';
 import { StaffModule } from './staff/staff.module.js';
 import { ExportModule } from './export/export.module.js';
 import { MembersModule } from './members/members.module.js';
+// privacy-legal-15: the Article 15 / Article 20 answer for ONE member. Its own
+// module, mounted here in one line, so the route cannot end up existing without
+// being reachable — the failure mode ConsentModule above records.
+import { PrivacyModule } from './privacy/privacy.module.js';
 import { ReservationsModule } from './reservations/reservations.module.js';
 import { TenantSettingsModule } from './tenant-settings/tenant-settings.module.js';
 import { AuditModule } from './audit/audit.module.js';
@@ -71,6 +75,7 @@ import { ApplicationsModule } from './applications/applications.module.js';
     StorageModule,
     CatalogModule,
     MembersModule,
+    PrivacyModule,
     LoansModule,
     FinesModule,
     ReservationsModule,

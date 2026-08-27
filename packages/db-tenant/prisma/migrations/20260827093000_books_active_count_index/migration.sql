@@ -1,0 +1,66 @@
+-- performance-05: stop the quota count from reading the whole catalogue.
+--
+-- `BooksService.create` runs, inside the same transaction as the insert and
+-- behind `pg_advisory_xact_lock('quota:<tenant>:max_books:')`:
+--
+--   SELECT COUNT(*) FROM (SELECT "public"."books"."id" FROM "public"."books"
+--     WHERE "public"."books"."archivedAt" IS NULL OFFSET $1) AS "sub"
+--
+-- Nothing indexed that predicate, so it was a full scan of `books` — held under
+-- a lock that serialises the whole library's cataloguing session behind it, and
+-- reading the heap through a `shared_buffers` pool every tenant on the box
+-- shares. `update` pays it again on un-archive.
+--
+-- The count only runs when the library has a FINITE `max_books` ceiling, which
+-- is the posture the launch cohort moves into once subscriptions are switched
+-- on; with subscriptions off `maxBooksCeilingApplies` skips it entirely. So
+-- this index is what makes billing-on cataloguing survivable, not a saving on
+-- today's configuration.
+--
+-- Measured on the audit's 400,000-title fixture (libriant_perf_pqj, warm,
+-- shared_buffers 128MB), on the literal statement above:
+--   BEFORE  Aggregate -> Seq Scan on books, Filter: ("archivedAt" IS NULL)
+--           Buffers: shared hit=32 read=10494   Execution Time: 61.893 ms
+--   AFTER   Aggregate -> Index Only Scan using books_active_idx
+--           Heap Fetches: 0
+--           Buffers: shared hit=1536            Execution Time: 23.835 ms
+-- 10,526 buffers down to 1,536 — 82 MB of heap traffic per book create replaced
+-- by 12 MB of index, which is also this index's whole size at that row count.
+--
+-- WHY A PARTIAL INDEX IS USABLE HERE AND WAS NOT FOR `loans`. The long note in
+-- 20260824170000 explains that Prisma renders an enum comparison as
+-- `CAST($1::text AS "LoanStatus")`, which `enum_in` (STABLE) stops the planner
+-- folding to a constant, so the partial-index predicate prover can never
+-- discharge it. `"archivedAt" IS NULL` carries no parameter and no cast: Prisma
+-- emits it verbatim, the prover discharges it, and the index is chosen. Checked
+-- rather than assumed — the AFTER plan above is the proof.
+--
+-- CHECKED FOR COLLATERAL PLAN CHANGES on the same fixture, because an index the
+-- planner adopts for the wrong query is a regression wearing a fix's clothes.
+-- With this index present and `ANALYZE books` run: the catalogue list page 1
+-- still uses `books_sortTitle_idx` (30 buffers, 0.53 ms), the trigram search
+-- still uses `books_search_trgm`, and the ISBN lookup still uses
+-- `books_isbn13_unique_active`. Nothing moved.
+--
+-- NOT DONE FOR `members`, and this is measured rather than an oversight:
+-- `MembersService` runs the same shape (`archivedAt IS NULL AND status <>
+-- 'archived'`), but at 50,000 members that count is already only
+-- `Seq Scan on members, Buffers: shared hit=1163, Execution Time: 7.667 ms`,
+-- and the candidate `("status","id") WHERE "archivedAt" IS NULL` was tested
+-- and the planner REFUSED it — same 1,163-buffer sequential scan, because the
+-- `status <>` term cannot become an index condition (the enum cast again) and
+-- scanning the whole index to filter is not cheaper than scanning a small
+-- heap. An index nobody uses is pure write amplification on every member
+-- created, so members does not get one.
+--
+-- Cost: one extra btree entry per book insert, archive and un-archive. Books
+-- are catalogued a few hundred times a day in a busy library and this index is
+-- read on every create under a finite ceiling.
+--
+-- Idempotent (IF NOT EXISTS), per repo convention. LOCK NOTE: plain
+-- CREATE INDEX takes a SHARE lock on `books`, so cataloguing blocks while it
+-- builds (~1 s on the 400,000-title fixture). Not CONCURRENTLY, because
+-- `prisma migrate deploy` wraps each migration file in a transaction.
+
+CREATE INDEX IF NOT EXISTS "books_active_idx"
+  ON "books" ("id") WHERE "archivedAt" IS NULL;

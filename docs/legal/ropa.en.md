@@ -1,6 +1,6 @@
 # Record of processing activities — processor (GDPR Article 30(2))
 
-**Last updated: 2026-08-27** · **Document version: 2** ·
+**Last updated: 2026-08-27** · **Document version: 3** ·
 Greek version: [`ropa.el.md`](./ropa.el.md)
 
 This is the record Libriant maintains **as a processor** under Article 30(2)
@@ -90,6 +90,7 @@ Article 30(2)(b). Every row is an operation the product performs today.
 | 5   | Search and indexing           | Accent- and case-folded composite search field built from name + email + member number + phone         | Section 4.1                |
 | 6   | Bulk import                   | CSV/XLSX import of members and holdings uploaded by the library                                        | Section 4.1                |
 | 7   | Data export                   | Full copy of the library's database as CSV/JSON/XLSX/SQL, on the library's own request (Art. 20)       | All                        |
+| 7b  | Per-data-subject export       | One member's record, circulation, notices, activity entries and photo as JSON (Art. 15 and Art. 20)    | Sections 4.1–4.2           |
 | 8   | Member e-mail notifications   | Due-soon, overdue and hold-ready reminders — **per-library opt-in, default OFF**                       | Name, e-mail, loan details |
 | 9   | Custom fields and collections | Fields and records the library defines itself; it chooses their content                                | Section 4.3                |
 | 10  | Audit logging                 | Per-library `audit_log` with before/after snapshots of changes                                         | Sections 4.1–4.3           |
@@ -144,16 +145,28 @@ column, so processing children's data is expected rather than incidental.
 
 - The **library** is the controller of that data and carries the lawful basis,
   any parental consent, and the notice to data subjects (DPA §3.2).
-- The product **does not currently branch on age**: there is no guardian contact
-  field, no consent flag, no reduced retention period, and no restriction on
-  sending automated e-mail to a minor's address. Member notifications are OFF by
+- The product branches on age in **exactly one place**: the per-data-subject
+  export (Section 3, row 7b) computes whether the subject is under 18 from
+  `dateOfBirth`, and in a `school` library with no date of birth on file
+  presumes a pupil. The result is carried in the produced file and shown to the
+  librarian before they hand it over, so that a child's record is not disclosed
+  to an adult whose entitlement nobody checked. It is a caution at the point of
+  disclosure, not a control.
+- Everything else is still age-blind: there is **no guardian contact field, no
+  consent flag, no reduced retention period, and no restriction on sending
+  automated e-mail to a minor's address**. Member notifications are OFF by
   default, which limits — but does not remove — the exposure.
-- This gap is recorded (finding privacy-legal-12) and **must be disclosed to
-  every school and municipal library before signature**, so they can weigh it in
-  their own impact assessment. It is now disclosed in two places they will
-  actually read: [`dpia-school-libraries.en.md`](./dpia-school-libraries.en.md)
+- That remaining gap is recorded (finding privacy-legal-12) and **must be
+  disclosed to every school and municipal library before signature**, so they
+  can weigh it in their own impact assessment. It is disclosed in two places
+  they will actually read: [`dpia-school-libraries.en.md`](./dpia-school-libraries.en.md)
   §4, the Article 35 material we hand a school, and DPA §7.3, which is part of
-  the agreement they sign.
+  the agreement they sign. DPA §7.2 and §7.3 still describe the product before
+  row 7b existed; correcting a published document requires a `LEGAL_VERSION`
+  bump and a re-frozen corpus, so it is queued rather than silently edited (see
+  `locales/legal-README.md`). Until it lands, the DPA under-states what the
+  Service does, which is the safe direction for a document a controller relies
+  on.
 
 ## 6. Recipients and sub-processors
 
@@ -280,10 +293,20 @@ Separate from the record above, kept here for completeness. Full description:
 4. **Article 35 impact assessment.** Delivered as
    [`dpia-school-libraries.en.md`](./dpia-school-libraries.en.md) and referenced
    from DPA §7.3 (privacy-legal-12). What remains is counsel confirming the
-   Hellenic DPA list reference in its Section 1, and a decision on whether the
-   product should gain age-aware behaviour at all — the pack currently discloses
-   the absence rather than closing it.
-5. **Disclose the minors gap** (Section 5) to every school and municipal library
+   Hellenic DPA list reference in its Section 1, and a decision on the three
+   age-aware behaviours that were considered and deliberately NOT built: a
+   guardian contact field with notification routing, a shorter retention window
+   for a minor's record, and suppression of automated notices to a child's own
+   address. Each needs a tenant-database migration and a change to the
+   notification or retention job; none is a defect in what ships, and building
+   them speculatively would put a deletion schedule and a routing rule into
+   production that no library has agreed to. Decide, then build one.
+5. **Publish the DPA correction** for the per-data-subject export (Section 3,
+   row 7b): §7.2's "There is no per-member export" and §7.3's "there is no
+   guardian contact field, no age-based restriction …" are both now inaccurate
+   in the conservative direction. The edit is drafted in
+   `locales/legal-README.md` and needs a `LEGAL_VERSION` bump.
+6. **Disclose the minors gap** (Section 5) to every school and municipal library
    before signature.
 
 ## Revision history
@@ -292,3 +315,4 @@ Separate from the record above, kept here for completeness. Full description:
 | ------- | ---------- | -------------------------------------------------------------------------------------- |
 | 1       | 2026-08-26 | First draft — finding privacy-legal-08 (the record did not exist)                      |
 | 2       | 2026-08-27 | Retention corrected to what the code enforces; Article 35 material delivered (§5, §10) |
+| 3       | 2026-08-27 | Per-data-subject export added (§3 row 7b); §5 corrected — one age branch now exists    |

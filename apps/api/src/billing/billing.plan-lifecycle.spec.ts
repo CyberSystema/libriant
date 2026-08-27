@@ -545,6 +545,65 @@ describe('billing-12: admin set-plan onto a manual plan stops the Stripe subscri
 });
 
 // ---------------------------------------------------------------------------
+// launch-readiness-02 — the founding-library offer, grantable through the product
+// ---------------------------------------------------------------------------
+
+describe('launch-readiness-02: a paid stripe plan can be granted on invoice terms', () => {
+  it('writes manual billing for a stripe plan when the admin asks for it', async () => {
+    // The whole offer: twelve months of a paid plan at no charge. Without the
+    // override the subscription got billingMode 'stripe' from the plan, and
+    // applyManualPayment then refused the paid-until date the offer is made of
+    // — so the advertised offer could not be granted through the product, and
+    // the documented workaround was an UPDATE typed against production by hand.
+    const { svc } = makeService();
+
+    await svc.applyAdminPlanChange(
+      TENANT,
+      { planSlug: 'community', billingModeOverride: 'manual' },
+      ACTOR,
+    );
+
+    expect(lastUpdate()).toMatchObject({ planId: COMMUNITY.id, billingMode: 'manual' });
+  });
+
+  it('stops the card, because a library we agreed to invoice must not still be charged', async () => {
+    const { svc, driver } = makeService();
+
+    await svc.applyAdminPlanChange(
+      TENANT,
+      { planSlug: 'community', billingModeOverride: 'manual' },
+      ACTOR,
+    );
+
+    expect(driver.cancelSubscriptionAtPeriodEnd).toHaveBeenCalledWith('sub_live');
+    expect(lastUpdate()).toMatchObject({ stripeSubscriptionId: null });
+  });
+
+  it('marks the override in the audit trail, so it reads as a decision and not a state', async () => {
+    const { svc } = makeService();
+
+    await svc.applyAdminPlanChange(
+      TENANT,
+      { planSlug: 'community', billingModeOverride: 'manual' },
+      ACTOR,
+    );
+
+    const entry = (recordAdminAudit as unknown as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1];
+    expect(entry.after).toMatchObject({ billingMode: 'manual', overrodeBillingMode: true });
+  });
+
+  it('without the override the same plan is still billed by card — the default is unchanged', async () => {
+    subFindUnique.mockResolvedValue(subRow({ planId: STARTER.id }));
+    const { svc, driver } = makeService();
+
+    await svc.applyAdminPlanChange(TENANT, { planSlug: 'community' }, ACTOR);
+
+    expect(lastUpdate()).toMatchObject({ billingMode: 'stripe' });
+    expect(driver.cancelSubscriptionAtPeriodEnd).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // billing-09 — one library, one Stripe customer
 // ---------------------------------------------------------------------------
 

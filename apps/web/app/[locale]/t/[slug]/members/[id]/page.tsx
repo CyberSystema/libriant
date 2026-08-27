@@ -91,6 +91,12 @@ export default async function MemberDetailPage(props: {
   const role = session?.user.role ?? 'owner';
   const canSettle = role === 'owner' || role === 'admin' || role === 'librarian';
   const canWriteOff = role === 'owner' || role === 'admin';
+  // privacy-legal-15: same three roles as a payment, and for the same reason —
+  // the volunteer role reads the desk's screens but does not hand a copy of
+  // somebody's whole record to whoever asked for it. `@Roles` on
+  // SubjectAccessController is the enforcement; this only keeps the button out
+  // of a volunteer's face.
+  const canExportSubjectData = canSettle;
 
   if (!member) {
     return (
@@ -122,6 +128,7 @@ export default async function MemberDetailPage(props: {
         finesError={finesError}
         canSettleFines={canSettle}
         canWriteOffFines={canWriteOff}
+        canExportSubjectData={canExportSubjectData}
       />
     </>
   );

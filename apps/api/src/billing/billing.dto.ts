@@ -53,6 +53,32 @@ export class AdminSetPlanDto {
   @IsString()
   @Matches(PLAN_SLUG_RE)
   planSlug!: string;
+
+  /**
+   * Bill this tenant by invoice even though the plan's own mode is `stripe`.
+   *
+   * launch-readiness-02. The founding-library offer is twelve months of
+   * Municipal at no charge, and Municipal is a `stripe` plan — so moving a
+   * tenant onto it set `billingMode: 'stripe'`, and `applyManualPayment` then
+   * refused the paid-until date the offer is made of ("Manual paid-until only
+   * applies to manually-billed plans"). The advertised offer could not be
+   * granted through the product at all; the documented workaround was an
+   * UPDATE typed against production by hand, which is recorded nowhere and
+   * audited by nothing.
+   *
+   * A plan's billingMode is a DEFAULT — how this plan is normally paid for —
+   * not a constraint on how a particular library may be. Making that explicit
+   * here keeps the exception visible: it travels through the same admin
+   * endpoint, the same owner-only guard, and the same audit row as every other
+   * plan change, instead of through psql.
+   *
+   * Only ever downward, to `manual`. There is no override in the other
+   * direction: putting a tenant on Stripe billing means creating a Stripe
+   * subscription, which is a checkout, not a flag.
+   */
+  @IsOptional()
+  @IsIn(['manual'])
+  billingModeOverride?: 'manual';
 }
 
 /**

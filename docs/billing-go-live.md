@@ -55,10 +55,17 @@ tenant with `--plan=municipal --billing-mode=manual --paid-until=<+12mo>` yields
 
 **The executable procedure lives in
 [`marketing/campaigns/launch-offer/reply-playbook.md`](../marketing/campaigns/launch-offer/reply-playbook.md),
-under "Provisioning an accepted library".** It also records the two things the
-code cannot do — convert an already-signed-up library to manual billing, and
-warn anyone before `paidUntil` lapses — rather than describing them as if it
-could. Do not re-derive the procedure from this document; it is superseded.
+under "Provisioning an accepted library".** Its step 4 also carries the case
+`tenant:create` cannot reach — a library that signed itself up before you got to
+it — as a verified two-step (`UPDATE subscriptions SET "billingMode"='manual'`
+where there is no live Stripe subscription, then **Set paid-until** in the admin
+panel, which is the half that invalidates the plan cache and writes the audit
+row). The `UPDATE` is unaudited; that is its cost and the playbook says so.
+
+The other thing the code still cannot do is **warn anyone before `paidUntil`
+lapses**: no scheduled job watches it, so the one-month-ahead contact the
+published offer terms promise is a calendar entry or it does not happen. Do not
+re-derive the procedure from this document; it is superseded.
 
 ---
 

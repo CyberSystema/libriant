@@ -96,16 +96,13 @@ export class BooksService {
    *
    * performance-05. `QuotaService.enforceWithinTx` takes
    * `pg_advisory_xact_lock('quota:<tenant>:max_books:')` and THEN runs
-   * `count(*) FROM books WHERE "archivedAt" IS NULL` — a full scan, because
-   * nothing indexes that predicate. Measured on a 400,000-title catalogue
-   * (audit Postgres), on the literal statement Prisma emits for `book.count`:
+   * `count(*) FROM books WHERE "archivedAt" IS NULL`, held under a lock that
+   * serialises the whole library's cataloguing session behind it. That count
+   * used to be a full scan, because nothing indexed the predicate — measured on
+   * a 400,000-title catalogue, on the literal statement Prisma emits:
    *
-   *   Aggregate … Seq Scan on books  Buffers: shared hit=1594 read=11739
-   *                                  Execution Time: 59.142 ms
-   *
-   * 13,333 buffers — 104 MB of traffic through a 128 MB shared_buffers pool
-   * that every library on the box shares — per book created, held under a lock
-   * that serialises the whole library's cataloguing session behind it.
+   *   Aggregate … Seq Scan on books  Buffers: shared hit=32 read=10494
+   *                                  Execution Time: 61.893 ms
    *
    * In the SHIPPED configuration (`BILLING_ENABLED=false`) every int feature
    * resolves to `UNLIMITED_INT`, so that scan and that lock were being paid to
@@ -114,10 +111,18 @@ export class BooksService {
    *
    * Read BEFORE the transaction opens, deliberately: `getEffectivePlan` is a
    * Redis-cached read, and doing it inside would put a network round trip
-   * inside the lock window this exists to shrink. When the limit IS finite the
-   * enforcement path below is untouched — the count still runs inside the
-   * lock, and it is still a full scan until `books_active_idx` exists (see the
-   * out-of-scope note in the remediation report).
+   * inside the lock window this exists to shrink.
+   *
+   * When the limit IS finite — the posture the launch cohort moves into the day
+   * subscriptions are switched on — the enforcement path below is unchanged and
+   * the count still runs inside the lock, but it is no longer a scan: migration
+   * 20260827093000_books_active_count_index adds
+   * `books_active_idx ON books (id) WHERE "archivedAt" IS NULL`, and the same
+   * statement becomes `Index Only Scan … Buffers: shared hit=1536,
+   * Execution Time: 23.835 ms`. The predicate is provable there — Prisma emits
+   * `"archivedAt" IS NULL` verbatim, with no parameter and no cast — which is
+   * why a partial index works here and could not for the `loans` status
+   * predicate; the migration comment carries that comparison.
    */
   private async maxBooksCeilingApplies(tenantId: string): Promise<boolean> {
     return !isUnlimitedInt(await this.plans.getInt(tenantId, 'max_books'));
@@ -305,17 +310,14 @@ export class BooksService {
     try {
       // Enforce `max_books` and insert in ONE transaction, serialized by a
       // per-tenant advisory lock, so parallel creates can't both pass the
-      // quota check and push the tenant past its plan ceiling. This is the
-      // race-safe authority; the route's QuotaInterceptor is the pre-check.
-      //
-      // That pre-check is NOT cheap, and the comment here used to claim it was:
-      // QUOTA_COUNTERS.max_books (plans/quota-counters.ts) runs the SAME
-      // `book.count({ where: { archivedAt: null } })` full scan, unconditionally,
-      // before this method is even entered. So a book create still pays one
-      // 13,333-buffer scan even when the ceiling is unlimited. The one-line fix
-      // — `if (isUnlimitedInt(limit)) return next.handle();` in
-      // QuotaInterceptor, right after it resolves `limit` — is outside this
-      // change's ownership and is reported with the remediation.
+      // quota check and push the tenant past its plan ceiling. This is the ONLY
+      // authority for `max_books` now, and deliberately so: the route used to
+      // also carry `@RequiresQuota('max_books')`, which made QuotaInterceptor
+      // run QUOTA_COUNTERS.max_books — the SAME count — before this method was
+      // entered, so every create paid for two of them and the racy pre-check
+      // decided nothing this transaction did not decide again. The decorator is
+      // gone from books.controller.ts (which says so at the create handler) and
+      // the interceptor now short-circuits on an unlimited ceiling anyway.
       const created = await client.$transaction(async (tx) => {
         if (ceilingApplies) {
           await this.quota.enforceWithinTx(tx, {

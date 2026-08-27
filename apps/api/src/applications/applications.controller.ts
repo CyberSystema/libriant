@@ -45,11 +45,26 @@ export class ApplicationsController {
   async apply(@Req() req: Request, @Res() res: Response): Promise<void> {
     const lang = langOf(req.path);
     const E = ERRORS[lang];
-    const home = localePath(lang, '/');
 
-    // Closed offer: bounce before touching anything the visitor sent.
-    if (config.offer.spotsRemaining <= 0) {
-      res.redirect(303, `${home}#apply`);
+    // Closed offer: answer before touching anything the visitor sent.
+    //
+    // launch-readiness-11, both halves. The condition was
+    // `config.offer.spotsRemaining <= 0` — a literal compiled into this file,
+    // so closing the form was a commit, a CI run and an on-box deploy, and
+    // until that landed the sixth applicant was accepted by a form that should
+    // have shut. It now asks the applications table, which the admin panel
+    // writes: accepting the fifth library closes the form that minute.
+    //
+    // And the answer is the page, not a redirect. The bounce went to
+    // `/#apply` — the static home page, which still renders the form, because
+    // a file written at deploy time cannot know the places are gone. A library
+    // that had just typed nine answers got them back empty with no
+    // explanation. They now get the real waiting-list notice, with the address
+    // to write to, on a 200: nothing failed at their end, and an offer filling
+    // up must not light up whatever watches this host for 4xx.
+    const offer = await this.svc.offerState();
+    if (!offer.open) {
+      this.sendClosed(res, lang);
       return;
     }
 
@@ -178,6 +193,15 @@ export class ApplicationsController {
       })
       // BOM so Excel reads the Greek as UTF-8 instead of mojibake.
       .send('﻿' + lines.join('\r\n') + '\r\n');
+  }
+
+  /** The home page with the waiting-list notice where the form usually is. */
+  private sendClosed(res: Response, lang: Lang): void {
+    res
+      .status(200)
+      .type('text/html; charset=utf-8')
+      .set('cache-control', 'no-store')
+      .send(renderIndex(config, LANDING[lang], { lang, offerClosed: true }));
   }
 
   /** Re-render the real page with the visitor's answers and inline errors. */

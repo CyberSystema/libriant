@@ -144,6 +144,22 @@ x-logging: &logging
       max-size: '50m'
       max-file: '5'
 
+# supply-chain-07. Applied to EVERY service below, including the ones that still
+# start as uid 0. `no-new-privileges` sets PR_SET_NO_NEW_PRIVS on the container's
+# init process, which every descendant inherits and none can clear: a setuid or
+# file-capability binary reached from a compromised process — the ordinary first
+# step out of an RCE and into the container's privileged surface — execs with the
+# caller's privileges instead of the file's.
+#
+# It does NOT break privilege DROPPING, which is what the data-tier entrypoints
+# actually do: the postgres image execs `gosu postgres`, redis execs `su-exec
+# redis`, and both are a root process calling setuid() downwards. no_new_privs
+# only blocks GAINING privileges, so those paths are unaffected. That distinction
+# is the whole reason this is safe to apply to every service rather than to the
+# app tier only.
+x-hardening: &hardening
+  security_opt: ['no-new-privileges:true']
+
 services:
   # ----- edge -----------------------------------------------------------
   caddy:
@@ -154,10 +170,55 @@ services:
     build:
       context: ../..
       dockerfile: infra/caddy/Dockerfile
-    <<: [*restart, *logging]
+    <<: [*restart, *logging, *hardening]
     mem_limit: ${CADDY_MEM_LIMIT:-256m}
     cpus: ${CADDY_CPUS:-1}
     pids_limit: 256
+    # supply-chain-07. THIS CONTAINER RUNS AS uid 0 — the upstream caddy image
+    # sets no USER and infra/caddy/Dockerfile does not add one. Saying so out
+    # loud matters because the comment on `migrate` below used to claim the
+    # opposite about the whole stack, which is the kind of sentence that ends a
+    # security review early.
+    #
+    # What uid 0 buys an attacker here is now almost nothing, because the
+    # capability set is empty except for the one capability the process cannot
+    # work without. NET_BIND_SERVICE is what lets it listen on 80/443; dropping
+    # ALL takes away CAP_DAC_OVERRIDE, CAP_SETUID/SETGID/SETPCAP/SETFCAP,
+    # CAP_CHOWN, CAP_FOWNER, CAP_SYS_CHROOT, CAP_MKNOD, CAP_NET_RAW and the rest
+    # of the default set — every one of the post-RCE escalation and
+    # container-escape primitives that made "root" the word worth worrying
+    # about. Paired with no-new-privileges above, a compromised Caddy is a
+    # process that can read the files it already reads and open two ports.
+    #
+    # WHY NOT uid 1000, WHICH IS THE OBVIOUS NEXT STEP. Two routes, both
+    # rejected here, and the reasons are specific so nobody repeats the dead end:
+    #
+    #  1. Non-root on 80/443 needs CAP_NET_BIND_SERVICE to reach a NON-ROOT
+    #     process, which Docker's `cap_add` alone does not do — the daemon does
+    #     not set the AMBIENT set, and the capability is dropped across the
+    #     setuid into the container user unless the caddy binary carries a file
+    #     capability. Whether the upstream alpine image runs `setcap` on
+    #     /usr/bin/caddy decides it, and that cannot be checked from here:
+    #     Docker is not installed on the machine this was written on, so the
+    #     image could not be pulled or inspected. Shipping it unverified risks
+    #     an edge that cannot bind — the whole product dark — to close a
+    #     hardening gap the audit itself downgraded to low.
+    #  2. Listening on 8080/8443 instead and publishing 80→8080 removes the
+    #     capability question entirely, and it is what the audit suggested. It
+    #     also silently disarms the origin lockdown: scripts/prod-bootstrap.sh
+    #     matches `--dports 80,443` in DOCKER-USER, and DOCKER-USER sees the
+    #     packet AFTER DNAT, so the rule would stop matching the container port
+    #     and every IPv4 source on the internet would reach this edge again.
+    #     Two files that must change together, one of them a firewall — a worse
+    #     trade than uid 0 behind an empty capability set.
+    #
+    # To finish it: confirm `getcap /usr/bin/caddy` on the real image, then add
+    # `user: '1000:1000'` here, keep the two capability lines exactly as they
+    # are, and chown $LIBRIANT_DATA_ROOT/caddy (the /data bind AND the origin
+    # key) to that uid — the deploy scripts' origin-key gate already asserts
+    # that ownership, so it is the one line that would have to change with it.
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
     depends_on:
       # Loosened from service_healthy deliberately: now that the marketing site
       # lives inside Caddy, an app outage must not take the marketing site down
@@ -250,13 +311,18 @@ services:
   # session advisory lock.
   migrate:
     image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-api:${IMAGE_TAG:-latest}
-    <<: *logging
+    <<: [*logging, *hardening]
     restart: 'no'
     # INFRA-4: runs as the image's non-root `node` user (the Dockerfile default)
     # — the previous `user: root` override was only there to avoid a corepack
     # cache re-download, which is now fixed by warming a shared COREPACK_HOME at
-    # build time. This eliminates the only root container in the prod stack;
-    # the one-shot does DB DDL and serves no traffic.
+    # build time.
+    #
+    # supply-chain-07: this used to end "…which eliminates the only root
+    # container in the prod stack", and that was false the day it was written.
+    # `caddy` runs as uid 0 — see the long note on that service, which now says
+    # so in the first line. A sentence like that one is worse than silence: a
+    # reviewer greps for `user:`, finds nothing, reads this, and stops looking.
     command: ['sh', '/app/scripts/prod-bootstrap.sh']
     environment:
       <<: *app-env
@@ -281,7 +347,7 @@ services:
 
   api:
     image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-api:${IMAGE_TAG:-latest}
-    <<: [*restart, *logging]
+    <<: [*restart, *logging, *hardening]
     mem_limit: ${API_MEM_LIMIT:-1g}
     cpus: ${API_CPUS:-1.5}
     pids_limit: 1024
@@ -297,9 +363,11 @@ services:
       postgres:
         condition: service_healthy
       # `service_started` and not `service_healthy` — boot-and-config-15: the
-      # pooler has no healthcheck to wait for, on purpose. This container's own
-      # /readyz is the thing that proves the path through it works, and it is
-      # what the deploy gate reads.
+      # pooler carries no healthcheck of its own (the probe lives in the
+      # `pgbouncer-probe` sidecar), and this container is deliberately not gated
+      # on that sidecar either. This container's own /readyz crosses the same
+      # hop, so gating the API's boot on a diagnostic would only convert a
+      # broken probe into an outage.
       pgbouncer:
         condition: service_started
       redis:
@@ -331,7 +399,7 @@ services:
 
   web:
     image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-web:${IMAGE_TAG:-latest}
-    <<: [*restart, *logging]
+    <<: [*restart, *logging, *hardening]
     mem_limit: ${WEB_MEM_LIMIT:-768m}
     cpus: ${WEB_CPUS:-1}
     pids_limit: 512
@@ -397,7 +465,7 @@ services:
 
   worker:
     image: ghcr.io/${IMAGE_OWNER:-libriant}/libriant-api:${IMAGE_TAG:-latest}
-    <<: [*restart, *logging]
+    <<: [*restart, *logging, *hardening]
     mem_limit: ${WORKER_MEM_LIMIT:-1g}
     cpus: ${WORKER_CPUS:-1}
     pids_limit: 512
@@ -445,7 +513,7 @@ services:
     #   docker buildx imagetools inspect postgres:16-alpine
     # ) and change both halves in the same commit.
     image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
-    <<: [*restart, *logging]
+    <<: [*restart, *logging, *hardening]
     # Keep Postgres's ceiling the highest of the app tier — it's the component
     # whose death takes the whole cell down. Tune shared_buffers/work_mem in the
     # command below to stay within this on a larger host.
@@ -582,7 +650,7 @@ services:
     # `docker compose pull` with no signal. Pinned to the digest of
     # v1.25.2-p0 as published on 2026-08-26.
     image: edoburu/pgbouncer:v1.25.2-p0@sha256:7d7a27d9e90985cab5cf42256f5c13a3120baa4b055b69df37beb272b89b2340
-    <<: [*restart, *logging]
+    <<: [*restart, *logging, *hardening]
     mem_limit: ${PGBOUNCER_MEM_LIMIT:-256m}
     cpus: ${PGBOUNCER_CPUS:-0.5}
     pids_limit: 256
@@ -599,33 +667,95 @@ services:
       MAX_CLIENT_CONN: '500'
       DEFAULT_POOL_SIZE: '20'
     networks: [data]
-    # boot-and-config-15. There is deliberately NO healthcheck here now. There
-    # was one — `pg_isready -h localhost -p 5432 -U libriant` — and it was a
-    # green light that could not turn red for the failure that matters:
-    # pg_isready is satisfied by the startup-packet reply, which pgbouncer sends
-    # itself. It never reaches Postgres, so the pooler reported "accepting
-    # connections" while the backend behind it was unreachable, wrong-password
-    # or gone. Nothing consumed the result either (`api` waits on
-    # `service_started` below, and scripts/deploy-on-host.sh's health gate
-    # asserts api/web/worker only), so its only effect was on the operator
-    # reading `docker compose ps` during a control-plane outage — where it
-    # pointed away from the problem.
+    # boot-and-config-15. NO healthcheck on this service, and the probe that
+    # replaces it lives in `pgbouncer-probe` below. The one that used to be here
+    # — `pg_isready -h localhost -p 5432 -U libriant` — was a green light that
+    # could not turn red for the failure that matters: pg_isready is satisfied
+    # by the startup-packet reply, which pgbouncer sends ITSELF. It never
+    # reaches Postgres, so the pooler reported "accepting connections" while the
+    # backend behind it was unreachable, wrong-password or gone.
     #
-    # The honest end-to-end probe is `psql "$CONTROL_DATABASE_URL" -c 'select
-    # 1'`, and it is already running: that is exactly what the api's /readyz
-    # does (apps/api/src/platform/health.controller.ts:42 — `controlDb` connects
-    # through pgbouncer:5432), it is the api container's healthcheck, and the
-    # deploy gate does consume THAT. Repeating it here needs `psql` inside this
-    # image, and this is a single-maintainer community image whose contents are
-    # not verifiable from this repo (docs/RUNBOOK.md already carries that as an
-    # open question). A probe that turns a working pooler permanently red is a
-    # worse 3am signal than no probe, so: no probe, and no second opinion about
-    # a component whose health is already asserted one hop downstream.
+    # Putting the real probe back HERE needs `psql` inside this image, and this
+    # is the one image in the file that is a single-maintainer community build
+    # rather than an official one — its contents cannot be checked from this
+    # repo, and Docker is not installed on the machine this was written on, so
+    # it could not be pulled and inspected either. A healthcheck that turns a
+    # perfectly good pooler permanently red is a worse 3am signal than none.
+    # Hence the sidecar: same probe, run from an image whose contents ARE known.
+
+  # boot-and-config-15. The pooler's health probe, hosted out-of-process.
+  #
+  # `psql -c 'select 1'` through pgbouncer:5432 is the only probe that can tell
+  # the two states apart — "the pooler answers" and "the pooler can reach the
+  # database" — because it makes the pooler open a server-side connection and
+  # run a statement on it. pg_isready cannot: it is answered by pgbouncer's own
+  # startup-packet reply and never touches Postgres. Demonstrated rather than
+  # assumed: against the audit's local Postgres, `pg_isready -U nobody -d
+  # nope` returns "accepting connections" and exit 0, while `psql -U nobody -d
+  # nope -c 'select 1'` exits 2 with a FATAL.
+  #
+  # THE IMAGE IS DELIBERATELY THE ONE POSTGRES ALREADY USES, digest and all: it
+  # ships psql, it is a Docker Official Image, it is already pulled on the host,
+  # and reusing the exact pin adds no supply-chain surface for a diagnostic. The
+  # entrypoint is replaced because the postgres entrypoint would try to
+  # initialise a cluster; this container only ever sleeps and gets probed.
+  #
+  # WHO CONSUMES IT, because a healthcheck nobody reads is the defect this
+  # replaces: the deploy health gate asserts it alongside api/web/worker in BOTH
+  # deploy paths (scripts/deploy-on-host.sh and .github/workflows/deploy.yml).
+  # `api` deliberately does NOT gate its start on it — its own /readyz already
+  # crosses the same hop, and making the API's boot depend on a diagnostic
+  # sidecar would turn a broken probe into an outage. What this adds is
+  # ATTRIBUTION: at 3am, api unhealthy + probe unhealthy means the pooler path,
+  # api unhealthy + probe healthy means the API.
+  pgbouncer-probe:
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    <<: [*restart, *logging, *hardening]
+    mem_limit: ${PGBOUNCER_PROBE_MEM_LIMIT:-128m}
+    cpus: ${PGBOUNCER_PROBE_CPUS:-0.25}
+    pids_limit: 64
+    # Replacing the entrypoint also replaces the thing that drops privileges:
+    # postgres:16-alpine declares no USER, and it is its ENTRYPOINT that steps
+    # down to the `postgres` account. Overriding it with `sleep` left PID 1 as
+    # root with the full default capability set, on the `data` network beside
+    # Postgres — a second uid-0 container introduced by the same change that
+    # hardens the first one. This container only ever runs `sleep` and `psql`,
+    # so neither root nor any capability buys it anything.
+    user: 'postgres'
+    cap_drop: ['ALL']
+    # A bare number, not `sleep infinity`: this image is alpine, so `sleep` is
+    # busybox, and `infinity` is a GNU coreutils spelling busybox rejects. That
+    # would exit immediately, crash-loop under `restart: unless-stopped` and
+    # never report healthy. The deploy no longer FAILS on that — the probe is a
+    # reported signal, not a gate (see the health block in deploy.yml) — but a
+    # crash-looping diagnostic is still a diagnostic nobody can read.
+    # 2147483647 seconds is 68 years.
+    entrypoint: ['sleep', '2147483647']
+    depends_on:
+      pgbouncer:
+        condition: service_started
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      # Bound the probe below the healthcheck timeout, so a pooler that accepts
+      # the TCP connection and then hangs reads as a failed check rather than as
+      # a check that never returns.
+      PGCONNECT_TIMEOUT: '5'
+    networks: [data]
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'psql -qtAX -h pgbouncer -p 5432 -U libriant -d libriant_control -c "select 1" >/dev/null',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   redis:
     # supply-chain-05 — see the note on `postgres` above.
     image: redis:8-alpine@sha256:becdda6c7f4b3fb42e42fd7f120bbf5c54c4caaaf16f26da24e4563d2c1f0576
-    <<: [*restart, *logging]
+    <<: [*restart, *logging, *hardening]
     mem_limit: ${REDIS_MEM_LIMIT:-512m}
     cpus: ${REDIS_CPUS:-1}
     pids_limit: 256

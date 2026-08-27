@@ -79,6 +79,67 @@ acceptance record. Until those exist a version bump means telling the live
 libraries to re-accept out of band — the API can record it, but nothing in the
 product asks.
 
+## Queued correction — DPA §7.2 and §7.3 (privacy-legal-15)
+
+**The Service now does more than the published DPA says it does.** A per-member
+Article 15 / Article 20 export shipped — `GET /t/:slug/members/:id/data-export`,
+with an **Export member's data** control on the member's page — and §7.2 still
+reads "There is no per-member export … not something the Service lets you
+self-serve today", while §7.3 still reads "there is no guardian contact field,
+no age-based restriction on automated notices, and no shorter retention for a
+minor's record" without mentioning the one age branch that now exists.
+
+It is written down here rather than edited in place because editing a published
+document is the two-file change above: it needs a `LEGAL_VERSION` bump, a fresh
+`docs/legal/accepted/<version>/`, new digests in `LEGAL_CORPUS`, and both
+locales moved together. The change that shipped the export did not own
+`packages/shared/src/legal.ts` or `apps/api/src/auth/legal-acceptance.ts`, and a
+half-done version bump breaks `legal-acceptance.spec.ts` for everybody.
+
+The direction of the error is the safe one — the DPA under-promises — but it
+must go out with the next version. Drafted replacements:
+
+**`locales/en/legal/dpa.md` §7.2**, replacing the whole paragraph:
+
+> 7.2 **Two different exports.** Settings → Export produces your whole library —
+> catalogue, members, circulation — as CSV, JSON, XLSX or SQL. That is your
+> Article 20 tool for moving your own data and needs nothing from us. For one
+> person's Article 15 or Article 20 request, use **Export member's data** on that
+> member's page instead: it produces a single structured, machine-readable JSON
+> file holding that member's record, loans, reservations, fines, the notices we
+> addressed to them, the activity entries about their record and their photo, and
+> nothing about anybody else. It is available to an owner, an administrator or a
+> librarian, never to a volunteer, and each production is recorded in your own
+> activity log. The file states its own limits: it is matched on identifiers, so
+> it does not sweep up rows that merely mention the person inside another
+> record's free text, and it does not cover backups or anything you hold outside
+> the Service. Where a request needs more than it contains, ask us under 7.4.
+
+**`locales/en/legal/dpa.md` §7.3**, replacing the first sentence:
+
+> 7.3 **School libraries and children.** The Service stores a date of birth if
+> you enter one, and one feature reads it: the per-member export in 7.2 marks a
+> subject who is under 18 — and, in a school library with no date of birth on
+> file, says the subject should be presumed a pupil — so that whoever is about to
+> hand the file over checks who is entitled to receive it. Nothing else in the
+> Service treats a child differently: there is no guardian contact field, no
+> age-based restriction on automated notices, and no shorter retention for a
+> minor's record.
+
+**And while that version is open, fix §7.1 too.** It says a member's record and
+history "are reachable from that member's page in the Service: you can read
+them, correct any field, and, as owner or admin, erase the member irreversibly
+under Article 17." The first two are true. The third is not: erasure is
+`POST /t/:slug/members/:id/erase` and **no page in `apps/web` calls it** — the
+member page has no erase button (see `MemberDetail.tsx`, which has archive,
+restore, suspend, reactivate and the new export, and nothing else). Either ship
+the button before the version goes out, or change "from that member's page" to
+name the route and say it is not yet on screen.
+
+`locales/el/legal/dpa.md` needs the same edits in Greek; the corresponding Greek
+wording already exists in `docs/legal/dpia-school-libraries.el.md` §4.1, §4.3 and
+§4.6 and can be adapted. Update the `Last updated:` line in both files.
+
 ## Translations
 
 Each document must exist in `locales/en/legal/` and `locales/el/legal/`. If a

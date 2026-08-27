@@ -35,6 +35,16 @@ export type RenderOptions = {
   formError?: string;
   /** Defaults to Greek — the site's primary language. */
   lang?: Lang;
+  /**
+   * Replace the form with the waiting-list notice.
+   *
+   * Only the API passes this, and only because it has just counted the
+   * accepted applications (launch-readiness-11). The static build never does:
+   * a file written at deploy time cannot know whether the fifth place went
+   * this morning, and the version of this switch that read
+   * `offer.spotsRemaining` pretended otherwise.
+   */
+  offerClosed?: boolean;
 };
 
 /**
@@ -187,7 +197,7 @@ function closedNotice(c: SiteConfig, lang: Lang): string {
 export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions = {}): string {
   const lang: Lang = o.lang ?? 'el';
   const h = HOME[lang];
-  const open = c.offer.spotsRemaining > 0;
+  const open = !o.offerClosed;
   const entry = priceLabel(c.offer.entryMonthlyPriceEur, lang);
   const planned = priceLabel(c.offer.plannedMonthlyPriceEur, lang);
 
@@ -223,6 +233,15 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
   </article>`,
   ).join('\n  ');
 
+  // The first offer tile used to read «N θέσεις διαθέσιμες» over a number fed by
+  // a literal in site.config.json that nothing ever decremented, so the sixth
+  // applicant was told five places remained (launch-readiness-11). It states the
+  // SIZE of the offer now — a claim no application can falsify, and the only
+  // kind a file written at deploy time is in a position to make. Built here
+  // rather than inline below so this explanation does not ship to visitors as an
+  // HTML comment.
+  const spotsTile = `<div class="stat"><span class="stat__num">${esc(c.offer.spotsTotal)}</span><span class="stat__label">${esc(h.statSpots)}</span></div>`;
+
   const body = `<section class="hero">
   <div class="wrap"><div class="hero__inner">
     <p class="eyebrow">${esc(copy['hero.eyebrow'] ?? h.heroEyebrow)}</p>
@@ -243,7 +262,7 @@ export function renderIndex(c: SiteConfig, copy: LandingCopy, o: RenderOptions =
       <h2 id="offer-title">${esc(h.offerTitle(c.offer.spotsTotal))}</h2>
       <p class="offer__lede">${esc(h.offerLede(c.offer.spotsTotal, c.offer.planName, c.offer.months))}</p>
       <div class="offer__grid">
-        <div class="stat"><span class="stat__num">${esc(c.offer.spotsRemaining)}</span><span class="stat__label">${esc(h.statSpots(c.offer.spotsRemaining, c.offer.spotsTotal))}</span></div>
+        ${spotsTile}
         <div class="stat"><span class="stat__num">${esc(h.statMonths(c.offer.months))}</span><span class="stat__label">${esc(h.statMonthsLabel)}</span></div>
         <div class="stat"><span class="stat__num">${esc(h.statFree)}</span><span class="stat__label">${esc(h.statFreeLabel)}</span></div>
         <div class="stat"><span class="stat__num">${esc(h.statFrom(entry))}</span><span class="stat__label">${esc(h.statFromLabel)}</span></div>

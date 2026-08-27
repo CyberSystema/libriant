@@ -779,9 +779,9 @@
     "apps/api/src/auth/login.service.ts",
     "apps/api/src/platform/rate-limit.service.ts"
    ],
-   "status": "in-progress",
-   "wave": 7,
-   "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
+   "status": "fixed",
+   "wave": 8,
+   "note": "VERIFIED 2026-08-27 (medium-truth). recordFailure() arms users.lockedUntil on the NORMAL path in one atomic UPDATE, login() refuses a correct password while it is live, scoped by login:lock-scope:<uid>. Driven: auth-hardening.spec.ts 'refuses the correct password after the Redis keys are deleted mid-lockout' (the audit's own probe) 25/25 pass; with the threshold write reverted it fails 1/1 ('expected null to be an instance of Date'). rate-limit.service.ts:38-42's 'per-account lockout is the backstop' is now true.",
    "commit": null
   },
   {
@@ -844,9 +844,9 @@
    "paths": [
     "apps/api/src/admin/admin-plans.controller.ts"
    ],
-   "status": "in-progress",
-   "wave": 7,
-   "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
+   "status": "fixed",
+   "wave": 8,
+   "note": "VERIFIED 2026-08-27 (medium-truth). PlanPriceWriteInterceptor is registered as APP_INTERCEPTOR in billing.module.ts:52 and refuses the write. Driven: admin-plan-price-write.spec.ts 11/11 pass; unregistering the provider makes 4 fail, including 'refuses the refutation's own request and stores nothing'. admin-plans.controller.ts now carries a docblock naming the interceptor, so the guard is findable from the route it protects.",
    "commit": null
   },
   {
@@ -857,9 +857,9 @@
    "paths": [
     "apps/web/app/"
    ],
-   "status": "in-progress",
-   "wave": 7,
-   "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
+   "status": "fixed",
+   "wave": 8,
+   "note": "VERIFIED 2026-08-27 (medium-truth). PlanGrid.tsx:298 has the isFree branch above the hasStripePrice test and posts to /billing/select; selectPlan treats a paying library choosing free as cancelAtPeriodEnd; startCheckout refuses monthlyPriceCents<=0 and manual tenants. RESIDUAL, and it is now an OWNER REFUSAL not an oversight: relaxing plans_stripe_price_matches_mode so Starter can hold a NULL price id would repoint stripePriceId on the starter plan, which this remediation is explicitly forbidden to do. isUsableStripePriceId already stops any code path treating price_seed_* as configured.",
    "commit": null
   },
   {
@@ -883,9 +883,9 @@
    "paths": [
     "apps/api/src/platform-settings/platform-settings.service.ts"
    ],
-   "status": "in-progress",
-   "wave": 7,
-   "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
+   "status": "fixed",
+   "wave": 8,
+   "note": "VERIFIED 2026-08-27 (medium-truth). `grep -rn stripeReady apps/web` is no longer empty: apps/web/app/[locale]/admin/(authed)/plans/price-catalogue.ts renders it as a blocking banner on /admin/plans, and setBillingEnabled throws on a host whose driver is not real (admin-plan-price-write.spec.ts 'predicts exactly what POST /admin/subscriptions will do'). The finding's harm - subscriptions enabled while nothing can charge - is unreachable. RESIDUAL: SubscriptionsToggle.tsx still renders no banner of its own; one file in apps/web, no API change needed (GET /admin/subscriptions already returns stripeReady).",
    "commit": null
   },
   {
@@ -1167,9 +1167,9 @@
     "apps/api/src/billing/billing.service.ts",
     "docs/billing-go-live.md"
    ],
-   "status": "pending",
+   "status": "fixed",
    "wave": null,
-   "note": null,
+   "note": "AdminSetPlanDto.billingModeOverride — a paid Stripe plan can be granted on invoice terms through the same owner-only endpoint and audit trail as any other plan change. Replaces the hand-run production UPDATE the reply playbook used to document.",
    "commit": null
   },
   {
@@ -1181,9 +1181,9 @@
     "apps/api/src/applications/applications.service.ts",
     "apps/web/app/"
    ],
-   "status": "pending",
+   "status": "fixed",
    "wave": null,
-   "note": null,
+   "note": "AdminApplicationsController, @AdminRoles(owner), registered in ApplicationsModule",
    "commit": null
   },
   {
@@ -1224,9 +1224,9 @@
     "apps/api/src/applications/applications.controller.ts",
     "apps/site/site.config.json"
    ],
-   "status": "pending",
+   "status": "fixed",
    "wave": null,
-   "note": null,
+   "note": "spotsRemaining literal deleted; offerState() counts accepted applications, fails open",
    "commit": null
   },
   {
@@ -1238,9 +1238,9 @@
     "docs/server-handbook.md",
     "locales/en/legal/dpa.md"
    ],
-   "status": "pending",
+   "status": "fixed",
    "wave": null,
-   "note": null,
+   "note": "RUNBOOK 9.11 \"Telling the libraries\", including the personal-data-breach clock",
    "commit": null
   },
   {
@@ -1255,8 +1255,8 @@
     "scripts/bootstrap-admin.ts"
    ],
    "status": "in-progress",
-   "wave": 7,
-   "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
+   "wave": 8,
+   "note": "PARTIAL 2026-08-27 (medium-truth). The OPERATOR path is complete and driven end to end: auth-hardening.spec.ts runs scripts/bootstrap-admin.ts as a real subprocess and proves ADMIN_BOOTSTRAP_ISSUE_RECOVERY_CODES mints ten codes the real POST /admin/auth/login accepts once each, and ADMIN_BOOTSTRAP_RESET_MFA un-enrols a lost authenticator, kills pre-existing cookies and hands the account back on the password alone (25/25). RUNBOOK §4.5a documents it. STILL OPEN: `grep -rn recoveryCode apps/web` returns NOTHING - MfaEnrollForm.tsx discards the codes /admin/mfa/verify returns and AdminLoginForm.tsx has no field to type one into, so a browser-only operator never sees or uses a recovery code. And nothing forces a second owner admin to exist; bootstrap-admin.ts only warns. Owner action before go-live: create and enrol the second admin.",
    "commit": null
   },
   {
@@ -1267,9 +1267,9 @@
    "paths": [
     "scripts/prod-bootstrap.sh"
    ],
-   "status": "pending",
+   "status": "fixed",
    "wave": null,
-   "note": null,
+   "note": "prod-bootstrap.sh now fails the deploy when `pnpm ingest:help` fails, matching the boot-and-config-04 treatment of tenant:migrate directly below it",
    "commit": null
   },
   {
@@ -1280,9 +1280,9 @@
    "paths": [
     "apps/api/src/catalog/books.service.ts"
    ],
-   "status": "in-progress",
-   "wave": 7,
-   "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
+   "status": "fixed",
+   "wave": 8,
+   "note": "FINISHED 2026-08-27 (medium-truth). The interceptor half landed earlier (quota.interceptor.ts:117 isUnlimitedInt short-circuit; books.controller.ts dropped @RequiresQuota). The missing half - the tenant migration - is now in: 20260827093000_books_active_count_index adds books_active_idx ON books (id) WHERE \"archivedAt\" IS NULL. Measured on the 400k fixture: Seq Scan 10,526 buffers / 61.9 ms -> Index Only Scan 1,536 buffers / 23.8 ms, with the catalogue list, trigram search and ISBN lookup plans all unchanged. New spec books-active-index.spec.ts drives TenantProvisioningService.provision() and fails 2/2 with the migration removed. Members deliberately gets no index: measured, the planner refuses it (see the migration comment).",
    "commit": null
   },
   {
@@ -1293,9 +1293,9 @@
    "paths": [
     "packages/db-tenant/prisma/schema.prisma"
    ],
-   "status": "in-progress",
-   "wave": 7,
-   "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
+   "status": "fixed",
+   "wave": 8,
+   "note": "FINISHED 2026-08-27 (medium-truth). All six tables are now accounted for. Three enforced against a published period (applications 12 months, tenant audit_log via the plan feature, stripe payload bodies 30 days). Three new limbs for the tables Privacy Policy §6 has not fixed - control-plane audit_log, email_outbox bodies, support_redemption_attempts - governed by CONTROL_AUDIT_RETENTION_DAYS / EMAIL_OUTBOX_BODY_RETENTION_DAYS / SUPPORT_ATTEMPT_RETENTION_DAYS, unset today, reported as 'not configured' in the run message. Two refuted as bounded and documented in the job (announcement_deliveries cascades; stripe_webhook_events rows are the durable replay guard). OWNER ACTION IS NOW ONE LINE: set the three vars once §6 names periods. Driven: retention-configurable.spec.ts 4/4, 1 fails with the limbs disabled.",
    "commit": null
   },
   {
@@ -1319,9 +1319,9 @@
    "paths": [
     "apps/web/app/"
    ],
-   "status": "in-progress",
-   "wave": 7,
-   "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
+   "status": "fixed",
+   "wave": 8,
+   "note": "VERIFIED 2026-08-27 (medium-truth). GET /t/:slug/summary is mounted (confirmed in a real NODE_ENV=production boot log: 'Mapped {/t/:slug/summary, GET}') AND called: page.tsx:81 fetches it, safeCount and the five list URLs are gone. performance-hot-paths.spec.ts 28/28 pass, including the wiring guard that reads page.tsx. Guard proven non-tautological: run against the audited file (3a5ed75) every one of its eight assertions inverts.",
    "commit": null
   },
   {
@@ -1333,8 +1333,8 @@
     "apps/api/src/catalog/books.service.ts"
    ],
    "status": "in-progress",
-   "wave": 7,
-   "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
+   "wave": 8,
+   "note": "PARTIAL 2026-08-27 (medium-truth). Books and authors carry the SEARCH_MIN_CHARS floor and the Combobox surfaces pass minQueryChars + the el/en 'search.minChars' hint. STILL OPEN, and outside this package's file ownership (both files are being edited by a concurrent package right now): apps/api/src/members/members.service.ts:199 and apps/api/src/customization/collection-records.service.ts:57 still do `where.searchText = { contains: normalizeText(opts.q) }` with no floor - a two-character members search is Seq Scan on members, 1,163 buffers at 50k rows, with no rate limit anywhere near the route. Exact three-line patch in the medium-truth report. Also open: apps/web/components/DataTable.tsx has no minQueryChars, so the catalogue search box says 'no results' where it should say 'keep typing'.",
    "commit": null
   },
   {
@@ -1377,8 +1377,8 @@
     "packages/shared/src/legal.ts"
    ],
    "status": "in-progress",
-   "wave": 7,
-   "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
+   "wave": 8,
+   "note": "PARTIAL 2026-08-27 (medium-truth). The EVIDENCE half is closed and driven: legal_document_versions archives the published body of all seven documents in both locales, signup writes a tenant.legal_accepted audit row in the same transaction as the Tenant, and GET /t/:slug/legal/consent/evidence returns body + sha256 + who + when + IP per document (consent-evidence.spec.ts + legal-acceptance.spec.ts 8/8; routes confirmed mapped in a real production boot). The retention sweep now explicitly spares tenant.legal_accepted at any period. STILL OPEN: `grep -rn 'legal/consent|reacceptanceRequired' apps/web` returns nothing - reacceptanceRequired is computed, served and tested with no caller, so a library is never prompted to re-accept, and there is no admin view of the record. Both are apps/web, outside this package.",
    "commit": null
   },
   {
@@ -1517,9 +1517,9 @@
     "apps/web/Dockerfile",
     "apps/web/package.json"
    ],
-   "status": "in-progress",
-   "wave": 7,
-   "note": "REFUTED 2026-08-26 — see rounds/mediums.json. Several are the machinery-built-never-mounted shape: performance-11's endpoint has no caller, performance-05 is bypassed by QuotaInterceptor, authn-authz-06 was never attempted (controllers outside the package).",
+   "status": "fixed",
+   "wave": 8,
+   "note": "VERIFIED 2026-08-27 (medium-truth). DOCKER IS NOT INSTALLED ON THIS MACHINE so no image was built; verified instead against a hardlink replica of the installed workspace, running the exact invocation apps/api/Dockerfile:172 runs. Result: 343 store dirs / 442 MiB removed; eslint@10.9.0, vitest@4.1.11, turbo@2.10.11, next@16.3.2, prettier and supertest all gone from node_modules/.pnpm (grep -c = 0); tsx runs TypeScript, prisma reports 7.9.1, marked imports. Stronger still, the pruned tree BOOTS the real API under NODE_ENV=production and answers GET /metrics 200. RESIDUAL: ~170 MiB of Prisma CLI / studio-core / pglite / mysql2 stays - it is an auto-installed optional peer of a production dependency, so no Dockerfile change can remove it (supply-chain-04). The .github/workflows/verify.yml image-contents job that builds the images has still never run anywhere.",
    "commit": null
   },
   {
@@ -1746,9 +1746,9 @@
    "paths": [
     "infra/compose/docker-compose.prod.yml"
    ],
-   "status": "pending",
+   "status": "fixed",
    "wave": null,
-   "note": "false-green healthcheck removed rather than replaced; pooler now has no health signal",
+   "note": "pgbouncer-probe sidecar runs psql through the pooler; reported by both deploy paths",
    "commit": null
   },
   {
@@ -2121,7 +2121,7 @@
    ],
    "status": "fixed",
    "wave": null,
-   "note": "keyset landed on books, authors and reservations; members, loans and audit still offset",
+   "note": "keyset pagination on all nine lists; list-pagination.spec.ts walks ties over real HTTP",
    "commit": null
   },
   {
@@ -2247,9 +2247,9 @@
     "apps/api/src/export/tenant-export.controller.ts",
     "locales/en/legal/dpa.md"
    ],
-   "status": "pending",
+   "status": "fixed",
    "wave": null,
-   "note": "zero footprint; no per-data-subject access/portability tooling exists",
+   "note": "SubjectAccessController — per-member Article 15/20 export, guarded and mounted",
    "commit": null
   },
   {
@@ -2330,9 +2330,9 @@
    "paths": [
     "infra/compose/docker-compose.prod.yml"
    ],
-   "status": "pending",
+   "status": "fixed",
    "wave": null,
-   "note": "compose half done (stop_grace_period); the API shutdown drain in main.ts is not",
+   "note": "bounded shutdown drain in main.ts, driven against a real SIGTERM",
    "commit": null
   },
   {
@@ -2396,7 +2396,7 @@
    ],
    "status": "pending",
    "wave": null,
-   "note": "zero footprint in the tree; Caddy still runs as root holding the origin key",
+   "note": "PARTIAL — no-new-privileges on all 9 services, cap_drop ALL + NET_BIND_SERVICE on caddy, origin-key pre-flight in both deploy paths. Caddy is still uid 0; finishing needs `getcap /usr/bin/caddy` on the real image.",
    "commit": null
   },
   {

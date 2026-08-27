@@ -10,10 +10,19 @@ import type { AdminProfile } from '@/lib/admin-session';
 
 type Props = {
   admin: AdminProfile;
+  /**
+   * Applications nobody has read yet (launch-readiness-03). Rendered as a
+   * count beside the Applications link — the whole point of the page is that a
+   * library's application no longer waits for someone to think of looking, and
+   * a nav entry with no number would be exactly that. `null` when the count
+   * could not be read (a support admin is refused it, the API is down): the
+   * badge disappears rather than claiming zero.
+   */
+  applicationsUnread: number | null;
 };
 
 /** Persistent sidebar for the admin shell — distinct from the tenant sidebar. */
-export function AdminSidebar({ admin }: Props) {
+export function AdminSidebar({ admin, applicationsUnread }: Props) {
   const pathname = usePathname() ?? '';
   const router = useRouter();
   const toast = useToast();
@@ -28,8 +37,18 @@ export function AdminSidebar({ admin }: Props) {
   // Escape-to-close, scroll-lock, focus trap + focus restore while open.
   const sidebarRef = useDrawerA11y<HTMLElement>(menuOpen, () => setMenuOpen(false));
 
-  const links = [
+  const links: Array<{ href: string; label: string; badge?: number }> = [
     { href: `${base}/tenants`, label: 'Tenants' },
+    // launch-readiness-03: applications from the public form used to reach
+    // Postgres and stop there — no notification that survives
+    // EMAIL_DRIVER=console, and no page in this menu. First in the list after
+    // the libraries themselves, because during the campaign it is the thing
+    // with a two-working-day promise attached to it.
+    {
+      href: `${base}/applications`,
+      label: 'Applications',
+      badge: applicationsUnread ?? undefined,
+    },
     { href: `${base}/library-requests`, label: 'Library requests' },
     { href: `${base}/fleet`, label: 'Capacity' },
     { href: `${base}/plans`, label: 'Plans' },
@@ -137,6 +156,24 @@ export function AdminSidebar({ admin }: Props) {
                 aria-current={active ? 'page' : undefined}
               >
                 <span className="lbr-nav__link-label">{l.label}</span>
+                {l.badge ? (
+                  // Counted in the accessible name too — a screen-reader user
+                  // gets "Applications, 3 unread", not a decorative number.
+                  <span
+                    style={{
+                      marginLeft: 'auto',
+                      background: 'var(--color-primary)',
+                      color: 'var(--color-primary-fg)',
+                      borderRadius: '999px',
+                      padding: '0 var(--sp-2)',
+                      fontSize: 'var(--fs-xs)',
+                      lineHeight: '1.6',
+                    }}
+                  >
+                    {l.badge}
+                    <span className="lbr-visually-hidden"> unread</span>
+                  </span>
+                ) : null}
               </Link>
             );
           })}

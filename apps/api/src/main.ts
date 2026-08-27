@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import type { Server } from 'node:http';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
@@ -66,11 +67,11 @@ async function bootstrap() {
   // which DTO class to apply. When we adopt a transpiler that emits
   // metadata (swc), we can swap back to `useGlobalPipes(new ValidationPipe(...))`.
 
-  // Run lifecycle hooks (e.g. TenantPrismaService.onModuleDestroy, which
-  // disconnects every cached tenant client; Redis cleanup) on SIGTERM /
-  // SIGINT so container stops drain connections cleanly instead of dropping
-  // them. `tini` (PID 1 in the Docker image) forwards the signal here.
-  app.enableShutdownHooks();
+  // Drain on SIGTERM / SIGINT — `tini` (PID 1 in the Docker image) forwards
+  // the signal here. Registered at the point `enableShutdownHooks()` was, ahead
+  // of `listen()`, so the window in which a signal can land unhandled is no
+  // wider than it was before.
+  installShutdownHandlers(app);
 
   await app.listen(env.port);
   // eslint-disable-next-line no-console
@@ -95,6 +96,101 @@ async function bootstrap() {
       `redis=${endpointOf(env.redisUrl)} storage=${env.storageRoot}`,
   );
   void warnIfGreekSortsWrong();
+}
+
+/**
+ * Hard ceiling on a graceful drain (reliability-14). Kept well inside the `api`
+ * service's `stop_grace_period: 30s` so the exit that ends a deploy is ours —
+ * logged, with the hooks run — instead of the kernel's SIGKILL. The longest
+ * thing an API request does is provision a tenant: `POST /signup` runs the
+ * CREATE DATABASE and the migration inline, measured at ~1.1s of DDL in
+ * auth.controller.ts.
+ *
+ * One route breaks that rule and it is worth naming rather than letting the
+ * sentence above quietly be wrong: `GET /t/:slug/desktop/download` pipes the
+ * Electron installer straight through from GitHub Releases
+ * (desktop-release.service.ts, `nodeStream.pipe(res)`), so its duration is the
+ * client's bandwidth, not ours. A ~100 MB installer needs a sustained ~5 MB/s
+ * to finish inside this cap, and a slower connection gets cut.
+ *
+ * That is the right trade and not a close call. A severed download is a GET of
+ * an immutable artefact: the browser reports a failed download and the reader
+ * clicks again. Raising the cap to cover it would instead hold every deploy
+ * open for whoever has the slowest link, and the alternative — no cap — is the
+ * uncontrolled SIGKILL this whole change exists to prevent, which would cut the
+ * same download anyway AND take a mid-write checkout with it. The thing worth
+ * protecting is the write, and 20s is many times what any write here needs.
+ *
+ * Mirrors worker.ts's SHUTDOWN_DEADLINE_MS (25s under a 60s grace).
+ */
+const SHUTDOWN_DEADLINE_MS = 20_000;
+
+/**
+ * Stop accepting, let in-flight requests finish, close Nest, exit — bounded.
+ *
+ * This replaces `app.enableShutdownHooks()`, which was doing the job badly in
+ * two ways that only show up on a deploy. Its handler
+ * (@nestjs/core/nest-application-context.js, `listenToShutdownSignals`) runs
+ * `callDestroyHook()` BEFORE `dispose()`, i.e. it disconnects every cached
+ * tenant Prisma client and quits Redis while the HTTP server is still serving:
+ * the checkout a librarian pressed a second before the deploy landed loses its
+ * database connection mid-write instead of finishing. And nothing bounds it —
+ * one wedged hook or one wedged request and the process simply sits there until
+ * Docker's `stop_grace_period` escalates to SIGKILL, which is the uncontrolled
+ * sever the grace period exists to prevent.
+ *
+ * So we own the order: close the listening socket first (new connections are
+ * refused, idle keep-alives are dropped, sockets that still owe a response are
+ * left alone), and only once nothing is in flight call `app.close()`, which
+ * runs the same destroy/shutdown hooks `enableShutdownHooks` would have — the
+ * two are the same code path in Nest, the signal listener is all we are giving
+ * up. The whole sequence is raced against SHUTDOWN_DEADLINE_MS; if that trips
+ * we exit non-zero so a drain that failed is visible in the deploy log rather
+ * than looking like a clean stop.
+ *
+ * SIGTERM and SIGINT only. Nest's default list also carried SIGSEGV, SIGILL,
+ * SIGABRT, SIGBUS and SIGFPE — signals that mean the VM is already broken, and
+ * where running async teardown on top of it is the wrong thing to attempt.
+ */
+function installShutdownHandlers(app: NestExpressApplication): void {
+  const httpServer = app.getHttpServer() as Server;
+  let shuttingDown = false;
+
+  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+    // A second signal — an impatient operator re-running `docker compose down`
+    // — must not start a second drain on top of the first.
+    if (shuttingDown) return;
+    shuttingDown = true;
+    // eslint-disable-next-line no-console
+    console.log(`[libriant-api] received ${signal}, draining…`);
+
+    const deadline = setTimeout(() => {
+      console.error(
+        `[libriant-api] graceful shutdown exceeded ${SHUTDOWN_DEADLINE_MS}ms — forcing exit`,
+      );
+      process.exit(1);
+    }, SHUTDOWN_DEADLINE_MS);
+
+    try {
+      // Calls back once the last in-flight response has been written. On a
+      // server that never reached `listen()` it calls back immediately with
+      // ERR_SERVER_NOT_RUNNING, which is the right outcome here too.
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+      await app.close();
+    } catch (err) {
+      console.error('[libriant-api] error during shutdown', err);
+      clearTimeout(deadline);
+      process.exit(1);
+    }
+
+    clearTimeout(deadline);
+    // eslint-disable-next-line no-console
+    console.log('[libriant-api] drained, exiting');
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', (signal) => void shutdown(signal));
+  process.on('SIGINT', (signal) => void shutdown(signal));
 }
 
 /**

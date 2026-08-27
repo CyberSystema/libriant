@@ -8,7 +8,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import type { MemberStatus, Prisma } from '@libriant/db-tenant';
+import type { MemberStatus, Prisma, TenantPrismaClient } from '@libriant/db-tenant';
 import { controlDb } from '@libriant/db-control';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import type { TenantActor } from '../tenancy/tenant-actor.js';
@@ -18,6 +18,7 @@ import { FieldDefinitionsService } from '../customization/field-definitions.serv
 import { QuotaService } from '../customization/quota.service.js';
 import { validateRecordOrThrow } from '../customization/dynamic-validator.js';
 import { buildSearchText, normalizeText } from '../catalog/normalize.js';
+import { decodeCursor, encodeCursor } from '../platform/query.js';
 import { StorageService } from '../storage/storage.service.js';
 import { buildMemberNumber, nextSequenceForYear, resyncSequenceForYear } from './member-numbers.js';
 
@@ -198,15 +199,67 @@ export class MembersService {
     if (opts.status) where.status = opts.status;
     if (opts.q) where.searchText = { contains: normalizeText(opts.q) };
 
+    // performance-03, the same keyset predicate `BooksService.list` carries and
+    // for the same reason. This used to be `cursor: { id: opts.after }, skip: 1`,
+    // which Prisma renders as an OR of correlated subselects; Postgres cannot
+    // turn that into a btree start key, so it walked `members_sortName_idx` from
+    // the beginning of the range and threw away every row before the cursor.
+    //
+    // The roster is the list a librarian pages DEEPLY — it is how you find a
+    // patron whose name you half-remember — and it was the most expensive of
+    // the nine. Measured on a 200,000-member roster, on the literal SQL Prisma
+    // emitted for the page at depth 100,000:
+    //   BEFORE  Index Scan using "members_sortName_idx", Rows Removed by
+    //           Filter: 100000, Buffers: shared hit=98561 read=2054,
+    //           Execution Time: 79.415 ms
+    //   AFTER   Index Scan using "members_sortName_id_idx",
+    //           Index Cond: ("sortName" >= …), Rows Removed by Filter: 1,
+    //           Buffers: shared read=30, Execution Time: 0.765 ms
+    // 100,615 buffers is 786 MB of traffic through a shared_buffers pool every
+    // library on the box competes for — to render 25 names.
+    //
+    // The `gte` is the start key; the OR beside it is the exact boundary, since
+    // `gte` alone would repeat the members who tie on `sortName` (and Greek
+    // rosters do tie — same surname, same given name, different patron).
+    const after = await this.decodeListCursor(client, opts.after);
+    if (after) {
+      where.AND = [
+        { sortName: { gte: after.sortName } },
+        {
+          OR: [
+            { sortName: { gt: after.sortName } },
+            { sortName: after.sortName, id: { gt: after.id } },
+          ],
+        },
+      ];
+    }
     const rows = await client.member.findMany({
       where,
       orderBy: [{ sortName: 'asc' }, { id: 'asc' }],
       take: limit + 1,
-      ...(opts.after ? { cursor: { id: opts.after }, skip: 1 } : {}),
     });
     const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map((r) => this.toDto(r));
-    return { items, nextCursor: hasMore ? items[items.length - 1]!.id : null };
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const items = page.map((r) => this.toDto(r));
+    const last = page[page.length - 1];
+    return {
+      items,
+      nextCursor: hasMore && last ? encodeCursor([last.sortName, last.id]) : null,
+    };
+  }
+
+  /** As `BooksService.decodeListCursor`, over `(sortName, id)`. */
+  private async decodeListCursor(
+    client: TenantPrismaClient,
+    after: string | undefined,
+  ): Promise<{ sortName: string; id: string } | null> {
+    if (!after) return null;
+    const parts = decodeCursor(after, 2);
+    if (parts) {
+      const [sortName, id] = parts;
+      return typeof sortName === 'string' && typeof id === 'string' ? { sortName, id } : null;
+    }
+    return client.member.findUnique({ where: { id: after }, select: { sortName: true, id: true } });
   }
 
   /**

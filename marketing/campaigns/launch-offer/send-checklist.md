@@ -111,11 +111,16 @@ counsel review as the legal drafts in `locales/el/legal/`.
 
 - [ ] Reply to every response within one working day — the email promises two
 - [ ] Honour every `ΔΙΑΓΡΑΦΗ` **same day**, and add the address to `suppression.csv`
-- [ ] Decrement `offer.spotsRemaining` in `apps/site/site.config.json` for each
-      library you accept. The scarcity claim has to stay true.
-      **This is a commit now, not a twenty-second deploy** — the site is baked
-      into the edge image, so it goes through CI and a full deploy. There is no
-      fast on-box path, by design. Batch acceptances if several land at once.
+- [ ] Mark each accepted library **_Give a place_** on the admin panel's
+      Applications page. That is the whole of keeping the count true: the public
+      form is gated on accepted applications, so the fifth acceptance closes it
+      within the minute. It was a commit, a CI run and a full deploy until
+      launch-readiness-11; if you find yourself editing `site.config.json` for
+      this, you are following an old copy of this list.
+- [ ] Read the Applications page daily while the wave is out. It is the only
+      notification there is — `EMAIL_DRIVER=console` means the "new application"
+      e-mail is composed and delivered to nobody, and the sidebar's unread count
+      is what tells you an application is waiting.
 - [ ] **One follow-up only**, after 7–10 days, to non-responders. Two or three
       lines, not a resend of the whole email. Then stop — a third message to a
       public institution that has ignored two is not persistence, it's a complaint

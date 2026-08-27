@@ -1,6 +1,6 @@
 # DPIA information pack — school libraries (GDPR Article 35)
 
-**Last updated: 2026-08-27** · **Document version: 1** ·
+**Last updated: 2026-08-27** · **Document version: 2** ·
 Greek version: [`dpia-school-libraries.el.md`](./dpia-school-libraries.el.md)
 
 ## What this is, and what it is not
@@ -76,19 +76,29 @@ actually forces:
 These are the ones a school should assess. Each is a fact about the product
 today, not a hypothetical.
 
-1. **There is no guardian field, and no age logic anywhere.** A date of birth is
-   stored if you enter one, and nothing in the product branches on it: no
-   reduced retention, no restriction on automated e-mail, no consent flag. If a
-   pupil's notices must reach a parent, **enter the parent's address in the
-   member record** — that is the only routing the system has.
+1. **There is no guardian field, and age changes almost nothing.** A date of
+   birth is stored if you enter one. Exactly one thing in the product reads it
+   as an age: the per-member data export in risk 6 below flags a subject who is
+   under 18 (and, in a school library with no date of birth on file, says the
+   subject should be presumed a pupil), so that the person about to hand the
+   file over is told to check who is entitled to receive it. That is a caution
+   at the desk, not a control. There is still **no reduced retention for a
+   minor, no restriction on automated e-mail to a child's address, and no
+   consent flag.** If a pupil's notices must reach a parent, **enter the
+   parent's address in the member record** — that is the only routing the system
+   has, and it is why the export deliberately does not attribute a notice to a
+   pupil merely because it was sent to the mailbox on their record.
 2. **A notice names the book.** An overdue notice's subject is
    «Εκπρόθεσμο: «<title>»», so whoever reads that mailbox learns what the child
    borrowed. Consider whether that mailbox is the child's, the parent's, or the
    school's.
 3. **Borrowing history is kept until you delete it.** There is no shorter
-   retention for a minor's record. Erasure is a deliberate act: a member's page
-   has an irreversible **erase** action (Article 17) for an owner or admin.
-   Plan when a pupil leaves the school.
+   retention for a minor's record. Erasure is a deliberate act and, as of this
+   version, an API action only: `POST /t/<your library>/members/<id>/erase`,
+   restricted to an owner or an administrator and irreversible (Article 17). The
+   member's page does not yet carry a button for it, so until it does, agree
+   with us how a leaver's record gets erased rather than assuming a librarian
+   can do it from the screen. Plan for it before the first cohort leaves.
 4. **On the configuration Libriant ships, e-mail is not delivered at all**
    (`EMAIL_DRIVER=console`): messages are composed and stored but never sent, and
    are recorded as `failed`. Do not build a process on notices reaching anyone
@@ -98,9 +108,19 @@ today, not a hypothetical.
    browser with a short summary naming the pupil and the title — see the
    [Cookie Policy](../../locales/en/legal/cookies.md), "Local storage", for
    exactly what is cleared when.
-6. **Export is all-or-nothing.** The export feature produces the whole library,
-   not one member. Treat every export as a copy of the entire pupil registry and
-   handle it accordingly; for a single pupil's data, ask us instead (DPA §7.2).
+6. **There are two exports, and only one of them is safe to use for a pupil.**
+   Settings → Export produces the **whole library**: treat every such file as a
+   copy of the entire pupil registry and handle it accordingly. A member's own
+   page now also has **Export member's data**, which produces one JSON file
+   holding that member's record, loans, reservations, fines, the notices
+   addressed to them, the activity entries about their record and their photo —
+   and nothing about anybody else. That is the file to produce for an Article 15
+   or Article 20 request; use the library-wide export for a migration, never for
+   a pupil's question. It is available to the owner, an administrator or a
+   librarian, never to a volunteer, and every production of it is written to
+   your activity log as `member.data_exported` (counts only — the log does not
+   become a second copy of the answer). What it deliberately does **not**
+   contain is listed inside the file itself, under `notCovered`.
 7. **The audit log records staff actions against member records.** Its retention
    follows your plan, and with subscriptions disabled — the current
    configuration — retention is **lifted**, not zero: nothing is deleted on age.
@@ -116,6 +136,9 @@ Quote these from [DPA §6](../../locales/en/legal/dpa.md) and `ropa.en.md` §8:
 - Administrative database exports require that window, are audited, and the file
   is deleted automatically within 24 hours.
 - Article 17 erasure that also overwrites the identifiers in the audit trail.
+- A per-member Article 15 / Article 20 export (risk 6) that is scoped to one
+  person by foreign key, so answering one pupil's request cannot disclose
+  another's — including where two pupils share one guardian's mailbox.
 - Role-based access control, mandatory MFA for platform administrators,
   encrypted backups with restore testing, rate limiting.
 
@@ -138,8 +161,12 @@ To `[CONTACT EMAIL]`, for a named library:
 - this pack and the Article 30(2) record;
 - the sub-processor list with locations and safeguards;
 - a summary of the Article 32 measures;
-- a single member's record and history in a machine-readable format, when you
-  need to answer an Article 15 or Article 20 request (DPA §7.2).
+- a single member's record and history in a machine-readable format, if you
+  cannot produce it yourself. Since document version 2 you can: **Export
+  member's data** on the member's own page does exactly this, so the usual
+  answer to an Article 15 or Article 20 request needs nothing from us. DPA §7.2
+  still describes the older position and is corrected at the next publication of
+  the legal corpus; where the two disagree, the product is the one that changed.
 
 ## 8. What is not filled in yet
 
@@ -153,6 +180,7 @@ this directory, so the placeholders here are listed by hand:
 
 ## Revision history
 
-| Version | Date       | Change                                                           |
-| ------- | ---------- | ---------------------------------------------------------------- |
-| 1       | 2026-08-27 | First issue — finding privacy-legal-12 (promised, never written) |
+| Version | Date       | Change                                                                                      |
+| ------- | ---------- | ------------------------------------------------------------------------------------------- |
+| 1       | 2026-08-27 | First issue — finding privacy-legal-12 (promised, never written)                            |
+| 2       | 2026-08-27 | Per-member Article 15/20 export shipped (privacy-legal-15); §4.1, §4.6, §5 and §7 corrected |

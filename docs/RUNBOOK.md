@@ -825,7 +825,7 @@ Read the migrate log properly. Only two steps are **fatal**: control-plane
 
 | Step              | If it silently fails                                             |
 | ----------------- | ---------------------------------------------------------------- |
-| `ingest:help`     | help articles missing                                            |
+| `ingest:help`     | help articles missing — the check below is what catches it       |
 | `tenant:migrate`  | **live libraries left on an old schema** — re-run by hand (§6.5) |
 | `admin:bootstrap` | **a green deploy nobody can log into**                           |
 
@@ -842,9 +842,40 @@ dc exec -T web sh -c 'wget -qO- http://api:3001/healthz' && echo WEB-TO-API-OK
 
 # a real page, not a static probe
 curl -sk --resolve libriant.com:443:127.0.0.1 -o /dev/null -w '%{http_code}\n' https://libriant.com/pricing
+
+# the help centre. `ingest:help` is one of the best-effort steps above, and an
+# empty help centre is indistinguishable from a working one until a librarian
+# goes looking — the app renders "no articles" rather than an error, and the
+# site sells in-app help as one of four support mechanisms. This is the only
+# thing in the deploy that fails when it is empty, so do not skip it.
+dc exec -T postgres psql -U libriant -d libriant_control -tAc \
+  "SELECT count(*) FILTER (WHERE locale = 'el'), count(*) FILTER (WHERE locale = 'en')
+     FROM help_articles WHERE \"archivedAt\" IS NULL" \
+  | awk -F'|' '{ if ($1 >= 4 && $2 >= 4) print "HELP-OK el=" $1 " en=" $2;
+                 else { print "HELP-MISSING el=" $1 " en=" $2; exit 1 } }'
 ```
 
-Good looks like: `STORAGE-OK`, `WEB-TO-API-OK`, `200`.
+`HELP-MISSING` is repaired by re-running the ingest — it upserts, so running it
+again is free:
+
+```bash
+dc run --rm --no-deps migrate sh -lc "cd /app && pnpm ingest:help"
+```
+
+> The `count(*) FILTER` form is not decoration. The obvious version —
+> `SELECT locale, count(*) … GROUP BY locale` piped to a comparison — returns
+> **no rows at all** when the table is empty, so the check prints nothing and
+> exits 0 on exactly the failure it exists to catch. Verified both ways against
+> a control plane on 2026-08-27: populated → `HELP-OK el=4 en=4`, exit 0;
+> everything archived → `HELP-MISSING el=0 en=0`, exit 1.
+>
+> **Four articles per language is the whole corpus** (getting-started,
+> adding-members, lending-books, reservations). There is nothing on returning a
+> copy, fines, importing a file, exporting data, staff and roles, or the desktop
+> app. Every one of those gaps arrives as an e-mail to you, so the check above
+> proves the help centre is _installed_, not that it is _sufficient_.
+
+Good looks like: `STORAGE-OK`, `WEB-TO-API-OK`, `200`, `HELP-OK el=4 en=4`.
 
 > `STORAGE-OK` proves the **directory** is writable by uid 1000. It does not
 > prove uploads work. **`BLOCKER data-integrity-01`: every file upload returns
@@ -1494,6 +1525,26 @@ until all four hosts have been stable for weeks — withdrawal takes months.
 Do not start this until §3.0's blocker is fixed and the box is proven healthy
 locally. DNS is the **last** step.
 
+0. **Re-derive §5.1's table before you touch anything.** It is a measurement
+   taken on 2026-08-23, not a description of the zone; a record can be added or
+   repointed in the dashboard between then and the morning you do this, and the
+   whole point of step 5 is that it is one change made with the current state in
+   front of you.
+
+   ```bash
+   for h in libriant.com www.libriant.com app.libriant.com admin.libriant.com _dmarc.libriant.com; do
+     printf '%-28s %s\n' "$h" "$(dig +short "$h" A | tr '\n' ' ')"
+   done
+   ```
+
+   The one every superseded document got wrong is `admin`: it **exists** and is
+   a repoint, not a create. Leaving it on the released Hetzner address while the
+   zone is anything other than Full (strict) means the host that serves the
+   admin login proxies to whoever Hetzner gives that IP to next — under a name
+   the origin certificate covers and that HSTS `includeSubDomains` has already
+   pinned to HTTPS in every browser that has visited the apex. Step 3 is what
+   stands between those two facts, which is why it comes before step 5.
+
 1. **Create the Origin CA certificate** for `libriant.com` **and**
    `*.libriant.com`. Store both PEMs in the password manager — nothing backs
    them up.
@@ -1665,6 +1716,12 @@ Deploy when nobody is using it, or announce it (§9.10).
 
 Caddyfile-only changes: `up -d` will not restart caddy (the config is a bind
 mount), which is why the deploy script explicitly runs `caddy reload`.
+
+**Then run §3.9 again.** It is not a first-deploy-only list: `prod-bootstrap.sh`
+runs on _every_ deploy, and the same three steps are best-effort on every one of
+them — including `ingest:help`, whose failure leaves a help centre that is empty
+rather than broken and says nothing about it. The four commands take under a
+minute and one of them can fail.
 
 ### 6.3 Logs
 
@@ -1848,16 +1905,17 @@ If you reboot _without_ `dc stop`, the stack comes back on its own — but check
 
 ### 7.1 What exists, and what is switched off
 
-| Thing                                        | State                                                                                                                                       |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prometheus, node-exporter, cAdvisor, Grafana | Exist in `infra/monitoring/docker-compose.monitoring.yml`. **Not started by any deploy step, script or workflow.** Not running on this box. |
-| Alertmanager                                 | **Does not exist.** The `alerting:` block in `prometheus.yml` is commented out.                                                             |
-| Alert rules                                  | 10, all liveness / host-capacity / Postgres-capacity. None can express an error rate or a latency.                                          |
-| Grafana dashboards                           | **Zero.** Provisioning contains one datasource file and nothing else.                                                                       |
-| Grafana contact points                       | **Zero.**                                                                                                                                   |
-| Error tracker / APM                          | **None.** No Sentry, no OTel, nothing. The only durable record of an exception is container stdout.                                         |
-| Uptime monitor                               | **None.** Nothing in the repo names a provider, an endpoint or an on-call address.                                                          |
-| Caddy metrics                                | **None** — `admin off`, no `metrics` directive. The only publicly exposed component exports nothing.                                        |
+| Thing                     | State                                                                                                                                                                                                                                                                                           |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prometheus, node-exporter | Started by **every deploy** — `scripts/deploy-on-host.sh` and the `Bring up the monitoring stack` step in `deploy.yml` both compose `infra/monitoring/docker-compose.monitoring.yml`, then assert both containers are still running ten seconds later.                                          |
+| Grafana, cAdvisor         | Behind `profiles: ['dashboards']`, which **no deploy path passes**. Opt in deliberately for a diagnosis with `--profile dashboards`. No alert rule reads a cAdvisor metric, and Prometheus labels that target `optional: 'true'` so `TargetDown` does not page about it while it is off.        |
+| Alertmanager              | Exists, behind `profiles: ['alerting']`. The deploy passes that profile **only when `alertmanager.yml` carries no `[PLACEHOLDER]` receiver** — so today it does not start, and the deploy prints an `ALERTING=off` banner instead. Fill in the two receiver URLs and the next deploy starts it. |
+| Alert rules               | 25, including backup freshness/encryption, Redis memory, and a `Watchdog` dead-man's switch routed to its own receiver. `pnpm check:alerts` proves every `libriant_*` metric they name is actually emitted. None can express an error rate or a latency.                                        |
+| Grafana dashboards        | **Zero.** Provisioning contains one datasource file and nothing else.                                                                                                                                                                                                                           |
+| Grafana contact points    | **Zero.**                                                                                                                                                                                                                                                                                       |
+| Error tracker / APM       | **None.** No Sentry, no OTel, nothing. The only durable record of an exception is container stdout.                                                                                                                                                                                             |
+| Uptime monitor            | **None.** Nothing in the repo names a provider, an endpoint or an on-call address.                                                                                                                                                                                                              |
+| Caddy metrics             | **None** — `admin off`, no `metrics` directive. The only publicly exposed component exports nothing.                                                                                                                                                                                            |
 
 **What reaches a human today: nothing.** Detection time for any outage is _until
 you next look_, which the weekly rhythm sets at seven days.
@@ -1882,20 +1940,26 @@ worker exposes uptime and running jobs per queue, and no success/failure gauge.
 Gauges are TTL-cached 15 s and isolated with `Promise.allSettled`, so a _missing_
 gauge means that subsystem failed, not that the API is down.
 
-### 7.2 Bringing the monitoring stack up (optional)
+### 7.2 The monitoring stack (started by every deploy)
+
+This section used to describe the stack as optional and told you to generate a
+`GRAFANA_ADMIN_PASSWORD` into a separate `/srv/libriant/.env.monitoring`. Both
+are now wrong: the deploy brings Prometheus and node-exporter up on every run,
+and `scripts/ensure-env.sh` generates the Grafana password into `.env.prod`
+alongside everything else. A second file would hold a password Compose never
+reads, and you would be locked out of a Grafana you thought you had configured.
+
+Nothing to do by hand. To look at it, or to bring up the opt-in half:
 
 ```bash
 cd /srv/libriant/app
-# Keep it out of shell history and out of the app's env file.
-sudo install -m 600 -o deploy -g deploy /dev/null /srv/libriant/.env.monitoring
-printf 'GRAFANA_ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 16)" > /srv/libriant/.env.monitoring
-set -a; . /srv/libriant/.env.monitoring; set +a       # export, or compose cannot see it
+set -a; . /srv/libriant/.env.prod; set +a            # export, or compose cannot see it
+MON="-p libriant-monitoring -f infra/monitoring/docker-compose.monitoring.yml"
 
-docker compose -p libriant-monitoring \
-  -f infra/monitoring/docker-compose.monitoring.yml up -d
-
+docker compose $MON ps                                # what the deploy started
+docker compose $MON --profile dashboards up -d        # add Grafana + cAdvisor, for a diagnosis
 docker run --rm --network libriant_app curlimages/curl -s -o /dev/null -w '%{http_code}\n' http://api:3001/metrics
-cat /srv/libriant/.env.monitoring    # copy the password into the password manager, then log in once
+grep '^GRAFANA_ADMIN_PASSWORD=' /srv/libriant/.env.prod   # log in once, then store it
 ```
 
 Good looks like: `200`. The default `${LIBRIANT_APP_NETWORK:-libriant_app}` is
@@ -2263,6 +2327,7 @@ Symptom index. Start here at 3am.
 | 526 / certificate error              | [9.8](#98-certificate-expired-or-wrong) |
 | One library broken, others fine      | [9.9](#99-one-tenant-broken)            |
 | I need to take it down on purpose    | [9.10](#910-the-customer-facing-levers) |
+| Someone outside has to be told       | [9.11](#911-telling-the-libraries)      |
 
 **First ninety seconds, always:**
 
@@ -2679,7 +2744,153 @@ customer communication is you, from a personal mailbox, by hand. Plan for that.
 personal-data breach _"without undue delay"_, with the clock running from
 awareness. If an incident involves unauthorised access to member data — including
 children's — that clock is legal, not operational. Write down the time you became
-aware, in the first minutes, before you start fixing.
+aware, in the first minutes, before you start fixing. **Then go to
+[§9.11c](#911-telling-the-libraries)**, which is what that sentence actually
+requires you to do, to whom, and with what in the message.
+
+### 9.11 Telling the libraries
+
+§9.10 is the levers. This is the part that is not a lever: deciding that a human
+outside this building has to be told, working out who, and saying it. It is
+written down because the first customer-visible incident will otherwise be
+improvised at an inconvenient hour by the one person who is also fixing the
+fault — and because the DPA makes one of these decisions legally timed rather
+than a matter of taste.
+
+**Everything below is you, from your own mailbox.** `EMAIL_DRIVER=console`: the
+platform composes mail and delivers none of it (§9.10d). Nothing here may be
+left to the product to send.
+
+#### a. Does anyone have to be told?
+
+| Situation                                                                   | Tell them | How                                            |
+| --------------------------------------------------------------------------- | --------- | ---------------------------------------------- |
+| Under 15 minutes, outside opening hours, nothing lost                       | No        | Note it in the incident log; move on           |
+| Any window you opened on purpose (`read_only`, `maintenance`, planned work) | Yes       | Announcement banner first, then e-mail if long |
+| Any outage during opening hours that a librarian could have noticed         | Yes       | E-mail, same day, from your own mailbox        |
+| Data lost, restored from backup, or rolled back                             | Yes       | E-mail, naming what was lost and what was not  |
+| Unauthorised access to, or disclosure of, personal data                     | Yes       | §9.11c — the clock is legal, start it first    |
+
+Greek public libraries open in the morning. An outage at 03:00 that is fixed by
+07:00 is an incident-log entry; the same outage at 10:00 is an e-mail.
+
+#### b. Who, and where their addresses are
+
+There is no mailing list. The addresses are rows in the control plane, and this
+is how you get them out:
+
+```bash
+dc exec -T postgres psql -U libriant -d libriant_control -c "
+SELECT t.slug, t.name, t.\"primaryEmail\", t.\"publicPhone\",
+       string_agg(u.email, ', ' ORDER BY u.email) FILTER (WHERE u.role = 'owner') AS owner_logins
+  FROM tenants t
+  LEFT JOIN users u ON u.\"tenantId\" = t.id AND u.status = 'active'
+ WHERE t.\"archivedAt\" IS NULL
+ GROUP BY t.id
+ ORDER BY t.\"createdAt\";"
+```
+
+`primaryEmail` is the library's contact address as given at signup;
+`owner_logins` are the people who can actually sign in. Write to both — the
+first is often a shared departmental mailbox nobody reads on a Saturday.
+
+**Keep a copy off the box.** If the machine is the thing that is down, this
+query cannot be run. Export it after each new library is provisioned and keep it
+where you can reach it from a phone.
+
+#### c. Personal-data breach — the one with a clock
+
+The DPA we sign with every library says, in full
+(`locales/{en,el}/legal/dpa.md` §10):
+
+> We will notify you **without undue delay** after becoming aware of a
+> personal-data breach affecting Controller Personal Data, with the information
+> available to help you meet your Article 33/34 obligations, and we will take
+> reasonable steps to mitigate it.
+
+Read that carefully, because it is not a 72-hour commitment and it is not
+vaguer than one:
+
+- **The clock starts at _awareness_, not at confirmation.** Write down the
+  wall-clock time you first suspected it, in the incident log, before you start
+  fixing anything. That timestamp is the only evidence of when the clock
+  started, and reconstructing it afterwards is not evidence.
+- **The deadline is "without undue delay", which we owe to the library — not
+  72 hours, which the library owes to the authority.** They are the controller;
+  under Art. 33(1) they have 72 hours from _their_ awareness to notify the
+  Hellenic DPA, and their awareness starts when we tell them. Anything from us
+  that eats their 72 hours is undue delay by definition. Treat the practical
+  bar as hours.
+- **Say it even while you are unsure.** The DPA promises "the information
+  available", not a finished investigation. A first message that says what is
+  known, what is not, and when the next update comes is compliant; silence
+  until you have the full picture is not.
+
+What the message must carry — this is Art. 33(3), which our DPA points at, not
+a wish-list:
+
+1. what happened, in plain words, and which of their data it touched
+   (catalogue, members, loans, staff accounts, files);
+2. the categories and approximate number of data subjects and records — an
+   estimate said to be an estimate is fine, a guess presented as a count is not;
+3. the likely consequences for the people in that data;
+4. what we have done and are doing, and any step they should take;
+5. a contact point for follow-up. **[PLACEHOLDER: the data-protection contact
+   address the DPA's §13 promises — `locales/*/legal/dpa.md` still carries
+   `[DPO EMAIL]` / `[CONTACT EMAIL]` and the libraries are entitled to a real
+   one before they sign.]**
+
+If members' data is involved, remember whose it is: for their members the
+library is the controller and we are the processor. We do not contact their
+members. They do, and we give them what they need to do it.
+
+#### d. The holding message
+
+Send this before you know the cause. Fill in the four blanks, send it, and do
+not wait for a fifth.
+
+> **Θέμα: Libriant — διακοπή λειτουργίας, ενημέρωση**
+>
+> Καλησπέρα σας,
+>
+> Το Libriant [δεν είναι διαθέσιμο / λειτουργεί με περιορισμούς] από τις
+> [ώρα]. Το πρόβλημα αφορά [τι δεν δουλεύει· τι εξακολουθεί να δουλεύει].
+>
+> Τα δεδομένα σας δεν έχουν χαθεί. [Αν κάτι χάθηκε, πείτε το εδώ αντί για αυτή
+> τη φράση — και πείτε ακριβώς τι.]
+>
+> Δουλεύω πάνω του τώρα. Θα σας στείλω νεότερη ενημέρωση μέχρι τις [ώρα, το
+> πολύ δύο ώρες από τώρα], ακόμη κι αν δεν έχει λυθεί.
+>
+> [όνομα, τηλέφωνο]
+
+English, for a library that corresponds in English:
+
+> **Subject: Libriant — service interruption, update**
+>
+> Libriant has been [unavailable / running with limits] since [time]. The part
+> that is affected is [what is not working; what still works].
+>
+> Your data has not been lost. [If something was lost, say that here instead —
+> and say exactly what.]
+>
+> I am working on it now, and I will send another update by [time, at most two
+> hours from now] whether or not it is fixed.
+
+Two rules, and they are the whole point of having a template: **the next-update
+time is a promise you keep even when there is no progress**, and **never write
+"your data is safe" until you have checked that it is.**
+
+#### e. Afterwards
+
+Within a working day of the fix: one more message saying what happened, what was
+affected, and what changed so it does not happen again. Same recipients, no
+jargon, no "an issue was experienced" — this is five libraries who chose an
+unproven product from one person, and the honest note is the entire difference
+between a bad morning and a lost customer.
+
+Then write it up in `docs/` next to this runbook while the detail is fresh, and
+add the symptom to §9's index if it is not there.
 
 ---
 

@@ -33,9 +33,16 @@ Two things about it that are easy to get wrong:
 
 The processor's half of a data-protection impact assessment, for the customer
 segment that needs one: school libraries, whose members are children. It states
-what the system does, what it does **not** do (there is no guardian field and no
-age logic anywhere in the product), the risks that follow, and the measures that
-answer them.
+what the system does, what it does **not** do, the risks that follow, and the
+measures that answer them.
+
+Keep its §4 honest about the age question, because it is the part a school's DPO
+reads twice. As of document version 2 the product reads `dateOfBirth` as an age
+in **exactly one place** — the per-member Article 15/20 export flags a subject
+under 18, and presumes a pupil in a `school` library with no date of birth on
+file — and still has **no** guardian field, no consent flag, no reduced
+retention and no age restriction on automated notices. If any of those four
+changes, §4.1 and `ropa.*.md` §5 change with it.
 
 It exists because [DPA](../../locales/el/legal/dpa.md) §4(e) promises assistance
 with Articles 32–36 to a segment it names in Annex I, and shipped none (finding

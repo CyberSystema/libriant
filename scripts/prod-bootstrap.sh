@@ -308,8 +308,22 @@ if ! pnpm db:seed; then
   exit 1
 fi
 
-echo "[bootstrap] ingesting help-centre articles (best-effort) ..."
-pnpm ingest:help || echo "[bootstrap] help ingest skipped (non-fatal)"
+# launch-readiness-15. This was `pnpm ingest:help || echo "... (non-fatal)"`,
+# the same shape boot-and-config-04 removed from tenant:migrate immediately
+# below — and with the same consequence: the step could not fail, so a deploy
+# that shipped no help articles at all looked exactly like one that shipped
+# them. That matters more here than it looks, because apps/site names in-app
+# help as one of only FOUR things standing in for a support organisation. A
+# library that opens Help and finds nothing has been sold something that is not
+# there, and nobody on this side would know.
+echo "[bootstrap] ingesting help-centre articles ..."
+if ! pnpm ingest:help; then
+  echo "[bootstrap] FATAL: help-centre ingest failed." >&2
+  echo "[bootstrap] In-app help is advertised as a support channel; shipping without it" >&2
+  echo "[bootstrap] is shipping a promise the product does not keep. Fix the ingest, or" >&2
+  echo "[bootstrap] remove the claim from apps/site/content/pages.{el,en}.json first." >&2
+  exit 1
+fi
 
 # boot-and-config-04. This was `pnpm tenant:migrate || echo "... (non-fatal)"`.
 #

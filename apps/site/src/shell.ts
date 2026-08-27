@@ -27,7 +27,14 @@ export type SiteConfig = {
   };
   offer: {
     spotsTotal: number;
-    spotsRemaining: number;
+    /**
+     * No `spotsRemaining`. It used to live here and it was a lie with a
+     * deploy-shaped fuse (launch-readiness-11): a static build cannot know how
+     * many places are left, and the one that gated the API's form was a
+     * compiled-in copy of the same literal. The count now comes from the
+     * `applications` table at request time; pages built from this config make
+     * only the claim that stays true — how many places there are in total.
+     */
     months: number;
     planName: string;
     plannedMonthlyPriceEur: number;

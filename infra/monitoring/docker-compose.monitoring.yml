@@ -1,25 +1,46 @@
-# Libriant — free, self-hosted server-level monitoring (optional add-on).
+# Libriant — the monitoring stack. NOT an optional add-on any more.
 #
-#   Prometheus  — scrapes + stores time series (30d retention)
-#   node-exporter — host CPU / RAM / disk / network
-#   cAdvisor    — per-container CPU / RAM / I/O
-#   Grafana     — dashboards + alerting (OSS edition)
+# THE GAP THIS FILE USED TO BE. Every deploy path composed exactly two files —
+# `-f docker-compose.prod.yml -f docker-compose.volume.yml` — in
+# scripts/deploy-on-host.sh and twice in .github/workflows/deploy.yml. This file
+# was in none of them. So infra/monitoring/alerts.yml held 25 rules, including
+# the backup dead-man's switches and the Watchdog whose whole purpose is to
+# prove the pipeline is alive, and NOTHING EVALUATED ANY OF THEM. `pnpm
+# check:alerts` passed the whole time, because what it checks is that the rules
+# reference metrics the code emits — true, and irrelevant if no Prometheus ever
+# reads the file. Both deploy paths now bring this stack up.
 #
-# All images are free / open-source. The stack attaches to the main app's
-# private network so Prometheus can scrape the app's own /metrics
-# (api:3001, worker:3002 — incl. the libriant_tenants_total /
-# libriant_pg_* / libriant_redis_* gauges).
+# WHAT DEPLOYS BY DEFAULT, and why it is only three services:
+#   prometheus     — scrapes + stores (30d / 2 GB) and EVALUATES alerts.yml
+#   node-exporter  — host CPU/RAM/disk, and the textfile collector that carries
+#                    backup.sh's timestamps (BackupNeverRan / BackupStale)
+#   alertmanager   — delivery. Profile-gated; see the block on it below.
 #
-# Bring up (after the main stack is running):
-#   export LIBRIANT_APP_NETWORK="$(docker network ls --format '{{.Name}}' | grep -E '_app$' | head -1)"
-#   export GRAFANA_ADMIN_PASSWORD="$(openssl rand -hex 16)"
-#   docker compose -f infra/monitoring/docker-compose.monitoring.yml up -d
+# Everything else is opt-in via `--profile dashboards`:
+#   grafana        — dashboards. Useful, not load-bearing for alerting, and
+#                    ~200 MB of RAM on a box whose app tier already budgets more
+#                    than the host has.
+#   cadvisor       — per-container CPU/RAM/IO. Runs `privileged: true` with
+#                    /var/run mounted, which is the Docker socket, which is root
+#                    on the host. No alert rule uses a cAdvisor metric, so
+#                    putting that in the automatic deploy path would have traded
+#                    a much larger hole for a dashboard.
+#
+# Bring up (both deploy scripts do this; by hand it is):
+#   export GRAFANA_ADMIN_PASSWORD=...            # from .env.prod
+#   docker compose -p libriant-monitoring \
+#     -f infra/monitoring/docker-compose.monitoring.yml up -d
+#   # add `--profile alerting` once alertmanager.yml has a real receiver,
+#   # and `--profile dashboards` for Grafana + cAdvisor.
+#
+# SEPARATE COMPOSE PROJECT, deliberately: `-p libriant-monitoring`. The app
+# stack is project `libriant` and its deploy runs `up -d --remove-orphans`.
+# Merging this file into that invocation would also collide on the `app`
+# network, which prod declares as a bridge it creates and this file declares as
+# external.
 #
 # Grafana binds to localhost only — reach it over an SSH tunnel:
 #   ssh -L 3300:127.0.0.1:3300 deploy@your-server   # then open http://localhost:3300
-#
-# Versions are pinned but old enough to exist everywhere — bump to current
-# stable when you set this up.
 
 x-restart: &restart
   restart: unless-stopped
@@ -31,14 +52,34 @@ x-logging: &logging
       max-size: '20m'
       max-file: '5'
 
+# Same reasoning as docker-compose.prod.yml's x-hardening: no_new_privs blocks
+# GAINING privileges through a setuid or file-capability exec and does not
+# affect anything here, all of which either already runs unprivileged or, in
+# cAdvisor's case, is privileged by design.
+x-hardening: &hardening
+  security_opt: ['no-new-privileges:true']
+
 services:
   prometheus:
     image: prom/prometheus:v3.1.0
-    <<: [*restart, *logging]
+    <<: [*restart, *logging, *hardening]
+    # A12-01 applies here too, and more sharply than in the app stack: this
+    # stack was written to be run by hand on a spare box and is now started on
+    # the SAME single host as Postgres. An unbounded TSDB compaction is exactly
+    # the kind of thing that would have taken the cell down while looking for
+    # the reason the cell went down.
+    mem_limit: ${PROM_MEM_LIMIT:-512m}
+    cpus: ${PROM_CPUS:-0.5}
+    pids_limit: 128
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--storage.tsdb.retention.time=30d'
+      # Time-based retention alone has no upper bound in BYTES — 30 days of a
+      # busier fleet is however large it is, on the boot disk, next to the
+      # database. The size cap is what stops the monitoring for HostDiskFilling
+      # from being the thing that fills the disk.
+      - '--storage.tsdb.retention.size=${PROM_RETENTION_SIZE:-2GB}'
       - '--web.enable-lifecycle'
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -49,7 +90,10 @@ services:
 
   node-exporter:
     image: prom/node-exporter:v1.8.2
-    <<: [*restart, *logging]
+    <<: [*restart, *logging, *hardening]
+    mem_limit: ${NODE_EXPORTER_MEM_LIMIT:-128m}
+    cpus: ${NODE_EXPORTER_CPUS:-0.25}
+    pids_limit: 64
     pid: host
     command:
       - '--path.rootfs=/host'
@@ -66,12 +110,32 @@ services:
 
   # reliability-04 / launch-readiness-06. Prometheus evaluated every rule in
   # alerts.yml and delivered none of them: `alerting:` in prometheus.yml was
-  # commented out, and there was nothing to deliver TO. Rules without a receiver
-  # are a dashboard, not an alerting system — only ever read by someone who
-  # already knows something is wrong.
+  # commented out, and there was nothing to deliver TO.
+  #
+  # PROFILE-GATED, and this is the honest half of the fix. alertmanager.yml
+  # still carries two [PLACEHOLDER] receiver URLs — who gets woken up is a
+  # decision no engineer can invent — and Alertmanager REFUSES TO START on an
+  # unparseable webhook URL, which is deliberate. Under `restart:
+  # unless-stopped` that means a crash loop on every deploy: log spam, and a
+  # `docker compose ps` full of a restarting container, which is its own kind of
+  # noise-that-means-nothing.
+  #
+  # So while the placeholders are there this service is simply not started, and
+  # BOTH deploy scripts say so in the loudest terms they have — they grep
+  # alertmanager.yml for `[PLACEHOLDER` and print a banner naming exactly what
+  # will not happen, on every deploy, until somebody fixes it.
+  # Prometheus still runs and still evaluates all 25 rules; they are visible at
+  # /alerts and they reach nobody. That is a state the operator is told about on
+  # every single deploy, which is the difference from where this started.
+  #
+  # Fill in the two URLs and the deploy turns the profile on by itself.
   alertmanager:
     image: prom/alertmanager:v0.28.0
-    <<: [*restart, *logging]
+    <<: [*restart, *logging, *hardening]
+    profiles: ['alerting']
+    mem_limit: ${ALERTMANAGER_MEM_LIMIT:-128m}
+    cpus: ${ALERTMANAGER_CPUS:-0.25}
+    pids_limit: 64
     command:
       - '--config.file=/etc/alertmanager/alertmanager.yml'
       - '--storage.path=/alertmanager'
@@ -83,6 +147,14 @@ services:
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     <<: [*restart, *logging]
+    # `privileged: true` PLUS /var/run, which contains docker.sock. That is root
+    # on the host for anything that gets inside this container. It stays out of
+    # the default deploy for that reason alone — and no rule in alerts.yml reads
+    # a cAdvisor metric, so nothing is lost by leaving it off. Turn it on
+    # deliberately, for a diagnosis, with `--profile dashboards`.
+    profiles: ['dashboards']
+    mem_limit: ${CADVISOR_MEM_LIMIT:-256m}
+    cpus: ${CADVISOR_CPUS:-0.5}
     privileged: true
     devices:
       - /dev/kmsg
@@ -96,10 +168,20 @@ services:
 
   grafana:
     image: grafana/grafana-oss:11.4.0
-    <<: [*restart, *logging]
+    <<: [*restart, *logging, *hardening]
+    # Dashboards, not alerting: Prometheus evaluates the rules and Alertmanager
+    # delivers them with or without this. Opt in when you want to look at
+    # graphs; leave it off on a 4 GB box that is already tight.
+    profiles: ['dashboards']
+    mem_limit: ${GRAFANA_MEM_LIMIT:-384m}
+    cpus: ${GRAFANA_CPUS:-0.5}
+    pids_limit: 128
     depends_on: [prometheus]
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      # No default, on purpose — Grafana's admin login is a way into every
+      # metric this fleet produces. scripts/ensure-env.sh generates it with the
+      # other secrets, so both deploy paths always have one.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD (scripts/ensure-env.sh generates one)}
       GF_USERS_ALLOW_SIGN_UP: 'false'
       GF_ANALYTICS_REPORTING_ENABLED: 'false'
       GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
@@ -114,14 +196,14 @@ services:
   # ---- Optional richer exporters (uncomment + set creds to enable) --------
   # postgres-exporter:
   #   image: quay.io/prometheuscommunity/postgres-exporter:v0.16.0
-  #   <<: [*restart, *logging]
+  #   <<: [*restart, *logging, *hardening]
   #   environment:
   #     DATA_SOURCE_NAME: "postgresql://libriant:${POSTGRES_PASSWORD}@postgres:5432/libriant_control?sslmode=disable"
   #   networks: [monitoring, app]
   #
   # redis-exporter:
   #   image: oliver006/redis_exporter:v1.67.0
-  #   <<: [*restart, *logging]
+  #   <<: [*restart, *logging, *hardening]
   #   environment:
   #     REDIS_ADDR: redis://redis:6379
   #   networks: [monitoring, app]
@@ -129,8 +211,10 @@ services:
 networks:
   monitoring:
     driver: bridge
-  # The main stack's private network (created by docker-compose.prod.yml).
-  # `docker network ls | grep _app` → set LIBRIANT_APP_NETWORK accordingly.
+  # The main stack's private network, created by docker-compose.prod.yml under
+  # COMPOSE_PROJECT_NAME=libriant — which both deploy paths export, so the
+  # default below is the right answer and no `docker network ls | grep` step is
+  # needed any more. Override only if you renamed the app project.
   app:
     external: true
     name: ${LIBRIANT_APP_NETWORK:-libriant_app}

@@ -33,9 +33,25 @@ scrape_configs:
       - targets: ['node-exporter:9100']
 
   # Per-container resource usage.
+  #
+  # cAdvisor sits behind `profiles: ['dashboards']` in the monitoring compose
+  # file, and no deploy path passes that profile — COMPOSE_PROFILES is only ever
+  # "" or "alerting" (scripts/deploy-on-host.sh:198,200 and deploy.yml:555,558).
+  # So on every ordinary bring-up this target is down, and an unqualified
+  # `up == 0` would page `severity: critical` forever about a container nobody
+  # intended to run. The first message a newly-wired alert channel delivers
+  # teaches its reader whether to trust it; spending that on a false page is how
+  # BackupNeverRan and the Watchdog end up muted.
+  #
+  # The `optional` label is what TargetDown excludes. It marks "this target is
+  # opt-in; its absence is the normal state", which is a property of the target,
+  # not of the rule — so it belongs here rather than as a job name hard-coded
+  # into alerts.yml.
   - job_name: cadvisor
     static_configs:
       - targets: ['cadvisor:8080']
+        labels:
+          optional: 'true'
 
   # Libriant API — uptime + tenant census + PG connections/cache + Redis mem.
   # Scraped directly over the private `app` network (NOT via Caddy, which

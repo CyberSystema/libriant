@@ -968,11 +968,19 @@ export class BillingService {
    */
   async applyAdminPlanChange(
     tenantId: string,
-    input: { planSlug: string },
+    input: { planSlug: string; billingModeOverride?: 'manual' },
     actor: AdminAuditActor,
   ): Promise<BillingSnapshot> {
     const plan = await controlDb.plan.findUnique({ where: { slug: input.planSlug } });
     if (!plan || plan.archivedAt) throw new NotFoundException(`Plan "${input.planSlug}" missing.`);
+    // launch-readiness-02. The plan's own mode is the default; an admin may
+    // put one library on invoice billing for a plan everyone else pays by card.
+    // That is exactly the founding-library offer — twelve months of Municipal,
+    // a `stripe` plan, at no charge — which previously could not be granted
+    // through the product because the mode was copied from the plan and
+    // `applyManualPayment` then refused the paid-until date the offer is made
+    // of. See AdminSetPlanDto.billingModeOverride.
+    const billingMode = input.billingModeOverride ?? plan.billingMode;
     // Snapshot the prior plan/status for the audit diff before we overwrite it.
     // `stripeSubscriptionId` is in the select for two reasons: the cancellation
     // below needs it, and once we null it the audit row is the ONLY remaining
@@ -1005,13 +1013,19 @@ export class BillingService {
     // BEFORE the local write and its failure propagates, so the change cannot
     // half-apply into "moved off Stripe in our database, still billing at
     // Stripe" — which is the exact state this finding describes.
-    const leavingPaidStripe = plan.billingMode !== 'stripe' || plan.monthlyPriceCents <= 0;
+    // `billingMode`, not `plan.billingMode`: an override to `manual` means this
+    // library stops paying by card, so a live Stripe subscription must be
+    // cancelled exactly as it would be for a move onto a manual plan. Reading
+    // the plan here instead would leave the card being charged for a library we
+    // have just agreed to invoice — or, in the founding-library case, for one
+    // we have agreed not to charge at all.
+    const leavingPaidStripe = billingMode !== 'stripe' || plan.monthlyPriceCents <= 0;
     const liveSubscriptionId = before?.stripeSubscriptionId ?? null;
     const stoppingStripe = Boolean(liveSubscriptionId) && leavingPaidStripe;
     if (stoppingStripe && liveSubscriptionId) {
       await this.stripe.cancelSubscriptionAtPeriodEnd(liveSubscriptionId);
       this.logger.warn(
-        `Admin moved tenant ${tenantId} onto ${plan.slug} (${plan.billingMode}, ` +
+        `Admin moved tenant ${tenantId} onto ${plan.slug} (${billingMode}, ` +
           `${plan.monthlyPriceCents} cents) — cancelled Stripe subscription ${liveSubscriptionId} ` +
           'at period end so the card stops being charged. Refund the remainder in Stripe if the ' +
           'contract starts sooner.',
@@ -1022,7 +1036,7 @@ export class BillingService {
       where: { tenantId },
       data: {
         planId: plan.id,
-        billingMode: plan.billingMode,
+        billingMode,
         status: 'active',
         graceUntil: null,
         // Only when we actually stopped it. Otherwise Stripe remains the source
@@ -1050,7 +1064,13 @@ export class BillingService {
       after: {
         planSlug: plan.slug,
         planId: plan.id,
-        billingMode: plan.billingMode,
+        // The EFFECTIVE mode, and `overrodeBillingMode` beside it, so a reader
+        // of the audit trail can tell "this library is on invoice billing" from
+        // "someone deliberately put this library on invoice billing for a plan
+        // that is normally paid by card". Those are different facts and only
+        // the second one needs explaining later.
+        billingMode,
+        overrodeBillingMode: input.billingModeOverride ? true : undefined,
         status: 'active',
         stripeSubscriptionId: stoppingStripe ? null : (before?.stripeSubscriptionId ?? null),
         // Named in the audit row so "was the card stopped?" is answerable from

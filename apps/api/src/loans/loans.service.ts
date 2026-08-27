@@ -19,6 +19,7 @@ import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import { FieldDefinitionsService } from '../customization/field-definitions.service.js';
 import { validateRecordOrThrow } from '../customization/dynamic-validator.js';
+import { decodeCursor, encodeCursor } from '../platform/query.js';
 import type { ReturnCondition } from './loans.dto.js';
 
 const MS_PER_DAY = 86_400_000;
@@ -872,16 +873,111 @@ export class LoansService {
       where.dueAt = { lt: new Date() };
     }
 
+    // performance-03, the same keyset predicate `BooksService.list` carries.
+    // This used to be `cursor: { id: opts.after }, skip: 1` — an OR of
+    // correlated subselects, which Postgres cannot use as a btree start key, so
+    // it walked `loans_loanedAt_id_idx` from the newest loan and discarded
+    // everything above the cursor. Circulation history is the list that grows
+    // fastest in a working library: one row per checkout, kept forever.
+    //
+    // Measured on 300,000 loans, on the literal SQL Prisma emitted for the page
+    // at depth 150,000:
+    //   BEFORE  Index Only Scan using "loans_loanedAt_id_idx",
+    //           Rows Removed by Filter: 150000, Buffers: shared hit=11
+    //           read=1059 written=395, Execution Time: 11.360 ms
+    //   AFTER   same index, Index Cond: ("loanedAt" <= …),
+    //           Rows Removed by Filter: 1, Buffers: shared hit=1 read=3,
+    //           Execution Time: 0.863 ms
+    // Both orderings already have an index that matches them exactly
+    // (`loans_loanedAt_id_idx`, `loans_status_dueAt_id_idx`), added for
+    // performance-02 — this finding is only about giving the planner a start
+    // key to enter them at, so it needs no migration.
+    const key = this.sortKeyFor(opts);
+    const after = await this.decodeListCursor(client, opts.after, key);
+    if (after) {
+      // The overdue tile runs `dueAt ASC` (most overdue first) and everything
+      // else runs `loanedAt DESC` (newest first), so the boundary flips
+      // direction with the sort key.
+      where.AND =
+        key === 'dueAt'
+          ? [
+              { dueAt: { gte: after.at } },
+              { OR: [{ dueAt: { gt: after.at } }, { dueAt: after.at, id: { gt: after.id } }] },
+            ]
+          : [
+              { loanedAt: { lte: after.at } },
+              {
+                OR: [{ loanedAt: { lt: after.at } }, { loanedAt: after.at, id: { lt: after.id } }],
+              },
+            ];
+    }
+
     const rows = await client.loan.findMany({
       where,
       orderBy: this.orderFor(opts),
       take: limit + 1,
-      ...(opts.after ? { cursor: { id: opts.after }, skip: 1 } : {}),
       include: this.fullInclude,
     });
     const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map((r) => this.toJoinsDto(r));
-    return { items, nextCursor: hasMore ? items[items.length - 1]!.id : null };
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const items = page.map((r) => this.toJoinsDto(r));
+    const last = page[page.length - 1];
+    return {
+      items,
+      nextCursor:
+        hasMore && last
+          ? encodeCursor([
+              key,
+              (key === 'dueAt' ? last.dueAt : last.loanedAt).toISOString(),
+              last.id,
+            ])
+          : null,
+    };
+  }
+
+  /**
+   * Which timestamp {@link orderFor} sorts this request by. Kept beside it so
+   * the cursor and the ORDER BY cannot drift apart.
+   */
+  private sortKeyFor(opts: ListLoansOptions): 'loanedAt' | 'dueAt' {
+    return opts.overdue ? 'dueAt' : 'loanedAt';
+  }
+
+  /**
+   * As `BooksService.decodeListCursor`, over `(loanedAt, id)` or `(dueAt, id)`.
+   *
+   * The token carries WHICH key it was minted under, because this list has two
+   * sort orders and a librarian who ticks "overdue only" mid-scroll hands back
+   * a cursor built from the other one. Reading a `dueAt` as a `loanedAt` would
+   * silently start the overdue page somewhere arbitrary in the backlog, so a
+   * mismatched token is treated as a bare id and the row is re-read — one
+   * primary-key lookup that lands them on the right page under the new sort.
+   */
+  private async decodeListCursor(
+    client: TenantPrismaClient,
+    after: string | undefined,
+    key: 'loanedAt' | 'dueAt',
+  ): Promise<{ at: Date; id: string } | null> {
+    if (!after) return null;
+    let rowId = after;
+    const parts = decodeCursor(after, 3);
+    if (parts) {
+      const [tokenKey, iso, id] = parts;
+      if (typeof tokenKey !== 'string' || typeof iso !== 'string' || typeof id !== 'string') {
+        return null;
+      }
+      if (tokenKey === key) {
+        const at = new Date(iso);
+        return Number.isNaN(at.getTime()) ? null : { at, id };
+      }
+      rowId = id;
+    }
+    const row = await client.loan.findUnique({
+      where: { id: rowId },
+      select: { loanedAt: true, dueAt: true, id: true },
+    });
+    if (!row) return null;
+    return { at: key === 'dueAt' ? row.dueAt : row.loanedAt, id: row.id };
   }
 
   async get(tenant: TenantContext, loanId: string): Promise<LoanWithJoinsDto> {
@@ -910,9 +1006,9 @@ export class LoansService {
    * `dueAt ASC` is also the order a librarian wants for that list — most
    * overdue first — so this is not a performance-only concession.
    *
-   * `id` is the tiebreaker in both, and both are total orders: Prisma's cursor
-   * pagination (`cursor` + `skip: 1`) needs a deterministic sort to page
-   * without dropping or repeating rows.
+   * `id` is the tiebreaker in both, and both are total orders: the keyset in
+   * {@link list} needs a deterministic sort to page without dropping or
+   * repeating rows.
    */
   private orderFor(opts: ListLoansOptions): Prisma.LoanOrderByWithRelationInput[] {
     if (opts.overdue) return [{ dueAt: 'asc' }, { id: 'asc' }];
