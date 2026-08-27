@@ -30,7 +30,14 @@ RUN apk add --no-cache tini
 # The version is pinned and `scripts/check-pnpm-pins.mjs` asserts it matches
 # package.json's `packageManager` across all three Dockerfiles.
 RUN npm install -g pnpm@11.22.0 \
- && pnpm --version
+ && pnpm --version \
+ # npm writes the tarball it fetched into /root/.npm/_cacache before unpacking
+ # it, so this layer would otherwise hold pnpm twice — once installed, once as a
+ # cached archive. Chained into the SAME RUN on purpose: a later `rm` writes a
+ # whiteout over bytes the image already carries and saves nothing. Nothing
+ # after this line runs npm (pnpm is the package manager everywhere else), so
+ # the cache can never be a hit.
+ && rm -rf /root/.npm
 WORKDIR /app
 
 # ----- deps ----------------------------------------------------------------
@@ -78,7 +85,34 @@ COPY locales locales
 # time. Without this, route handlers see the build-time fallback at
 # runtime, not the env var the runtime stage sets.
 ENV NEXT_TELEMETRY_DISABLED=1 NODE_ENV=production
-RUN pnpm --filter @libriant/web build
+# The build also leaves a compiler cache behind, and the runtime stage copies
+# /app wholesale, so it shipped. `next build` runs under Turbopack (Next 16's
+# default) and writes apps/web/.next/cache/turbopack: a persistent module cache
+# in .sst files, versioned by Next release. Nothing reads it once the build
+# returns — turbo.json already says so, listing `!.next/cache/**` as not a build
+# output — and after node_modules it is the largest thing in this image.
+#
+# The size is inferred rather than measured, because Docker is not available on
+# the machine this was written on. On the CI build it was written against, the
+# web `COPY --from=build` layer compressed to 144.08 MB while the API's
+# compressed to 127.45 MB, and the API carries 150 MiB MORE node_modules (449
+# MiB reachable against this image's 299). node_modules, .next/server (19 MB)
+# and .next/static (1.4 MB) do not account for the gap. .sst files are already
+# compacted and barely compress — 1.31:1 measured on a 3.4 MB sample from this
+# repo, against ~3.8:1 for the API's JavaScript — which puts roughly 73 MB of
+# cache in the image. A tree that has built many times accumulates far more;
+# this working copy holds 193 MB.
+#
+# Only `turbopack/` goes, not all of `.next/cache`. The two dotfiles beside it
+# are keys, not compiler output: `.rscinfo` holds the Server Actions encryption
+# key (next/dist/server/app-render/encryption-utils-server.js — load or
+# generate, 14-day rotation) and `.previewinfo` the draft-mode keys. They are
+# ~400 bytes together, so removing them buys nothing and costs a real failure
+# mode: each container mints its own key at boot, and two web containers cannot
+# then decrypt each other's Server Action payloads. Nothing in CI boots the web
+# image, so that would surface in production or not at all.
+RUN pnpm --filter @libriant/web build \
+ && rm -rf apps/web/.next/cache/turbopack
 
 # ----- prune ---------------------------------------------------------------
 # supply-chain-03, the web half. Trimming the manifest COPY list above stopped
@@ -114,9 +148,21 @@ ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     NODE_OPTIONS="--enable-source-maps"
 
-COPY --from=build /app /app
+# COPY --chown, not COPY followed by `chown -R`. The `node` user (uid 1000)
+# ships with the official image owning no files, so /app has to change hands —
+# but a recursive chown in its own RUN touches every file, and overlayfs copies
+# a file up into the new layer whenever anything about it changes, ownership
+# included. The image therefore carried /app twice. The CI build this was
+# written against shows it plainly: a 144.08 MB COPY layer followed by a
+# 144.50 MB chown layer, with nothing else in this stage that could produce
+# 144 MB. Setting ownership as COPY writes the files costs one layer, not two.
+COPY --from=build --chown=node:node /app /app
 
-RUN chown -R node:node /app
+# `--chown` above covers everything COPY writes; /app itself predates it, since
+# `WORKDIR /app` in `base` created it root-owned. The `chown -R` this replaces
+# did change that directory, so change it here too rather than quietly narrowing
+# what the `node` user may write. One directory inode, not another copy of /app.
+RUN chown node:node /app
 USER node
 
 EXPOSE 3000

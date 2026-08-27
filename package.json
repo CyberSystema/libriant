@@ -21,6 +21,7 @@
     "check:caddy": "node scripts/check-caddy.mjs",
     "check:alerts": "node scripts/check-alerts.mjs",
     "check:shared-imports": "node scripts/check-shared-imports.mjs",
+    "check:image-size": "node scripts/check-image-size.mjs",
     "check:all": "pnpm check:translations && pnpm check:assets && pnpm check:pnpm-pins && pnpm check:supply-chain && pnpm check:legal && pnpm check:caddy && pnpm check:alerts && pnpm check:shared-imports && pnpm typecheck && pnpm lint",
     "db:up": "docker compose -f infra/compose/docker-compose.dev.yml up -d",
     "db:down": "docker compose -f infra/compose/docker-compose.dev.yml down",

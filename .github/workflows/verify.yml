@@ -589,6 +589,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # This job never needed Node — it only shells out to docker. The size
+      # budget is a Node script because the numbers and the argument for them
+      # belong in a committed file with a diff, not in an env var. No `cache:`
+      # key here: the script is dependency-free and this job runs no install.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26'
+
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Build the API image
@@ -669,15 +677,23 @@ jobs:
       # `'docker image ls' requires at most 1 argument`. It had never run: every
       # earlier attempt died before reaching it, first on the corepack build and
       # then on the dev-tooling check, so a one-line step that could not work
-      # sat in the file unnoticed. One loop, and the number is now printed in a
-      # shape a human reads — supply-chain-03 is a claim about image size, and a
-      # claim needs a figure.
-      - name: Report image sizes
+      # sat in the file unnoticed. Fixing it finally produced a figure —
+      # 1.18GB and 1.03GB — and that is where the usefulness of a total ends.
+      #
+      # A total says an image is too big. It does not say which layer to look
+      # at, and `docker history` has never once been run against these images,
+      # so nobody in this project has ever seen where the bytes are. That is the
+      # diagnostic every future size question starts from, so it now prints on
+      # every run, biggest layer first, with the command that created it.
+      #
+      # `if: always()`: the run you most want a breakdown on is the run that
+      # failed. If a build failed there is no image, and the script says so and
+      # exits 0 rather than stacking a second red X on the real failure.
+      - name: Image size and layer breakdown
+        if: always()
         run: |
           set -euo pipefail
-          for img in libriant-api:verify libriant-web:verify; do
-            docker image ls "$img" --format '  {{.Repository}}:{{.Tag}}  {{.Size}}'
-          done
+          node scripts/check-image-size.mjs --report
 
       - name: Postgres extensions
         run: |
@@ -700,7 +716,42 @@ jobs:
             --entrypoint sh libriant-api:verify \
             -c 'pnpm db:migrate:deploy && pnpm db:seed'
 
-      - name: The pruned image starts and serves
+      # The web image had never been booted by anything, here or anywhere. This
+      # job asserted that `next --version` resolves inside it and that it still
+      # contains a `next@` package directory — which proves Next is INSTALLED,
+      # not that it STARTS. Every web container that has ever run did so on a
+      # production deploy.
+      #
+      # That gap is why the size work stopped where it did: `output: 'standalone'`
+      # is worth ~150–200 MB and dropping @next/swc another ~85 MB, and neither
+      # can be taken responsibly while the only thing standing between a bad
+      # prune and a library is a `grep` for a directory name. This step is the
+      # prerequisite for both.
+      #
+      # /api/healthz is deliberately the probe: it is `force-dynamic` and touches
+      # no dependency, so it proves the Next server itself is up without needing
+      # the API, Postgres or Redis alongside it.
+      - name: The pruned web image starts and serves
+        run: |
+          set -euo pipefail
+          docker run -d --name web-verify --network host \
+            -e NODE_ENV=production \
+            -e PORT=3000 \
+            libriant-web:verify
+          for i in $(seq 1 45); do
+            if curl -sf -o /dev/null http://localhost:3000/api/healthz; then
+              echo "✓ the pruned web image booted and served /api/healthz after ${i}s"
+              docker rm -f web-verify >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "✗ the pruned web image never served a request:"
+          docker logs web-verify
+          docker rm -f web-verify >/dev/null
+          exit 1
+
+      - name: The pruned API image starts and serves
         run: |
           set -euo pipefail
           docker run -d --name api-verify --network host \
@@ -729,3 +780,21 @@ jobs:
           docker logs api-verify
           docker rm -f api-verify >/dev/null
           exit 1
+
+      # supply-chain-03 was closed on two claims: that the production image
+      # ships no dev tooling, and that it is smaller. The steps above check the
+      # first claim. Nothing has ever checked the second one, and a 1.18GB image
+      # is what "nothing ever checked it" looks like. A number nobody enforces
+      # drifts, so the band lives in scripts/check-image-size.mjs, where moving
+      # it costs a commit and a paragraph rather than an env-var bump.
+      #
+      # LAST in the job, deliberately. Four steps here had never executed until
+      # 2026-08-27, each hidden behind the failure before it, and a size gate
+      # placed ahead of the boot test would hide the boot test — the one that
+      # matters. A big image is a nuisance; an image that does not start is an
+      # outage. So the budget only gets to speak after the image has proved it
+      # migrates, seeds, boots and serves.
+      - name: Image size stays inside its budget
+        run: |
+          set -euo pipefail
+          node scripts/check-image-size.mjs --enforce

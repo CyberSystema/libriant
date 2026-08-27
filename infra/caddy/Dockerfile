@@ -36,7 +36,14 @@ FROM node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781
 # The version is pinned and `scripts/check-pnpm-pins.mjs` asserts it matches
 # package.json's `packageManager` across all three Dockerfiles.
 RUN npm install -g pnpm@11.22.0 \
- && pnpm --version
+ && pnpm --version \
+ # npm writes the tarball it fetched into /root/.npm/_cacache before unpacking
+ # it, so this layer would otherwise hold pnpm twice — once installed, once as a
+ # cached archive. Chained into the SAME RUN on purpose: a later `rm` writes a
+ # whiteout over bytes the image already carries and saves nothing. Nothing
+ # after this line runs npm (pnpm is the package manager everywhere else), so
+ # the cache can never be a hit.
+ && rm -rf /root/.npm
 WORKDIR /app
 
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./

@@ -9,7 +9,7 @@
 # build pipeline that mirrors `pnpm dev` exactly.
 #
 # Build stages:
-#   base       — node 24 + pnpm + openssl (needed for Prisma's engine)
+#   base       — node 26 + pnpm + openssl (needed for Prisma's engine)
 #   deps       — locked dep install
 #   build      — workspace source + Prisma client generation
 #   runtime    — minimal image with source + node_modules + non-root user
@@ -76,8 +76,17 @@ RUN apk add --no-cache openssl tini postgresql16-client \
 #
 # The version is pinned and `scripts/check-pnpm-pins.mjs` asserts it matches
 # package.json's `packageManager` across all three Dockerfiles.
+#
+# `rm -rf /root/.npm` because `npm i -g` caches the tarball it just unpacked,
+# and `runtime` is `FROM base`, so that cache is in the production image.
+# Nothing runs npm after this line — pnpm is the package manager for every
+# later stage, for the compose `migrate` one-shot and for verify.yml's
+# in-image `pnpm db:migrate:deploy` — so the cache can never be a hit. It has
+# to go in THIS layer: a later `rm` writes a whiteout on top of bytes the
+# image already carries and saves nothing.
 RUN npm install -g pnpm@11.22.0 \
- && pnpm --version
+ && pnpm --version \
+ && rm -rf /root/.npm
 WORKDIR /app
 
 # ----- deps ----------------------------------------------------------------
@@ -196,6 +205,48 @@ RUN node scripts/docker-prune-dev-modules.mjs \
       --require-bin apps/api/node_modules/.bin/tsx \
       --require-bin packages/db-control/node_modules/.bin/prisma
 
+# The prune above works at package granularity, and `@prisma/client` is a
+# package this image cannot do without. Inside it, `runtime/` carries a query
+# compiler for EVERY database Prisma supports —
+# `query_compiler_{fast,small}_bg.<provider>.wasm-base64.{js,mjs}` for
+# postgresql, mysql, sqlite, sqlserver and cockroachdb. Measured on this
+# repo's store that directory is 75 MiB, of which 56 MiB is the four providers
+# no schema here declares. Both schemas hard-code `provider = "postgresql"` in
+# their datasource block, so no configuration this image can be given selects
+# another one.
+#
+# Unreferenced, too, which is the part worth checking rather than assuming.
+# `prisma generate` copies the compiler for the schema's own provider INTO
+# each generated client, and the generated client requires that local copy: a
+# traced `new PrismaClient({ adapter: new PrismaPg(…) })` + `$connect()`
+# against the generated control client loaded exactly three Prisma files —
+# `.prisma/client/query_compiler_fast_bg.js`,
+# `.prisma/client/query_compiler_fast_bg.wasm-base64.js` and
+# `@prisma/client/runtime/client.js`. That last one is the only runtime entry
+# a Node process reaches, and the string `query_compiler` does not occur
+# anywhere in it, so it cannot assemble one of these paths dynamically either.
+#
+# Deleted HERE rather than in `runtime`, because a delete after the COPY only
+# writes whiteouts on top of bytes the image already carries. The `ls` is the
+# guard: if a Prisma upgrade renames or moves these blobs the globs silently
+# match nothing and the image quietly regains 56 MiB, so assert the file being
+# KEPT is still where this line thinks it is and fail the build if it is not.
+RUN set -eu; \
+    found=0; \
+    for d in node_modules/.pnpm/@prisma+client@*/node_modules/@prisma/client/runtime; do \
+      [ -d "$d" ] || continue; \
+      found=1; \
+      rm -f "$d"/query_compiler_*_bg.mysql.* \
+            "$d"/query_compiler_*_bg.sqlite.* \
+            "$d"/query_compiler_*_bg.sqlserver.* \
+            "$d"/query_compiler_*_bg.cockroachdb.*; \
+      ls "$d"/query_compiler_fast_bg.postgresql.wasm-base64.js >/dev/null; \
+    done; \
+    [ "$found" = 1 ] || { \
+      echo "no @prisma/client/runtime under node_modules/.pnpm — the layout moved" >&2; \
+      exit 1; \
+    }
+
 # ----- runtime -------------------------------------------------------------
 FROM base AS runtime
 
@@ -210,11 +261,35 @@ ENV NODE_ENV=production \
     # for NestJS DI), regardless of CWD.
     TSX_TSCONFIG_PATH=/app/apps/api/tsconfig.json
 
-COPY --from=build /app /app
+# Run as a non-root user. The standard `node` user (uid 1000) ships with the
+# official image and owns no files yet, so ownership is set AT COPY TIME.
+#
+# This used to be `COPY --from=build /app /app` followed by
+# `RUN chown -R node:node /app`, and that pair shipped /app TWICE. A layer is
+# a diff, and a diff has no way to say "same bytes, different owner": every
+# file `chown` touches is written into the new layer complete, payload and
+# all. The last green CI run measured it — the two adjacent layers of the API
+# image were the COPY at 127.45 MB and the chown at 139.07 MB, i.e. the
+# metadata-only change cost more than the copy it duplicated. (The 9% growth
+# is consistent with the copy-up also breaking the hardlinks pnpm uses to
+# share identical files between package directories, which the COPY had
+# preserved.)
+#
+# `--chown` sets the owner as each file is written, so there is one layer
+# instead of two and every file lands with the ownership `chown -R` used to
+# apply afterwards.
+COPY --from=build --chown=node:node /app /app
 
-# Run as a non-root user. The standard `node` user (uid 1000) ships with
-# the official image and owns no files yet, so chown the work dir to it.
-RUN chown -R node:node /app
+# One thing `--chown` does NOT cover: /app itself. `WORKDIR /app` in `base`
+# already created that directory, root-owned, and `COPY src dest` writes the
+# CONTENTS of src into dest — it never touches the destination inode. The
+# `chown -R /app` this replaces did change it. Nothing under /app is written at
+# runtime today (STORAGE_ROOT is /srv/libriant/storage, and no source file calls
+# process.cwd()), so CI would not notice either way — which is exactly why it is
+# set explicitly rather than left to be discovered by the first person who
+# writes a path relative to the workdir and gets EACCES in production only.
+# One directory inode, not another copy of /app.
+RUN chown node:node /app
 USER node
 
 EXPOSE 3001

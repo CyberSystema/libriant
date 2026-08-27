@@ -20,9 +20,23 @@ const buildId = process.env.LIBRIANT_BUILD_ID || Date.now().toString(36);
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // Pin the file-tracing root to the monorepo root. Without this Next walks
-  // up and can latch onto a stray lockfile in $HOME, mis-rooting production
-  // (standalone) output traces.
+  // Pin the file-tracing root to the monorepo root. Without this Next walks up
+  // and can latch onto a stray lockfile in $HOME. It is load-bearing even
+  // though this app does not set `output: 'standalone'`: Turbopack takes its
+  // project root from `turbopack.root ?? outputFileTracingRoot ?? dir`
+  // (next/dist/build/turbopack-build/impl.js), so this is what keeps the three
+  // linked workspace packages inside the build's root.
+  //
+  // `output: 'standalone'` was weighed for image size and rejected. It would
+  // let the runtime stage drop most of node_modules, but it changes how the app
+  // starts — `node .next/standalone/apps/web/server.js`, with .next/static and
+  // public copied alongside — and verify.yml's image job never boots the web
+  // image. Its only web assertions are that node_modules/.pnpm still holds
+  // `next` and that apps/web/node_modules/.bin/next answers --version: a
+  // standalone image that dropped node_modules fails both, and one that kept it
+  // saves nothing. A tracing miss across the pnpm symlinks to @libriant/ui,
+  // @libriant/i18n and @libriant/shared builds clean and 500s at runtime, and
+  // there is no check anywhere that would catch it.
   outputFileTracingRoot: path.join(here, '../../'),
   transpilePackages: ['@libriant/ui', '@libriant/i18n', '@libriant/shared'],
   // Inlined at build time (NOT re-read at `next start`), which is what makes it

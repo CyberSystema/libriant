@@ -45,6 +45,17 @@
  * as siblings BECAUSE their `node_modules/` also contains their
  * devDependencies — walking those would defeat the whole exercise.
  *
+ * ## Reachability is not the whole bill
+ *
+ * A package is either reachable or it is not, so the walk above stops at the
+ * package boundary — and that is where most of the remaining weight turned out
+ * to be. Measured on this repo's store, the packages that SURVIVE the walk
+ * carry 53.6 MiB of `.js.map` plus 32.8 MiB of `.d.ts` on the API side, and
+ * 89.6 MiB of `.js.map` (89.3 of it inside `next` alone) plus 5.3 MiB of
+ * `.d.ts` on the web side. Both are build-time artefacts of packages the images
+ * genuinely need, so no root-set or COPY change can reach them. A second pass
+ * strips them in place — see the block at the end of section 3.
+ *
  * ## Verification
  *
  * `--dry-run` prints the counts and byte totals without touching anything, so
@@ -56,10 +67,13 @@
  * the roots; a static reachability argument is only as good as its roots.
  */
 import {
+  closeSync,
   existsSync,
   lstatSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
   rmSync,
   statSync,
@@ -267,6 +281,119 @@ console.log(`                   reachable bytes: ${mib(keptBytes)} MiB`);
 console.log(
   `                   removable bytes: ${mib(doomedBytes)} MiB across ${doomed.length} package dir(s)`,
 );
+
+// ---- 3b. strip build-time artefacts out of the packages that SURVIVE -------
+// Deleting whole package directories left 449 MiB (API) and 299 MiB (web)
+// standing, and a third of that is files no process in either container can
+// open. `next` ships 89.3 MiB of `.js.map`; `stripe` ships 12.1 MiB of `.d.ts`;
+// `exceljs` ships 14.1 MiB of `.js.map`. These sit inside packages the images
+// cannot do without, so no root-set change and no COPY change reaches them.
+//
+// Two file classes, and each is inert for a different reason:
+//
+//   - A `.d.ts` is not a module. `require` has no loader for the extension and
+//     ESM resolution never yields one, so nothing can import it; `tsx`
+//     transpiles through esbuild and does not type-check; and `next build`,
+//     the one step that does read declarations, has already finished by the
+//     time this runs. The exception is `typescript` itself, where lib/*.d.ts
+//     are the compiler's own runtime data — `prisma migrate deploy` pulls in
+//     @prisma/dev, which declares typescript as a peer, so that package is
+//     skipped whole rather than gambled on for 4 MiB.
+//   - A `.js.map` is opened only by a source-map consumer chasing a
+//     `//# sourceMappingURL` comment, and Node's consumer is best-effort: the
+//     read is wrapped, a missing file yields no mapping, and the frame is
+//     printed unmapped. It cannot throw. That is the property that makes this
+//     safe under the runtime stage's NODE_OPTIONS=--enable-source-maps.
+//
+// The source maps are a TRADE and should be recorded as one: after this, a
+// stack trace that passes through exceljs or next/dist points at bundled
+// output instead of the vendor's original source. It does NOT touch the traces
+// this project actually reads — apps/api/src runs under tsx, which builds its
+// maps in memory at import time and never writes a .map file, and workspace
+// packages are symlinks outside the store that this pass never walks.
+//
+// Rejected here rather than taken. The vendored `.ts` sources (8.4 MiB, mostly
+// effect/src): a package whose `exports` resolves to .ts would fail with
+// MODULE_NOT_FOUND at first import, and the saving does not pay for that.
+// README/CHANGELOG (4.7 MiB): a whole new deletion class for a rounding error.
+// The four non-postgresql query-compiler wasms in the Prisma CLI (21.1 MiB):
+// they are read by `prisma generate`, which runs in the build stage BEFORE this
+// line, so the CI job that boots the pruned image would not catch a mistake —
+// and an uncaught mistake is the one kind this file exists to prevent.
+const SOURCE_MAP = /\.(?:js|cjs|mjs|jsx|ts|cts|mts|tsx|css)\.map$/;
+const DECLARATION = /\.d\.(?:ts|cts|mts)$/;
+const DECLARATIONS_ARE_RUNTIME_DATA = /^typescript@/;
+
+// The extension is enough for every file in this repo's store, but a deletion
+// rule is only as narrow as its worst match. Reading the header costs one
+// 256-byte pread per candidate and makes the rule mean "an actual source map",
+// so a data file that happens to be named `something.js.map` survives.
+function isSourceMap(p) {
+  let fd;
+  try {
+    fd = openSync(p, 'r');
+    const head = Buffer.alloc(256);
+    const n = readSync(fd, head, 0, 256, 0);
+    const text = head.subarray(0, n).toString('utf8').trimStart();
+    return text.startsWith('{') && text.includes('"version"');
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+let strippedBytes = 0;
+let strippedFiles = 0;
+for (const d of keptStoreDirs) {
+  const keepDeclarations = DECLARATIONS_ARE_RUNTIME_DATA.test(d);
+  const stack = [path.join(STORE, d)];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      // Never follow a link out of the store: `.pnpm/<dir>/node_modules/<dep>`
+      // is a symlink to another package's real directory, and walking it would
+      // visit that package once per dependent and, worse, could step out into
+      // a workspace source tree.
+      if (e.isSymbolicLink()) continue;
+      if (e.isDirectory()) {
+        stack.push(p);
+        continue;
+      }
+      let condemned = false;
+      if (SOURCE_MAP.test(e.name)) condemned = isSourceMap(p);
+      else if (DECLARATION.test(e.name)) condemned = !keepDeclarations;
+      if (!condemned) continue;
+      let size;
+      try {
+        size = statSync(p).size;
+      } catch {
+        continue;
+      }
+      if (!dryRun) {
+        try {
+          unlinkSync(p);
+        } catch {
+          continue;
+        }
+      }
+      strippedBytes += size;
+      strippedFiles++;
+    }
+  }
+}
+console.log(
+  `                   ${dryRun ? 'strippable' : 'stripped'} bytes: ${mib(strippedBytes)} MiB in ` +
+    `${strippedFiles} .js.map/.d.ts file(s) inside the ${keptStoreDirs.size} kept package dir(s)`,
+);
+
 if (dryRun) {
   console.log('                   --dry-run: nothing was deleted');
   console.log(doomed.sort().join('\n'));
