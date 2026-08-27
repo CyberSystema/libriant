@@ -664,8 +664,20 @@ jobs:
           docker run --rm --entrypoint sh libriant-web:verify -c \
             './apps/web/node_modules/.bin/next --version'
 
+      # `docker image ls` takes AT MOST ONE reference — passing two is a usage
+      # error, not a filter, and the step exited 1 with
+      # `'docker image ls' requires at most 1 argument`. It had never run: every
+      # earlier attempt died before reaching it, first on the corepack build and
+      # then on the dev-tooling check, so a one-line step that could not work
+      # sat in the file unnoticed. One loop, and the number is now printed in a
+      # shape a human reads — supply-chain-03 is a claim about image size, and a
+      # claim needs a figure.
       - name: Report image sizes
-        run: docker image ls libriant-api:verify libriant-web:verify
+        run: |
+          set -euo pipefail
+          for img in libriant-api:verify libriant-web:verify; do
+            docker image ls "$img" --format '  {{.Repository}}:{{.Tag}}  {{.Size}}'
+          done
 
       - name: Postgres extensions
         run: |
