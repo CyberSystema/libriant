@@ -268,6 +268,22 @@ fi
 # byte of every library's database; a 600 file beside it changes nothing about
 # who can read what. It is deliberately NOT a substitute for an off-host backup
 # (a lost volume loses both) — see docs/RUNBOOK.md §8.
+# What the operator needs to know, and the one command that fixes it.
+ENV_COPY_OK=1
+copy_failed() {
+  ENV_COPY_OK=0
+  echo "  ! could not ${2} ${1} - NO ON-VOLUME COPY OF ${ENV_FILE} WAS MADE." >&2
+  echo "  !" >&2
+  echo "  ! That copy is the FIRST recovery source this script names when" >&2
+  echo "  ! POSTGRES_PASSWORD is missing and an initialized cluster still exists —" >&2
+  echo "  ! the boot-disk-rebuild case. Without it the password lives only in" >&2
+  echo "  ! ${ENV_FILE}, on the disk that a rebuild destroys, while the cluster it" >&2
+  echo "  ! unlocks survives on the volume." >&2
+  echo "  !" >&2
+  echo "  ! Fix, then re-run this script:" >&2
+  echo "  !   sudo install -d -m 700 -o \"\$(id -un)\" -g \"\$(id -gn)\" ${1}" >&2
+}
+
 save_env_copy() {
   local root dest
   root="$(data_root)"
@@ -276,10 +292,14 @@ save_env_copy() {
   # secret on the boot disk under a path the operator believes is the volume.
   [ -d "${root}" ] || { echo "  (no ${root} - skipping the on-volume copy of ${ENV_FILE})"; return 0; }
   dest="${root}/env"
-  mkdir -p "${dest}" 2>/dev/null || { echo "  ! could not create ${dest} - no on-volume copy made" >&2; return 0; }
+  # The data root is created by `sudo mkdir` and owned by root, so an
+  # unprivileged run cannot make a subdirectory in it. Say what was LOST rather
+  # than only what failed: the previous message was one line about a copy, and
+  # the script still ended "Done - ready", so the operator had no way to know a
+  # documented recovery source had silently not happened.
+  mkdir -p "${dest}" 2>/dev/null || { copy_failed "${dest}" 'create'; return 0; }
   chmod 700 "${dest}" 2>/dev/null || true
-  cp "${ENV_FILE}" "${dest}/.env.prod.new" 2>/dev/null || {
-    echo "  ! could not write ${dest}/.env.prod - no on-volume copy made" >&2; return 0; }
+  cp "${ENV_FILE}" "${dest}/.env.prod.new" 2>/dev/null || { copy_failed "${dest}" 'write'; return 0; }
   chmod 600 "${dest}/.env.prod.new"
   # Rename last: a reader never sees a half-written file, and a crash mid-copy
   # leaves the previous good copy in place rather than a truncated one.
@@ -288,4 +308,11 @@ save_env_copy() {
 }
 save_env_copy
 
-echo "Done - ${ENV_FILE} is ready."
+if [ "${ENV_COPY_OK}" = "1" ]; then
+  echo "Done - ${ENV_FILE} is ready."
+else
+  # Not fatal: the env file itself is correct and a deploy can proceed. But it
+  # must not read as an unqualified success, because the thing that failed is
+  # only ever needed on the day everything else has already gone wrong.
+  echo "Done - ${ENV_FILE} is ready, but WITHOUT the on-volume copy (see above)."
+fi

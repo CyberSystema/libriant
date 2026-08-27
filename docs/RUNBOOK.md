@@ -597,6 +597,15 @@ sudo chown deploy:deploy /var/log/libriant
 sudo mkdir -p /mnt/libriant/{postgres,redis,storage,caddy/origin,backups}
 sudo chown -R 1000:1000 /mnt/libriant/storage       # ← required, enforced by nothing
 sudo chown deploy:deploy /mnt/libriant/backups
+# `env` holds the on-volume copy of .env.prod that ensure-env.sh writes, and it
+# is the FIRST recovery source that script names when POSTGRES_PASSWORD is lost
+# but the cluster survives — the boot-disk-rebuild case. It was missing from
+# this list, and /mnt/libriant is root-owned, so ensure-env.sh (which runs as
+# deploy) could not create it and reported
+#   ! could not create /mnt/libriant/env - no on-volume copy made
+# while still finishing "Done". Owned by deploy because ensure-env.sh writes it
+# unprivileged; 700 because it holds every secret the stack has.
+sudo install -d -m 700 -o deploy -g deploy /mnt/libriant/env
 ls -la /mnt/libriant
 ```
 
