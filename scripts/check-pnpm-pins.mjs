@@ -29,29 +29,50 @@ if (!m) {
 const want = m[1];
 
 let bad = 0;
+
+/**
+ * Dockerfile source with comments removed.
+ *
+ * This is not tidiness. The pin used to be matched against the whole file, and
+ * when the corepack block was replaced its explanatory comment quoted the old
+ * `corepack prepare pnpm@11.22.0` line verbatim — so the checker went on
+ * matching PROSE and reported the pin as present in a file that no longer ran
+ * it. A checker satisfied by a comment is worse than no checker: it is the
+ * exact false green this script exists to prevent, and it had already happened
+ * once by the time anyone looked.
+ */
+function instructions(file) {
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .filter((l) => !/^\s*#/.test(l))
+    .join('\n');
+}
+
+// `npm install -g pnpm@<version>`, not `corepack prepare`. Corepack is no longer
+// present in node:26-alpine — `corepack enable` exits 127 — and the digest pin
+// means it will not reappear. Installing pnpm outright also removes the runtime
+// registry fetch that COREPACK_HOME existed to prevent.
+const PIN = /npm\s+install\s+-g\s+pnpm@(\d+\.\d+\.\d+)/g;
+
 for (const f of DOCKERFILES) {
-  const src = readFileSync(f, 'utf8');
-  const pins = [...src.matchAll(/corepack\s+prepare\s+pnpm@(\d+\.\d+\.\d+)/g)].map((x) => x[1]);
+  const src = instructions(f);
+  const pins = [...src.matchAll(PIN)].map((x) => x[1]);
   if (pins.length === 0) {
-    console.error(`✗ ${f}: no \`corepack prepare pnpm@<version>\` found — did the pin move?`);
+    console.error(`✗ ${f}: no \`npm install -g pnpm@<version>\` found — did the pin move?`);
     bad++;
     continue;
   }
   for (const got of pins) {
     if (got !== want) {
-      console.error(`✗ ${f}: prepares pnpm@${got}, package.json declares pnpm@${want}`);
+      console.error(`✗ ${f}: installs pnpm@${got}, package.json declares pnpm@${want}`);
       bad++;
     }
   }
-}
-
-// The api and web images run pnpm as the non-root `node` user, so their corepack
-// cache has to be readable by that user or it re-fetches over the network at
-// container start. caddy only uses pnpm at build time, as root.
-for (const f of ['apps/api/Dockerfile', 'apps/web/Dockerfile']) {
-  const src = readFileSync(f, 'utf8');
-  if (!/ENV\s+COREPACK_HOME=/.test(src)) {
-    console.error(`✗ ${f}: runs pnpm as a non-root user but does not set COREPACK_HOME`);
+  // Corepack resolved the package manager lazily, at run time, which is how a
+  // pin mismatch became a runtime outage rather than a build failure. Nothing
+  // may reintroduce it.
+  if (/\bcorepack\s+(enable|prepare)\b/.test(src)) {
+    console.error(`✗ ${f}: still runs corepack, which is absent from the pinned base image`);
     bad++;
   }
 }

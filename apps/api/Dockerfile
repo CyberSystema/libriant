@@ -55,15 +55,29 @@ RUN apk add --no-cache openssl tini postgresql16-client \
       *) echo "pg_dump is not major 16: $(pg_dump --version) — see launch-readiness-14" >&2; \
          exit 1 ;; \
     esac
-# Pin corepack's cache to a SHARED, world-readable location instead of the
-# per-user default (~/.cache/node/corepack). The migrate one-shot runs `pnpm`
-# via corepack as the non-root `node` user (INFRA-4); without a warm cache it
-# would try to re-download pnpm into node's HOME and fail. Preparing here lands
-# pnpm under COREPACK_HOME where every user can read it.
-ENV COREPACK_HOME=/opt/corepack
-RUN corepack enable \
- && corepack prepare pnpm@11.22.0 --activate \
- && chmod -R a+rX "$COREPACK_HOME"
+# Install pnpm directly instead of through corepack.
+#
+# `corepack enable` exits 127 — command not found — in
+# node:26-alpine@sha256:aadf416b. Corepack is no longer in the image, and the
+# digest pin (supply-chain-05) means it will not come back on its own; the CI
+# build reported it as
+#   process "/bin/sh -c corepack enable && corepack prepare pnpm@11.22.0 …"
+#   did not complete successfully: exit code: 127
+#
+# This is strictly better than what it replaces, which is worth saying because
+# the comment that used to sit here was about working around corepack rather
+# than about pnpm. Corepack RESOLVES the package manager at run time: it kept a
+# cache, and the whole COREPACK_HOME dance existed because the non-root `node`
+# user could not read root's cache and would therefore re-fetch pnpm from
+# npmjs.org — on the boot path, in production, with no fallback. `npm i -g`
+# lands the binary in /usr/local, owned by root and readable by everyone, and
+# nothing reaches for the network after the build. The failure mode the old
+# comment described cannot happen.
+#
+# The version is pinned and `scripts/check-pnpm-pins.mjs` asserts it matches
+# package.json's `packageManager` across all three Dockerfiles.
+RUN npm install -g pnpm@11.22.0 \
+ && pnpm --version
 WORKDIR /app
 
 # ----- deps ----------------------------------------------------------------

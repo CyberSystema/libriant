@@ -75,11 +75,38 @@ jobs:
       - name: Web imports @libriant/shared by subpath, never the barrel
         run: pnpm check:shared-imports
 
+      # amtool is run against a COPY with the receiver placeholders substituted,
+      # not against the file as committed.
+      #
+      # alertmanager.yml ships `[PLACEHOLDER: alert webhook URL …]` on purpose:
+      # no engineer can invent who gets woken up, and Alertmanager refusing to
+      # start on an unparseable URL is the deliberate mechanism that stops the
+      # stack pretending to alert. But amtool refuses it for the same reason
+      # (`first path segment in URL cannot contain colon`), so this step could
+      # never pass and blocked every push to main.
+      #
+      # Skipping it while placeholders remain would be the easy fix and the
+      # wrong one — it would leave the routing tree, the receivers, the matchers
+      # and the inhibit rules unvalidated for exactly as long as the file is in
+      # the state most likely to contain a mistake. Substituting the URLs
+      # validates everything except the URLs, today, and the real file is
+      # validated directly the moment an owner fills them in.
       - name: Prometheus rules and Alertmanager config are valid
         run: |
+          set -o pipefail
           docker run --rm -v "$PWD/infra/monitoring:/m:ro" --entrypoint promtool \
             prom/prometheus:v3.1.0 check rules /m/alerts.yml
-          docker run --rm -v "$PWD/infra/monitoring:/m:ro" --entrypoint amtool \
+
+          mkdir -p /tmp/amcheck
+          if grep -q '\[PLACEHOLDER' infra/monitoring/alertmanager.yml; then
+            n=$(grep -c '\[PLACEHOLDER' infra/monitoring/alertmanager.yml)
+            echo "::notice::alertmanager.yml carries $n [PLACEHOLDER] receiver(s). Validating structure with substituted URLs; the URLs themselves are unchecked until an owner fills them in."
+            sed 's#\[PLACEHOLDER[^]]*\]#https://ci.invalid/placeholder#g' \
+              infra/monitoring/alertmanager.yml > /tmp/amcheck/alertmanager.yml
+          else
+            cp infra/monitoring/alertmanager.yml /tmp/amcheck/alertmanager.yml
+          fi
+          docker run --rm -v /tmp/amcheck:/m:ro --entrypoint amtool \
             prom/alertmanager:v0.28.0 check-config /m/alertmanager.yml
 
       # And that the config is loadable at all — a syntax error here takes the

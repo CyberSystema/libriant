@@ -332,70 +332,50 @@ Two facts hidden in there:
 
 ## 3. First deploy, from bare metal
 
-### 3.0 It does not currently succeed. Read this first.
+### 3.0 The pnpm toolchain in the images — historical, and why it is fine now
 
-`BLOCKER supply-chain-06` — **the stack builds but does not run.**
+This section used to open "It does not currently succeed. Read this first." and
+describe `BLOCKER supply-chain-06`: the Dockerfiles prepared pnpm 9.15.4 while
+`package.json` declared 11.22.0, so corepack tried to fetch the declared version
+at container start, on the `data` network — which is `internal: true`, no egress
+— and the one-shot `migrate` exited 1. `api` and `worker` gate on migrate, so
+the whole stack never started, and the visible error was a Prisma P3009 that
+pointed nowhere near the cause.
 
-`package.json:6` declares `"packageManager": "pnpm@11.22.0"`. All three
-Dockerfiles run `corepack prepare pnpm@9.15.4 --activate`. Corepack always
-honours the nearest `package.json` and ignores `prepare --activate`, so the pin
-is inert. In the API runtime stage (`FROM base`, not `deps`) the only pnpm ever
-written into `COREPACK_HOME=/opt/corepack` is 9.15.4; the directory is root-owned
-and `a+rX` (readable, **not** writable) and the process runs as `USER node`. So
-`prod-bootstrap.sh` → `pnpm db:migrate:deploy` makes corepack try to fetch and
-cache 11.22.0, it cannot write the cache, and it exits 1.
+**None of that can happen any more, and neither can anything else in its class.**
+Two changes, in order:
 
-And it cannot fetch anyway: `migrate` is on the `data` network, which is
-`internal: true`. **No egress.** There is no host-side workaround —
-`deploy-on-host.sh` does `git reset --hard` on every run and would discard a
-local edit, and `package.json` is baked into the image regardless.
+1. The pins were corrected to 11.22.0 everywhere, and `scripts/check-pnpm-pins.mjs`
+   now asserts on every push that all three Dockerfiles agree with
+   `package.json`'s `packageManager`.
+2. Corepack itself is gone. `corepack enable` exits 127 in
+   `node:26-alpine@sha256:aadf416b` — the binary is not in the image, and the
+   digest pin means it will not reappear. All three Dockerfiles now
+   `npm install -g pnpm@11.22.0` at build time instead.
 
-What you actually see:
+The second is what closes the class rather than the instance. Corepack RESOLVED
+the package manager lazily, at run time, which is precisely why a wrong pin
+became a runtime outage rather than a build failure — and why `COREPACK_HOME`
+had to be warmed and made world-readable so the non-root `node` user would not
+re-fetch pnpm from npmjs.org on every container start. A global install lands
+the binary in `/usr/local/bin`, readable and executable by every user, resolved
+at build time. Nothing reaches for the network after the image is built, so
+neither the missing-cache failure nor the no-egress failure has anywhere to
+occur.
 
-```
-▸ docker compose up
-...
-[bootstrap] FATAL: control-plane migration failed. If this is a P3009 'failed
-migration' or drift, inspect with 'prisma migrate status' and resolve with
-'prisma migrate resolve' before redeploying.
-✗ compose up failed.
-```
+`check:pnpm-pins` guards all three properties: the version matches, the install
+is a real instruction rather than a line of prose (it was briefly satisfied by a
+comment quoting the old command), and nothing has reintroduced corepack.
 
-**Ignore the P3009 advice — it is a red herring.** Scroll up in the dumped
-migrate log for the real line:
-
-```
-Failed to create cache directory. Please ensure the user has write access to
-the target directory (/opt/corepack/v1)
-```
-
-Nothing is left half-applied: `migrate` exits before touching the database.
-
-**The fix, before any of §3 is worth doing** (commit it, then deploy):
-
-1. `apps/api/Dockerfile:30`, `apps/web/Dockerfile:9`, `infra/caddy/Dockerfile:16`
-   → `corepack prepare pnpm@11.22.0 --activate`.
-2. Add `ENV COREPACK_HOME=/opt/corepack` and `chmod -R a+rX` to the **web** image.
-   Today the web container's PID 1 _is_ corepack: it has no `COREPACK_HOME`, so it
-   downloads pnpm from npmjs.org **on every container start**, on the boot path.
-   Every web restart currently depends on npmjs.org being up.
-3. Add the `+sha224.<hash>` integrity suffix to `package.json:6`.
-4. Add a CI job that builds the api image and runs
-   `docker run --rm --user node <img> pnpm --version`. Nothing in CI builds or
-   runs these images today, which is why this was invisible.
-
-Verify locally before you push:
+Verify against a built image:
 
 ```bash
 docker build -f apps/api/Dockerfile -t lbr-api-probe . \
   && docker run --rm --user node --network none -w /app lbr-api-probe pnpm --version
 ```
 
-Good looks like: `11.22.0`, exit 0. That `--network none` is the point — it
-reproduces the `data` network's isolation.
-
-Everything below assumes that fix has landed. Steps 3.1–3.7 are safe and useful
-regardless; **3.8 is the one that fails today.**
+`--network none` is the point: it proves pnpm resolves with no egress at all,
+which is the condition the `migrate` one-shot actually runs under.
 
 ### 3.1 Get on the box and take stock
 

@@ -315,8 +315,9 @@ services:
     restart: 'no'
     # INFRA-4: runs as the image's non-root `node` user (the Dockerfile default)
     # — the previous `user: root` override was only there to avoid a corepack
-    # cache re-download, which is now fixed by warming a shared COREPACK_HOME at
-    # build time.
+    # cache re-download. Corepack is gone entirely now (pnpm is installed
+    # globally at build time; see RUNBOOK 3.0), so there is nothing left to warm
+    # and no reason for this one-shot to be root.
     #
     # supply-chain-07: this used to end "…which eliminates the only root
     # container in the prod stack", and that was false the day it was written.

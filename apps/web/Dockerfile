@@ -8,15 +8,29 @@
 # for how to re-resolve. All three Dockerfiles must move together.
 FROM node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019 AS base
 RUN apk add --no-cache tini
-# COREPACK_HOME is pinned to a shared, world-readable path for the same reason
-# as apps/api/Dockerfile: this image's CMD is `pnpm … start` running as the
-# non-root `node` user, so a cache under root's HOME means corepack tries to
-# re-download pnpm from the network on EVERY container start — on the boot path,
-# in production, with no fallback if npmjs.org is unreachable.
-ENV COREPACK_HOME=/opt/corepack
-RUN corepack enable \
- && corepack prepare pnpm@11.22.0 --activate \
- && chmod -R a+rX "$COREPACK_HOME"
+# Install pnpm directly instead of through corepack.
+#
+# `corepack enable` exits 127 — command not found — in
+# node:26-alpine@sha256:aadf416b. Corepack is no longer in the image, and the
+# digest pin (supply-chain-05) means it will not come back on its own; the CI
+# build reported it as
+#   process "/bin/sh -c corepack enable && corepack prepare pnpm@11.22.0 …"
+#   did not complete successfully: exit code: 127
+#
+# This is strictly better than what it replaces, which is worth saying because
+# the comment that used to sit here was about working around corepack rather
+# than about pnpm. Corepack RESOLVES the package manager at run time: it kept a
+# cache, and the whole COREPACK_HOME dance existed because the non-root `node`
+# user could not read root's cache and would therefore re-fetch pnpm from
+# npmjs.org — on the boot path, in production, with no fallback. `npm i -g`
+# lands the binary in /usr/local, owned by root and readable by everyone, and
+# nothing reaches for the network after the build. The failure mode the old
+# comment described cannot happen.
+#
+# The version is pinned and `scripts/check-pnpm-pins.mjs` asserts it matches
+# package.json's `packageManager` across all three Dockerfiles.
+RUN npm install -g pnpm@11.22.0 \
+ && pnpm --version
 WORKDIR /app
 
 # ----- deps ----------------------------------------------------------------
