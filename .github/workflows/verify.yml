@@ -111,10 +111,30 @@ jobs:
 
       # And that the config is loadable at all — a syntax error here takes the
       # whole edge down on deploy, and no job built or parsed it before now.
+      #
+      # `caddy validate` does not merely adapt: it PROVISIONS every app, and the
+      # tls app opens `/etc/caddy/origin/origin.crt` (Caddyfile:160), which is
+      # the Cloudflare origin certificate and exists only on the production
+      # host. So this step failed with `loading certificates: … no such file or
+      # directory` — a real file, correctly referenced, that CI has no business
+      # holding.
+      #
+      # A throwaway self-signed pair at the same path is the right substitute.
+      # Dropping to `caddy adapt` would have been easier and would have given up
+      # exactly the half worth having: adapt catches a syntax error, provision
+      # catches a directive that parses and cannot load, which is the failure
+      # that takes the edge down on deploy rather than at build time.
       - name: Caddyfile adapts and validates
         run: |
+          set -euo pipefail
+          mkdir -p /tmp/caddy-origin
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj '/CN=libriant-ci.invalid' \
+            -keyout /tmp/caddy-origin/origin.key \
+            -out /tmp/caddy-origin/origin.crt 2>/dev/null
           docker run --rm \
             -v "$PWD/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            -v /tmp/caddy-origin:/etc/caddy/origin:ro \
             caddy:2-alpine caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile
 
       - name: TypeScript typecheck (all packages)
@@ -596,9 +616,22 @@ jobs:
       - name: No dev tooling in either production image
         run: |
           set -euo pipefail
-          banned='^(eslint|vitest|turbo|prettier|typescript-eslint|supertest|@typescript-eslint\+|@eslint\+|@vitest\+|next|@next\+|rolldown|vite)@'
+          # "Dev tooling" is per-image, because `next` is not one thing in both.
+          # It is build-only in the API image and the FRAMEWORK the web image
+          # exists to run. This step used to ban it in both and then, four lines
+          # later, assert the web image still contained it — two conditions that
+          # cannot hold at once, so the job could only ever have gone green if
+          # the web image were broken. It never ran until now: the image build
+          # ahead of it was failing on corepack, so the contradiction shipped
+          # unnoticed.
+          shared='eslint|vitest|turbo|prettier|typescript-eslint|supertest|@typescript-eslint\+|@eslint\+|@vitest\+|rolldown|vite'
           fail=0
           for img in libriant-api:verify libriant-web:verify; do
+            case "$img" in
+              # `next` and `@next/*` belong in the web image and nowhere else.
+              *-web:verify) banned="^($shared)@" ;;
+              *)            banned="^($shared|next|@next\+)@" ;;
+            esac
             echo "── $img"
             hits=$(docker run --rm --entrypoint sh "$img" -c \
               "ls node_modules/.pnpm 2>/dev/null | grep -E '$banned' || true")
@@ -608,8 +641,9 @@ jobs:
               echo "✓ clean"
             fi
           done
-          # The web image is the one that legitimately contains Next.js; assert
-          # it separately rather than weakening the shared pattern.
+          # And the other direction: the web image must still HAVE Next.js. A
+          # prune that removed it would leave this step green on the check above
+          # while the container could not start.
           docker run --rm --entrypoint sh libriant-web:verify -c \
             'ls node_modules/.pnpm | grep -qE "^next@"' \
             || { echo "✗ the web image lost Next.js"; fail=1; }
