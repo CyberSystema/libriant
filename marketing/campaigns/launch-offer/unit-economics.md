@@ -10,15 +10,16 @@ corrected version, deliberately pessimistic.
 ## 1. What changed since the first estimate
 
 **Hetzner raised prices on 15 June 2026.** DRAM is up ~171% year-on-year on AI
-demand, and NVMe followed. The increase was not uniform, and the line the
-deployment runbook specced was among the worst hit:
+demand, and NVMe followed. The increase was not uniform, and the line the old
+deployment doc specced (deleted 2026-08-28; the machine actually in use is in
+`docs/RUNBOOK.md` §1) was among the worst hit:
 
-| Instance                         | Now (ex-VAT)  | Notes                                                         |
-| -------------------------------- | ------------- | ------------------------------------------------------------- |
-| **CPX32** (4 vCPU, 8 GB)         | **€35.49/mo** | what `docs/deployment-hetzner.md` specs — CPX rose ~2.4–2.75× |
-| **CX43** (8 vCPU, 16 GB, 160 GB) | **€15.99/mo** | more machine, less than half the price                        |
-| CAX31 (ARM, 8 vCPU, 16 GB)       | €20.99/mo     |                                                               |
-| AX42-1 dedicated                 | €97.30/mo     |                                                               |
+| Instance                         | Now (ex-VAT)  | Notes                                                     |
+| -------------------------------- | ------------- | --------------------------------------------------------- |
+| **CPX32** (4 vCPU, 8 GB)         | **€35.49/mo** | what the old deployment doc specced — CPX rose ~2.4–2.75× |
+| **CX43** (8 vCPU, 16 GB, 160 GB) | **€15.99/mo** | more machine, less than half the price                    |
+| CAX31 (ARM, 8 vCPU, 16 GB)       | €20.99/mo     |                                                           |
+| AX42-1 dedicated                 | €97.30/mo     |                                                           |
 
 > **Action, independent of the voucher question: do not re-order a CPX32.** The
 > CX line rose only ~30% while CPX rose ~140%. A **CX43 costs €19.50/month less

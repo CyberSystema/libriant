@@ -41,14 +41,22 @@ COMPOSE_FILE="${COMPOSE_FILE:-${LIBRIANT_APP_DIR}/infra/compose/docker-compose.p
 # the app containers are stopped, so the volume's `_data` directory is empty and
 # unmounted, and writing there is the same total loss one layer deeper. An
 # explicit STORAGE_DIR= still wins, for the operator who knows better.
-STORAGE_DIR="$(storage_resolve_dir "${COMPOSE_PROJECT_NAME:-libriant}" "${STORAGE_DIR:-}")"
-# The superuser the dump was taken as and is restored as.
-PG_ROLE="${PG_ROLE:-libriant}"
-
+# Sourced BEFORE the first call into them. `storage_resolve_dir` lives in
+# storage-archive.sh and was being called seven lines above the `.` that
+# defines it, so restore.sh died with
+#   scripts/restore.sh: line 44: storage_resolve_dir: command not found
+# on every invocation, whatever the arguments — the recovery path for the
+# whole product, unable to reach its own argument parser. Nothing caught it
+# because no test and no CI job runs this script, and the DR drill exercises
+# the filter library directly rather than through here.
 # shellcheck source=_lib/pg-restore-filter.sh
 . "$(dirname "$0")/_lib/pg-restore-filter.sh"
 # shellcheck source=_lib/storage-archive.sh
 . "$(dirname "$0")/_lib/storage-archive.sh"
+
+STORAGE_DIR="$(storage_resolve_dir "${COMPOSE_PROJECT_NAME:-libriant}" "${STORAGE_DIR:-}")"
+# The superuser the dump was taken as and is restored as.
+PG_ROLE="${PG_ROLE:-libriant}"
 
 log() { printf '[%s] %s\n' "$(date +'%Y-%m-%d %H:%M:%S')" "$*"; }
 die() { printf 'restore: %s\n' "$*" >&2; exit 1; }

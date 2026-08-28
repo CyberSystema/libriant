@@ -17,8 +17,8 @@ The email's primary CTA points at `https://libriant.com/#apply`. Sending before
 that works puts every recipient on a broken page, and you get one first
 impression per library.
 
-- [ ] The server is built and the stack is deployed — `docs/deployment-hetzner.md`
-- [ ] The cutover is done — `docs/cutover-three-hosts.md`
+- [ ] The server is built and the stack is deployed — `docs/RUNBOOK.md` §3
+- [ ] The cutover is done — `docs/RUNBOOK.md` §5.4
 - [ ] `libriant.com` returns 200 and renders the Greek home page
 - [ ] Submit a real test application yourself and confirm the row lands:
       `dc exec -T postgres psql -U libriant -d libriant_control -c 'select id, "libraryName", "createdAt" from applications order by "createdAt" desc limit 1;'`

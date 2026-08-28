@@ -42,8 +42,19 @@ compose overlay needs exist yet.
 | IPv6      | `2a01:4f8:13b:ac8::2/64` — **the box has public IPv6**        |
 | Listening | port 22 only (plus systemd-resolved on 127.0.0.53/127.0.0.54) |
 
-IPv6 matters and is easy to miss: DNS needs AAAA records or IPv6 clients silently
-miss the host, and any firewall rule written only for IPv4 leaves v6 wide open.
+IPv6 matters and is easy to miss: any firewall rule written only for IPv4 leaves
+v6 wide open.
+
+> **Superseded, 2026-08-28 — the second half of this note used to read "DNS needs
+> AAAA records or IPv6 clients silently miss the host". That inference is wrong
+> for this architecture and RUNBOOK §5.4 now forbids acting on it.** The
+> measurement above stands: the box does have public IPv6. But the origin
+> publishes on IPv4 only (`EDGE_BIND_IPV4`, RUNBOOK §3.2c layer 2), so there is
+> no `[::]` listener on 80 or 443 — and because Cloudflare fronts the site, IPv6
+> clients reach it through Cloudflare's own AAAA records, not the origin's.
+> Creating an `AAAA` record for the origin gives you a 522 on the v6 path only,
+> intermittently, while every v4 check passes. **A records only.** See RUNBOOK
+> §5.4 step 5.
 
 ## What is installed
 

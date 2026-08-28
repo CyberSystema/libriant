@@ -9,6 +9,10 @@ from day one, hot-swappable graphic assets, designed end-to-end for non-technica
 Full design plan: see [the plan](./.claude/plan.md) (also kept at
 `~/.claude/plans/i-want-to-create-enumerated-corbato.md`).
 
+> **This file is for working on the code.** Building, running, breaking and
+> fixing Libriant on a server is [`docs/RUNBOOK.md`](docs/RUNBOOK.md), and it is
+> the only operational document — there is no second place to look.
+
 ## Repo layout
 
 ```
@@ -30,9 +34,12 @@ scripts/       CI gates (check-translations, check-assets) + provisioning later
 
 ## Prerequisites
 
-- Node 20+ (`.nvmrc` pins it)
-- pnpm 9+ (`packageManager` in `package.json` pins it)
-- Docker + Docker Compose
+- Node 26+ (`package.json`'s `engines.node` is `>=26`; note `.nvmrc` still says
+  `24` and is behind — `supply-chain-06` was a pin disagreement of exactly this
+  shape, so trust `package.json`)
+- pnpm 11.22.0 (`packageManager` in `package.json` pins it, and
+  `pnpm check:pnpm-pins` asserts all three Dockerfiles agree with it)
+- Docker + Docker Compose v2
 
 ## First-time setup
 
@@ -1821,66 +1828,41 @@ open http://localhost:3000/en/t/step18a                    # branded takeover pa
 
 ### Verify the production infra (Step 19)
 
-Step 19 ships the production topology: Caddy at the edge (TLS via ACME),
-api + web + worker behind it on a private docker network, Postgres +
-PgBouncer + Redis on the same network, the hot-swap `/assets/` bind
-mount, and a static `maintenance.html` fallback that survives a full
-app outage. GitHub Actions builds + pushes images to GHCR and rolls them
-to every host in [`infra/deploy/fleet.yml`](infra/deploy/fleet.yml); a
-nightly [`scripts/backup.sh`](scripts/backup.sh) captures Postgres +
-storage to disk and optionally rclone-syncs them off-host.
+Step 19 ships the production topology: Caddy at the edge, api + web +
+worker behind it on a private docker network, Postgres + PgBouncer +
+Redis on the same network, the hot-swap `/assets/` bind mount, and a
+static `maintenance.html` fallback that survives a full app outage.
+
+> **Operating this on a server is [`docs/RUNBOOK.md`](docs/RUNBOOK.md).** It is
+> the only operational document; this file is for working on the code. What used
+> to be here was a set of server instructions that had drifted — it described TLS
+> via ACME (there is none: every vhost serves a Cloudflare Origin certificate
+> from disk), a CI deploy that fans out over `infra/deploy/fleet.yml` (the
+> workflow has been `workflow_dispatch`-only since 2026-08-22 and deploys are
+> manual from the box), a one-`-f` compose invocation that would put Postgres and
+> uploads somewhere other than the data volume, and health probes against
+> `/healthz`, which is a static 200 answered by Caddy. Do not re-derive any of it
+> from here.
+
+Two checks below are genuinely developer ones — they run on a laptop and need no
+server.
 
 ```sh
 # 1) Build images locally to validate the Dockerfiles end-to-end.
 docker build -f apps/api/Dockerfile -t libriant-api:test .
 docker build -f apps/web/Dockerfile -t libriant-web:test .
 
-# 2) Boot the prod stack against an isolated env file. Compose's variable
-# interpolation refuses to start if any required secret is missing, so
-# `:?` errors here mean the .env.prod is incomplete — that's by design.
-cp .env.prod.example /srv/libriant/.env.prod    # then fill in the blanks
-( set -a; source /srv/libriant/.env.prod; set +a; \
-  docker compose -f infra/compose/docker-compose.prod.yml up -d )
-
-# 3) Health probes (every service has the same contract):
-curl -fs https://libriant.com/healthz              # Caddy → web
-curl -fs https://libriant.com/lbr-api/healthz      # Caddy → api
-docker compose -f infra/compose/docker-compose.prod.yml \
-  exec worker wget -qO- http://localhost:3002/healthz
-# Readiness fans out: web /api/readyz round-trips to api /readyz, which
-# pings Redis + the control DB. Either dependency down → 503.
-curl -is https://libriant.com/api/readyz
-curl -is https://libriant.com/lbr-api/readyz
-
-# 4) Prometheus metrics (text exposition; same contract on all three).
-curl -s https://libriant.com/api/metrics      | head -6
-curl -s https://libriant.com/lbr-api/metrics  | head -6
-docker compose -f infra/compose/docker-compose.prod.yml \
-  exec worker wget -qO- http://localhost:3002/metrics | head -6
-
-# 5) Static-page fallback. Flip MAINTENANCE_HARD=true and reload caddy;
-# even with api + web killed, Caddy serves the brand-aware page.
-MAINTENANCE_HARD=true docker compose -f infra/compose/docker-compose.prod.yml \
-  up -d --force-recreate caddy
-curl -is https://libriant.com/ | head -8     # 200 with X-Maintenance: hard
-# /healthz still passes through so the load balancer doesn't pull the host.
-curl -is https://libriant.com/healthz | head -4
-
-# 6) Asset hot-swap (still works under prod compose — the assets/ folder
-# is bind-mounted into Caddy + web + api as a single read-only volume).
+# 2) Asset hot-swap (works under prod compose too — the assets/ folder is
+# bind-mounted into Caddy + web + api as a single read-only volume, and
+# ASSETS_ROOT/LOCALES_ROOT are set on all of them so Next.js honours it).
 echo "<svg ...>...</svg>" > assets/brand/logo.svg
-curl -I https://libriant.com/_assets/brand/logo.svg     # ETag updates
-
-# 7) Backup drill. Runs against the live compose project; idempotent on
-# the same day.
-COMPOSE_PROJECT_NAME=libriant ./scripts/backup.sh
-ls /srv/libriant/backups/$(date +%Y%m%d)/
-# → postgres.sql.gz storage.tar.gz caddy-logs.tar.gz manifest.txt
-
-# 8) Deploy drill — push to GHCR + roll the fleet. The workflow runs
-# from CI, but you can dry-run locally with `act`:
-act push -W .github/workflows/deploy.yml --container-architecture linux/amd64
+curl -I http://localhost/_assets/brand/logo.svg     # ETag updates
 ```
+
+Everything else that used to be in this block — bringing the prod stack up,
+health probes, metrics, the maintenance fallback, the backup drill — is
+`docs/RUNBOOK.md` §3, §7 and §8, against the real host and with the traps
+attached.
 
 **Architecture notes.**
 
@@ -1889,6 +1871,13 @@ act push -W .github/workflows/deploy.yml --container-architecture linux/amd64
   Postgres / Redis / API / worker are unreachable from outside the host.
   When this graduates to multi-host (Stage 2), the LB takes over the
   edge role and Caddy moves to per-node.
+  **The bind address is load-bearing**: they are published as
+  `${EDGE_BIND_IPV4:-0.0.0.0}:80:80` and never the bare `80:80`, because the
+  wildcard form also opens a `[::]` listener that Docker services through the
+  userland proxy — which re-originates every IPv6 client from the bridge
+  gateway and hands them a trusted private address. Simplifying that back to
+  `80:80` removes a layer of the origin lockdown. The 36 lines of comment above
+  `ports:` say why; `docs/RUNBOOK.md` §3.2c is the operator's half.
 - **`tsx` in production.** The API runs under `tsx` instead of compiled
   JavaScript because pnpm workspace packages export their TypeScript
   source directly (`main: ./src/index.ts`). The trade-off is a ~30 MB
@@ -1902,9 +1891,11 @@ act push -W .github/workflows/deploy.yml --container-architecture linux/amd64
   effects) land over the next steps.
 - **Same health contract across all three.** `/healthz` (liveness),
   `/readyz` (dependency check; for api → DB + Redis, for web →
-  round-trip to api, for worker → liveness), `/metrics` (Prometheus
-  text exposition). One probe shape no matter which service or which
-  orchestrator picks it up.
+  round-trip to api, for worker → its BullMQ consumers + Redis), `/metrics`
+  (Prometheus text exposition). One probe shape no matter which service or which
+  orchestrator picks it up. Container healthchecks probe `/readyz`, not
+  `/healthz` — and `/healthz` on a **public** host never reaches any of them: it
+  is answered at the edge by Caddy's `(maintenance_check)` snippet with a static 200. Never use it to decide whether the app is up.
 - **`assets/` and `locales/` are bind-mounted read-only into multiple
   services.** Designers can replace `assets/brand/logo.svg` on the host
   and every container sees the change instantly — same hot-swap drill
@@ -1914,20 +1905,25 @@ act push -W .github/workflows/deploy.yml --container-architecture linux/amd64
   `$MAINTENANCE_HARD`. Even if the entire NestJS app is down, browsers
   get a polished page (and Caddy's 502 templates never surface to
   users).
-- **Deploy targets a "fleet," not a host.** [`infra/deploy/fleet.yml`](infra/deploy/fleet.yml)
-  lists hosts; the workflow fans out across them with `fail-fast: false`
-  so one cell failing doesn't roll back others — the cells are
-  independent by design. Today the list has one entry; growth = append.
-- **Backups are atomic per-day.** [`scripts/backup.sh`](scripts/backup.sh)
-  writes everything under `$BACKUP_ROOT/YYYYMMDD/`, prunes anything
-  older than `$BACKUP_KEEP_DAYS` (default 14), and optionally
-  rclone-mirrors off-host. Re-running on the same day is a no-op
-  (idempotent overwrite), so a missed cron + manual catch-up is safe.
-- **Out of MVP, hooks in place.** Wildcard TLS for `*.libriant.com`
-  (commented Caddyfile block with a DNS-01 challenge — needs a provider
-  plugin), multi-region cell routing, OpenTelemetry traces, and a real
-  Prometheus + Grafana stack are all deferred. The metrics endpoints
-  already exist so a scraper can attach to today's deployment.
+- **Deploy targets a "fleet," not a host** — in shape.
+  [`infra/deploy/fleet.yml`](infra/deploy/fleet.yml) lists hosts and the
+  workflow fans out across them with `fail-fast: false`, so one cell failing
+  doesn't roll back others; the cells are independent by design. **That workflow
+  is `workflow_dispatch`-only as of 2026-08-22** and the live box is deployed by
+  hand from the server (`docs/RUNBOOK.md` §6.2). Today the list has one entry.
+- **Backups.** [`scripts/backup.sh`](scripts/backup.sh) writes everything under
+  `$BACKUP_ROOT/YYYYMMDD/` and re-running on the same day overwrites in place, so
+  a missed cron plus a manual catch-up is safe. It **refuses to run** without an
+  encryption decision and without a dead man's switch, and the artefacts carry a
+  `.age` / `.gpg` suffix. All of that, and the cron line, is `docs/RUNBOOK.md`
+  §8 — do not invoke it from here.
+- **Out of MVP, hooks in place.** Multi-region cell routing and OpenTelemetry
+  traces are deferred. Prometheus and node-exporter are **not** deferred any
+  more: every deploy brings them up and evaluates 25 alert rules. The commented
+  wildcard-TLS block in the Caddyfile is a dead end rather than a hook — in a
+  Cloudflare-proxied architecture tenant subdomains need a proxied wildcard `A *`
+  record and the same file certificate as everything else, no ACME and no DNS
+  token (`docs/RUNBOOK.md` §5.2).
 
 ### Verify provisioning + relocation (Step 20)
 
@@ -1938,10 +1934,22 @@ read-only-mode + cache bust, and move a tenant's files between storage
 backends. All four scripts live under [`scripts/`](scripts/) and shell
 in via pnpm.
 
+> **Running any of these against production is `docs/RUNBOOK.md`** — §6.6
+> (adding a tenant), §6.5 (fan-out migrations) and §10.3 (relocation and moving
+> files), where they carry the env prefix they need and the flags they refuse to
+> run without. On the server the host has no Node, so they run inside the
+> `migrate` container. The examples below are local ones.
+
+Every one of these scripts needs `CONTROL_DATABASE_URL` in its environment and
+dies with `Error: CONTROL_DATABASE_URL is not set` without it — including on a
+`--dry-run`, and `tenant:relocate` prints one line that looks like progress
+first.
+
 ```sh
 # 1) Admin provisioning — full control over plan, billing mode, cell,
 # initial owner. Idempotent on slug; rolls back the physical DB if the
-# control-plane TX fails after CREATE DATABASE.
+# control-plane TX fails after CREATE DATABASE. On the server this runs
+# through `dc run --rm --no-deps migrate` — see RUNBOOK §6.6.
 CONTROL_DATABASE_URL=postgresql://libriant:libriant@localhost:5432/libriant_control \
 PG_SUPERUSER_URL=postgresql://libriant:libriant@localhost:5432/libriant_control \
 STORAGE_ROOT=/srv/libriant/storage \
@@ -1981,64 +1989,21 @@ pnpm tenant:create --owner-password=short  # < 12 chars → 1
 # every tenant on the box. Measured: it reported `done. 137 ok, 0 failed`
 # against the audit control plane while claiming to be a dry run. The same
 # `--` makes tenant:relocate abort with `missing required flag(s): --tenant`.
-pnpm tenant:migrate                       # all active tenants
-pnpm tenant:migrate --only=acme,step18a   # specific slugs
-pnpm tenant:migrate --include-archived    # also migrate archived
-pnpm tenant:migrate --dry-run             # list, don't migrate
-pnpm tenant:migrate --concurrency=4
+CDB=postgresql://libriant:libriant@localhost:5432/libriant_control
+CONTROL_DATABASE_URL=$CDB pnpm tenant:migrate                     # all active tenants
+CONTROL_DATABASE_URL=$CDB pnpm tenant:migrate --only=acme,step18a # specific slugs
+CONTROL_DATABASE_URL=$CDB pnpm tenant:migrate --include-archived  # also archived
+CONTROL_DATABASE_URL=$CDB pnpm tenant:migrate --dry-run           # list, don't migrate
+CONTROL_DATABASE_URL=$CDB pnpm tenant:migrate --concurrency=4
 # Per-row outcomes printed at the end:
 #   [tenant-migrate]   acme         ✓ up to date
 #   [tenant-migrate]   step18a      ✓ 1 applied
 #   [tenant-migrate]   broken       ✗ P3009 — database not reachable
 #   [tenant-migrate] done. 14 ok, 1 failed.    (exit 2 when any failed)
 
-# 3) Cell-to-cell DB relocation. Dry-run prints the plan; the real run
-# opens a per-tenant `read_only` window, pg_dumps the source, pg_restores
-# to the destination, verifies, updates tenants.db_url + cell_id, busts
-# the TenantResolver Redis cache, and closes the window. Failures leave
-# the tenant on the source DB and the read_only window open for inspection.
-#
-# --allow-remote is NOT optional in production. The script fences a database
-# read-only, restores over one with `pg_restore --clean` and can issue DROP
-# DATABASE, so it refuses any cluster that is not on the machine it runs from:
-#   refusing to run against a non-local cluster: --to-db-url destination
-#   resolves to host "cell-02.lan". … Re-run with --allow-remote once you have
-#   read the host above and meant it.
-# It checks CONTROL_DATABASE_URL, the tenant's live database and the
-# destination, so a run that crosses the network needs the flag even when only
-# one of the three is remote.
-REDIS_URL=redis://localhost:6379 \
-  pnpm tenant:relocate \
-    --tenant=acme \
-    --to-db-url='postgresql://libriant:pw@cell-02.lan:5432/' \
-    --to-cell=cell-02 \
-    --allow-remote \
-    --dry-run
-# → [tenant-relocate] --allow-remote: proceeding against NON-LOCAL --to-db-url
-#     destination at cell-02.lan.
-# → [tenant-relocate]   from cell=cell-eu-1 dbUrl=…@localhost:5432/tenant_…
-# → [tenant-relocate]   to   cell=cell-02   dbUrl=…@cell-02.lan:5432/tenant_…
-# → [tenant-relocate] dry run: not relocating.
-#
-# After verifying the new home is healthy, drop the old database. --yes is a
-# second, separate consent: without it the run prints the host and the database
-# name it is about to destroy and then refuses.
-pnpm tenant:relocate --tenant=acme --drop-source --allow-remote --yes
-
-# 4) Storage migration. Same lifecycle — read_only window + verify + cache
-# bust. Today: file:// ↔ file:// only; s3:// / smb:// throw "not
-# implemented" with the wiring already in place.
-pnpm storage:migrate \
-  --tenant=acme \
-  --to-storage-url='file:///srv/libriant-2/storage/<tenant-id>' \
-  --dry-run
-# Real run reports:
-#   [storage-migrate] opened read_only window event=…
-#   [storage-migrate] rsync -a → destination…
-#   [storage-migrate] verifying byte counts match…
-#   [storage-migrate] updating control plane (storage_url)…
-#   [storage-migrate] busting TenantResolver cache…
-#   [storage-migrate] closing read_only window…
+# 3) Cell-to-cell DB relocation and 4) storage migration are production
+# operations with flags they refuse to run without (--allow-remote, --yes) and
+# an env prefix that is not optional. They live in docs/RUNBOOK.md §10.3.
 ```
 
 **Architecture notes.**

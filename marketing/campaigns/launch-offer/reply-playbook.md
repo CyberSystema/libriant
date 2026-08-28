@@ -88,6 +88,12 @@ Once they say yes, this is the whole runbook. It is written against the code
 that exists on 2026-08-25; where the code cannot do something, this says so
 instead of describing it anyway.
 
+> **`docs/RUNBOOK.md` §6.6 is authoritative where the two disagree.** This
+> section covers the same provisioning ground from the sales side (the owner
+> password handover, the `migrate`-container precheck) and duplicates the rest.
+> If a command, count or flag here does not match §6.6, believe §6.6 and fix
+> this file.
+
 **Read this first, before you promise anyone a start date.** Two things about
 the founding offer are not what you would guess:
 
@@ -100,7 +106,7 @@ the founding offer are not what you would guess:
    brand-new library with `pnpm tenant:create --billing-mode` instead (step 1),
    which sets it at provisioning time.
 2. **Nothing anywhere watches `paidUntil`.** No scheduled job
-   (`apps/api/src/jobs/registry.ts` has ten; none is about billing terms), no
+   (`apps/api/src/jobs/registry.ts` has eleven; none is about billing terms), no
    email, no admin list of expiring terms. The one-month-ahead contact the
    published terms promise is kept by you, in a calendar, or it is not kept.
 

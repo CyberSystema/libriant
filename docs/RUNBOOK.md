@@ -1,13 +1,18 @@
 # Libriant operations runbook — 195.201.13.95
 
-The single authority for building, running, breaking and fixing Libriant on this
-machine. It replaces `docs/deployment-hetzner.md` and `docs/server-handbook.md`
-and absorbs what is still true from `docs/cutover-three-hosts.md`,
-`docs/deploy-from-the-server.md` and `docs/billing-go-live.md`. Where those
-documents disagree with this one, they are wrong — most of them describe
-178.104.32.176, which no longer exists.
+**This is the only operational document.** There is no second place to look.
+It replaced five documents, which were deleted on 2026-08-28 —
+`docs/deployment-hetzner.md`, `docs/server-handbook.md`,
+`docs/cutover-three-hosts.md`, `docs/deploy-from-the-server.md` and
+`docs/billing-go-live.md`. Their originals are in git history
+(`git log --follow -p -- docs/<name>.md`) and they are wrong where they disagree
+with this file; most of them describe 178.104.32.176, which no longer exists.
+`README.md` is for working on the code, not for operating a server.
 
-Written 2026-08-23. Hardware facts are measured, not remembered
+Written 2026-08-23; extended 2026-08-28 with `scripts/install-server.sh` (§3),
+the complete variable reference (§4.2a), backup encryption and the dead man's
+switch (§8.1a, §8.1b), control-database retention (§8.6) and what the deleted
+documents still carried. Hardware facts are measured, not remembered
 (`docs/runbook-rewrite-2026-08-23/HOST-FACTS.md`). Anything unmeasured is
 labelled **UNVERIFIED** where you would use it, never smoothed over.
 
@@ -17,26 +22,84 @@ labelled **UNVERIFIED** where you would use it, never smoothed over.
 
 Read this before you touch anything.
 
-|                |                                                                                                                                                                 |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The box        | Bare. No docker, no `deploy` user, no `/srv/libriant`. `/mnt/libriant` is mounted and empty.                                                                    |
-| Firewall       | **`ufw` is inactive.** Port 22 is open to the internet with nothing in front of it.                                                                             |
-| SSH            | **`passwordauthentication yes`.** Root is key-only; every other account can be brute-forced.                                                                    |
-| The stack      | **Has never run anywhere — not on a server, not in CI.**                                                                                                        |
-| Does it start? | **No.** `BLOCKER supply-chain-06`. See §3.0.                                                                                                                    |
-| Deploys        | Manual, from the box: `scripts/deploy-on-host.sh`. The GitHub workflow is `workflow_dispatch`-only and its `DEPLOY_KNOWN_HOSTS` secret still pins the dead box. |
-| DNS            | `libriant.com` → Cloudflare, origin unreachable (522). `admin.libriant.com` exists and is equally dead. **`app.libriant.com` does not exist.**                  |
-| Email          | `EMAIL_DRIVER=console`. Nothing is delivered, and the body is withheld from logs. `BLOCKER launch-readiness-01`.                                                |
-| Billing        | `BILLING_ENABLED=false`, `STRIPE_DRIVER=fake`. The fake driver is an unauthenticated remote-write hole. `BLOCKER billing-02`.                                   |
-| Backups        | None. Nothing installs the cron.                                                                                                                                |
-| Alerting       | None. Nothing reaches a human.                                                                                                                                  |
+|                |                                                                                                                                                                                         |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The box        | Bare. No docker, no `deploy` user, no `/srv/libriant`. `/mnt/libriant` is mounted and empty. **One command provisions all of it** — `scripts/install-server.sh`, §3.                    |
+| Firewall       | **`ufw` is inactive.** Port 22 is open to the internet with nothing in front of it. The origin lockdown (§3.2c) has never run on a live box.                                            |
+| SSH            | **`passwordauthentication yes`.** Root is key-only; every other account can be brute-forced.                                                                                            |
+| The stack      | **Has never run anywhere — not on a server, not in CI.**                                                                                                                                |
+| Does it start? | Nothing known stops it. `supply-chain-06` is fixed in the repository and **unproven on a box** — §3.0.                                                                                  |
+| Deploys        | Manual, from the box: `scripts/deploy-on-host.sh`. The GitHub workflow is `workflow_dispatch`-only and its `DEPLOY_KNOWN_HOSTS` secret still pins the dead box.                         |
+| DNS            | `libriant.com` → Cloudflare, origin unreachable (522). `admin.libriant.com` exists and is equally dead. **`app.libriant.com` does not exist.**                                          |
+| Email          | `EMAIL_DRIVER=console`. Nothing is delivered, and the body is withheld from logs. `BLOCKER launch-readiness-01`. Account recovery is §4.3a, and it works.                               |
+| Billing        | `BILLING_ENABLED=false`, `STRIPE_DRIVER=none`. `billing-02` and `billing-03` are closed; **`BLOCKER billing-04` — no VAT anywhere in the billing path** — still blocks taking money.    |
+| Backups        | None yet. Nothing in the deploy path installs the cron; `install-server.sh --only backup` does (§8.2). `backup.sh` refuses to run without encryption and a dead man's switch (§8.1a/b). |
+| Alerting       | Prometheus evaluates all 25 rules on every deploy. **Nothing reaches a human**: `alertmanager.yml` still has `[PLACEHOLDER]` receivers (§7.1, §7.3).                                    |
 
-Nine of the twelve audit blockers block public launch. **Do not put this box in
-DNS.** A first deploy on a private, not-in-DNS box is legitimate and useful; a
-cutover is not, yet.
+Of the twelve audit blockers, **three are still open**: `launch-readiness-01`
+(no mail is delivered), `privacy-legal-01` (the legal documents still carry
+`[PLACEHOLDER]`s) and `billing-04` (no VAT). The first two block a public
+launch; the third blocks taking money. **Do not put this box in DNS.** A first
+deploy on a private, not-in-DNS box is legitimate and useful; a cutover is not,
+yet.
 
 **Emergency shortcuts:** [§9 When it breaks](#9-when-it-breaks) ·
-[§11 Quick reference](#11-quick-reference)
+[§11 Quick reference](#11-quick-reference) · `sudo bash install-server.sh --status`
+(what is provisioned and what is not) · `sudo bash install-server.sh --verify-only`
+(the read-only §3.9 probes, the firewall verdict and the backup status — asks
+nothing, changes nothing)
+
+## Where to look
+
+**At 3am, start here.** The section numbers are stable and every `§n.n` in this
+document is a real heading you can search for.
+
+| If you are here because…                            | Go to                                                                                                                                |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| The site returns a Cloudflare error (522, 526, 502) | [§9.1](#91-site-down-cloudflare-error)                                                                                               |
+| Pages load but the app is broken                    | [§9.2](#92-app-down)                                                                                                                 |
+| A deploy just failed                                | [§9.7](#97-deploy-failed)                                                                                                            |
+| The disk is full                                    | [§9.5](#95-disk-full)                                                                                                                |
+| One library is broken and the rest are fine         | [§9.9](#99-one-tenant-broken)                                                                                                        |
+| You must restore from a backup                      | [§8.3a](#83a-the-restore-you-actually-have-today) — **`restore.sh` does not run; that section is the working path**                  |
+| You are provisioning a brand-new box                | [§3, the one command](#the-one-command)                                                                                              |
+| You need to know what a variable does               | [§4.2a](#42a-every-variable-and-who-actually-reads-it)                                                                               |
+| A setting you edited had no effect                  | [§4.1](#41-how-configuration-actually-reaches-a-container), then [§4.2b](#42b-checking-what-a-container-actually-got)                |
+| You are adding a library                            | [§6.6](#66-adding-a-tenant)                                                                                                          |
+| Somebody is locked out of the admin panel           | [§4.5](#45-the-admin-password-reset-that-nobody-documented), [§4.5a](#45a-the-lost-authenticator--getting-back-into-the-admin-panel) |
+| You are about to point DNS at this box              | [§5.4](#54-the-cutover-order-and-what-breaks-if-you-deviate) — **read it before, not during**                                        |
+| You need to tell the libraries something            | [§9.11](#911-telling-the-libraries)                                                                                                  |
+| Personal data may have leaked                       | [§9.11c](#911c-personal-data-breach--the-one-with-a-clock) — **72-hour clock**                                                       |
+| You just want the command                           | [§11](#11-quick-reference)                                                                                                           |
+
+**Every section.**
+
+- **[State of the world, 2026-08-23](#state-of-the-world-2026-08-23)**
+- **[1. The machine](#1-the-machine)**
+  [Storage](#storage) · [Network](#network) · [Installed / not installed](#installed--not-installed) · [Timezone decision](#timezone-decision)
+- **[2. What you are operating](#2-what-you-are-operating)**
+  [The services](#the-services) · [The networks](#the-networks) · [The start order](#the-start-order) · [Restart policy — read this once and remember it](#restart-policy--read-this-once-and-remember-it) · [What /healthz is, and is not](#what-healthz-is-and-is-not) · [The four Caddy vhosts](#the-four-caddy-vhosts) · [Volumes and bind mounts](#volumes-and-bind-mounts) · [Postgres, pgbouncer, Redis specifics](#postgres-pgbouncer-redis-specifics)
+- **[3. First deploy, from bare metal](#3-first-deploy-from-bare-metal)**
+  [Getting the script onto a box with no checkout](#getting-the-script-onto-a-box-with-no-checkout) · [Before you start — the seven things it will ask you for](#before-you-start--the-seven-things-it-will-ask-you-for) · [The one command](#the-one-command) · [Flags](#flags) · [Resuming, which is the normal way to use it](#resuming-which-is-the-normal-way-to-use-it) · [The two ways this script could ruin your day](#the-two-ways-this-script-could-ruin-your-day) · [What each step does, and what it will ask you](#what-each-step-does-and-what-it-will-ask-you) · [What the installer does not do, and you still must](#what-the-installer-does-not-do-and-you-still-must) · [The manual path — §3.0 to §3.10](#the-manual-path--30-to-310) · [3.0 The pnpm toolchain in the images — historical, and why it is fine now](#30-the-pnpm-toolchain-in-the-images--historical-and-why-it-is-fine-now) · [3.1 Get on the box and take stock](#31-get-on-the-box-and-take-stock) · [3.2 Harden — do this before anything is worth stealing](#32-harden--do-this-before-anything-is-worth-stealing) · [3.3 Docker](#33-docker) · [3.4 The deploy user](#34-the-deploy-user) · [3.5 Directories](#35-directories) · [3.6 The checkout](#36-the-checkout) · [3.7 .env.prod and the origin certificate](#37-envprod-and-the-origin-certificate) · [3.8 Deploy](#38-deploy) · [3.9 Post-deploy checks the script does not do](#39-post-deploy-checks-the-script-does-not-do) · [3.10 The nightly backup — a green deploy has none](#310-the-nightly-backup--a-green-deploy-has-none)
+- **[4. Configuration](#4-configuration)**
+  [4.1 How configuration actually reaches a container](#41-how-configuration-actually-reaches-a-container) · [4.2 Hard requirements](#42-hard-requirements) · [4.2a Every variable, and who actually reads it](#42a-every-variable-and-who-actually-reads-it) · [4.2b Checking what a container actually got](#42b-checking-what-a-container-actually-got) · [4.2c The Postgres timeouts, and what is exempt](#42c-the-postgres-timeouts-and-what-is-exempt) · [4.2d REDIS_MAXMEMORY moves with three other numbers](#42d-redis_maxmemory-moves-with-three-other-numbers) · [4.2e Backup encryption: the keys that are not in the template](#42e-backup-encryption-the-keys-that-are-not-in-the-template) · [4.2f Retention: five keys in the template, three that are real, none that reach a container](#42f-retention-five-keys-in-the-template-three-that-are-real-none-that-reach-a-container) · [4.2g Configured, and decorative](#42g-configured-and-decorative) · [4.3 The production landmines](#43-the-production-landmines) · [4.3a Recovering an account while no mail is delivered](#43a-recovering-an-account-while-no-mail-is-delivered) · [4.3b Before you flip subscriptions on: the two checks, and the commands that perform them](#43b-before-you-flip-subscriptions-on-the-two-checks-and-the-commands-that-perform-them) · [4.3c The price catalogue, and the screen that says whether this host can charge](#43c-the-price-catalogue-and-the-screen-that-says-whether-this-host-can-charge) · [4.4 Secrets: what breaks if you lose or rotate each one](#44-secrets-what-breaks-if-you-lose-or-rotate-each-one) · [4.5 The admin password reset that nobody documented](#45-the-admin-password-reset-that-nobody-documented) · [4.5a The lost authenticator — getting back into the admin panel](#45a-the-lost-authenticator--getting-back-into-the-admin-panel) · [4.5b Freezing — and un-freezing — a library account](#45b-freezing--and-un-freezing--a-library-account) · [4.6 Host-shaped variables worth knowing](#46-host-shaped-variables-worth-knowing)
+- **[5. DNS and TLS](#5-dns-and-tls)**
+  [5.1 Measured state, 2026-08-23](#51-measured-state-2026-08-23) · [5.2 There is no ACME here](#52-there-is-no-acme-here) · [5.3 HSTS, and why order matters](#53-hsts-and-why-order-matters) · [5.4 The cutover order, and what breaks if you deviate](#54-the-cutover-order-and-what-breaks-if-you-deviate) · [5.5 CAA](#55-caa) · [5.6 Mail DNS](#56-mail-dns) · [5.7 Verifying TLS without fooling yourself](#57-verifying-tls-without-fooling-yourself)
+- **[6. Routine operations](#6-routine-operations)**
+  [6.1 The dc helper](#61-the-dc-helper) · [6.2 Deploying a change](#62-deploying-a-change) · [6.3 Logs](#63-logs) · [6.4 The operator shell](#64-the-operator-shell) · [6.5 Migrations](#65-migrations) · [6.6 Adding a tenant](#66-adding-a-tenant) · [6.7 The rhythm](#67-the-rhythm) · [6.8 Rebooting](#68-rebooting)
+- **[7. Monitoring](#7-monitoring)**
+  [7.1 What exists, and what is switched off](#71-what-exists-and-what-is-switched-off) · [7.2 The monitoring stack (started by every deploy)](#72-the-monitoring-stack-started-by-every-deploy) · [7.3 Minimum viable alerting — the concrete recipe](#73-minimum-viable-alerting--the-concrete-recipe) · [7.4 The health surfaces that lie](#74-the-health-surfaces-that-lie)
+- **[8. Backup and restore](#8-backup-and-restore)**
+  [8.1 What is and is not backed up](#81-what-is-and-is-not-backed-up) · [8.1a Encryption — the decision backup.sh will not make for you](#81a-encryption--the-decision-backupsh-will-not-make-for-you) · [8.1b The dead man's switch — backup.sh refuses to run without one](#81b-the-dead-mans-switch--backupsh-refuses-to-run-without-one) · [8.2 Installing the nightly backup](#82-installing-the-nightly-backup) · [8.3 Restoring](#83-restoring) · [8.3a The restore you actually have today](#83a-the-restore-you-actually-have-today) · [8.4 What CI actually proves](#84-what-ci-actually-proves) · [8.5 The drill — quarterly, and it has never been done](#85-the-drill--quarterly-and-it-has-never-been-done) · [8.6 The other retention — the control database, and the five names that govern it](#86-the-other-retention--the-control-database-and-the-five-names-that-govern-it)
+- **[9. When it breaks](#9-when-it-breaks)**
+  [9.1 Site down (Cloudflare error)](#91-site-down-cloudflare-error) · [9.2 App down](#92-app-down) · [9.3 Redis down](#93-redis-down) · [9.4 Postgres down](#94-postgres-down) · [9.5 Disk full](#95-disk-full) · [9.6 OOM](#96-oom) · [9.7 Deploy failed](#97-deploy-failed) · [9.8 Certificate expired or wrong](#98-certificate-expired-or-wrong) · [9.9 One tenant broken](#99-one-tenant-broken) · [9.10 The customer-facing levers](#910-the-customer-facing-levers) · [9.11 Telling the libraries](#911-telling-the-libraries)
+- **[10. Growing](#10-growing)**
+  [10.1 Extending /mnt/libriant — online, no downtime](#101-extending-mntlibriant--online-no-downtime) · [10.2 Resource caps, and when to raise them](#102-resource-caps-and-when-to-raise-them) · [10.3 When one box stops being enough](#103-when-one-box-stops-being-enough)
+- **[11. Quick reference](#11-quick-reference)**
+  [Getting in](#getting-in) · [Paths](#paths) · [Commands](#commands) · [Six things to remember](#six-things-to-remember)
+- **[Appendix — the unknowns register](#appendix--the-unknowns-register)**
+- **[How this document was built and checked](#how-this-document-was-built-and-checked)**
+  [Sources](#sources) · [What was verified, and how](#what-was-verified-and-how) · [What this pass changed](#what-this-pass-changed) · [What remains unverified](#what-remains-unverified)
 
 ---
 
@@ -87,8 +150,12 @@ Two consequences worth internalising:
 | IPv6      | `2a01:4f8:13b:ac8::2/64` — **public IPv6**              |
 | Listening | port 22 only (plus `systemd-resolved` on 127.0.0.53/54) |
 
-IPv6 is the easy thing to miss. DNS needs `AAAA` records or IPv6 clients silently
-never reach the host, and a firewall written only for IPv4 leaves v6 wide open.
+IPv6 is the easy thing to miss, and the answer is counter-intuitive: **the
+origin is deliberately IPv4-only and must have no `AAAA` records** (§3.2c layer
+2, §5.4). Visitors still reach Cloudflare over IPv6; only the Cloudflare→origin
+hop is v4. What the public address does mean is that a firewall written only for
+IPv4 leaves a second front door wide open — which is why a missing `ip6tables` is
+fatal to `prod-bootstrap.sh` rather than a warning.
 
 ### Installed / not installed
 
@@ -116,11 +183,12 @@ timedatectl   # verify, then update this section
 
 ## 2. What you are operating
 
-Eight compose services. Seven long-running, one one-shot. **Three** images built
+Nine compose services. Eight long-running, one one-shot. **Three** images built
 on this box — `libriant-caddy`, `libriant-api`, `libriant-web` — and **three**
-pulled: `postgres:16-alpine`, `edoburu/pgbouncer:v1.25.2-p0`, `redis:8-alpine`.
-`migrate` and `worker` both reuse the `libriant-api` image, which is why eight
-services need only six images.
+pulled, each pinned by digest since `supply-chain-05`: `postgres:16-alpine`,
+`edoburu/pgbouncer:v1.25.2-p0`, `redis:8-alpine`. `migrate` and `worker` both
+reuse the `libriant-api` image and `pgbouncer-probe` reuses the `postgres` one,
+which is why nine services need only six images.
 
 Compose files, always both, always in this order:
 
@@ -131,31 +199,33 @@ infra/compose/docker-compose.volume.yml  rebinds 4 volumes onto /mnt/libriant
 
 ### The services
 
-| Service     | Image                                                                        | Networks      | Limits (mem / cpu / pids) | Healthcheck                                           | What the healthcheck actually proves                                                                                                                                                                                                                                                                        |
-| ----------- | ---------------------------------------------------------------------------- | ------------- | ------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `caddy`     | built `libriant-caddy` (base `caddy:2-alpine`, **bakes the marketing site**) | edge, app     | 256m / 1 / 256            | `wget localhost:80/healthz` 30s/5s/5, no start_period | **Only that the Caddy process is alive.** Static 200. Stays green through a total outage.                                                                                                                                                                                                                   |
-| `migrate`   | built `libriant-api`                                                         | **data only** | none / none / none        | none                                                  | — one-shot, must exit 0                                                                                                                                                                                                                                                                                     |
-| `api`       | built `libriant-api`                                                         | app, data     | 1g / 1.5 / 1024           | `wget localhost:3001/readyz` 15s/5s/8, start 30s      | Real: Redis `PING` **and** `SELECT 1` on the control DB.                                                                                                                                                                                                                                                    |
-| `web`       | built `libriant-web`                                                         | **app only**  | 768m / 1 / 512            | `wget localhost:3000/api/healthz` 15s/5s/8, start 30s | **Nothing.** A constant `{status:'ok'}`. Touches no dependency, not even the API.                                                                                                                                                                                                                           |
-| `worker`    | built `libriant-api`                                                         | app, data     | 1g / 1 / 512              | `wget localhost:3002/readyz` 30s/5s/5, start 20s      | Real: all five BullMQ consumers running **and** Redis `PING`.                                                                                                                                                                                                                                               |
-| `postgres`  | `postgres:16-alpine`                                                         | data          | 2g / 2 / 512              | `pg_isready -U libriant -d libriant_control`          | The cluster accepts connections.                                                                                                                                                                                                                                                                            |
-| `pgbouncer` | `edoburu/pgbouncer:v1.25.2-p0`                                               | data          | 256m / 0.5 / 256          | `pg_isready -h localhost -p 5432 -U libriant`         | **Nothing useful** — the pooler answers this itself without touching Postgres, and nothing gates on it (`api` waits for `service_started`). UNVERIFIED whether `pg_isready` even exists in this image; if it does not, the container sits permanently `unhealthy` while working perfectly. Do not chase it. |
-| `redis`     | `redis:8-alpine`                                                             | data          | 512m / 1 / 256            | `redis-cli ping`                                      | Redis responds.                                                                                                                                                                                                                                                                                             |
+| Service           | Image                                                                        | Networks      | Limits (mem / cpu / pids) | Healthcheck                                            | What the healthcheck actually proves                                                                                                                                                                                                                                                                                            |
+| ----------------- | ---------------------------------------------------------------------------- | ------------- | ------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `caddy`           | built `libriant-caddy` (base `caddy:2-alpine`, **bakes the marketing site**) | edge, app     | 256m / 1 / 256            | `wget localhost:80/healthz` 30s/5s/5, no start_period  | **Only that the Caddy process is alive.** Static 200. Stays green through a total outage.                                                                                                                                                                                                                                       |
+| `migrate`         | built `libriant-api`                                                         | **data only** | none / none / none        | none                                                   | — one-shot, must exit 0                                                                                                                                                                                                                                                                                                         |
+| `api`             | built `libriant-api`                                                         | app, data     | 1g / 1.5 / 1024           | `wget localhost:3001/readyz` 15s/5s/8, start 30s       | Real: Redis `PING` **and** `SELECT 1` on the control DB.                                                                                                                                                                                                                                                                        |
+| `web`             | built `libriant-web`                                                         | **app only**  | 768m / 1 / 512            | `wget localhost:3000/api/readyz` 15s/5s/8, start 30s   | Real since `boot-and-config-08`: it fetches `${API_INTERNAL_URL}/readyz` with a 3 s timeout and 503s on failure, so it **does** cross the web→api hop. It probed the constant `/api/healthz` until then, and could not go red no matter what was behind it. `/api/healthz` still exists as pure liveness.                       |
+| `worker`          | built `libriant-api`                                                         | app, data     | 1g / 1 / 512              | `wget localhost:3002/readyz` 30s/5s/5, start 20s       | Real: all five BullMQ consumers running **and** Redis `PING`.                                                                                                                                                                                                                                                                   |
+| `postgres`        | `postgres:16-alpine`                                                         | data          | 2g / 2 / 512              | `pg_isready -U libriant -d libriant_control`           | The cluster accepts connections.                                                                                                                                                                                                                                                                                                |
+| `pgbouncer`       | `edoburu/pgbouncer:v1.25.2-p0`                                               | data          | 256m / 0.5 / 256          | **none**                                               | `boot-and-config-15` removed it. `pg_isready` was answered by pgbouncer's own startup-packet reply and stayed green with Postgres unreachable. The real probe is the sidecar below.                                                                                                                                             |
+| `pgbouncer-probe` | `postgres:16-alpine` (the same digest), entrypoint `sleep`                   | data          | 128m / 0.25 / 64          | `psql -h pgbouncer -c 'select 1'` 30s/10s/3, start 30s | The only probe that tells "the pooler answers" from "the pooler can reach Postgres". `api` deliberately does **not** gate on it — a broken diagnostic must not be an outage — but **the deploy health gate does** (§3.8). At 3am: api unhealthy + probe unhealthy is the pooler path; api unhealthy + probe healthy is the API. |
+| `redis`           | `redis:8-alpine`                                                             | data          | 512m / 1 / 256            | `redis-cli ping`                                       | Redis responds.                                                                                                                                                                                                                                                                                                                 |
 
-Caps sum to **5888 MiB (5.75 GiB)** and **8.0 cpus** against 62 GiB and 8 threads
-— comfortable, with room to raise (§10.2). The compose file's own comment says
-these "suit a ~4 GB host"; that arithmetic is wrong and the comment predates this
-machine. Ignore it.
+Caps sum to **6016 MiB (5.875 GiB)** and **8.25 cpus** against 62 GiB and 8
+threads — comfortable on memory, and slightly over-committed on CPU, which is
+fine because these are limits and not reservations. Room to raise either (§10.2).
+The compose file's own comment says these "suit a ~4 GB host"; that arithmetic is
+wrong and the comment predates this machine. Ignore it.
 
 `migrate` has **no** memory, cpu or pid cap.
 
 ### The networks
 
-| Network | Members                                              | Properties                                                          |
-| ------- | ---------------------------------------------------- | ------------------------------------------------------------------- |
-| `edge`  | caddy                                                | bridge                                                              |
-| `app`   | caddy, api, web, worker                              | bridge, **has internet egress**                                     |
-| `data`  | postgres, pgbouncer, redis, api, worker, **migrate** | bridge, **`internal: true` — no route to the host or the internet** |
+| Network | Members                                                               | Properties                                                          |
+| ------- | --------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `edge`  | caddy                                                                 | bridge                                                              |
+| `app`   | caddy, api, web, worker                                               | bridge, **has internet egress**                                     |
+| `data`  | postgres, pgbouncer, pgbouncer-probe, redis, api, worker, **migrate** | bridge, **`internal: true` — no route to the host or the internet** |
 
 Two consequences that explain most confusing failures:
 
@@ -164,9 +234,12 @@ Two consequences that explain most confusing failures:
 - `migrate` is on `data` only. It has **no internet egress**. This is why
   `supply-chain-06` cannot be worked around on the box (§3.0).
 
-Only `caddy` publishes host ports: `80:80/tcp`, `443:443/tcp`, `443:443/udp`.
-Docker publishes on `0.0.0.0` **and** `[::]`, and inserts rules into `DOCKER-USER`
-ahead of ufw's INPUT chain — so a `ufw` rule does **not** filter 80/443. See §3.2.
+Only `caddy` publishes host ports, and never in the bare `80:80` form: they are
+`${EDGE_BIND_IPV4:-0.0.0.0}:80:80`, `:443:443` and `:443:443/udp`. **That
+explicit v4 bind removes the `[::]` listener entirely**, which is layer 2 of the
+origin lockdown and the reason the origin has no `AAAA` records (§3.2c, §5.4).
+Docker inserts its own rules into `DOCKER-USER` ahead of ufw's INPUT chain, so a
+`ufw` rule does **not** filter 80/443. See §3.2.
 
 ### The start order
 
@@ -182,6 +255,7 @@ redis ──(healthy)───────────────────�
 Exactly:
 
 - `pgbouncer` → postgres healthy
+- `pgbouncer-probe` → pgbouncer _started_ (it is a diagnostic; nothing gates on it)
 - `migrate` → postgres healthy **only**
 - `api` → migrate **completed successfully** + postgres healthy + pgbouncer _started_ + redis healthy
 - `worker` → migrate **completed successfully** + postgres healthy + redis healthy (**not** pgbouncer, even though its control URL points at it)
@@ -220,7 +294,8 @@ container healthcheck hits — a self-test that cannot go red while Caddy runs.
 
 Real signals, in descending order of trust:
 
-1. `docker inspect --format '{{.State.Health.Status}}'` on `api` and `worker`.
+1. `docker inspect --format '{{.State.Health.Status}}'` on `api`, `worker`, `web`
+   and `pgbouncer-probe`. All four are real probes now; `caddy`'s is not.
 2. `api:3001/readyz` and `worker:3002/metrics` from inside the `app` network.
 3. A real page: `https://libriant.com/pricing`, `https://app.libriant.com/`.
 
@@ -297,10 +372,13 @@ and the origin dir; api / web / worker get `<repo>/assets` and `<repo>/locales`;
 
 Two facts hidden in there:
 
-- The `assets` and `locales` mounts on **`web` are inert**. The web service sets
-  neither `ASSETS_ROOT` nor `LOCALES_ROOT`, so Next.js uses the copies baked into
-  the image. Hot-swapping assets on the host works for the API and for Caddy's
-  `/_assets/*` file server, **not** for Next.js pages.
+- The `assets` and `locales` mounts on **`web` used to be inert** and are not any
+  more. `boot-and-config-13`: compose merges nothing from `x-app-env` into the
+  `web` service's own `environment:` block, so `ASSETS_ROOT` and `LOCALES_ROOT`
+  had to be repeated there — until they were, Next.js silently fell back to the
+  copies baked into the image, and editing `/srv/libriant/locales` on the host
+  changed everything the API served and nothing a visitor saw. Both are now set
+  on `web`, so a host-side edit reaches every service.
 - Because `migrate` bind-mounts the host checkout's `scripts/`, the bootstrap
   that runs is the **host checkout's** code against the **image's** node_modules.
   With `--skip-build` those can be different commits.
@@ -308,29 +386,435 @@ Two facts hidden in there:
 ### Postgres, pgbouncer, Redis specifics
 
 - **Postgres** `postgres:16-alpine`, user `libriant`, db `libriant_control`,
-  started with `shared_preload_libraries=pg_stat_statements` and
-  `max_connections=200`. `postgres-init.sql` creates `unaccent`, `pg_trgm`,
+  started with `shared_preload_libraries=pg_stat_statements`,
+  `max_connections=${PG_MAX_CONNECTIONS:-200}`,
+  `statement_timeout=${PG_STATEMENT_TIMEOUT:-60s}` and
+  `idle_in_transaction_session_timeout=${PG_IDLE_TX_TIMEOUT:-120s}` (§4.2c).
+  `stop_grace_period: 120s`, so a shutdown checkpoint is never SIGKILLed into WAL
+  crash recovery. `postgres-init.sql` creates `unaccent`, `pg_trgm`,
   `pg_stat_statements`, `pgcrypto`, `citext` and a `libriant_demo` database —
   **but only when PGDATA is empty**. After a restore, or on any existing cluster,
   that file never runs.
-  `LANG=el_GR.UTF-8` is set and the compose comment claims Greek collation.
-  **UNVERIFIED and probably a no-op** — Alpine/musl ships no locale definitions,
-  so initdb records the name and collation falls back to byte order. Do not
-  promise Greek sorting to a customer on the strength of that comment.
+  Greek collation is now real rather than aspirational: `POSTGRES_INITDB_ARGS`
+  passes `--locale-provider=icu --icu-locale=el-GR --locale=C.UTF-8`, which does
+  not depend on musl shipping a locale definition, and `postgres-init.sql`
+  asserts it on that same first run. It applies **at initdb only** — an existing
+  cluster keeps whatever it was built with and cannot be changed in place without
+  a full reindex, so this has to be right before the first library is
+  provisioned.
 - **pgbouncer** transaction pooling, `scram-sha-256`, `MAX_CLIENT_CONN=500`,
   `DEFAULT_POOL_SIZE=20`, fronting **only** `libriant_control`. Tenant databases
   do not go through it. Migrations deliberately bypass it via `PG_SUPERUSER_URL`
   → `postgres:5432`, because Prisma Migrate's session-level advisory lock is
   silently broken by a transaction-mode pooler.
-- **Redis** `redis:8-alpine`, `--appendonly yes`, `--maxmemory-policy allkeys-lru`
-  with **no `--maxmemory`** — which makes the policy inert. That is deliberate
-  (Redis also backs the BullMQ queues; eviction would drop live job keys) but it
-  means there is no soft landing between "fine" and "cgroup-OOM-killed", and a
-  killed Redis is a 100% outage (§9.3).
+- **Redis** `redis:8-alpine`, `--appendonly yes`,
+  `--maxmemory ${REDIS_MAXMEMORY:-320mb} --maxmemory-policy noeviction`.
+  `reliability-18` put both halves in: it used to carry `allkeys-lru` with no
+  `--maxmemory` at all, which made the policy inert **and** named the one
+  behaviour its own comment said would lose live BullMQ job keys. With
+  `noeviction` Redis never drops a key; at the ceiling it refuses **writes** with
+  an OOM error the app sees and logs, while reads and the existing queues keep
+  working. That is the soft landing there used to be none of — a killed Redis is
+  still a 100% outage (§9.3). The ceiling moves with three other numbers: §4.2d.
 
 ---
 
 ## 3. First deploy, from bare metal
+
+There are two ways through this section and they build the same box.
+
+**`scripts/install-server.sh` is the first one.** It executes §3.1 to §3.10,
+plus §6.1's `dc` helper and the origin lockdown a green deploy leaves undone,
+in one command. It orchestrates the scripts that already exist —
+`ensure-env.sh`, `deploy-on-host.sh`, `prod-bootstrap.sh`, `backup.sh` — and
+reimplements none of them; everything it does itself is the glue this section
+describes in prose.
+
+It has **never been run against a real server** — nothing in this document has,
+the stack has never run anywhere. What has been exercised is its own decision
+logic: `bash scripts/install-server.sh --self-test` needs no root, no network
+and no Docker, and printed `195 passed, 0 failed` on a developer machine on
+2026-08-28. That covers the lockout counter, the PEM and certificate checks, the
+`--firewall-status` verdict, the cron line it writes and the `dc` block it
+writes. It does not cover the box.
+
+**§3.0 to §3.10 below are the second one.** They are the same steps, by hand,
+and they stay because a script that dies at step 11 is only useful next to the
+prose that says what step 11 was for. Read them when the installer stops, when
+you want to know what it did, or when you would rather type it yourself.
+
+### Getting the script onto a box with no checkout
+
+The `checkout` step is ninth of sixteen: the repository is not on the machine
+when you start, so the script cannot come from it.
+
+```bash
+# from your laptop
+scp scripts/install-server.sh root@195.201.13.95:/root/
+ssh root@195.201.13.95
+sudo bash /root/install-server.sh
+```
+
+It is a single self-contained bash file (~250 KB, 4,963 lines) with no
+dependency on anything else in the repo, so pasting it into an editor on the box
+works too. Once the `checkout` step has run there is a copy at
+`/srv/libriant/app/scripts/install-server.sh`, and that is the one to use for
+every later `--only` / `--from` run — the firewall step invokes
+`prod-bootstrap.sh` **out of the checkout**, so the two must not drift.
+
+### Before you start — the seven things it will ask you for
+
+The script's own briefing lists these and stops until you type `READY`. It is
+right about all seven; get them in front of you first, because most of them are
+things a shell cannot invent for you at 02:00.
+
+|                                                                                                                                              |                                                                                                                                                                                                                |
+| -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. A second SSH session, already open and working.**                                                                                       | The `ssh` step disables password authentication. If the key you rely on stops working after that, only the provider console or a rescue boot gets you back in.                                                 |
+| **2. The Cloudflare Origin certificate — both PEM blocks.**                                                                                  | Hostnames must be **both** the apex and `*.<apex>`. No backup contains this pair; if it is not in your password manager it exists nowhere else.                                                                |
+| **3. A browser logged in to GitHub**, with rights to add a read-only Deploy Key to `git@github.com:CyberSystema/libriant.git`.               | The `checkout` step generates the key, prints it, and **stops and waits for you**.                                                                                                                             |
+| **4. The first admin e-mail and password**, 12 characters minimum.                                                                           | Without the e-mail no admin is created and the deploy prints a yellow warning. Without the password no admin is created and **nothing warns at all**. `bootstrap-admin.ts` exits non-zero below 12 characters. |
+| **5. A password for the `deploy` account**, and somewhere to store it.                                                                       | `sudo` cannot authenticate without one and roughly a third of this document is `sudo`.                                                                                                                         |
+| **6. A backup encryption decision:** an `age` **recipient** (public key, `age1…`, the identity kept off this host) or a gpg passphrase file. | `backup.sh` refuses to run without one, so this is not something to defer to the morning. §8.                                                                                                                  |
+| **7. tmux or screen.**                                                                                                                       | The image build is 10–20 minutes cold and an SSH drop in the middle of it kills the run. The `briefing` step checks `$TMUX` and `$STY` and warns when both are empty; it does not refuse.                      |
+
+### The one command
+
+```bash
+sudo bash install-server.sh
+```
+
+Before it touches anything it prints what it found, which is also the fastest
+answer to "what state is this box in":
+
+```
+Libriant installer — docs/RUNBOOK.md §3, §6.1, §8.2, on <hostname> as root
+
+  This box, right now:
+    ubuntu           <VERSION_ID> <VERSION_CODENAME>
+    timezone         Europe/Berlin
+    ufw              Status: inactive
+    sshd passwords   yes
+    docker           not installed
+    deploy user      absent
+    checkout         absent
+    .env.prod        absent
+    origin cert      absent
+    backup cron      absent
+```
+
+Good looks like, on the bare box §1 describes: exactly that — the right-hand
+column is read off the machine, not remembered, and every value in it is one a
+later step fixes.
+
+Then the sixteen steps run in order. A step that has work to do announces itself
+with its own banner — `▸ §3.2a SSH — disabling password authentication` — and a
+step that is already true of the machine prints the numbered form instead,
+`▸ [3/16] §3.2a SSH password authentication OFF (lockout guard)` followed by
+`ok   already satisfied — skipping (--force to run it anyway)`, and costs
+nothing. The counter appears only on that skipped form and under `--dry-run`;
+for the full picture use `--status`.
+
+### Flags
+
+| Flag                                          | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--status`                                    | Print the sixteen-row step table and exit. Read-only. It runs without root, as do `--self-test`, `--list-steps` and `--help`, and says so: the privileged answers (`ufw`, `sshd`, `passwd`) then read as pending. (The script's own root-gate message at `:4829` offers you "two things you CAN do without root" and names only `--status` and `--self-test`; `--list-steps` and `--help` `exit 0` inside the argument parser at `:4803-4804`, before the gate is reached. Four, not two.) |
+| `--dry-run`                                   | Print what each step would do; change nothing. Needs root, because most of what it inspects needs root.                                                                                                                                                                                                                                                                                                                                                                                    |
+| `--verify-only`                               | The §3.9 probes, the firewall status and the backup status. Nothing else, no questions — the one mode that is safe from a cron job or a checklist.                                                                                                                                                                                                                                                                                                                                         |
+| `--from <step>`                               | Resume at a named step and run everything after it.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `--only <step[,step…]>`                       | Run just these, satisfied or not.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `--skip <step[,step…]>`                       | Run everything except these.                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `--force`                                     | Run steps even when they report themselves satisfied.                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `--list-steps`                                | Print the sixteen step ids and stop.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `--repo <git-url>`                            | The checkout source. Default `git@github.com:CyberSystema/libriant.git` (§3.6's).                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `--origin-crt <file>` / `--origin-key <file>` | Read the origin pair from files instead of pasting the two PEM blocks.                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `--replace-origin-cert`                       | Replace an **existing** origin pair. Backs the old one up first as `origin.crt.bak-<timestamp>` beside it.                                                                                                                                                                                                                                                                                                                                                                                 |
+| `--self-test`                                 | Run the internal tests and exit. Touches only a temp directory, needs no root and no network.                                                                                                                                                                                                                                                                                                                                                                                              |
+| `--help`                                      | The whole leading comment block, which is the source this section was written from.                                                                                                                                                                                                                                                                                                                                                                                                        |
+
+A typo in `--from` / `--only` / `--skip` is refused by name — `unknown step
+'orgin_cert'` — rather than matching nothing and printing a closing summary as
+though the box had been provisioned.
+
+### Resuming, which is the normal way to use it
+
+Every step decides whether it is needed by inspecting the **machine**, not by
+reading a marker of what a previous run believed. So re-running after a failure
+is not a recovery procedure, it is the intended workflow.
+
+```bash
+sudo bash install-server.sh --status
+```
+
+```
+Libriant install status   state: /var/lib/libriant-install
+
+   1/16 [pending] briefing  What to have in front of you
+   2/16 [pending] stock     §3.1   Take stock (and the §1 timezone decision)
+   3/16 [pending] ssh       §3.2a  SSH password authentication OFF (lockout guard)
+   4/16 [pending] ufw       §3.2b  ufw, with IPv6, allowing the real ssh port
+   5/16 [pending] packages  §3.2d  Baseline packages, fail2ban, unattended-upgrades
+   6/16 [pending] docker    §3.3   Docker from its own apt repository
+   7/16 [pending] user      §3.4   The deploy user: docker, sudo, a password, keys
+   8/16 [pending] dirs      §3.5   Directories on the data volume
+   9/16 [pending] checkout  §3.6   Deploy key + checkout (pauses for GitHub)
+  10/16 [pending] env       §3.7a  ensure-env.sh, interactively — never --auto
+  11/16 [pending] cert      §3.7b  The Cloudflare origin certificate
+  12/16 [pending] dchelper  §6.1   The dc helper in the deploy shell
+  13/16 [pending] deploy    §3.8   The deploy (builds images — 10-20 min cold)
+  14/16 [pending] backup    §8.2   The nightly backup — nothing else installs it
+  15/16 [pending] firewall  authn-authz-01  Origin lockdown, v4 AND v6
+  16/16 [pending] verify    §3.9   The checks the deploy script does not do
+```
+
+`done` is green, `pending` is dim, and `ran*` is yellow — the script's own
+legend, _"ran before, but the machine no longer satisfies the check"_. Only two
+steps write a marker at all (`briefing` and `backup`), so in practice `ran*` is
+the `backup` row telling you the cron file has gone since you settled the
+encryption and dead-man's-switch questions. That is the row to read twice.
+
+Four steps — `stock`, `env`, `cert`, `verify` — have no machine-visible end
+state and always report pending; they are cheap, and they re-check rather than
+redo.
+
+When a step fails, the exit trap names it and hands you the resume command:
+
+```
+  The run stopped inside step 'deploy' (exit 1). Nothing after it has run.
+  Every step decides what it needs by inspecting the machine, so resuming is
+  the normal way to use this:
+      /root/install-server.sh --status
+      /root/install-server.sh --from deploy
+```
+
+State, and the transcript of every decision the run made, live in
+`/var/lib/libriant-install` (mode 0700, root) — `install.log` at 0600, and
+verbatim copies of the sshd configuration as it was found under
+`sshd-backups/`. Neither holds a secret; this script never prints one.
+
+> **It refuses to start without a terminal.** `--dry-run` and `--verify-only`
+> are exempt; everything else dies with _"no terminal"_. That is not fussiness:
+> `ensure-env.sh`'s prompts are bare `read -rp` on stdin, so a run whose stdin
+> is `/dev/null` would take the empty default for `IMAGE_OWNER`,
+> `ADMIN_BOOTSTRAP_EMAIL` **and** `ADMIN_BOOTSTRAP_PASSWORD` without pausing —
+> a fully green deploy nobody can log into, which is §3.7a's whole warning. The
+> installer's own prompts read `/dev/tty` when stdin is a pipe, so
+> `sudo bash install-server.sh </dev/null` from an interactive session is
+> supported; a session with no controlling terminal at all is not.
+
+### The two ways this script could ruin your day
+
+#### 1. Locking you out
+
+Three steps here can cost you the machine and each carries its own guard.
+
+**`ssh` — §3.2a turns password authentication off.** If no account has a usable
+`authorized_keys` that is a permanent lockout, so the step refuses to write the
+drop-in until it has _counted_ a real public key for an account that can still
+log in. It parses the file the way sshd does, which is not the same as
+`[ -s authorized_keys ]`:
+
+- a `@revoked` line, a `@cert-authority` line and a lapsed `expiry-time="…"`
+  are all **non-empty and authenticate nobody** holding a bare key. CA lines are
+  reported separately, never counted;
+- `AuthorizedKeysFile` is resolved out of `sshd -T` with its `%h`/`%u` tokens
+  expanded, because a guard that inspects a file sshd never opens is not a
+  guard;
+- `AllowUsers` / `AllowGroups` / `DenyUsers` / `DenyGroups` are honoured — a
+  hardening image that ships `AllowGroups sudo` makes an otherwise perfect key
+  worthless;
+- the account you are **actually logged in as** is inspected, via `who am i` and
+  `logname`, not just `root` and `$SUDO_USER`. Someone who ssh'd in as `ubuntu`
+  and used `su -` leaves `SUDO_USER` unset;
+- `StrictModes` permission bits are checked on the home directory, `.ssh` and
+  the key file. sshd silently ignores a group- or world-writable one, and
+  `ssh-keygen -lf` prints the key happily while authentication fails anyway.
+
+It validates with `sshd -t`, then checks the **effective** configuration with
+`sshd -T` — all three of §3.2a's values — while the running sshd is still the
+old working one, and reloads only after that. If any check fails it restores
+every file it edited, removes the drop-in it created, reloads, and dies. When
+it did change something it then demands you type `VERIFIED` to confirm a second
+session works.
+
+**`ufw` — §3.2b enables a default-deny firewall.** It reads the ssh port from
+the **listening socket** and never assumes 22: `ss -Hlntp`, then `ssh.socket`'s
+`ListenStream`, then `sshd -T`, then `$SSH_CONNECTION`, unioned. On a
+socket-activated box — Ubuntu's default since 22.10 — `sshd_config`'s `Port` is
+ignored and `sshd -T` answers a different question from the one being asked. It
+proves the allow rule is in the ruleset with `ufw show added` **before**
+`ufw --force enable`, and if the firewall comes up with no `(v6)` rule on a box
+with a global IPv6 address it turns ufw back **off** rather than leave you
+reachable only over v4.
+
+If nothing can tell it where sshd listens, it refuses outright rather than
+guess.
+
+**`firewall` — authn-authz-01 inserts a DROP at INPUT position 1.** The
+`LIBRIANT-ORIGIN` chain is jumped into for tcp 80,443 and udp 443 only, and
+ends `-j DROP` for everything outside Cloudflare's published ranges, loopback
+and RFC1918. If
+sshd is on 443 — a common way through a corporate egress filter — that is a
+lockout that looks completely green, because your running session survives on
+the chain's `RELATED,ESTABLISHED` RETURN. The step reads the listening ssh port
+and **dies** rather than apply it, naming the port. When it can read the port
+and it is neither 80 nor 443 it says so explicitly instead of asking you to
+promise.
+
+#### 2. Destroying an existing install
+
+Assume this **will** be re-run on a box that is already half — or fully —
+provisioned.
+
+- **No secret is ever minted here.** `ensure-env.sh` owns that and never
+  overwrites an existing value. A `POSTGRES_PASSWORD` keyed to a live cluster is
+  unrecoverable.
+- **An existing origin certificate is validated, never replaced**, unless
+  `--replace-origin-cert`, which backs the old pair up first.
+- **No data directory is ever removed**, and the recursive `chown` on
+  `storage` only runs when the ownership is actually wrong.
+- **An existing deploy key is never regenerated** — the public half is
+  registered in GitHub and a new key silently breaks every future fetch.
+- **The `git reset --hard` inside `deploy-on-host.sh` is announced before
+  anyone confirms anything**, with the list of dirty tracked files _and_ the
+  list of commits on this checkout that are not on `origin/main`. Untracked
+  files are listed separately as surviving, so the confirmation is never asked
+  for something that is not at risk.
+
+> **The sharpest edge here is `POSTGRES_PASSWORD` after a provider Rebuild, and
+> it will not look like a disaster while it is happening.**
+>
+> `ensure-env.sh`'s guard refuses to mint a fresh `POSTGRES_PASSWORD` when it
+> finds `$LIBRIANT_DATA_ROOT/postgres/PG_VERSION` — it exits 3 with
+> _"POSTGRES_PASSWORD is missing but an initialized Postgres cluster exists."_
+> A Hetzner Rebuild wipes the boot disk, `/etc/fstab` with it, and leaves the
+> data volume **intact but not mounted**. `/mnt/libriant` is then an empty
+> directory on the root filesystem with 250 GiB of live library data sitting
+> invisibly underneath it, and that guard is pointed at the empty directory. It
+> does not fire.
+>
+> One `y` and: `dirs` creates `postgres/ redis/ storage/ backups/ env/` on the
+> **boot disk**; `ensure-env.sh` mints a fresh password; the deploy initialises
+> a **second, empty** cluster; the health gate goes green; §3.9 passes; and
+> fourteen days of backups are scheduled onto the boot disk. Every library's
+> data is still on the volume, unreachable, and the running app is keyed to a
+> password that cannot open it. The moment anyone mounts the volume the entire
+> install disappears behind the mount.
+>
+> So `stock`, `dirs` and `env` all call the same check, and it does not ask a
+> vague question:
+>
+> - an **fstab entry for `$DATA_ROOT` that is not mounted** is a failed mount,
+>   not a design choice — it dies and tells you to `mount /mnt/libriant`;
+> - a **formatted block device mounted nowhere** is the same story with the
+>   fstab lost — it names the device and warns;
+> - otherwise a box genuinely without a data volume is a legitimate decision, so
+>   you type `BOOTDISK`, not `y`, and the choice is written to the transcript.
+
+### What each step does, and what it will ask you
+
+| Step       | Runbook        | What it does, and what it asks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `briefing` | —              | Prints the seven things above and the two guards. Warns if you are not in tmux/screen. **Asks:** type `READY`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `stock`    | §3.1           | `uptime`, `free`, `df`, `lsblk`, `/proc/mdstat`, `ufw status`, `sshd -T`. Refuses to continue past a **degraded RAID array** without a confirmation. Warns when `/` has under **25 GiB** free, because the cold build wants ~15–20 GiB in `/var/lib/docker` — a figure this document marks **UNVERIFIED** on this box, and the script repeats the caveat rather than presenting it as fact. **Asks:** the §1 timezone decision, once, before the first deploy — it validates the zone against `timedatectl list-timezones` and, if a backup cron already exists, makes you type `MOVE` because changing the zone moves the 02:15 window.                                                                                                                                                                                                                                                                                                                                                                                            |
+| `ssh`      | §3.2a          | The lockout guard above, then the `00-libriant.conf` drop-in. Comments out every competing `PasswordAuthentication` **and** `KbdInteractiveAuthentication` it finds in `/etc/ssh/sshd_config` and `sshd_config.d/*.conf`, keeping the originals under `/var/lib/libriant-install/sshd-backups/`. **Asks:** type `VERIFIED` that a second session works — but only when it actually changed something.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `ufw`      | §3.2b          | Installs `ufw` and `iproute2` first if missing, because it runs _before_ the packages step and needs `ss` to read the real port. Sets `IPV6=yes` in `/etc/default/ufw`, default deny in / allow out, allows every ssh port it found, proves the rule, enables. Ends with the §3.2c banner: **ufw does not filter 80/443 once Docker is up**, and prints the two `nmap` commands with this box's own addresses.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `packages` | §3.2d          | Installs `ca-certificates curl git openssl fail2ban unattended-upgrades ufw cron iproute2 iptables` (`install-server.sh:2907`) — the same ten §3.2d lists, four of which that section used to omit. `iptables` because `prod-bootstrap.sh` exits **FATAL** without `ip6tables`; `iproute2` because `--firewall-status` needs `ss` to prove there is no `[::]` listener; `cron` because `/etc/cron.d/libriant-backup` is an inert text file without a cron daemon. Writes `/etc/apt/apt.conf.d/20auto-upgrades` (`is-active` can be green while nothing is scheduled), and adds a `fail2ban` `ignoreip` for the address **this session came from**, so a long provisioning session cannot ban you.                                                                                                                                                                                                                                                                                                                                   |
+| `docker`   | §3.3           | Probes `https://download.docker.com/linux/ubuntu/dists/$VERSION_CODENAME/Release` and, on a 404, **asks which codename to pin to** rather than silently falling back — then re-probes that answer and records the decision in the transcript. Re-asserts `chmod a+r` on the keyring outside the already-present branch, because apt verifies as `_apt` and a 600 keyring fails the next update with an error naming the _repository_. Dies unless `docker compose` reports major version ≥ 2.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `user`     | §3.4           | Creates `deploy`, adds it to `docker` **and** `sudo`, copies in `authorized_keys` only when `deploy` has none of its own. **Asks:** a password, twice, at least 12 characters and no single quote — then proves it with `sudo -v` **as `deploy`, through a pipe**, which is the one check §3.4's two proxies do not perform. A failed `sudo -v` is a warning, not a die: everything the installer runs is root, so it does not block the install — it blocks a third of this runbook, later. Proves `docker ps` works as `deploy` through the same fresh-process path every later step uses.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `dirs`     | §3.5           | Creates `/srv/libriant`, `/var/log/libriant`, and the six directories the deploy and the backup need — `postgres`, `redis`, `storage`, `caddy` (as `caddy/origin`, so the parent exists either way), `backups`, and `env` at mode 700 owned by `deploy`. Its closing assertion checks the six parents, `postgres redis storage caddy backups env` (`install-server.sh:3345`), and prints `all six data directories exist; storage is uid 1000; env is 700 deploy`. `chown -R 1000:1000` on `storage`, and only when the ownership is actually wrong, because a recursive chown over a populated uploads tree is minutes of pointless IO. Also creates **`/var/lib/node_exporter/textfile`**, which §3.5 does not list: it must exist and be owned by `deploy` _before_ the deploy, or the monitoring compose file's bind mount makes Docker create it as root and the nightly backup then cannot write its metric.                                                                                                                  |
+| `checkout` | §3.6           | Generates an ed25519 deploy key (never regenerating an existing one), upserts a marked `github.com` block in `~/.ssh/config`, and seeds `known_hosts` by showing you the fingerprints it just fetched and asking whether they match GitHub's published list — a mismatch stops the run. **Asks:** it prints the public key and **pauses** while you add it to GitHub as read-only. It proves access with `git ls-remote --exit-code`, never with `ssh -T`, and retries up to five times.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `env`      | §3.7a          | Re-asserts the data-root check, then runs `ensure-env.sh` **interactively, never `--auto`**, from the real terminal. Afterwards it asserts `600 deploy:deploy`, that the on-volume copy at `/mnt/libriant/env/.env.prod` exists, that `MFA_MASTER_KEY` is exactly 64 hex characters, that `STORAGE_SIGNING_SECRET` differs from `SESSION_SECRET`, and warns on duplicate keys. Makes you acknowledge it if `ADMIN_BOOTSTRAP_*` came out empty, then **pauses** so you copy the file into the password manager.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `cert`     | §3.7b          | Reads `SITE_HOST` and `PUBLIC_APEX_DOMAIN` out of `.env.prod` so it knows which names the certificate must cover. Collects the two PEM blocks from the terminal (discarding anything before `-----BEGIN`, stripping CR from a Windows paste) or from `--origin-crt`/`--origin-key`. Validates **before** installing: both PEMs balanced, both parse, and the certificate and key are a **matching pair**. Installs 640/600 `root:root`, re-checks the pair on the _installed_ files, then verifies issuer, SANs and expiry — dying on an already-expired certificate and warning at under 30 days.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `dchelper` | §6.1           | Upserts §6.1's block into `deploy`'s `.bashrc` as a marked region, with two additions: if `git` cannot answer, it reads `IMAGE_TAG` off the running `libriant-api-1` container, and if both sources come up empty it warns at login instead of exporting an empty tag.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `deploy`   | §3.8           | Announces what `git reset --hard` would destroy, offers `--no-fetch` instead, runs `deploy-on-host.sh --dry-run`, then — after a confirmation — the real deploy. **Never `--skip-build`.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `backup`   | §8.2           | **Asks:** the encryption decision (age recipient / gpg passphrase file / typed `PLAINTEXT`), a `BACKUP_HEARTBEAT_URL`, and whether an absent off-site copy is a deliberate `BACKUP_ALLOW_LOCAL_ONLY=1`. Writes `/etc/cron.d/libriant-backup`, runs `backup.sh --preflight`, then the real backup, then `--check-cron`. Refuses an `age` **identity** pasted where the **recipient** belongs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `firewall` | authn-authz-01 | `prod-bootstrap.sh --firewall-only`, then `--firewall-install-unit`, then **starts the unit** to prove it works — a unit that is enabled but fails on boot is indistinguishable from a working one until the next reboot, which will be during an incident. Then it parses `--firewall-status` itself and treats a missing `ip6tables` chain, a missing jump from either `INPUT` or `DOCKER-USER` on either family, and a `[::]` listener as **FATAL**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `verify`   | §3.9           | Every probe in §3.9, run as `deploy` with §6.1's preamble, plus two §6.1 assertions that can only mean something once an image exists: that `IMAGE_TAG` is not `latest`/empty/`-dirty`, and that a **local** `libriant-api:$IMAGE_TAG` image is there. **Read the message, not `$?`.** The embedded §3.9 script exits with the number of failed checks (`install-server.sh:4537`), but the step captures that and collapses it: a 90 — §6.1's own refusal, meaning `IMAGE_TAG` could not be determined at all because `git` said nothing in `/srv/libriant/app` and no `libriant-api-1` container is running — is rewritten to 1 and reported as _"§3.9 could not run: IMAGE_TAG could not be determined"_ (`:4544-4548`), and every other non-zero is reported as _"§3.9: N check(s) failed"_ while still exiting 1. `install-server.sh` itself only ever exits **0 or 1** (`:4903-4905` for `--verify-only`, `:4955` for a full run). Do not script against a count; there is none. For a 90, deploy first, then `--verify-only`. |
+
+> **`backup` runs before `firewall`, and that is deliberate.** The firewall step
+> dies on any FATAL finding, and one of those — _"ip6tables has no jump from
+> DOCKER-USER"_ — is produced by Docker whenever its daemon has ip6tables off.
+> That is an entirely plausible box state, it has nothing to do with backups,
+> and in the other order it meant the one thing this installer exists to add —
+> the nightly backup nothing else installs and nothing warns is missing — was
+> never reached. An operator who could not resolve an ip6tables question walked
+> away from a production box with zero backups, which looks exactly like a box
+> that has them.
+>
+> If you hit that wall, the backup is already installed and only the read-only
+> verification is left:
+>
+> ```bash
+> sudo bash install-server.sh --verify-only
+> sudo bash install-server.sh --from firewall --skip firewall
+> ```
+
+### What the installer does not do, and you still must
+
+- **The external scan, from a machine that is not this one, over both address
+  families.** On-box output proves nothing about the internet, and this is the
+  only check that cannot be fooled. The script prints the commands with the
+  addresses it read off the box, and prints a literal
+  `[PLACEHOLDER: this box's public IPv4 — read it with: ip -4 addr]` rather than
+  a made-up address when it cannot tell:
+
+  ```bash
+  # from your laptop, NOT from the box
+  nmap -Pn -p 22,80,443,5432,6379,3300,9090 195.201.13.95
+  nmap -6 -Pn -p 22,80,443 2a01:4f8:13b:ac8::2
+  ```
+
+  Expect ssh, 80 and 443 and nothing else; 80/443 **filtered** from a
+  non-Cloudflare address once the `firewall` step has run. 5432 and 6379 must
+  never appear — the `data` network is `internal: true`. 3300 (Grafana) and 9090
+  (Prometheus) must never appear either: they are published on `127.0.0.1` only,
+  and the post-deploy scan is the one moment that bind can be proved to have
+  held.
+
+- **Copy `/srv/libriant/.env.prod` and both origin PEM blocks into the password
+  manager.** They are in no backup. `MFA_MASTER_KEY`, `POSTGRES_PASSWORD` and
+  the origin pair are irrecoverable if lost (§4.4). The script pauses and tells
+  you to; it cannot do it.
+
+- **Put the origin certificate's `notAfter` in your calendar.** Nothing monitors
+  it. An expired origin certificate is a fully green deploy and a Cloudflare
+  **526** on every host.
+
+- **DNS and the cutover (§5.4).** It does not put the box in DNS, deliberately —
+  which is why the deploy prints _"nothing is public"_ rather than _"you are
+  live"_.
+
+- **Alerting.** The deploy starts Prometheus and evaluates every rule, but
+  Alertmanager sits behind a compose profile that only switches on once
+  `infra/monitoring/alertmanager.yml` has real receivers instead of
+  `[PLACEHOLDER]`s. Until then nothing wakes anybody up — including the backup
+  dead-man's switch and the disk-full alerts. §7.3.
+
+- **Mail.** `EMAIL_DRIVER=console`; nothing is delivered and nothing in the
+  installer depends on delivery. Account recovery is done by an owner admin from
+  `/admin/account-recovery` (§4.3a).
+
+- **The quarterly restore drill (§8.5), which has never been done**, and MFA
+  enrolment, which needs a browser (§3.9).
+
+The script prints this same list when it finishes, and it re-reads the
+outstanding promises **off the machine** rather than remembering what you
+answered on some earlier run. Four of them get their own banner: no
+`/etc/cron.d/libriant-backup` at all; `BACKUP_ALLOW_LOCAL_ONLY=1` with no
+`RCLONE_REMOTE`, so the nightly no longer complains while every backup on this
+box still dies with this box; `BACKUP_ALLOW_PLAINTEXT=1`, which makes the Art. 28
+DPA a municipality signs untrue; and an origin lockdown that is applied but not
+installed as a boot unit.
+
+---
+
+### The manual path — §3.0 to §3.10
+
+Everything below is §3 done by hand. It is the reference for what the installer
+did, for the step it stopped on, and for the operator who would rather type it.
+The mapping from step id to section is in the table above.
 
 ### 3.0 The pnpm toolchain in the images — historical, and why it is fine now
 
@@ -379,6 +863,8 @@ which is the condition the `migrate` one-shot actually runs under.
 
 ### 3.1 Get on the box and take stock
 
+**Installer step:** `stock` — `sudo bash install-server.sh --only stock`.
+
 ```bash
 ssh root@195.201.13.95
 ```
@@ -394,7 +880,10 @@ sshd says `passwordauthentication yes` — both of which you are about to fix.
 
 ### 3.2 Harden — do this before anything is worth stealing
 
-**a. SSH: turn off password authentication.** Find where it is set first;
+**Installer steps:** `ssh` (3.2a), `ufw` (3.2b), `packages` (3.2d). 3.2c is a
+banner the `ufw` step prints and a scan only you can run.
+
+**3.2a SSH: turn off password authentication.** Find where it is set first;
 OpenSSH uses the _first_ value it obtains, and drop-ins are read in lexical
 order, so a `99-` file cannot override a `50-cloud-init.conf`.
 
@@ -422,7 +911,7 @@ Good looks like: `passwordauthentication no`, `kbdinteractiveauthentication no`,
 > confirm you can still log in before you close the first. If you cannot, the
 > first session is the only thing standing between you and a rescue boot.
 
-**b. ufw: turn it on, with IPv6.** The box has public IPv6; a v4-only ruleset
+**3.2b ufw: turn it on, with IPv6.** The box has public IPv6; a v4-only ruleset
 leaves v6 open.
 
 ```bash
@@ -439,7 +928,7 @@ sudo ufw status verbose
 Good looks like: `Status: active`, default deny incoming, and **two** rules for
 22 — `22/tcp` and `22/tcp (v6)`.
 
-**c. Understand what ufw does not protect.** Once Docker is installed and the
+**3.2c Understand what ufw does not protect.** Once Docker is installed and the
 stack is up, the caddy container publishes 80/443 through the `DOCKER-USER`
 chain, **ahead of ufw's INPUT chain**. `ufw deny 80` will not close port 80.
 The only check that cannot be fooled is an external scan from your laptop:
@@ -450,21 +939,25 @@ nmap -Pn -p 22,80,443,5432,6379,3300,9090 195.201.13.95
 nmap -6 -Pn -p 22,80,443 2a01:4f8:13b:ac8::2
 ```
 
-Good looks like, today: only 22 open. After the first deploy: 22, 80, 443 open,
-and **nothing else** — in particular 5432 and 6379 must never appear (the `data`
-network is `internal: true`, so they cannot be published even by accident).
+Good looks like, today: only 22 open. After the first deploy and **before** the
+origin lockdown below: 22, 80, 443 open, and **nothing else** — in particular
+5432 and 6379 must never appear (the `data` network is `internal: true`, so they
+cannot be published even by accident), and neither must 3300 (Grafana) or 9090
+(Prometheus), which are published on `127.0.0.1` only.
 
-> **`authn-authz-01` — the origin lockdown, and the three layers it needs.**
+> **`authn-authz-01` — the origin lockdown, and the four layers it needs.**
 > Every rate limit, the `/apply` throttle and the brute-force login lockout are
 > keyed on `X-Real-IP`, which Caddy sets from `CF-Connecting-IP`. Anyone who can
-> reach the origin IP directly and forge that header reshapes all of them. As of
-> 2026-08-24 there are three layers against that, and **all three have to hold**:
+> reach the origin IP directly and forge that header reshapes all of them. There
+> are four layers against that, and **all four have to hold**:
 >
 > 1. **The firewall.** `prod-bootstrap.sh --firewall-only` builds a
->    `LIBRIANT-ORIGIN` chain in `DOCKER-USER` — not in ufw, which Docker bypasses
->    — through **both `iptables` and `ip6tables`. A missing `ip6tables` is fatal,
->    not a warning**, because this box has a public IPv6 address. Add
->    `--allow-ipv6` only once AAAA records exist.
+>    `LIBRIANT-ORIGIN` chain jumped into from **both `INPUT` and `DOCKER-USER`**
+>    — not in ufw, which Docker bypasses — through **both `iptables` and
+>    `ip6tables`. A missing `ip6tables` is fatal, not a warning**, because this
+>    box has a public IPv6 address. The chain RETURNs for Cloudflare's published
+>    ranges, loopback and RFC1918, and ends `-j DROP`. Do **not** add
+>    `--allow-ipv6`: see the four-part change in §5.4 that has to happen first.
 > 2. **The published ports.** `docker-compose.prod.yml` publishes on
 >    `${EDGE_BIND_IPV4:-0.0.0.0}`, not the bare `443:443`. This is the layer that
 >    is easiest to lose and the least obvious: the wildcard form also opens a
@@ -473,14 +966,50 @@ network is `internal: true`, so they cannot be published even by accident).
 >    re-originates every one of them from the bridge gateway. The edge then sees
 >    a private address, trusts it, and the header forgery works again over IPv6
 >    while looking perfectly locked down over IPv4. This is not hypothetical — it
->    is how the first fix for this finding was defeated.
+>    is how the first fix for this finding was defeated. It is also why the
+>    origin has **no AAAA records** (§5.4).
 > 3. **The edge.** Every backend route in the Caddyfile imports `origin_guard`,
 >    which matches on `remote_ip` (the connection) rather than on a header. One
 >    route — `/webhooks/*` — shipped without it. `pnpm check:caddy` now fails the
 >    build if any `reverse_proxy` to `api:` or `web:` lacks a guard.
+> 4. **The API itself.** `apps/api/src/platform/client-ip.ts` honours
+>    `X-Real-IP` only when the immediate TCP peer is a trusted proxy; an
+>    untrusted peer **is** the client and its headers are ignored (`clientIp()`).
+>    `main.ts` hands Express the **same** predicate instead of
+>    `trust proxy: true` — the blanket form made `req.ip` client-controlled,
+>    which is how the second spoof vector in `authn-authz-01` worked. It also
+>    does **not** fall back to `req.ip` when `X-Real-IP` is absent, because
+>    `req.ip` is derived from `X-Forwarded-For`, i.e. from exactly the
+>    client-authored surface the function exists to distrust. Alone, this
+>    guarantees that a direct hit on `api:3001` — a misconfiguration, a container
+>    joined to the app network — cannot pick its own rate-limit bucket.
 >
-> **Verify, do not assume** (§3.2c's scan is the outside view; this is the inside
-> one):
+>    **`TRUSTED_PROXY_CIDRS` — nothing needs to be set for the standard
+>    deploy.** The default trust set is loopback plus every private and
+>    link-local range (`127.0.0.0/8`, `::1/128`, `10.0.0.0/8`, `172.16.0.0/12`,
+>    `192.168.0.0/16`, `169.254.0.0/16`, `fe80::/10`, `fc00::/7`), which is
+>    exactly the compose topology: the API is never published to a host port, so
+>    its only possible peer is the Caddy container. Set the variable only to
+>    narrow it — a comma-separated list of CIDRs or bare addresses. A malformed
+>    value **throws at boot**, not on the first request, with
+>    `TRUSTED_PROXY_CIDRS contains "…", which is not an IP address or CIDR.`
+>    It is one of the never-injected variables (§4.1), so narrowing it is a
+>    compose edit and a commit. The set in force is on the API's first log line,
+>    so you never have to guess:
+>
+>    ```bash
+>    dc logs api | grep 'trusted proxies'
+>    ```
+>
+>    Good looks like:
+>    `[libriant-api] listening on :3001 (production) — trusted proxies: 127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,169.254.0.0/16,fe80::/10,fc00::/7`
+>
+>    What this layer does **not** guarantee, stated so nobody mistakes it for
+>    more: from inside the API, Caddy is Caddy no matter what Caddy believed.
+>    Layers 1–3 are what make the header worth honouring in the first place.
+>
+> **Verify, do not assume** (the scan above is the outside view; this is the
+> inside one):
 >
 > ```bash
 > sudo bash scripts/prod-bootstrap.sh --firewall-status
@@ -489,17 +1018,80 @@ network is `internal: true`, so they cannot be published even by accident).
 > ```
 >
 > If that last line instead warns about a `[::]` listener, layer 2 has reverted
-> and layers 1 and 3 do not cover the gap on their own. Fix the compose publish
-> form before anything else.
->
-> Still true, and still the only check that cannot be fooled: an external scan
-> over **both** address families from a machine that is not this one.
+> and layers 1, 3 and 4 do not cover the gap on their own. Fix the compose
+> publish form before anything else.
 
-**d. Baseline packages.**
+**The lockdown does not survive a reboot on its own.** `iptables` rules are
+kernel state; nothing reinstates them. There is a unit for it, and installing it
+is a separate mode of the same script:
+
+```bash
+# root, on the host. The installer's `firewall` step does both, then STARTS the
+# unit to prove it works.
+sudo sh /srv/libriant/app/scripts/prod-bootstrap.sh --firewall-only
+sudo sh /srv/libriant/app/scripts/prod-bootstrap.sh --firewall-install-unit
+```
+
+Good looks like:
+`[bootstrap] installed + enabled libriant-origin-firewall.service (runs /srv/libriant/app/scripts/prod-bootstrap.sh --firewall-only after docker.service).`
+
+Two things about it that will bite:
+
+- **The unit does not pass `--allow-ipv6`.** The script says so itself. If you
+  ever admit the Cloudflare v6 ranges by hand, a reboot silently reverts to the
+  default DROP.
+- **The chain hooks into `DOCKER-USER`, which does not exist until dockerd has
+  created it**, which is why this is a systemd unit ordered `After=docker.service`
+  rather than an `rc.local` line. A unit that is _enabled_ but fails on boot is
+  indistinguishable from a working one until the next reboot, which will be
+  during an incident — so start it now and check it:
+  `sudo systemctl start libriant-origin-firewall && systemctl is-active libriant-origin-firewall`
+  → `active`.
+
+All three `prod-bootstrap.sh` firewall modes are hand-run rather than part of the
+deploy, deliberately: a DROP rule built from a range list that has drifted takes
+the whole site down. **UNVERIFIED — none of them has ever run on a live box.**
+Run them with a second SSH session already open.
+
+**After the lockdown, the external scan means something different.** Re-scan from
+off the box; the change _is_ the proof:
+
+```bash
+# from your laptop, NOT from the box
+nmap -Pn    -p 22,80,443 195.201.13.95
+nmap -6 -Pn -p 22,80,443 2a01:4f8:13b:ac8::2
+```
+
+Good looks like: 22 open; **80 and 443 filtered on both families**. Port 22 is
+in the scan on purpose — it is the control: it proves the box is still reachable
+and that `filtered` on 80/443 is the DROP rule doing its job rather than the
+whole host having gone away. If they still
+read `open`, the chain is not hooked in — check with `--firewall-status`. A scan
+that says `open` while `--firewall-status` says the chain exists means the jump
+landed in only one parent; the script inserts into both, so a partial state means
+an interrupted run.
+
+> **If legitimate traffic starts getting 403s at the edge, or Cloudflare starts
+> getting 522s, check <https://www.cloudflare.com/ips> before anything else.**
+> The list changes rarely and it does change. It appears **three** times in this
+> repository and all three must be updated together:
+>
+> | Where                                           | What it is                                       |
+> | ----------------------------------------------- | ------------------------------------------------ |
+> | `infra/caddy/Caddyfile` — `@untrusted_peer_…`   | the 403 matcher                                  |
+> | `infra/caddy/Caddyfile` — `@cf_peer_…`          | who may name someone else via `CF-Connecting-IP` |
+> | `scripts/prod-bootstrap.sh` — `CF_V4` / `CF_V6` | the firewall RETURN list                         |
+>
+> Both files say so in their own comments. Updating the Caddyfile and forgetting
+> the script gives you a firewall that drops traffic the edge would have
+> admitted, and the symptom is a 522 with a perfectly healthy stack behind it.
+
+**3.2d Baseline packages.**
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl git openssl fail2ban unattended-upgrades
+sudo apt-get install -y ca-certificates curl git openssl fail2ban \
+  unattended-upgrades ufw cron iproute2 iptables
 sudo systemctl enable --now fail2ban
 sudo systemctl is-active fail2ban unattended-upgrades
 ```
@@ -508,7 +1100,26 @@ sudo systemctl is-active fail2ban unattended-upgrades
 `docker`, and a missing `git` or `openssl` fails mid-run with a bare
 `command not found` rather than a named precondition.
 
+The last four are the ones this list used to omit, and each has a failure that
+looks like something else. `iptables` because `prod-bootstrap.sh` exits **FATAL**
+without `ip6tables` (§3.2c). `iproute2` because `--firewall-status` needs `ss` to
+prove there is no `[::]` listener, and because §3.2b reads the real ssh port off
+the listening socket. `cron` because `/etc/cron.d/libriant-backup` is an inert
+text file without a cron daemon — which is a backup that silently never runs
+(§8.2). `ufw` because §3.2b enables it. `install-server.sh` installs all ten.
+
+Two things `systemctl is-active` does not prove, both worth a minute now:
+
+```bash
+sudo fail2ban-client status sshd        # UNVERIFIED on Ubuntu 26.04 — the jail
+                                        # may not be enabled by default
+cat /etc/apt/apt.conf.d/20auto-upgrades # unattended-upgrades can be `active`
+                                        # while nothing is scheduled
+```
+
 ### 3.3 Docker
+
+**Installer step:** `docker`.
 
 Ubuntu 26.04 is new. **UNVERIFIED** whether Docker's apt repo has published a
 suite for this release; check before trusting the convenience script.
@@ -540,6 +1151,8 @@ Good looks like: `Docker version 2x.x`, `Docker Compose version v2.x`. Compose
 `pids_limit` keys, which only v2 honours.
 
 ### 3.4 The deploy user
+
+**Installer step:** `user`.
 
 Still in the root session from §3.1:
 
@@ -588,6 +1201,8 @@ sudo -v       # expect: it accepts the password you just set
 
 ### 3.5 Directories
 
+**Installer step:** `dirs`.
+
 ```bash
 sudo mkdir -p /srv/libriant
 sudo chown deploy:deploy /srv/libriant
@@ -606,6 +1221,15 @@ sudo chown deploy:deploy /mnt/libriant/backups
 # while still finishing "Done". Owned by deploy because ensure-env.sh writes it
 # unprivileged; 700 because it holds every secret the stack has.
 sudo install -d -m 700 -o deploy -g deploy /mnt/libriant/env
+# Beyond §3.5's original list, and not on the data volume: node-exporter's
+# textfile collector reads this directory, and `backup.sh` REFUSES to run when
+# neither it is writable nor BACKUP_HEARTBEAT_URL is set — a backup that stops
+# happening has to be noticeable. It must exist, owned by deploy, BEFORE the
+# deploy: the monitoring compose file bind-mounts it, so Docker would otherwise
+# create it as root and the nightly backup could not write its metric, exiting 1
+# every night in a log nobody reads. `install-server.sh` creates it in the
+# `dirs` step.
+sudo install -d -m 755 -o deploy -g deploy /var/lib/node_exporter/textfile
 ls -la /mnt/libriant
 ```
 
@@ -621,6 +1245,8 @@ ls -la /mnt/libriant
 > **not** check `backups`. Nothing in the deploy path touches backups at all.
 
 ### 3.6 The checkout
+
+**Installer step:** `checkout` — it pauses while you register the key.
 
 The repo is private, so an HTTPS clone will not work — and `deploy-on-host.sh`
 runs `git fetch origin` as `deploy` on **every** deploy, so a one-off credential
@@ -662,7 +1288,9 @@ Good looks like: a clone, and `git ls-remote --exit-code origin HEAD` exits 0.
 
 ### 3.7 `.env.prod` and the origin certificate
 
-**a. Mint the secrets — interactively, exactly once.**
+**Installer steps:** `env` (3.7a), `cert` (3.7b).
+
+**3.7a Mint the secrets — interactively, exactly once.**
 
 ```bash
 bash /srv/libriant/app/scripts/ensure-env.sh /srv/libriant/.env.prod
@@ -684,8 +1312,15 @@ it as the placeholder `your-github-owner`.
 `prod-bootstrap.sh` creates the admin only when **both** values are non-empty.
 
 The script generates and never overwrites: `SESSION_SECRET`, `HASH_PEPPER`,
-`ADMIN_SESSION_SECRET`, `IMPERSONATION_SECRET`, `STORAGE_SIGNING_SECRET`,
-`MFA_MASTER_KEY` (hex-32 each) and `POSTGRES_PASSWORD` (hex-24). It `umask 077`s,
+`ADMIN_SESSION_SECRET`, `IMPERSONATION_SECRET`, `STORAGE_SIGNING_SECRET` and
+`MFA_MASTER_KEY` — `openssl rand -hex 32`, so **64 hex characters each**, not 32
+— plus `POSTGRES_PASSWORD` and `GRAFANA_ADMIN_PASSWORD` at `-hex 24`, 48
+characters. The byte count is the argument, not the length: regenerate one by
+hand with `openssl rand -hex 16` and the API refuses to boot, because
+`MFA_MASTER_KEY` must be exactly 64 hex (AES-256) and `install-server.sh`'s
+`env` step asserts that. `GRAFANA_ADMIN_PASSWORD` is generated here rather than
+left to you because `grafana`'s compose entry has no default for it (`:?`) and
+both deploy paths now bring the monitoring stack up. It `umask 077`s,
 `chmod 600`s the file, then copies any key present in `.env.prod.example` but
 absent from your file.
 
@@ -702,7 +1337,7 @@ stat -c '%a %U:%G' /srv/libriant/.env.prod    # expect: 600 deploy:deploy
 > production with no recovery codes), `POSTGRES_PASSWORD` (the live cluster is
 > keyed to it) and the origin certificate pair. See §4.4.
 
-**b. Place the Cloudflare Origin certificate.**
+**3.7b Place the Cloudflare Origin certificate.**
 
 Cloudflare dashboard → SSL/TLS → Origin Server → Create Certificate. Hostnames
 must be **both** `libriant.com` **and** `*.libriant.com`. Save both PEM blocks to
@@ -754,6 +1389,8 @@ Good looks like: issuer `CloudFlare Origin SSL Certificate Authority`, SANs
 
 ### 3.8 Deploy
 
+**Installer steps:** `dchelper`, then `deploy`.
+
 **Set up the `dc` helper first (§6.1).** Everything from §3.9 onward is written
 in terms of it, and the deploy itself does not create it. It is four lines in
 `~/.bashrc`; go and add them now, then come back.
@@ -795,33 +1432,83 @@ What the script does, in order:
    (**UNVERIFIED on this box**; measured on the dead machine).
 7. `caddy validate` in a throwaway container, **before** anything is recreated.
 8. `dc up -d --remove-orphans --force-recreate`, dumping the last 200 lines of
-   migrate logs on failure. ← **fails today, `supply-chain-06`**
+   migrate logs on failure.
 9. `dc exec caddy caddy reload`, falling back to recreating caddy.
 10. A 180-second local health gate.
+11. The **monitoring stack** — a separate compose project, `libriant-monitoring`,
+    started last, after the app is already healthy, so a monitoring problem
+    never rolls a working application back. It `promtool check rules`
+    `infra/monitoring/alerts.yml`, requires `infra/monitoring/alertmanager.yml`
+    to exist, and turns the `alerting` profile on **only** when that file no
+    longer contains `[PLACEHOLDER` (comments stripped first). Then `up -d`, and
+    ten seconds later it asserts `prometheus` and `node-exporter` are still
+    running. It can still fail the deploy — it carries five `die` calls — and
+    when the profile stays off it prints a red **ALERTS ARE NOT BEING
+    DELIVERED** banner, which is the state this box is in today (§7.3).
 
-The health gate polls five signals every 5 s: `http://localhost/healthz` == 200,
+The health gate — step 10 — polls **six** signals every 5 s for 180 s:
+`http://localhost/healthz` == 200,
 `curl -sk --resolve libriant.com:443:127.0.0.1 https://libriant.com/` == 200, and
-Docker health `healthy` for api, web and worker. It touches no public DNS, and on
-timeout **it does not roll back**.
+Docker health `healthy` for api, web, worker **and `pgbouncer-probe`**. It
+touches no public DNS, and on timeout **it does not roll back**.
+
+The sixth is `boot-and-config-15`'s. Every control-plane query goes through the
+pooler, and that sidecar runs `psql -c 'select 1'` **through** pgbouncer — the
+only probe that can tell "the pooler answers" from "the pooler can reach
+Postgres". `pg_isready`, the probe it replaced, is satisfied by pgbouncer's own
+startup-packet reply and stayed green with the backend gone.
 
 **Good looks like** — these are the script's literal strings:
 
 ```
-▸ Healthy: origin + marketing site + api + web + worker
+▸ Healthy: origin + marketing site + api + web + worker + pooler path
 <dc ps table>
+   … deploy_monitoring runs here — see below …
 Deployed a1b2c3d4e5f6. This box is not in DNS yet, so nothing is public.
+Point DNS at it only when you want it live — docs/RUNBOOK.md.
 ```
 
+Those lines are **not contiguous on a real run.** `deploy_monitoring` is called
+between the `dc ps` table and the `Deployed` line (`deploy-on-host.sh:352-356`),
+and it emits `promtool check rules` output, its own `mon ps` table, and — while
+`alertmanager.yml` still carries `[PLACEHOLDER]` receivers, which today it does
+— the red `ALERTS ARE NOT BEING DELIVERED.` banner (§7.3). Screens of output
+between the two strings is the normal case, not a sign the deploy stalled.
+
 While it is still waiting you get one line every 5 s in the other shape —
-`waiting… edge=200 site=000 api=starting web=starting worker=starting`. That
-line is the _pending_ form, not the success form; the run has only succeeded
-when you see `▸ Healthy:` and the `Deployed <tag>` line.
+`waiting… edge=200 site=000 api=starting web=starting worker=starting pooler=starting`.
+That line is the _pending_ form, not the success form; the run has only
+succeeded when you see `▸ Healthy:` and the `Deployed <tag>` line. On timeout
+the failure names all six: `stack did not become healthy within 180s (edge=… site=… api=… web=… worker=… pooler=…)`.
+
+`install-server.sh`'s `deploy` step gates its own skip-when-satisfied check on
+**five of these six** — `satisfied_deploy()` at `scripts/install-server.sh:3846`
+requires `docker` on `PATH`, `api`, `web`, `worker` and `pgbouncer-probe` all
+`healthy`, and `http://localhost/healthz == 200`. That is every container health
+plus the plaintext edge. It does **not** run the marketing-site HTTPS probe —
+the `site=` term, `curl -sk --resolve libriant.com:443:127.0.0.1 https://libriant.com/`
+(`scripts/deploy-on-host.sh:325`). The comment above that function
+(`install-server.sh:3835`) says it checks "THE SAME SIX SIGNALS … not three of
+them"; it means it, and it is one short. Trust the function, not its comment.
+
+> **A deploy that timed out on `site=` alone reads as satisfied.** Every
+> container is healthy, `/healthz` answers, and so `--status` reports `deploy`
+> as done and a resume prints `ok   already satisfied — skipping` for a deploy
+> that actually died at its own gate. That is the one failure this check cannot
+> see, and it is not hypothetical: `site=` is the term that fails when the
+> origin certificate is missing or the `libriant.com` vhost is misconfigured,
+> which is exactly the state a first install is in before §3.7 is finished.
+> Before you believe a skipped `deploy`, run the `site=` curl yourself — it is
+> in §5.7 — or re-run the deploy with `--force`.
 
 **But do not over-read it.** `web=healthy` is the constant healthcheck: a wrong
 `API_INTERNAL_URL` or a broken `app` network passes the gate green while every
 page renders an error. `api=healthy` and `worker=healthy` are real.
 
 ### 3.9 Post-deploy checks the script does not do
+
+**Installer step:** `verify`, also reachable on its own as
+`sudo bash install-server.sh --verify-only`.
 
 ```bash
 dc ps
@@ -838,12 +1525,13 @@ three steps this table used to call best-effort:
 | `tenant:migrate`  | **FATAL**          | boot-and-config-04. The one-shot exited 0, `service_completed_successfully` was satisfied, and api + worker started against tenant databases that never got the migration.                                        |
 | `admin:bootstrap` | **FATAL when set** | Runs only when `ADMIN_BOOTSTRAP_EMAIL` and `ADMIN_BOOTSTRAP_PASSWORD` are both non-empty. If they are unset it still logs and exits 0 — which is the one remaining way to get a green deploy nobody can log into. |
 
-**Do not grep for `skipped (non-fatal)`.** That string was removed from every
-one of those steps and appears nowhere in the repo; a search for it returns
-nothing on a broken deploy exactly as it does on a healthy one, which reads as
-reassurance and is not. What is still worth reading for is
-`ADMIN_BOOTSTRAP_* not set - skipping` — the case above that exits 0 — and
-`[bootstrap] FATAL`, which is what the other five now emit.
+**Do not grep for `skipped (non-fatal)`.** `prod-bootstrap.sh` no longer emits
+it from any step, so a search returns nothing on a broken deploy exactly as it
+does on a healthy one — which reads as reassurance and is not. (The only place
+the string survives in this repository is `install-server.sh`, which keeps a
+defensive grep for it precisely so a reintroduction is caught.) What is worth
+reading for is `ADMIN_BOOTSTRAP_* not set - skipping` — the case above that
+exits 0 — and `[bootstrap] FATAL`, which is what the other five now emit.
 `scripts/install-server.sh` checks for both.
 
 Then prove the things nothing else proves:
@@ -858,11 +1546,13 @@ dc exec -T web sh -c 'wget -qO- http://api:3001/healthz' && echo WEB-TO-API-OK
 # a real page, not a static probe
 curl -sk --resolve libriant.com:443:127.0.0.1 -o /dev/null -w '%{http_code}\n' https://libriant.com/pricing
 
-# the help centre. `ingest:help` is one of the best-effort steps above, and an
-# empty help centre is indistinguishable from a working one until a librarian
-# goes looking — the app renders "no articles" rather than an error, and the
-# site sells in-app help as one of four support mechanisms. This is the only
-# thing in the deploy that fails when it is empty, so do not skip it.
+# the help centre. `ingest:help` is FATAL now (launch-readiness-15), so a deploy
+# that failed to ingest stops — but a deploy that ingested into a control plane
+# somebody has since archived is a different failure, and an empty help centre
+# is indistinguishable from a working one until a librarian goes looking: the
+# app renders "no articles" rather than an error, and the site sells in-app help
+# as one of four support mechanisms. This query is the only thing that fails on
+# an empty corpus, so do not skip it.
 dc exec -T postgres psql -U libriant -d libriant_control -tAc \
   "SELECT count(*) FILTER (WHERE locale = 'el'), count(*) FILTER (WHERE locale = 'en')
      FROM help_articles WHERE \"archivedAt\" IS NULL" \
@@ -893,10 +1583,22 @@ dc run --rm --no-deps migrate sh -lc "cd /app && pnpm ingest:help"
 Good looks like: `STORAGE-OK`, `WEB-TO-API-OK`, `200`, `HELP-OK el=4 en=4`.
 
 > `STORAGE-OK` proves the **directory** is writable by uid 1000. It does not
-> prove uploads work. **`BLOCKER data-integrity-01`: every file upload returns
-> HTTP 500 in the launch configuration** — the unlimited-plan `MAX_SAFE_INTEGER`
-> sentinel overflows a Postgres `bigint`. Do not conclude from a green storage
-> probe that a librarian can attach a cover image (§9.9).
+> prove uploads work — and for a long time they did not: `data-integrity-01`, now
+> closed, made every file upload return HTTP 500 in the launch configuration,
+> because the unlimited-plan sentinel scaled up to a byte ceiling ~1024× the
+> `int8` maximum and Postgres refused the reservation with SQLSTATE 22003. Do not
+> conclude from a green storage probe that a librarian can attach a cover image.
+> The only proof is attaching one (§9.9).
+>
+> **The script has not caught up with the fix.** `--verify-only` closes with a
+> banner calling `data-integrity-01` a BLOCKER that makes "every file upload
+> return HTTP 500 in the launch configuration" (`install-server.sh:4556`).
+> That banner is **stale** — the finding is closed, capped at `INT8_MAX` in
+> `apps/api/src/storage/storage.service.ts:90`. Do not treat it as a live
+> blocker or go hunting for a bug that is fixed. The banner's actual point — a
+> green `STORAGE-OK` is not a working upload — still stands, which is why it has
+> not simply been deleted. UNVERIFIED: nobody has attached a real cover image on
+> a real host to confirm the fix end to end (unknowns register #22).
 
 **Logging into the admin panel before cutover is harder than it sounds — plan
 for it.** The box is not in DNS, and a browser cannot be given `--resolve`. The
@@ -932,7 +1634,13 @@ dc exec -T postgres psql -U libriant -d libriant_control -tAc \
 
 ### 3.10 The nightly backup — a green deploy has none
 
-Nothing installs it. Do it now, in the same sitting. §8.2.
+**Installer step:** `backup`.
+
+Nothing in the deploy path installs it, and nothing warns it is missing. Do it
+now, in the same sitting. §8.2 — or `sudo bash install-server.sh --only backup`,
+which walks the encryption and dead-man's-switch decisions `backup.sh` now
+refuses to run without, writes the cron, runs `--preflight`, runs the backup
+once and reads the result.
 
 ---
 
@@ -944,7 +1652,7 @@ Three layers, and one rule that explains most surprises:
 
 ```
 /srv/libriant/.env.prod
-        │  set -a; . /srv/libriant/.env.prod; set +a       (deploy-on-host.sh)
+        │  set -a; . /srv/libriant/.env.prod; set +a       (deploy-on-host.sh:136)
         ▼
    shell environment
         │  ${VAR} interpolation in docker-compose.prod.yml
@@ -962,15 +1670,22 @@ file, Compose's automatic `.env` discovery never fires either. Running
 `docker compose ... up` without sourcing the file fails immediately on
 `${POSTGRES_PASSWORD:?}`.
 
-Three categories of variable, and knowing which is which saves an hour:
+**Five** categories, not three, and knowing which is which saves an hour. The
+old three-way split had no home for the variables Compose consumes without ever
+handing them to a process, which is where the Postgres and Redis tuning knobs
+live — so they read as "never injected", i.e. as dead, when they are the most
+live settings in the file.
 
-| Category                                                           | Count | Effect of editing `.env.prod`                                                                                                                                                                                                                           |
-| ------------------------------------------------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Pass-through** — named in compose, sourced from the file         | 27    | Works.                                                                                                                                                                                                                                                  |
-| **Compose literals** — hard-coded in the compose file              | 13    | **Silently ignored.** `NODE_ENV`, `CONTROL_DATABASE_URL`, `REDIS_URL`, `PUBLIC_APP_URL`, `TENANT_PATH_PREFIX`, `SESSION_COOKIE_SECURE`, `STORAGE_ROOT`, `ASSETS_ROOT`, `LOCALES_ROOT`, `BILLING_RETURN_URL`, `BCRYPT_COST`, `PG_SUPERUSER_URL`, `PORT`. |
-| **Never injected** — the app reads them, compose never passes them | 20    | **Silently ignored.** The code default always wins.                                                                                                                                                                                                     |
+| Category                                                                                                                           | Effect of editing `.env.prod`                                                                                                                                                                                                                                                                                         |
+| ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. Pass-through** — named in `x-app-env` or a service `environment:` block                                                       | Works. Restart the affected containers.                                                                                                                                                                                                                                                                               |
+| **2. Compose-consumed** — image tags, `mem_limit`/`cpus`, published ports, Postgres and Redis server flags, the volume device path | Works, but the value never becomes an environment variable inside any container — `docker exec … env` will not show it. Verify it at the thing it configures (§4.2c, §4.2d).                                                                                                                                          |
+| **3. Compose literals** — hard-coded in the compose file                                                                           | **Silently ignored.** `NODE_ENV`, `CONTROL_DATABASE_URL`, `REDIS_URL`, `PUBLIC_APP_URL`, `TENANT_PATH_PREFIX`, `SESSION_COOKIE_SECURE`, `STORAGE_ROOT`, `ASSETS_ROOT`, `LOCALES_ROOT`, `BILLING_RETURN_URL`, `BCRYPT_COST`, `PG_SUPERUSER_URL`, `API_INTERNAL_URL`, `NEXT_TELEMETRY_DISABLED`, `PORT`, `WORKER_PORT`. |
+| **4. Host-script-only** — never touched by Compose, read by a script that sources the file itself                                  | Works. `RCLONE_REMOTE`, `BACKUP_KEEP_DAYS` and the whole `BACKUP_*` family are here: the nightly cron line does its own `set -a; . /srv/libriant/.env.prod; set +a` and then runs `backup.sh` on the **host**, not in a container.                                                                                    |
+| **5. Never injected** — the app reads them, nothing passes them                                                                    | **Silently ignored.** The code default always wins. This set is bigger than it looks and now includes three data-retention periods the template invites you to fill in (§4.2f).                                                                                                                                       |
 
-The never-injected set, in full, so you stop trying:
+The never-injected set, in full, so you stop trying. Twenty come from
+`config/env.ts`:
 `ADMIN_COOKIE_NAME`, `ADMIN_MFA_REQUIRED`, `ADMIN_SESSION_TTL_SEC`,
 `BILLING_GRACE_PERIOD_DAYS`, `EMAIL_MAX_ATTEMPTS`, `IMPERSONATION_COOKIE_NAME`,
 `LOGIN_LOCKOUT_MS`, `MAX_FAILED_LOGINS`, `SESSION_ABSOLUTE_MAX_TTL_SEC`,
@@ -979,30 +1694,95 @@ The never-injected set, in full, so you stop trying:
 `SUPPORT_SESSION_TTL_SEC`, `TENANT_CACHE_TTL_SEC`, `TENANT_CLIENT_CACHE_SIZE`,
 `TENANT_CLIENT_IDLE_MS`, `RATE_LIMIT_DISABLED`.
 
+Nine more are read straight off `process.env` by the modules that own them, and
+are just as unreachable:
+`TRUSTED_PROXY_CIDRS`, `SIGNUP_MAX_CONCURRENT_PROVISIONING`, `TENANT_DB_POOL_MAX`,
+`PG_RESERVED_CONNECTIONS`, `LEGAL_ARCHIVE_ROOT`, `CONTROL_AUDIT_RETENTION_DAYS`,
+`EMAIL_OUTBOX_BODY_RETENTION_DAYS`, `SUPPORT_ATTEMPT_RETENTION_DAYS`, and
+`ADMIN_BOOTSTRAP_NAME` / `ADMIN_BOOTSTRAP_ROLE` (the migrate container gets
+`ADMIN_BOOTSTRAP_EMAIL` and `_PASSWORD` and nothing else).
+
 (`RATE_LIMIT_DISABLED` being unreachable is a _safety_ property, and there are two
-further in-code guards: the API refuses to boot in production if it is set, and
-the rate limiter logs an error and ignores it.)
+further in-code guards: `main.ts` refuses to boot in production if it is set to
+the literal `true`, and the signup admission control ignores it unless
+`NODE_ENV` is something other than `production`.)
 
 Changing any never-injected value means **editing the compose file**, which means
 a commit — `deploy-on-host.sh` will `git reset --hard` a host-local edit away.
 
-`bool()` accepts only `true`, `1`, `yes`, `on` (lower-cased, trimmed). Anything
-else — `enabled`, `y`, `True ` with trailing junk — resolves to **false with no
-warning**. That is how `BILLING_ENABLED` is parsed.
+**`bool()` no longer fails soft, and this reversed since the last edition.**
+`true`, `1`, `yes`, `on` are true; `false`, `0`, `no`, `off` are false; both
+lists are matched after `.toLowerCase().trim()`, so `True` and `TRUE ` are fine.
+**Anything else throws and the process does not start** —
+
+```
+Env var BILLING_ENABLED must be one of true, 1, yes, on, false, 0, no, off — got "enabled".
+```
+
+That is boot-and-config-10: the old parser returned false for everything it did
+not recognise, so `BILLING_ENABLED=enabled` and `BILLING_ENABLED=y` both meant
+"the whole product is free" with nothing logged. Two flags go through it:
+`BILLING_ENABLED` and `ADMIN_MFA_REQUIRED`.
+
+> **Caddy does not use `bool()`.** `MAINTENANCE_HARD` is matched by Caddy
+> against the literal string `true` (`@hard_maint vars {$MAINTENANCE_HARD:false} "true"`
+> in `infra/caddy/Caddyfile`). `MAINTENANCE_HARD=1`, `=yes` and `=TRUE` are all
+> silently **off**, and unlike the app they do not fail loudly — you get a
+> perfectly healthy stack that ignored the switch you thought you flipped.
 
 ### 4.2 Hard requirements
 
-Six keys are `${VAR:?}` at the **compose** layer. A missing one aborts
-`docker compose up` before any container is created, with a named error:
+**Seven** keys are `${VAR:?}` at the **compose** layer, not six. A missing one
+aborts `docker compose up` before any container is created, and the message ends
+with the text the compose file writes after the `:?`:
 
-`POSTGRES_PASSWORD`, `HASH_PEPPER`, `SESSION_SECRET`, `ADMIN_SESSION_SECRET`,
-`IMPERSONATION_SECRET`, `MFA_MASTER_KEY`.
+| Key                    | What compose says when it is missing                            |
+| ---------------------- | --------------------------------------------------------------- |
+| `POSTGRES_PASSWORD`    | `POSTGRES_PASSWORD is required`                                 |
+| `HASH_PEPPER`          | `HASH_PEPPER is required in production`                         |
+| `SESSION_SECRET`       | `SESSION_SECRET is required in production`                      |
+| `ADMIN_SESSION_SECRET` | `ADMIN_SESSION_SECRET is required`                              |
+| `IMPERSONATION_SECRET` | `IMPERSONATION_SECRET is required`                              |
+| `MFA_MASTER_KEY`       | `MFA_MASTER_KEY is required`                                    |
+| `PUBLIC_HOST`          | `PUBLIC_HOST is required (the app host, e.g. app.libriant.com)` |
 
-`MFA_MASTER_KEY` is additionally validated at boot against `/^[0-9a-fA-F]{64}$/`
-— a typo exits the process with
-`Env var MFA_MASTER_KEY must be 64 hex characters (a 32-byte key).`
+`PUBLIC_HOST` joined the list with boot-and-config-09 and is referenced from
+five places (`PUBLIC_APP_URL`, `BILLING_RETURN_URL`, the caddy block, and the web
+container's `NEXT_PUBLIC_API_URL` + `PUBLIC_APP_URL`). `POSTGRES_PASSWORD` is
+`:?` three times over — `postgres`, `pgbouncer` and the `pgbouncer-probe`
+sidecar. UNVERIFIED: the wrapper text Compose puts around those messages. There
+is no Docker on the workstation this was written on, and the exact envelope is
+not quoted anywhere in the repository; what **is** verified is that the variable
+is named and the sentence above is appended.
 
-`HASH_PEPPER` needs ≥ 32 chars; the other secrets ≥ 24.
+An eighth lives on the monitoring overlay, which both deploy paths bring up:
+`GRAFANA_ADMIN_PASSWORD`, as
+`${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD (scripts/ensure-env.sh generates one)}`.
+`ensure-env.sh` generates it (`ensure_rand GRAFANA_ADMIN_PASSWORD 24`), so this
+only bites a `.env.prod` assembled by hand — and it fails the **monitoring**
+step, after the app is already up, which is why it reads as a puzzle.
+
+Beyond compose, the API validates at boot:
+
+- `MFA_MASTER_KEY` against `/^[0-9a-fA-F]{64}$/`. A typo exits the process with
+  `Env var MFA_MASTER_KEY must be 64 hex characters (a 32-byte key).`
+- `HASH_PEPPER` ≥ 32 characters; `SESSION_SECRET`, `ADMIN_SESSION_SECRET`,
+  `IMPERSONATION_SECRET`, `STORAGE_SIGNING_SECRET` ≥ 24. Short ones exit with
+  `Env var <KEY> is too short — needs at least <n> characters.` The length bar
+  is skipped under `NODE_ENV=test` and the whole check is skipped under
+  `development`, which is why a fixture secret works locally and not here.
+- `NODE_ENV` against the allow-list `development`, `production`, `test`.
+  `staging`, `prod` and `Production` are **configuration errors**, not modes —
+  boot-and-config-03 / tenant-isolation-06. Four production-only protections key
+  on the exact string, and a bare cast let all four switch off on a box that
+  looked correctly configured.
+- Four infrastructure values are `required()` outside development, with a dev
+  fallback only: `CONTROL_DATABASE_URL`, `REDIS_URL`, `STORAGE_ROOT`,
+  `PG_SUPERUSER_URL`. All four are compose literals here, so you cannot get this
+  wrong from `.env.prod` — boot-and-config-07 is the story of `PG_SUPERUSER_URL`
+  unset booting fully green, because nothing on the startup or readiness path
+  touches it, and first surfacing as a tenant signup running `CREATE DATABASE`
+  against `localhost` with guessable credentials.
 
 **`STORAGE_SIGNING_SECRET` must not be a copy of `SESSION_SECRET`.** Under
 `NODE_ENV=production` the API refuses to boot when the two hold the same value:
@@ -1014,30 +1794,511 @@ cannot be turned into a session-forgery oracle, or the reverse. Generate a
 distinct value for STORAGE_SIGNING_SECRET (`openssl rand -hex 32`).
 ```
 
+You see it as `api` and `worker` restart-looping while `postgres`, `redis` and
+`caddy` stay up — `caddy` depends on them only with `condition: service_started`,
+deliberately, so the marketing vhost keeps serving normally while the app and
+admin vhosts answer 502. What the deploy tells you is one line —
+`stack did not become healthy within 180s (edge=… site=… api=… web=… worker=… pooler=…)`
+— followed by `dc ps`. `api` and `worker` will read `missing`, because
+`svc_health` resolves the container id with `docker ps -q` and a restarting
+container is not in that list. **It prints no container logs**, so the sentence
+naming the variable is never on your screen. `dc logs api | tail -30` is where
+it is.
+
 The reason is `GET /_files/signed`, the one storage route with no guard at all:
 the token alone picks both the tenant and the object, so one key covering both
 session forgery and anonymous cross-tenant file reads is exactly the oracle the
 separation exists to prevent. `scripts/ensure-env.sh` generates the two
 independently (`ensure_rand STORAGE_SIGNING_SECRET 32`), so the ordinary deploy
-never trips this — a **hand-edited** `.env.prod` is what does, and the failure
-arrives as a container that will not start rather than as a warning.
+never trips this — a **hand-edited** `.env.prod` is what does. Note the shape of
+the check: it is an equality test on the resolved values, so it also fires when
+you paste the same freshly-generated string into both, which is the copy-paste
+tenant-isolation-06 was written about.
 
-Note that `.env.prod.example` claims to document every key and **omits
-`HASH_PEPPER`** — one of the six compose hard-requires — along with
-`APPLY_NOTIFY_TO`, `COMPOSE_PROJECT_NAME`, `LIBRIANT_DATA_ROOT`, `BACKUP_ROOT`,
-`BACKUP_HEARTBEAT_URL`, `ADMIN_BOOTSTRAP_NAME/ROLE` and the eight
-`*_MEM_LIMIT`/`*_CPUS` knobs. And `pnpm secrets audit` will report a healthy env
-file that compose then refuses to start, because its registry is missing
-`HASH_PEPPER`, `RESEND_API_KEY` and `DESKTOP_RELEASE_TOKEN`.
+Note that `.env.prod.example` claims to document every key, holds **37**, and
+omits `HASH_PEPPER` — one of the seven compose hard-requires — along with
+`APPLY_NOTIFY_TO`, `COMPOSE_PROJECT_NAME`, `LIBRIANT_DATA_ROOT`,
+`EDGE_BIND_IPV4`, `PG_MAX_CONNECTIONS`, `GRAFANA_ADMIN_PASSWORD`,
+`ADMIN_BOOTSTRAP_NAME`/`ROLE`, the eight `*_MEM_LIMIT`/`*_CPUS` pairs in the
+prod file and the five more on the monitoring overlay, and — the omission an
+owner is most likely to be bitten by — **every one of the `BACKUP_*` encryption
+keys** (§4.2e). And `pnpm secrets audit` will report a healthy env file that
+compose then refuses to start, because its registry is fourteen keys and does
+not include `HASH_PEPPER`, `RESEND_API_KEY`, `DESKTOP_RELEASE_TOKEN` or
+`GRAFANA_ADMIN_PASSWORD`.
+
+### 4.2a Every variable, and who actually reads it
+
+This is the whole surface. `.env.prod.example` is not a second opinion — where
+the two disagree, the rows below say so and the file is wrong.
+
+**Legend for "Reaches":** _app_ = injected into `api`/`worker`/`migrate`;
+_web_ = injected into the `web` container only; _caddy_ = the Caddy container
+only; _compose_ = consumed by Compose to shape infrastructure, never an env var
+anywhere; _host_ = read by a script running on the host; _nothing_ = read by
+code that never receives it.
+
+#### The seven that must be right, or nothing starts
+
+| Variable               | Reaches         | What it is                                                         | If it is wrong                                                             | Lost forever? |
+| ---------------------- | --------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------- | ------------- |
+| `POSTGRES_PASSWORD`    | app, compose    | The `libriant` role's password. Applied at initdb and never again. | Every connection fails auth. See §4.4 and the `ensure-env.sh` guard below. | **Yes**       |
+| `SESSION_SECRET`       | app             | HMAC key for library-user session JWTs. ≥ 24 chars.                | Boot refusal if absent/short; every user logged out if changed.            | No            |
+| `ADMIN_SESSION_SECRET` | app             | HMAC key for platform-admin session JWTs. Deliberately distinct.   | Same, for `admin.libriant.com`.                                            | No            |
+| `IMPERSONATION_SECRET` | app             | HMAC key for support-impersonation JWTs. Distinct again.           | Same, for live support sessions.                                           | No            |
+| `MFA_MASTER_KEY`       | app             | 64 hex chars. AES-256-GCM key over admin TOTP secrets at rest.     | Boot refusal on a non-hex/short value; orphans every enrolment if changed. | **Yes**       |
+| `HASH_PEPPER`          | app             | Peppers the IP hash behind the `/apply` throttle. ≥ 32 chars.      | Boot refusal. Changing it resets the throttle history, nothing worse.      | No            |
+| `PUBLIC_HOST`          | app, web, caddy | **The app host** (`app.libriant.com`), not the apex.               | Compose aborts. Wrong-but-set is worse: see §4.6.                          | No            |
+
+#### Secrets and credentials that are not compose-required
+
+| Variable                   | Reaches | What it is                                                                                         | If it is wrong / missing                                                                                                   | Lost forever? |
+| -------------------------- | ------- | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `STORAGE_SIGNING_SECRET`   | app     | HMAC key for `GET /_files/signed` tokens. Passed through as `${…:-}` — empty at the compose layer. | Empty ⇒ `Missing required env var: STORAGE_SIGNING_SECRET` in production. Equal to `SESSION_SECRET` ⇒ boot refusal (§4.2). | No            |
+| `GRAFANA_ADMIN_PASSWORD`   | —       | Grafana's `admin` login. `${…:?}` on the monitoring overlay.                                       | The monitoring step of the deploy fails, after the app is already up.                                                      | No            |
+| `ADMIN_BOOTSTRAP_EMAIL`    | migrate | First platform admin. Left blank ⇒ admin creation skipped.                                         | Nothing is created and `prod-bootstrap.sh` prints `[bootstrap] ADMIN_BOOTSTRAP_* not set - skipping admin creation`.       | No            |
+| `ADMIN_BOOTSTRAP_PASSWORD` | migrate | Plaintext, bcrypt-hashed before insert. Written single-quoted by `ensure-env.sh`.                  | **Re-applied on every deploy while it is present.** That is the only admin password reset there is — §4.5.                 | No            |
+| `ADMIN_BOOTSTRAP_NAME`     | nothing | Optional; defaults to `Libriant Owner`.                                                            | Never injected. Set it in the `dc run` invocation, not in `.env.prod`.                                                     | No            |
+| `ADMIN_BOOTSTRAP_ROLE`     | nothing | Optional; `owner` \| `support`, defaults to `owner`.                                               | Never injected. Same.                                                                                                      | No            |
+| `STRIPE_API_KEY`           | app     | `sk_live_…`. Only meaningful with `STRIPE_DRIVER=real`.                                            | With `real` and no key, the real driver throws at construction and the API will not start.                                 | No            |
+| `STRIPE_WEBHOOK_SECRET`    | app     | `whsec_…`. Same condition.                                                                         | Same.                                                                                                                      | No            |
+| `SMTP_URL`                 | app     | `smtp://user:pass@host:587`. Required by `EMAIL_DRIVER=smtp`.                                      | `EMAIL_DRIVER=smtp requires SMTP_URL (e.g. smtp://user:pass@host:587).` — thrown at driver construction.                   | No            |
+| `RESEND_API_KEY`           | app     | `re_…`. Required by `EMAIL_DRIVER=resend`.                                                         | `EMAIL_DRIVER=resend requires RESEND_API_KEY (re_...).`                                                                    | No            |
+| `DESKTOP_RELEASE_TOKEN`    | app     | GitHub PAT, `Contents: Read-only` on the release repo.                                             | **The in-panel desktop download 404s**, because the repo is private. Nothing else breaks, and nothing warns.               | No            |
+
+#### Hosts, drivers and behaviour
+
+| Variable               | Reaches         | Default if unset                                                    | What it does                                                                                                                                                                                                                         |
+| ---------------------- | --------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PUBLIC_APEX_DOMAIN`   | app             | compose `libriant.com`; code `localhost`                            | Tenant-subdomain resolution, the CSRF Origin allow-list, and the derivation of `EMAIL_FROM`, `APPLY_NOTIFY_TO` and `ADMIN_HOST`. Not cookie scope.                                                                                   |
+| `SITE_HOST`            | app, caddy      | `libriant.com` in both                                              | The marketing vhost. Lower-cased by the app.                                                                                                                                                                                         |
+| `ADMIN_HOST`           | app, web, caddy | `admin.libriant.com`                                                | Excluded from tenant resolution; the only Origin allowed for state-changing `/admin/*`; the web app 404s `/admin` on any other host.                                                                                                 |
+| `ACME_EMAIL`           | caddy           | `ops@libriant.com`                                                  | **Dead.** All four live vhosts `import cloudflare_origin`, which serves a file certificate. No ACME order is ever placed.                                                                                                            |
+| `MAINTENANCE_HARD`     | caddy           | `false`                                                             | Edge takeover on the app and admin vhosts only — the marketing vhost deliberately does not import it. Matches the literal `true` and nothing else.                                                                                   |
+| `EMAIL_FROM`           | app             | `Libriant <no-reply@${PUBLIC_APEX_DOMAIN}>`                         | The `From:` envelope. From the **apex**. `.env.prod.example` and the JSDoc in `config/env.ts` both say `PUBLIC_HOST`; both are wrong.                                                                                                |
+| `EMAIL_REPLY_TO`       | app             | none                                                                | Optional `Reply-To:`.                                                                                                                                                                                                                |
+| `APPLY_NOTIFY_TO`      | app             | `info@libriant.com` (compose) / `info@${PUBLIC_APEX_DOMAIN}` (code) | Where marketing-form applications are notified. Absent from the template **and** from `ensure-env.sh`, so you would never see it.                                                                                                    |
+| `EMAIL_DRIVER`         | app             | passed through **unset**                                            | `console` \| `smtp` \| `resend`. Unset in production resolves to `smtp`, which then refuses to boot without `SMTP_URL` — that fail-fast is deliberate and `ensure-env.sh` fills it with `console` before you ever meet it. See §4.3. |
+| `STRIPE_DRIVER`        | app             | `none`                                                              | `real` \| `none` (aliases `off`, `disabled`) \| `fake`. An unrecognised value **throws**. See §4.3.                                                                                                                                  |
+| `BILLING_ENABLED`      | app             | `false`                                                             | Env value is only the fallback; the `platform_settings` DB row wins. See §4.3.                                                                                                                                                       |
+| `DESKTOP_RELEASE_REPO` | app             | `CyberSystema/libriant`                                             | Where `desktop-v*` installers are published.                                                                                                                                                                                         |
+
+#### Compose-consumed — real, and invisible to `docker exec … env`
+
+| Variable                 | Default in compose | What it shapes                                                                                                                                                                                                                                                                                         |
+| ------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `IMAGE_OWNER`            | `libriant`         | The `ghcr.io/<owner>/libriant-*` namespace. Irrelevant on the manual build path; matters only if you pull.                                                                                                                                                                                             |
+| `IMAGE_TAG`              | `latest`           | Which image tag runs. **`deploy-on-host.sh` exports the git SHA over whatever the file says**, deliberately and after sourcing. Editing it in `.env.prod` to roll back does not work — §6.1.                                                                                                           |
+| `LIBRIANT_DATA_ROOT`     | `/mnt/libriant`    | The bind device for `pg_data`, `redis_data`, `storage`, `caddy`. Also re-exported by `deploy-on-host.sh` — set it in the **shell**, not the file.                                                                                                                                                      |
+| `COMPOSE_PROJECT_NAME`   | `libriant`         | Container and volume name prefix. Also re-exported by `deploy-on-host.sh`.                                                                                                                                                                                                                             |
+| `EDGE_BIND_IPV4`         | `0.0.0.0`          | The host address Caddy's 80/443 publish on. **IPv4 on purpose** — authn-authz-01. Changing it is one of four changes that must be made together; read the note above `ports:` first.                                                                                                                   |
+| `PG_MAX_CONNECTIONS`     | `200`              | Postgres `max_connections` **and** the number the API/worker plan their tenant pools against. boot-and-config-02 made it one variable; do not re-split it.                                                                                                                                             |
+| `PG_STATEMENT_TIMEOUT`   | `60s`              | Postgres server-level `statement_timeout`. §4.2c.                                                                                                                                                                                                                                                      |
+| `PG_IDLE_TX_TIMEOUT`     | `120s`             | Postgres `idle_in_transaction_session_timeout`. §4.2c.                                                                                                                                                                                                                                                 |
+| `REDIS_MAXMEMORY`        | `320mb`            | Redis `--maxmemory`, with `--maxmemory-policy noeviction`. §4.2d. **The template ships `384mb`, which is not the same number.**                                                                                                                                                                        |
+| `*_MEM_LIMIT` / `*_CPUS` | see below          | Per-container caps. `CADDY` 256m/1, `API` 1g/1.5, `WEB` 768m/1, `WORKER` 1g/1, `PG` 2g/2, `PGBOUNCER` 256m/0.5, `PGBOUNCER_PROBE` 128m/0.25, `REDIS` 512m/1. On the monitoring overlay: `PROM` 512m/0.5, `NODE_EXPORTER` 128m/0.25, `ALERTMANAGER` 128m/0.25, `CADVISOR` 256m/0.5, `GRAFANA` 384m/0.5. |
+| `PROM_RETENTION_SIZE`    | `2GB`              | Prometheus TSDB size cap.                                                                                                                                                                                                                                                                              |
+| `LIBRIANT_APP_NETWORK`   | `libriant_app`     | The external network the monitoring stack joins.                                                                                                                                                                                                                                                       |
+
+#### Host-script-only
+
+These never touch Compose. They work because the cron line and the deploy script
+source `.env.prod` into their own shell. Full treatment in §8; here is what they
+are.
+
+| Variable                       | Read by                               | What it does                                                                                                                                                                         |
+| ------------------------------ | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `RCLONE_REMOTE`                | `backup.sh`                           | The off-site destination. **Unset makes the nightly exit non-zero on purpose** unless `BACKUP_ALLOW_LOCAL_ONLY=1`.                                                                   |
+| `BACKUP_KEEP_DAYS`             | `backup.sh`                           | Local and remote retention. Default 14.                                                                                                                                              |
+| `BACKUP_ROOT`                  | `backup.sh`                           | Default `/srv/libriant/backups` — the **boot disk**. `install-server.sh` writes the cron line with `BACKUP_ROOT=<data root>/backups` inline, which beats anything the env file says. |
+| `BACKUP_AGE_RECIPIENT`         | `_lib/backup-crypt.sh`                | An `age1…` **public** key. The preferred mode, because the matching identity stays off this host. §4.2e.                                                                             |
+| `BACKUP_AGE_RECIPIENTS_FILE`   | `_lib/backup-crypt.sh`                | A file of recipients, one per line, `#` comments allowed. Alternative to the above.                                                                                                  |
+| `BACKUP_AGE_IDENTITY_FILE`     | `_lib/backup-crypt.sh` (restore only) | The **secret** half. Needed to decrypt. Must not live on the app host.                                                                                                               |
+| `BACKUP_GPG_PASSPHRASE_FILE`   | `_lib/backup-crypt.sh`                | Path to a non-empty, readable file holding a passphrase. The fallback mode.                                                                                                          |
+| `BACKUP_ALLOW_PLAINTEXT`       | `_lib/backup-crypt.sh`                | `1` = a deliberate unencrypted backup. Marks every run degraded, and **aborts outright if `RCLONE_REMOTE` is also set**.                                                             |
+| `BACKUP_ALLOW_LOCAL_ONLY`      | `backup.sh`                           | `1` = "I know there is no off-site copy". Turns the nightly failure into a warning.                                                                                                  |
+| `BACKUP_HEARTBEAT_URL`         | `backup.sh`                           | External dead-man's switch. The only alert that survives losing this host.                                                                                                           |
+| `BACKUP_TEXTFILE_DIR`          | `backup.sh`                           | Where the node-exporter textfile metrics are written. Default `/var/lib/node_exporter/textfile`.                                                                                     |
+| `BACKUP_ALLOW_NO_STORAGE`      | `backup.sh`                           | `1` = proceed with no resolvable storage directory. Do not set it to make an error go away.                                                                                          |
+| `BACKUP_ALLOW_OFFHOST_TENANTS` | `backup.sh`                           | `1` = proceed when a tenant's database is not on this host.                                                                                                                          |
+
+#### Read by the app, injected by nothing
+
+The code default is what runs. Listed in §4.1; the ones you are most likely to
+want and cannot have from `.env.prod`:
+
+| Variable                                            | Code default                                        | Why you might reach for it                                                                                                                                            |
+| --------------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ADMIN_MFA_REQUIRED`                                | `true` outside development                          | You cannot turn admin MFA off from the env file. §4.5a.                                                                                                               |
+| `MAX_FAILED_LOGINS` / `LOGIN_LOCKOUT_MS`            | 5 / 900000 ms                                       | The lockout in §4.5b.                                                                                                                                                 |
+| `SESSION_TTL_SEC` / `_REMEMBER_` / `_ABSOLUTE_MAX_` | 7 d / 30 d / 90 d                                   | Session lifetimes.                                                                                                                                                    |
+| `TENANT_CLIENT_CACHE_SIZE` / `TENANT_DB_POOL_MAX`   | 50 / 5                                              | The tenant connection budget. `PG_MAX_CONNECTIONS` **is** injected and is the lever that works.                                                                       |
+| `PG_RESERVED_CONNECTIONS`                           | 30                                                  | Same budget.                                                                                                                                                          |
+| `TRUSTED_PROXY_CIDRS`                               | the private ranges + loopback + link-local          | Narrowing this to the Caddy container alone is a real hardening step, and it needs a compose edit. A malformed value throws at boot, not on the first request.        |
+| `SIGNUP_MAX_CONCURRENT_PROVISIONING`                | 16                                                  | The unauthenticated-signup admission control. A non-positive-integer value logs `[auth] SIGNUP_MAX_CONCURRENT_PROVISIONING="…" is not a positive integer — using 16.` |
+| `LEGAL_ARCHIVE_ROOT`                                | `<repo>/docs/legal/accepted`, copied into the image | Only override it in a test.                                                                                                                                           |
+| `STORAGE_MAX_UPLOAD_BYTES`                          | 25 MiB                                              | Per-request ceiling; the real quota is per plan.                                                                                                                      |
+
+### 4.2b Checking what a container actually got
+
+The env file is not evidence. The container is.
+
+```bash
+dc exec api sh -lc 'printenv | sort' | grep -E 'PUBLIC_HOST|PUBLIC_APP_URL|EMAIL_DRIVER|STRIPE_DRIVER|PG_MAX_CONNECTIONS'
+```
+
+Good looks like: **four lines, and `PUBLIC_HOST` is not one of them.** You get
+`PUBLIC_APP_URL`, `EMAIL_DRIVER`, `STRIPE_DRIVER` and `PG_MAX_CONNECTIONS` —
+all four are named in `x-app-env` (`docker-compose.prod.yml:58`, `:104`, `:92`,
+`:129`) and the `api` service's `environment:` is `<<: *app-env` plus
+`PORT: '3001'` and nothing else (`:358-360`).
+
+`PUBLIC_HOST` is absent from a **perfectly healthy** box, and that is the whole
+lesson of this section. It is a `${VAR:?}` hard requirement (§4.2), it is the
+most load-bearing name in the file — and the only service that receives it as a
+key is `caddy` (`:277`). Everywhere else Compose _consumes_ it to derive
+something and hands the app only the derived value: `PUBLIC_APP_URL` and
+`BILLING_RETURN_URL` in `x-app-env` (`:58`, `:95`), `NEXT_PUBLIC_API_URL` and
+`PUBLIC_APP_URL` on `web` (`:421-422`). That is category 2 of §4.1 in the flesh.
+Do not go looking for it in `api` and conclude the deploy is broken.
+
+A variable you set in `.env.prod` and cannot find here is in category 2, 3 or 5
+of §4.1 — and only for 3 and 5 does editing the file again fail to change
+anything. For category 2, verify it at the thing it configures (§4.2c, §4.2d),
+never at `printenv`.
+
+For duplicates — the shell keeps the **last** assignment, and `ensure-env.sh`'s
+own reader keeps the **first**, so a duplicated key is a genuine disagreement
+between the script and the deploy:
+
+```bash
+grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' /srv/libriant/.env.prod | sort | uniq -d
+```
+
+Good looks like: no output.
+
+### 4.2c The Postgres timeouts, and what is exempt
+
+performance-14. Nothing anywhere bounded a tenant query. A runaway — a lock wait
+nobody notices, a plan that flips to a sequential scan after a bad `ANALYZE` —
+held one of that library's five pool slots for as long as it liked, and five of
+them wedged the library completely with no recovery short of an operator running
+`pg_terminate_backend` by hand.
+
+Both are passed to the `postgres` container as server flags, not in a connection
+string, because the per-tenant URL is written into `tenants.db_url` at signup: a
+change made there would apply to libraries provisioned afterwards and to no
+existing one.
+
+| Variable               | Default | Postgres setting                      |
+| ---------------------- | ------- | ------------------------------------- |
+| `PG_STATEMENT_TIMEOUT` | `60s`   | `statement_timeout`                   |
+| `PG_IDLE_TX_TIMEOUT`   | `120s`  | `idle_in_transaction_session_timeout` |
+
+60s and not 30s because the longest legitimate single statement the product
+issues is the export worker's, and its author already picked 60s as the line
+between slow and broken (`STATEMENT_TIMEOUT_MS` in
+`apps/api/src/export/export-processors.ts`). Nothing a librarian waits on in a
+browser survives a tenth of that. There is deliberately **no `lock_timeout`**: a
+statement blocked on a lock is still a running statement, so `statement_timeout`
+already bounds it, and a separate `lock_timeout` would abort a migration waiting
+legitimately behind a long read.
+
+Confirm the server really has them:
+
+```bash
+dc exec postgres psql -U libriant -d libriant_control -c 'SHOW statement_timeout;'
+```
+
+Good looks like: `1min`. Postgres normalises `60s`, so a literal `60s` back is
+not what you are waiting for. `SHOW idle_in_transaction_session_timeout;` gives
+`2min`.
+
+**What this deliberately does not kill — checked, not assumed:**
+
+- **Backups and restores.** `pg_dump`/`pg_dumpall` set `statement_timeout = 0` on
+  their own connection **and write it into the dump prologue**, so `backup.sh`,
+  `restore.sh`, `dr-drill.sh` and the export worker's `pg_dump` are exempt by
+  construction — nothing in our scripts has to remember to do it. Measured
+  against a cluster running these flags: `pg_dump` exit 0, and the dump opens
+  with `SET statement_timeout = 0; SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;`, restore exit 0.
+- **Migrations.** Prisma runs each migration file in one session, so a migration
+  expected to run long must **open with `SET statement_timeout = 0;`**. There is
+  no other hook — the migrate container gets the same server.
+- **Imports.** `statement_timeout` is per STATEMENT. The import engine commits
+  one record per transaction out of a handful of small writes, so a two-hour
+  import of a 400k-record catalogue is never one statement, and it never sits
+  idle inside a transaction either.
+
+> **Your own `psql` session is not exempt.** A reindex, a `VACUUM FULL`, a
+> one-off `UPDATE` across a large table: 60 seconds and Postgres cancels it, and
+> what you see is `ERROR: canceling statement due to statement timeout` in the
+> middle of an incident. Open the session with
+> `PGOPTIONS='-c statement_timeout=0' psql …` — verified to reach the server
+> both through libpq and through the app's own Prisma/pg adapter. Raise
+> `PG_STATEMENT_TIMEOUT` for a maintenance window rather than removing it.
+
+### 4.2d `REDIS_MAXMEMORY` moves with three other numbers
+
+reliability-18. Redis had a 512 MB cgroup ceiling and no `maxmemory`, so it grew
+until the kernel OOM-killed it — a full outage rather than an eviction. Worse,
+the compose file carried `--maxmemory-policy allkeys-lru` with no `--maxmemory`
+above a comment explaining that eviction must never drop a live BullMQ job key:
+a policy is inert without a limit, so the line configured nothing while reading
+like a protection, and the policy it named was the exact behaviour the comment
+said would lose jobs.
+
+It is now `--maxmemory ${REDIS_MAXMEMORY:-320mb} --maxmemory-policy noeviction`.
+With `noeviction` Redis never drops a key; at the ceiling it refuses **writes**
+with an OOM error the app sees and logs, while reads and the existing queues
+keep working. A Redis that dies is not a degraded cache here, it is a 100 %-500
+API.
+
+Four numbers, and they must agree:
+
+| Where                                                         | Value                                                            |
+| ------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `REDIS_MEM_LIMIT` (compose `mem_limit`)                       | `512m`                                                           |
+| `REDIS_MAXMEMORY` (compose default)                           | `320mb`                                                          |
+| `LibriantRedisMemoryHigh` (`infra/monitoring/alerts.yml`)     | `libriant_redis_used_memory_bytes > 234881024` — 70 % of 320 MiB |
+| `LibriantRedisMemoryCritical` (`infra/monitoring/alerts.yml`) | `libriant_redis_used_memory_bytes > 301989888` — 90 % of 320 MiB |
+
+The two alert numbers are **absolute bytes, hard-coded**, because nothing
+exports Redis's own `maxmemory` as a metric. `alerts.yml` says so in its own
+comment: _"If `REDIS_MAXMEMORY` moves in compose, both move here."_ Raising
+`REDIS_MEM_LIMIT` alone leaves Redis refusing writes with the RAM unused;
+raising `REDIS_MAXMEMORY` alone puts the OOM-killer back in charge; moving
+either without the alerts leaves you with a warning that no longer means what
+its own summary text says. For scale: the audited instance carrying 50 seeded
+tenants plus BullMQ used 1.4 MB.
+
+> **The template and the compose default do not agree today.**
+> `.env.prod.example` ships `REDIS_MAXMEMORY=384mb`; the compose fallback is
+> `320mb`; the alert thresholds are 70 % and 90 % **of 320 MiB**. `ensure-env.sh`
+> copies every template line whose key is absent from `.env.prod`, so any host
+> provisioned or re-run since that line was added has **384 MiB**, and on that
+> host `LibriantRedisMemoryHigh` fires at 58 % and `LibriantRedisMemoryCritical`
+> at 75 % — both earlier than their own summaries claim, and 384 MiB of a 512 MiB
+> cgroup leaves less headroom for the AOF-rewrite fork than the 320 the compose
+> comment reasons about. Read the real value off the running server before you
+> trust either file. (The percentages assume Redis reads `mb` as MiB.
+> UNVERIFIED by execution here — there is no Redis on the workstation this was
+> written on — but it is the arithmetic `alerts.yml` itself does, "234881024 is
+> 70% of 320 MiB", so the repository is at least self-consistent about it.)
+
+```bash
+dc exec redis redis-cli config get maxmemory maxmemory-policy
+```
+
+Good looks like: four lines — `maxmemory`, the byte count, `maxmemory-policy`,
+`noeviction`. `402653184` means the template's 384 MiB is in force;
+`335544320` means the compose default of 320 MiB is. `0` means **no ceiling at
+all** and you are back in reliability-18.
+
+### 4.2e Backup encryption: the keys that are not in the template
+
+This is the variable-reference view. **§8.1a is the decision** — which mode to
+choose, how to generate the key, where it must and must not live, and what a
+lost key costs. Read that before you set any of these.
+
+`scripts/_lib/backup-crypt.sh` resolves exactly one of three modes, and
+**refuses to run with none of them**. This is why a freshly installed nightly
+can abort before the first byte, every night, in a log nobody reads.
+
+| Mode   | Set                                                                            | Restore needs                                                                      |
+| ------ | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| `age`  | `BACKUP_AGE_RECIPIENT` (an `age1…` public key) or `BACKUP_AGE_RECIPIENTS_FILE` | `BACKUP_AGE_IDENTITY_FILE` — **the secret half, which must not live on this host** |
+| `gpg`  | `BACKUP_GPG_PASSPHRASE_FILE` (a path to a non-empty, readable file)            | the same file                                                                      |
+| `none` | `BACKUP_ALLOW_PLAINTEXT=1`                                                     | nothing                                                                            |
+
+With none of them set, `backup.sh` prints
+
+```
+backup-crypt: NO ENCRYPTION CONFIGURED.
+              The DPA we ask municipalities to sign says backups are encrypted,
+              and a plaintext pg_dumpall is the entire member registry of every
+              library on this host. Set ONE of:
+```
+
+and exits 1. Setting **two** is also refused — "two half-configured schemes are
+how a backup ends up encrypted to a key nobody kept."
+
+Four things worth knowing before you choose:
+
+- **`age` is preferred precisely because `BACKUP_AGE_IDENTITY_FILE` stays off
+  this host.** A host compromise then cannot open yesterday's off-site copy.
+  `install-server.sh` refuses an `AGE-SECRET-KEY…` pasted into the recipient
+  prompt for that reason.
+- **`BACKUP_AGE_RECIPIENT` set without the `age` binary installed aborts every
+  run.** So does a `BACKUP_GPG_PASSPHRASE_FILE` that root can read and the cron
+  user cannot — the cron runs as `deploy`, and testing readability as root
+  proves nothing.
+- **`BACKUP_ALLOW_PLAINTEXT=1` together with `RCLONE_REMOTE` is a hard abort**,
+  not a warning: `ABORT: BACKUP_ALLOW_PLAINTEXT=1 with RCLONE_REMOTE set.` A
+  plaintext dump of every member registry on a third-party storage box is the
+  exposure the DPA rules out. Plaintext is permitted only local-only, and it
+  marks every run degraded.
+- **`BACKUP_AGE_IDENTITY_FILE` belongs in §4.4's irrecoverable list.** Lose it
+  and every encrypted archive you hold is a file nobody can open. It is the one
+  Libriant secret that is deliberately _not_ on this machine, so it is also the
+  one no backup of this machine contains.
+
+> `KEY=` is not the same as absent, and this cost someone a night.
+> `ensure-env.sh` copies every key from `.env.prod.example` that is missing from
+> your file, several of them **with an empty value**. An older writer treated
+> `BACKUP_AGE_RECIPIENT=` as "already set — left alone" and threw the operator's
+> typed answer away, while the backup's own detection (which reads the value)
+> correctly said "not configured". The result was a cron the operator watched
+> being installed and a `backup.sh` that aborted nightly. `install-server.sh`'s
+> writer now treats an empty value as absent and fills it in place. If you edit
+> by hand, check the **value**, not the presence of the line.
+
+### 4.2f Retention: five keys in the template, three that are real, none that reach a container
+
+performance-07 / privacy-legal-05. The retention sweep is written, registered
+and runs nightly, and every limb it governs is off until somebody publishes a
+period. That is deliberate — how long Libriant keeps each of these is a decision
+for the Privacy Policy §6 table, not for an engineer. But the template's five
+blank lines invite an owner to answer it there, and **three of the five would
+have no effect if they did, and two of them do not exist at all.**
+
+| Template key                       | Actually read from the environment?                                    | Floor  | Reaches a container? |
+| ---------------------------------- | ---------------------------------------------------------------------- | ------ | -------------------- |
+| `CONTROL_AUDIT_RETENTION_DAYS`     | yes, by `retention.job.ts`                                             | 1 day  | **No**               |
+| `EMAIL_OUTBOX_BODY_RETENTION_DAYS` | yes                                                                    | 2 days | **No**               |
+| `SUPPORT_ATTEMPT_RETENTION_DAYS`   | yes                                                                    | 1 day  | **No**               |
+| `STRIPE_PAYLOAD_RETENTION_DAYS`    | **no** — a hard-coded `30` in `retention.job.ts`                       | —      | No                   |
+| `APPLICATION_RETENTION_MONTHS`     | **no** — a hard-coded `12`, and the published applicant notice says 12 | —      | No                   |
+
+None of the five is named anywhere in `docker-compose.prod.yml`, so all five sit
+in category 5 of §4.1: put a number in `.env.prod`, restart, and the sweep still
+reports the limb as unconfigured. To turn one on today you have to add it to the
+`x-app-env` block, which is a commit — `deploy-on-host.sh` will `git reset
+--hard` a host-local edit away.
+
+**§8.6 is the other half of this** — what each limb actually deletes, why the
+floors are what they are, and why it is in the backup chapter (every row the
+sweep does not delete is in tonight's backup, and in every backup after it,
+forever). This section is only about whether the key reaches a process.
+
+The floors are refusals, not clamps: a value below the floor is logged and the
+limb is skipped entirely, because a retention job acting on a value it does not
+understand is the one way it can do more damage than not running at all.
+
+```
+refusing to enforce EMAIL_OUTBOX_BODY_RETENTION_DAYS="0": it must be a whole number of days, at least 2. Nothing was deleted for that limb.
+```
+
+The email-body floor is 2 days rather than 1 because it is derived: the longest
+one-time link the system mints is the 24-hour e-mail-verification token, plus a
+day because the cutoff is measured from `createdAt`. With `EMAIL_DRIVER=console`
+the admin outbox **is** the delivery mechanism (§4.3a), so blanking a body early
+strands the person it was written for.
+
+Two rows are never swept whatever the period says: control-plane audit actions
+`tenant.legal_accepted` and `tenant.deleted`. They are the Art. 7(1) evidence and
+the deletion record — one row per library, and the ones a regulator actually asks
+for.
+
+What the sweep says about these three when nothing is configured, which is
+today — these are the **last three clauses of a single-line message**, not three
+lines. `retention.job.ts:304-326` builds six clauses in a fixed order and joins
+them with `'; '`; the three below are clauses 4, 5 and 6, and `applications:`,
+`stripe payloads:` and `audit_log:` come first. §8.6 quotes the whole line:
+
+```
+… ; control audit_log: not configured (CONTROL_AUDIT_RETENTION_DAYS unset — Privacy Policy §6); email bodies: not configured (EMAIL_OUTBOX_BODY_RETENTION_DAYS unset — Privacy Policy §6); support attempts: not configured (SUPPORT_ATTEMPT_RETENTION_DAYS unset — Privacy Policy §6)
+```
+
+Good looks like: those three clauses present, in that order, at the end of one
+line. Grepping for `email bodies:` on a line of its own finds nothing and does
+not mean the sweep truncated — it means you are looking for the wrong shape. It
+means the sweep ran and honestly reported that nobody has published a period,
+not that it failed. What it also means is that **the control database grows
+forever**, so these are not optional so much as unanswered.
+
+### 4.2g Configured, and decorative
+
+Things the panel or the catalogue will happily let you set, that change nothing.
+
+- **`api_access_enabled`, `custom_subdomain_enabled`, `priority_support`** —
+  three plan features. launch-readiness-16 forced all three to `false` on every
+  plan, in a data migration, because the website says in writing that none of
+  them exists: `/en/security` — _"No. There is no programming interface"_ —
+  and `/en/about` — _"we do not sell tiers of support"_. A custom subdomain
+  cannot be served at all: the `*.{$PUBLIC_APEX_DOMAIN}` vhost in
+  `infra/caddy/Caddyfile` is commented out end to end and would need a DNS-01
+  wildcard certificate nobody has provisioned. The keys stay in the catalogue and
+  the admin plan editor still lists them, so the day one is built it is one
+  `UPDATE` away from being true. **Setting any of them to `true` today makes the
+  admin panel say something the product cannot do**, which is what the finding
+  costs: the admin who opens `/admin/plans` while a librarian is on the phone and
+  reads "API access: yes" off a Municipal plan.
+- **`ACME_EMAIL`** — every vhost serves a file certificate; no ACME order is ever
+  placed.
+- **`IMAGE_TAG` and `COMPOSE_PROJECT_NAME` in `.env.prod`** — `deploy-on-host.sh`
+  exports over both, after sourcing, on purpose.
+- **`STRIPE_PAYLOAD_RETENTION_DAYS`, `APPLICATION_RETENTION_MONTHS`** — §4.2f.
+- **`RATE_LIMIT_DISABLED`** — decorative on purpose, three times over (§4.1).
 
 ### 4.3 The production landmines
 
-| Variable           | Value now | What it actually does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Blocker                    |
-| ------------------ | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| `STRIPE_DRIVER`    | `none`    | Fixed 2026-08-24. Three postures now: `real`, `disabled` (the shipped default — no driver is constructed, billing operations refuse, and `POST /webhooks/stripe` answers 503 before reading a byte) and `fake`, which only exists for a declared `development`/`test` NODE_ENV. A legacy `.env.prod` still saying `fake` DOWNGRADES to `disabled` with a loud error rather than refusing to boot. The one configuration refused outright is `BILLING_ENABLED=true` with no driver that can transact. | `billing-02` — closed      |
-| `EMAIL_DRIVER`     | `console` | Nothing is delivered — there is no Resend key, and that is expected for this launch. It is **no longer a dead end**: an owner admin can recover any account from the panel. See §4.3a. Do NOT go looking in `docker logs api`; the body is withheld under `NODE_ENV=production`.                                                                                                                                                                                                                     | `launch-readiness-01`      |
-| `BILLING_ENABLED`  | `false`   | Not authoritative. `PlatformSettingsService` reads a `platform_settings` DB row and only falls back to the env value when the row is absent; the owner-only admin **Subscriptions** toggle writes that row. Nothing cross-validates enforcement-on against `STRIPE_DRIVER=fake`. See the box below before you touch it.                                                                                                                                                                              | `billing-03`, `billing-04` |
-| `MAINTENANCE_HARD` | `false`   | Caddy-only edge takeover. **UNVERIFIED whether it works at all** — see §9.10.                                                                                                                                                                                                                                                                                                                                                                                                                        | —                          |
+| Variable           | Value now | What it actually does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Blocker               |
+| ------------------ | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| `STRIPE_DRIVER`    | `none`    | Fixed 2026-08-24. Three postures now: `real`, `disabled` (the shipped default — no driver is constructed, billing operations refuse, and `POST /webhooks/stripe` answers 503 before reading a byte) and `fake`, which only exists for a declared `development`/`test` NODE_ENV. A legacy `.env.prod` still saying `fake` DOWNGRADES to `disabled` with a loud error rather than refusing to boot. The one configuration refused outright is `BILLING_ENABLED=true` with no driver that can transact. | `billing-02` — closed |
+| `EMAIL_DRIVER`     | `console` | Nothing is delivered — there is no Resend key, and that is expected for this launch. It is **no longer a dead end**: an owner admin can recover any account from the panel. See §4.3a. Do NOT go looking in `docker logs api`; the body is withheld under `NODE_ENV=production`.                                                                                                                                                                                                                     | `launch-readiness-01` |
+| `BILLING_ENABLED`  | `false`   | Not authoritative. `PlatformSettingsService` reads a `platform_settings` DB row and only falls back to the env value when the row is absent; the owner-only admin **Subscriptions** toggle writes that row. Enforcement-on **is** now cross-validated against the driver, on both paths — see the driver table below the box. Read §4.3c before you touch it.                                                                                                                                        | `billing-04`          |
+| `MAINTENANCE_HARD` | `false`   | Caddy-only edge takeover. **UNVERIFIED whether it works at all** — see §9.10.                                                                                                                                                                                                                                                                                                                                                                                                                        | —                     |
+
+**`STRIPE_DRIVER` is resolved by `apps/api/src/billing/stripe-driver-kind.ts`,
+not by `config/env.ts`.** `AppEnv.stripeDriver` is still typed `'real' | 'fake'`
+and would report `real` for `STRIPE_DRIVER=none` in production; nothing in the
+current source consumes it any more. The authority reads the raw variable,
+deliberately, because `loadEnv()` defaults an unset `NODE_ENV` to `development`
+and deciding "may this host have the fake driver?" from that value means an
+operator can obtain the fake driver simply by not setting `NODE_ENV`.
+
+| `STRIPE_DRIVER`             | Result                                                                                                                                                                                                                                                                    |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `real`                      | Stripe API. The real driver's constructor throws without both keys.                                                                                                                                                                                                       |
+| `none` / `off` / `disabled` | No driver. Every billing action refuses; `POST /webhooks/stripe` answers 503.                                                                                                                                                                                             |
+| `fake`                      | Only with a **raw** `NODE_ENV` of `development` or `test`. Anywhere else it downgrades to `disabled` with an error naming the fix — a downgrade rather than a refusal, so the hosts provisioned with `fake` before the fix do not crash-loop on the deploy that ships it. |
+| unset                       | `real` if both Stripe keys are present (the operator plainly intends to charge and forgot the switch), otherwise `disabled` — or `fake` on a raw dev/test box.                                                                                                            |
+| anything else               | **Throws.** `STRIPE_DRIVER="…" is not a recognised value.`                                                                                                                                                                                                                |
+
+There is exactly one hard refusal, and it is at boot:
+
+```
+BILLING_ENABLED is on but no Stripe driver is available (STRIPE_DRIVER=none, NODE_ENV=production) — refusing to start. Plan and quota enforcement would gate every library with no way to purchase. Set STRIPE_DRIVER=real with STRIPE_API_KEY + STRIPE_WEBHOOK_SECRET, or turn BILLING_ENABLED off.
+```
+
+The admin-panel path is guarded separately and refuses with
+`Cannot enable subscriptions while STRIPE_DRIVER resolves to "disabled"`, so
+`billing-02`'s "nothing cross-validates enforcement-on against the driver" no
+longer holds on either path.
+
+**`EMAIL_DRIVER=console` announces itself at boot now**, at `error` level, in a
+box — `launch-readiness-01`. It used to warn only per-send, in the middle of
+ordinary traffic, so an operator could bring the platform up, watch it come up
+clean, and not learn that no mail leaves the box until a librarian phoned. The
+banner names `https://<ADMIN_HOST>/en/admin/emails` and
+`…/en/admin/account-recovery`. Bodies are still withheld from the log because
+they carry one-time links.
+
+`ensure-env.sh` writes `EMAIL_DRIVER=console` only when the key is **empty or
+absent**, and when it does it prints its own five-line warning rather than one
+quiet `set EMAIL_DRIVER=console` among thirty others (`boot-and-config-05`). The
+compose file still passes `EMAIL_DRIVER` through unset so that a forgetful
+operator would meet `env.ts`'s fail-fast; `ensure-env.sh` fills the gap before
+they get there. The two files no longer assert opposite policies — one chooses
+the launch posture, the other refuses to choose for you.
+
+`STRIPE_DRIVER=fake` is the one value `ensure-env.sh` **actively rewrites**, on
+every run, printing
+`migrated STRIPE_DRIVER=fake -> none (the stand-in driver is dev/test only)`.
+Everything else it writes is `ensure_default`, which only fills a blank — so a
+value you set by hand survives every subsequent deploy.
 
 ### 4.3a Recovering an account while no mail is delivered
 
@@ -1077,32 +2338,28 @@ mail went to spam".
 > until three blockers are closed.** The toggle is one click and it is the
 > point of no return for a paying customer.
 >
-> - `billing-02` — with `STRIPE_DRIVER=fake` still set, enforcement-on is
->   enforcement against a subscription state any internet host can rewrite.
->   Nothing in the code stops that combination.
-> - **`BLOCKER billing-03`** — every plan change opens a **new** Stripe
->   subscription and abandons the old one, so an upgrade double-charges the
->   library. Blocks the first paying customer.
-> - **`BLOCKER billing-04`** — there is **no VAT anywhere in the billing path**.
->   A Greek public library cannot book the receipt, and roughly 24% of every
->   euro collected is unaccounted for. Blocks the first paying customer.
+> - `billing-02` — **closed.** `STRIPE_DRIVER=fake` can no longer be in force on
+>   this box (it downgrades to `disabled`), the API refuses to boot with
+>   `BILLING_ENABLED=true` and no driver that can transact, and the admin toggle
+>   refuses separately. See the driver table below.
+> - `billing-03` — **closed.** A plan change no longer opens a second Stripe
+>   subscription: `stripe-real.driver.ts` updates the live one in place, an
+>   in-flight Checkout session is expired before a second one can be opened, and
+>   `billing.duplicate-purchase.spec.ts` pins the window the in-flight marker
+>   cannot close. This is what `checkout.session.completed` is doing in §4.3b's
+>   event table.
+> - **`BLOCKER billing-04`** — still open. There is **no VAT anywhere in the
+>   billing path**: nothing in `apps/api/src/billing/` sets `automatic_tax`,
+>   collects a tax id or collects an address. A Greek public library cannot book
+>   the receipt, and roughly 24% of every euro collected is unaccounted for.
+>   Blocks the first paying customer, and it is the only one of the three left.
 >
-> These two are the reason the twelve blockers split 9 / 3: they do not block
-> a public launch on the free offer, but they block taking money.
+> `billing-04` is why a public launch on the free offer is legitimate and taking
+> money is not.
 >
-> When they are closed, **§4.3b** is what you run before the toggle: the two
-> pre-flight checks the old go-live document asked for in words and gave no way
-> to perform.
-
-`ensure-env.sh` writes `STRIPE_DRIVER=fake` and `EMAIL_DRIVER=console` into
-`.env.prod` **on every deploy** (it runs with `--auto` from `deploy-on-host.sh`).
-The compose file deliberately passes `EMAIL_DRIVER` through _unset_ so a
-forgetful operator would get a loud boot failure — but `ensure-env.sh` makes that
-fail-fast permanently unreachable, and re-adds the line if you delete it. Two
-files in the same deploy path assert opposite policies. To change either driver
-for real you must edit `.env.prod` **and** accept that `ensure_default` will not
-overwrite your non-empty value (it only fills blanks) — so setting them once
-sticks.
+> **§4.3b** is what you run before the toggle — the two pre-flight checks the
+> old go-live document asked for in words and gave no way to perform — and
+> **§4.3c** is the screen that answers both of them plus the one they missed.
 
 ### 4.3b Before you flip subscriptions on: the two checks, and the commands that perform them
 
@@ -1237,15 +2494,168 @@ A `seen` of 0 on `customer.subscription.created` after a library has paid means
 the endpoint is not subscribed to it. `deleted` and `payment_failed` legitimately
 stay at 0 until something is cancelled or a card is declined.
 
+### 4.3c The price catalogue, and the screen that says whether this host can charge
+
+Both of the checks in §4.3b used to be sentences with no command. There is now a
+third problem they did not cover, and it is the one that silently bills the wrong
+number: **nothing in the product ever compared `plans.stripePriceId` /
+`plans.stripeAnnualPriceId` against Stripe.** The go-live check an operator was
+told to run asked whether `hasStripeAnnualPrice` was true — computed as
+`!!plan.stripeAnnualPriceId`, which is true for every `price_seed_*` placeholder
+the seed writes. The one mechanical safeguard reported success on exactly the
+unconfigured database it existed to catch. (`billing-10`;
+`apps/api/src/billing/billing-catalog.controller.ts:12-25`.)
+
+**Read `/admin/plans` before you open Subscriptions.** Both `/admin/plans` and
+`/admin/plans/:slug` call `GET /admin/billing/price-catalogue` on every visit and
+render the verdict — a per-plan "reconciled / N problems" column, and the problems
+in full (`apps/web/app/[locale]/admin/(authed)/plans/page.tsx:41`,
+`plans/[slug]/page.tsx:71`). Nobody has to remember a curl. The curl still works
+and is still the thing to script:
+
+```bash
+# Owner session on the ADMIN host. Note the /lbr-api prefix — same reason as §4.3b:
+# on the admin vhost Caddy routes the API only under `handle_path /lbr-api/*`
+# (infra/caddy/Caddyfile:404), so the bare /admin/billing/... path reaches Next and 404s.
+curl -s -b "$ADMIN_COOKIE" https://<ADMIN_HOST>/lbr-api/admin/billing/price-catalogue | jq
+```
+
+Owner-role only (`@AdminRoles('owner')`, `billing-catalog.controller.ts:40`). It
+costs one Stripe `prices.retrieve` per **distinct** id in the catalogue, memoised,
+so a duplicated id is one call.
+
+Good looks like: `"ok": true`. `ok` is `rows.every(r => r.problems.length === 0)`
+(`billing.service.ts:2165`). For every active plan it asks Stripe about both price
+ids and reports `problems[]` in plain language when:
+
+- Stripe has never heard of the Price — `Stripe has no Price price_… (monthly) — Checkout would fail on it` (`plan-price-check.ts:114`);
+- the Price is archived, or its currency disagrees with the plan;
+- its **integer minor-unit** amount disagrees with the plan's;
+- its recurring interval does not match the column it is stored in — a monthly
+  Price in the annual column is what bills €39 a month to a library that clicked
+  "390 € a year";
+- the id is a seeded placeholder — `the monthly price id "price_seed_community" is a seeded placeholder, not a Stripe …` (`plan-price-check.ts:87`);
+- the same id appears in both columns, which Postgres accepts because both unique
+  indexes are satisfied.
+
+> **On a host where `STRIPE_DRIVER` is anything but `real`, there is no
+> "unverified" verdict — every configured id comes back as a PROBLEM, worded for
+> the driver.** Under `disabled` the lookup errors and you get
+> `Stripe could not be asked about the monthly price price_…`
+> (`plan-price-check.ts:111`); under the in-memory stand-in you get
+> `Stripe has no Price …`. `.ok` is `false` either way.
+> That is the honest answer and it is not a pass. Do not read a red catalogue on a
+> `disabled` host as "the catalogue is broken".
+
+**Whether this host can charge at all is on the same response** (`billing-14`).
+`subscriptionsStatus()` had returned `stripeReady` for a long time with a comment
+saying the admin UI could warn about it, and **no page in `apps/web` read it** — so
+an operator on a host that cannot charge saw a completely normal admin panel and
+learned the truth when the Subscriptions toggle threw at them. The catalogue
+response now also carries `stripeReady`, `billingEnabled`,
+`subscriptionsCanBeEnabled` and a plain-language `blockReason`, resolved from the
+same live `STRIPE_DRIVER` posture `setBillingEnabled` consults — so the banner
+**predicts** the refusal rather than merely correlating with it
+(`billing.service.ts:2146-2164`). `/admin/plans` renders it as a blocking banner:
+
+| State                                     | Banner                                                                           |
+| ----------------------------------------- | -------------------------------------------------------------------------------- |
+| Subscriptions **off**, nothing can charge | Warning naming `STRIPE_DRIVER`, saying the master switch will refuse.            |
+| Subscriptions **on**, nothing can charge  | Critical — every library is gated behind a purchase this server cannot complete. |
+
+`blockReason` is the literal sentence the operator reads, and it ends with the fix:
+_"Set STRIPE_DRIVER=real with STRIPE_API_KEY + STRIPE_WEBHOOK_SECRET and restart the
+API."_ (`billing.service.ts:2152-2157`.)
+
+> **The Subscriptions page itself still has no banner, and that is the screen the
+> decision is made on.** `apps/web/app/[locale]/admin/(authed)/subscriptions/`
+> renders only `billingEnabled`, `source` and `awaitingChoice`; neither `page.tsx`
+> nor `SubscriptionsToggle.tsx` reads `stripeReady` or `blockReason` (verified by
+> grep, 2026-08-28). Until that lands, **open `/admin/plans` first, every time**,
+> and treat its banner as the gate. The toggle will refuse anyway — it just refuses
+> after you have clicked it.
+
+**A seeded placeholder is not "configured" anywhere.** `isUsableStripePriceId`
+reads a `price_seed_*` id as false, so the library's own plan card renders "not
+available yet" instead of a Subscribe button Stripe would answer with
+`No such price`, and `POST /t/:slug/billing/checkout` refuses the same ids
+server-side — hiding the button is not the only guard.
+
+**The bad price id is now refused at write time, not reported afterwards.** Round 1
+of this fix was the endpoint above and nothing else, and it was refuted for the
+right reason: `PATCH /admin/plans/:slug` still accepted
+`{"stripeAnnualPriceId":"price_monthly_39"}`, and the audit reported it — but only
+if somebody ran the audit. `PlanPriceWriteInterceptor` is registered by
+`BillingModule` as an `APP_INTERCEPTOR` (`billing.module.ts:52`), so it runs on the
+real route after the admin guards, checks the row the PATCH would produce, and
+answers **400** before anything is stored. It refuses:
+
+- an id that is not a Stripe Price id (`prod_…`, an empty string, one with
+  copy-paste whitespace);
+- a `price_seed_*` placeholder being written back in;
+- the same id in both columns, or an id that already backs another plan;
+- a Price Stripe has never heard of, an archived one, one in the wrong currency,
+  one whose integer minor-unit amount differs from the plan's, one whose interval
+  does not match the column;
+- an amount or currency edit that would leave an already-configured Price charging
+  the old number;
+- and **any** price id on a host where `STRIPE_DRIVER` is not `real`, because a
+  price id this server cannot check is a price id it cannot charge with.
+
+It costs nothing on a PATCH that carries no price id and no amount, and it touches
+no other route. Proof it is mounted rather than merely written:
+`apps/api/test/integration/admin-plan-price-write.spec.ts` boots the real app and
+sends the refutation's own request over HTTP.
+
+**Two facts that follow, and neither is a bug you should try to fix at 3am:**
+
+- **Starter must keep a fake price id.** `plans_stripe_price_matches_mode` forces
+  it — `CHECK (("billingMode" = 'stripe' AND "stripePriceId" IS NOT NULL) OR ("billingMode" = 'manual' AND "stripePriceId" IS NULL AND "stripeAnnualPriceId" IS NULL))`
+  (`packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql:36-42`).
+  So `UPDATE plans SET "stripePriceId"=NULL WHERE slug='starter'` is rejected with
+  SQLSTATE `23514`. The catalogue therefore reports Starter's placeholder as a
+  **note, not a problem**: nothing can buy a free plan, the id is never read, and
+  counting it would make `.ok` permanently false — which is how a check becomes one
+  nobody reads. Clearing it through the admin API returns a 400 that names the
+  constraint instead of a Prisma 500. Letting Starter be honest needs a migration
+  relaxing that constraint for `monthlyPriceCents = 0`; do not attempt it during an
+  incident.
+- **A library on a contract cannot change its own plan.** `billingMode='manual'` is
+  an operator decision (§6.6). Both self-serve routes refuse to move such a library:
+  `POST /billing/select` (`billing.service.ts:469`) and `POST /billing/checkout`
+  (`:572`) answer 400 and point at us, and the billing page shows "contact us" on
+  every card instead of a switch button. The one thing they may do is **confirm**
+  the plan they are already on, which stamps `planSelectedAt` and changes nothing
+  else — without that, a contract library held by the forced plan chooser would have
+  no way out at all.
+
+> **One more consequence of the toggle, and it has no other symptom.** Once
+> subscriptions are on, `getDesktopAccess` refuses any plan with
+> `monthlyPriceCents <= 0`. A library parked on a zero-priced private plan loses
+> the desktop app the moment the toggle flips, with nothing else changing. Check
+> the plan's price, not its name.
+
 ### 4.4 Secrets: what breaks if you lose or rotate each one
 
 **Irrecoverable if lost — nothing on disk or in any backup can regenerate them:**
 
-| Secret              | Consequence                                                                                                                                                                                                                                                                                                                                                                        |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MFA_MASTER_KEY`    | The only decryptor of stored admin TOTP secrets. Losing it orphans every enrolment, and MFA is mandatory in production. It is **no longer a lock-out**: §4.5a un-enrols an admin without decrypting anything, and single-use recovery codes are accepted at admin sign-in. Classified rotation: _never_ — a rotation still orphans every enrolment, it just no longer strands you. |
-| `POSTGRES_PASSWORD` | Postgres applies it only at initdb. Once the cluster exists, the value in `.env.prod` must match `pg_authid` or every connection fails auth. Classified rotation: _never_ — changing it needs a coordinated `ALTER ROLE libriant PASSWORD …`.                                                                                                                                      |
-| origin cert + key   | `deploy-on-host.sh` says it outright: _no backup contains it_. A missing pair fails the deploy at `caddy validate` with the misleading message `Caddyfile is invalid`.                                                                                                                                                                                                             |
+| Secret                    | Consequence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MFA_MASTER_KEY`          | The only decryptor of stored admin TOTP secrets. Losing it orphans every enrolment, and MFA is mandatory in production. It is **no longer a lock-out**: §4.5a un-enrols an admin without decrypting anything, and single-use recovery codes are accepted at admin sign-in. Classified rotation: _never_ — a rotation still orphans every enrolment, it just no longer strands you.                                                                                                                                                                                                                  |
+| `POSTGRES_PASSWORD`       | Postgres applies it only at initdb. Once the cluster exists, the value in `.env.prod` must match `pg_authid` or every connection fails auth. Classified rotation: _never_ — changing it needs a coordinated `ALTER ROLE libriant PASSWORD …`.                                                                                                                                                                                                                                                                                                                                                       |
+| origin cert + key         | `deploy-on-host.sh` says it outright: _no backup contains it_. A missing pair fails the deploy at `caddy validate` with the misleading message `Caddyfile is invalid`.                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| the backup age identity   | The `AGE-SECRET-KEY-1…` half of `BACKUP_AGE_RECIPIENT`, held in the password manager and deliberately **not** on this host. It is the only decryptor of every `.age` artefact — local dailies, off-site dailies, Storage Box snapshots. Lose it and every backup you hold is permanently unreadable, with no escrow and no support path; the host is holding a public key and cannot help. Classified rotation: _forward only_ — a new recipient encrypts tomorrow's backups, it does not re-encrypt yesterday's, so keep the old identity for at least `BACKUP_KEEP_DAYS` after any change. §8.1a. |
+| the backup gpg passphrase | The contents of `BACKUP_GPG_PASSPHRASE_FILE`, if you chose the fallback mode instead. Same consequence, with the aggravation that the file sits on the same disk as the ciphertext — so it defends the off-site leg and nothing else. §8.1a.                                                                                                                                                                                                                                                                                                                                                        |
+
+**Three of these five rows are not in `.env.prod` at all**, so a copy of
+`.env.prod` — which is itself not in any backup — would not save you: the origin
+key pair, the age identity, and the _contents_ of the gpg passphrase file
+(`.env.prod` holds only the path). The last two are alternatives — you chose one
+encryption mode in §8.1a — so in practice it is **two things** you must hold
+elsewhere: the origin pair, and whichever backup key you picked. Both live in
+the password manager, and both block a **recovery** rather than an ordinary day
+— which is exactly why nobody notices they are missing until the night they are
+needed.
 
 **Recoverable but disruptive:**
 
@@ -1258,10 +2668,21 @@ stay at 0 until something is cancelled or a card is declined.
 | `HASH_PEPPER`            | Resets the application-form IP throttle history.                                                                                                                  |
 
 Rotation procedure: edit `/srv/libriant/.env.prod`, update the password manager
-**first**, then `dc up -d` to recreate the affected containers. `pnpm secrets`
-exists but **cannot be run on this box**: the host has no Node toolchain, and the
-`migrate` container — the only place `scripts/` is mounted — does not mount
-`/srv/libriant/.env.prod`. Rotation here is hand-editing.
+**first**, then `dc up -d` to recreate the affected containers. `ensure-env.sh`
+will not undo it — `ensure_rand` and `ensure_default` only fill blanks, so a
+value you write by hand survives every subsequent deploy. The one exception is
+`STRIPE_DRIVER=fake`, which it actively rewrites to `none` on every run (§4.3).
+
+`pnpm secrets` exists but **cannot be run on this box**: the host has no Node
+toolchain, and the `migrate` container — the only place `scripts/` is mounted —
+does not mount `/srv/libriant/.env.prod`. Rotation here is hand-editing. Its
+registry is also only fourteen keys — `SESSION_SECRET`, `ADMIN_SESSION_SECRET`,
+`IMPERSONATION_SECRET`, `STORAGE_SIGNING_SECRET`, `MFA_MASTER_KEY`,
+`POSTGRES_PASSWORD`, `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_PASSWORD`,
+`STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET`, `SMTP_URL`, `BACKUP_HEARTBEAT_URL`,
+`DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS` — so `HASH_PEPPER`, `RESEND_API_KEY`,
+`DESKTOP_RELEASE_TOKEN`, `GRAFANA_ADMIN_PASSWORD` and every other `BACKUP_*` key
+are outside it. A clean `secrets audit` is not a statement about them.
 
 ### 4.5 The admin password reset that nobody documented
 
@@ -1434,17 +2855,20 @@ A successful sign-in does the same thing by itself.
 
 ### 4.6 Host-shaped variables worth knowing
 
-| Variable             | Value                | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| -------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PUBLIC_HOST`        | `app.libriant.com`   | The **app** host, not the apex. The compose file used to default it to `libriant.com` in `x-app-env` and `app.libriant.com` in the caddy block — an internal contradiction that would have pointed the browser's API base at the marketing vhost, which has no `/lbr-api/*` handler. boot-and-config-09 removed both defaults: every site is now `${PUBLIC_HOST:?}`, so an unset value fails compose loudly instead of resolving to whichever block happened to be read. `ensure-env.sh` sets it before compose runs on both deploy paths, so this is belt and braces rather than a change of behaviour. |
-| `PUBLIC_APEX_DOMAIN` | `libriant.com`       | Drives tenant-subdomain resolution and the CSRF Origin allow-list, and derives `EMAIL_FROM`. **Does not drive cookie scope** — cookies carry no `Domain` and use the `__Host-` prefix, which forbids it.                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `ADMIN_HOST`         | `admin.libriant.com` | Load-bearing three times: excluded from tenant-subdomain resolution, the only Origin allowed for state-changing `/admin/*`, and the web app 404s `/admin` on any other host.                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `SITE_HOST`          | `libriant.com`       | Marketing vhost. No `/lbr-api/*` handler, on purpose.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `EMAIL_FROM`         | derived              | Defaults to `Libriant <no-reply@${PUBLIC_APEX_DOMAIN}>` — from the **apex**, not `PUBLIC_HOST`. `.env.prod.example` says otherwise and is wrong.                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `ACME_EMAIL`         | `ops@libriant.com`   | **Dead configuration.** Every vhost serves a file certificate, so no ACME order is ever placed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `LIBRIANT_DATA_ROOT` | `/mnt/libriant`      | Setting it in `.env.prod` **does nothing** — `deploy-on-host.sh` resolves it from the shell env and re-exports over whatever the file said. To relocate data, `export LIBRIANT_DATA_ROOT=… ` in the shell before invoking the script.                                                                                                                                                                                                                                                                                                                                                                    |
-| `IMAGE_OWNER`        | absent               | Irrelevant on the manual path. Compose falls back to `${IMAGE_OWNER:-libriant}` for local image tags. It matters only if you ever pull.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `APPLY_NOTIFY_TO`    | `info@libriant.com`  | Where marketing-form applications are notified. Interpolated by compose but absent from the template and from `ensure-env.sh`, so you would never see it.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Variable                 | Value                | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------ | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_HOST`            | `app.libriant.com`   | The **app** host, not the apex. The compose file used to default it to `libriant.com` in `x-app-env` and `app.libriant.com` in the caddy block — an internal contradiction that would have pointed the browser's API base at the marketing vhost, which has no `/lbr-api/*` handler. boot-and-config-09 removed both defaults: every site is now `${PUBLIC_HOST:?}`, so an unset value fails compose loudly instead of resolving to whichever block happened to be read. It is one of the seven hard requirements in §4.2. `ensure-env.sh` sets it before compose runs on both deploy paths, so this is belt and braces rather than a change of behaviour. |
+| `PUBLIC_APEX_DOMAIN`     | `libriant.com`       | Drives tenant-subdomain resolution and the CSRF Origin allow-list, and derives `EMAIL_FROM`, `APPLY_NOTIFY_TO` and the fallback `ADMIN_HOST`. **Does not drive cookie scope** — cookies carry no `Domain` and use the `__Host-` prefix, which forbids it.                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `ADMIN_HOST`             | `admin.libriant.com` | Load-bearing three times: excluded from tenant-subdomain resolution, the only Origin allowed for state-changing `/admin/*`, and the web app 404s `/admin` on any other host. Injected into `api`/`worker`/`migrate`, into `web` separately, and into `caddy`; lower-cased by the app.                                                                                                                                                                                                                                                                                                                                                                      |
+| `SITE_HOST`              | `libriant.com`       | Marketing vhost. No `/lbr-api/*` handler, on purpose, and deliberately not covered by `MAINTENANCE_HARD`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `EMAIL_FROM`             | derived              | Defaults to `Libriant <no-reply@${PUBLIC_APEX_DOMAIN}>` — from the **apex**, not `PUBLIC_HOST`. `.env.prod.example` says otherwise and so does the JSDoc on `emailFrom` in `config/env.ts`; both are wrong.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `ACME_EMAIL`             | `ops@libriant.com`   | **Dead configuration.** All four live vhosts `import cloudflare_origin`, which serves `/etc/caddy/origin/origin.{crt,key}`, so no ACME order is ever placed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `EDGE_BIND_IPV4`         | `0.0.0.0`            | The host address Caddy's 80, 443 and 443/udp are published on. IPv4-only **on purpose**: a wildcard publish also binds `[::]`, and because no compose network sets `enable_ipv6` a v6 connection is then relayed by Docker's userland proxy from the bridge gateway — which made every v6 client look private to the edge and handed them a fresh rate-limit bucket per forged header (authn-authz-01). Absent from `.env.prod.example`; written by `ensure-env.sh`. Changing it is one of four changes that must be made together.                                                                                                                        |
+| `PG_MAX_CONNECTIONS`     | `200`                | boot-and-config-02. Postgres's `max_connections` **and** the number the API and worker plan their tenant pools against, from one variable. It used to be written twice — a literal in the postgres `command:` and a hard-coded 200 in `tenant-pool-budget.ts` — with nothing keeping them equal, so an operator who raised the server's ceiling got no extra capacity and one who lowered it got a budget that overspends the server. Absent from the template.                                                                                                                                                                                            |
+| `LIBRIANT_DATA_ROOT`     | `/mnt/libriant`      | Setting it in `.env.prod` **does nothing** — `deploy-on-host.sh` resolves it from the shell env and re-exports over whatever the file said. To relocate data, `export LIBRIANT_DATA_ROOT=… ` in the shell before invoking the script. The same is true of `IMAGE_TAG` and `COMPOSE_PROJECT_NAME`.                                                                                                                                                                                                                                                                                                                                                          |
+| `IMAGE_OWNER`            | absent               | Irrelevant on the manual path. Compose falls back to `${IMAGE_OWNER:-libriant}` for local image tags. It matters only if you ever pull. `ensure-env.sh` deliberately never writes it from the template, because the template ships the placeholder `your-github-owner`.                                                                                                                                                                                                                                                                                                                                                                                    |
+| `APPLY_NOTIFY_TO`        | `info@libriant.com`  | Where marketing-form applications are notified. Interpolated by compose but absent from the template and from `ensure-env.sh`, so you would never see it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `GRAFANA_ADMIN_PASSWORD` | generated            | Grafana's `admin` login, which reaches every metric this fleet produces. `${…:?}` on the monitoring overlay — a `.env.prod` assembled by hand fails the monitoring step of the deploy on a key nobody was ever asked for. `ensure-env.sh` generates it so that cannot happen.                                                                                                                                                                                                                                                                                                                                                                              |
 
 ---
 
@@ -1462,8 +2886,8 @@ A successful sign-in does the same thing by itself.
 | `_dmarc.libriant.com` | NXDOMAIN                                                                                                                                           | see §5.6                                                              |
 | CAA                   | none                                                                                                                                               | see §5.5                                                              |
 
-**522, not 000.** Every existing document says the apex "returns 000" because
-every one of them probes with `--max-time 5`. A 522 specifically means Cloudflare
+**522, not 000.** Every one of the five deleted documents said the apex "returns
+000", because every one of them probed with `--max-time 5`. A 522 specifically means Cloudflare
 _has_ an origin configured and cannot reach it — almost certainly the dead
 178.104.32.176. **UNVERIFIED**: the hidden origin IP behind the orange cloud;
 read it in the dashboard before cutover. Both `@` and `admin` are records to
@@ -1537,8 +2961,9 @@ until all four hosts have been stable for weeks — withdrawal takes months.
 
 ### 5.4 The cutover order, and what breaks if you deviate
 
-Do not start this until §3.0's blocker is fixed and the box is proven healthy
-locally. DNS is the **last** step.
+Do not start this until the box is proven healthy locally (§3.8, §3.9) and the
+origin lockdown is applied and verified from outside (§3.2c). DNS is the **last**
+step.
 
 0. **Re-derive §5.1's table before you touch anything.** It is a measurement
    taken on 2026-08-23, not a description of the zone; a record can be added or
@@ -1574,20 +2999,30 @@ locally. DNS is the **last** step.
    `curl -sk --resolve libriant.com:443:127.0.0.1 https://libriant.com/pricing`.
 5. **Then, in one Cloudflare change:**
 
-   | Type     | Name    | Content               | Proxy                                                                                      |
-   | -------- | ------- | --------------------- | ------------------------------------------------------------------------------------------ |
-   | A        | `@`     | `195.201.13.95`       | **Proxied**                                                                                |
-   | AAAA     | `@`     | `2a01:4f8:13b:ac8::2` | **Proxied**                                                                                |
-   | A        | `app`   | `195.201.13.95`       | **Proxied**                                                                                |
-   | AAAA     | `app`   | `2a01:4f8:13b:ac8::2` | **Proxied**                                                                                |
-   | A        | `admin` | `195.201.13.95`       | **Proxied**                                                                                |
-   | AAAA     | `admin` | `2a01:4f8:13b:ac8::2` | **Proxied**                                                                                |
-   | A + AAAA | `www`   | same                  | **Proxied** — or a Cloudflare redirect rule instead. Pick one; do not leave it unresolved. |
+   | Type | Name    | Content         | Proxy                                                                                      |
+   | ---- | ------- | --------------- | ------------------------------------------------------------------------------------------ |
+   | A    | `@`     | `195.201.13.95` | **Proxied**                                                                                |
+   | A    | `app`   | `195.201.13.95` | **Proxied**                                                                                |
+   | A    | `admin` | `195.201.13.95` | **Proxied**                                                                                |
+   | A    | `www`   | `195.201.13.95` | **Proxied** — or a Cloudflare redirect rule instead. Pick one; do not leave it unresolved. |
 
-   The box has public IPv6 and the Caddy container publishes on `[::]` as well as
-   `0.0.0.0`, so AAAA records work. Omitting them is safe but wastes the v6 path;
-   adding them **without** an IPv6 origin firewall rule (§3.2c) widens the same
-   hole in a second address family.
+   > **A records only. Do not create `AAAA` records for the origin.** An earlier
+   > version of this table listed four of them, and it was wrong: Caddy's ports
+   > are published on `${EDGE_BIND_IPV4:-0.0.0.0}`, which is IPv4-only on
+   > purpose, so there is **no `[::]` listener on 80 or 443**. An `AAAA` record
+   > tells Cloudflare to try a v6 origin that refuses the SYN, and you get a
+   > **522 on the v6 path** while the v4 path looks perfect — an intermittent
+   > outage that depends on which family Cloudflare happens to pick.
+   >
+   > Visitors still reach Cloudflare over IPv6; only the Cloudflare→origin hop is
+   > v4, and the compose file says so in the comment above `ports:`.
+   >
+   > Going dual-stack properly is **four changes made together**, and any one of
+   > them alone reopens `authn-authz-01`: `enable_ipv6: true` on the `edge`
+   > network, `"ip6tables": true` in `/etc/docker/daemon.json`, `EDGE_BIND_IPV4`
+   > changed back to a dual-stack publish by hand, and
+   > `prod-bootstrap.sh --firewall-only --allow-ipv6` re-run. Only then the AAAA
+   > records. **UNVERIFIED — nobody has done this.**
 
 6. **Verify all four names over public HTTPS before telling anyone** (§5.7).
 
@@ -1601,6 +3036,7 @@ locally. DNS is the **last** step.
 | Deploy before the cert is on disk    | `Caddyfile is invalid` — a message that has nothing to do with the Caddyfile.                                                                                                                                                                             |
 | Cert expired or wrong SANs           | Green deploy, then Cloudflare **526** on every host. The deploy only `test -f`s the files.                                                                                                                                                                |
 | Leave `admin` on the dead IP         | A stranger who gets that IP reassigned can answer for `admin.libriant.com`.                                                                                                                                                                               |
+| Add an `AAAA` record for the origin  | Cloudflare tries a v6 origin that has no listener on 80/443 → **522 on the v6 path only**, intermittently, while every v4 check passes. See step 5.                                                                                                       |
 
 ### 5.5 CAA
 
@@ -1625,11 +3061,12 @@ rescue it.** Proven: `--resolve libriant.com:443:<ip>` presents `CN=libriant.com
 `-H 'Host: libriant.com' https://<ip>/` dies with `sslv3 alert handshake failure`
 and exchanges no certificate at all.
 
-This is not pedantry — it is a live bug in `.github/workflows/deploy.yml:375`,
+This is not pedantry — it is a live bug in `.github/workflows/deploy.yml:417`,
 whose health gate uses the `-H 'Host:'` form, reports `site=000` for 150 s on a
-perfectly healthy stack, fails the deploy and fires the automatic rollback.
-`docs/server-handbook.md:683` has the same defect with `openssl s_client
--connect localhost:443` and no `-servername`.
+perfectly healthy stack, fails the deploy and fires the automatic rollback. The
+deleted server handbook had the same defect with `openssl s_client -connect
+localhost:443` and no `-servername` (`docs/server-handbook.md:683`, deleted
+2026-08-28 — `git log --follow -p -- docs/server-handbook.md`).
 
 Correct idioms:
 
@@ -1676,6 +3113,22 @@ set -a; . /srv/libriant/.env.prod; set +a
 # .env.prod ships IMAGE_TAG=latest and no such image exists on this box.
 # Recompute the tag exactly as deploy-on-host.sh does, AFTER sourcing.
 export IMAGE_TAG="$(git -C /srv/libriant/app rev-parse --short=12 HEAD 2>/dev/null)$(git -C /srv/libriant/app diff --quiet 2>/dev/null || echo -dirty)"
+# If git could not answer, that expression is the bare string "-dirty" and every
+# 'dc up' fails on a manifest pull. Read the tag off the running api container
+# instead — the same advice this section gives for a checkout that has moved.
+case "$IMAGE_TAG" in
+  ''|-dirty) IMAGE_TAG="$(docker inspect -f '{{.Config.Image}}' libriant-api-1 2>/dev/null | sed 's/.*://')" ;;
+esac
+# If BOTH sources came up empty, say so at login rather than export "" and let
+# compose resolve an image reference with no tag at all. A login shell must not
+# exit, so this warns; §3.9's own check fails the run for it.
+case "$IMAGE_TAG" in
+  ''|latest)
+    printf '%s\n' "libriant: IMAGE_TAG is empty or 'latest' — 'dc up'/'dc run' will fail on a" >&2
+    printf '%s\n' "         manifest pull. git could not answer and no libriant-api-1 is running." >&2
+    printf '%s\n' "         See docs/RUNBOOK.md §6.1." >&2 ;;
+esac
+export IMAGE_TAG
 dc() { ( cd /srv/libriant/app && docker compose \
   -f infra/compose/docker-compose.prod.yml \
   -f infra/compose/docker-compose.volume.yml "$@" ); }
@@ -1685,6 +3138,12 @@ echo "IMAGE_TAG=$IMAGE_TAG"
 dc config >/dev/null && echo DC-OK
 docker images --format '{{.Repository}}:{{.Tag}}' | grep "libriant-api:$IMAGE_TAG"
 ```
+
+`install-server.sh`'s `dchelper` step writes this block, as a marked region it
+can upsert. The **executable content is identical**; the two comment paragraphs
+are worded differently there, so a `diff` against the file on the box will show
+comment lines and nothing that runs. If you type it by hand, type all of it — the two `case`
+statements are the difference between a bad tag and a broken stack.
 
 Good looks like: `DC-OK`, an `IMAGE_TAG` that is a 12-hex short SHA (not
 `latest`), and the `grep` finding a local image. Both `-f` files, always.
@@ -1735,10 +3194,11 @@ Deploy when nobody is using it, or announce it (§9.10).
 Caddyfile-only changes: `up -d` will not restart caddy (the config is a bind
 mount), which is why the deploy script explicitly runs `caddy reload`.
 
-**Then run §3.9 again.** It is not a first-deploy-only list: `prod-bootstrap.sh`
-runs on _every_ deploy, and the same three steps are best-effort on every one of
-them — including `ingest:help`, whose failure leaves a help centre that is empty
-rather than broken and says nothing about it. The four commands take under a
+**Then run §3.9 again**, or `sudo bash install-server.sh --verify-only`, which is
+the same probes. It is not a first-deploy-only list: `prod-bootstrap.sh` runs on
+_every_ deploy, and the checks that go green nowhere else — the storage write,
+the web→api hop from inside the network, a real page, the help-centre census —
+are the same on the tenth deploy as on the first. The four commands take under a
 minute and one of them can fail.
 
 ### 6.3 Logs
@@ -1781,9 +3241,12 @@ Because `scripts/` is bind-mounted from the host checkout, editing
 `prod-bootstrap.sh` takes effect with no rebuild. Editing `package.json` or a
 Dockerfile does not.
 
-> **This does not work today either** — same `supply-chain-06` root cause; `pnpm`
-> in that image exits 1. Test it first:
+> **Prove `pnpm` runs in that image before you rely on it.** This is where
+> `supply-chain-06` used to bite (§3.0), and although the cause is gone the
+> cheapest possible check is one line:
 > `dc run --rm --no-deps migrate sh -lc 'pnpm --version'` → expect `11.22.0`.
+> Note this needs a valid `IMAGE_TAG`: `dc run` **creates** a container, so it is
+> one of the commands §6.1's warning is about.
 
 ### 6.5 Migrations
 
@@ -1791,15 +3254,22 @@ Control-plane migrations run automatically in the `migrate` one-shot on **every*
 `dc up -d`, and they are **fatal**. You do not run them by hand. (Appendix C of
 the old deployment doc claims the opposite; it is wrong.)
 
-**Tenant** migrations are the dangerous half: `prod-bootstrap.sh` runs them
-best-effort and swallows failure, so a green deploy can leave live libraries on
-an old schema. After every deploy that touches the tenant schema:
+**Tenant** migrations used to be the dangerous half — `prod-bootstrap.sh` ran
+them best-effort and swallowed failure, so a green deploy could leave live
+libraries on an old schema while `service_completed_successfully` was satisfied.
+`boot-and-config-04` made them **fatal**, so a deploy that reaches `▸ Healthy:`
+has migrated every tenant it could see. Read the log anyway after a deploy that
+touches the tenant schema, because "could see" is doing work: a tenant that was
+archived or unreachable at that moment is not in the batch.
 
 ```bash
-dc logs migrate | grep -i -E 'tenant:migrate|skipped|non-fatal'
+dc logs migrate | grep -i -E 'tenant:migrate|\[bootstrap\] FATAL'
 ```
 
-If anything was skipped, fan out by hand:
+(Do **not** grep for `skipped (non-fatal)`. No step emits it any more, so it
+returns nothing on a broken deploy exactly as it does on a healthy one — §3.9.)
+
+If anything is missing, fan out by hand:
 
 ```bash
 dc run --rm --no-deps migrate sh -lc 'cd /app && pnpm tenant:migrate --concurrency=4'
@@ -1815,9 +3285,10 @@ the end. Good looks like: exit 0 and every tenant reported migrated.
 ```bash
 # NOTE: no `--` before the flags. pnpm forwards it to the script, node's
 # parseArgs treats it as the positional terminator, and EVERY flag after it
-# is discarded — the run exits 1 with "missing required flag(s)". Since this
-# is the only way to set billingMode, the `--` form stops the founding-offer
-# procedure at step 1. Verified on pnpm 9.15.4 and on 11.22.0, the pinned one.
+# is discarded — the run exits 1 with "missing required flag(s)". Verified on
+# pnpm 9.15.4 and on 11.22.0, the pinned one. The same mistake in
+# `pnpm tenant:migrate -- --dry-run` is worse: the flag is dropped, the dry run
+# becomes a real one, and it migrates every tenant on the box.
 dc run --rm --no-deps migrate sh -lc "cd /app && pnpm tenant:create \
   --slug=acme \
   --name='Acme Public Library' \
@@ -1842,6 +3313,62 @@ Run `--dry-run` first. The generated owner password is printed **once**.
 > understand that the owner is the only user that tenant can have until
 > `launch-readiness-01` is fixed.
 
+#### Putting an existing library on a contract
+
+`tenant:create --billing-mode=manual --paid-until=<+12mo>` above is how a **new**
+library is provisioned onto the founding offer. For a library that signed itself
+up before you got to it, there is an admin route. Use it — do **not** hand-write
+`UPDATE subscriptions SET "billingMode" = 'manual'`, because that `UPDATE` is
+unaudited and this is not.
+
+```bash
+# Owner session on the ADMIN host. tenantId, not slug.
+curl -s -b "$ADMIN_COOKIE" -X POST \
+  -H 'content-type: application/json' \
+  -d '{"planSlug":"municipal","billingModeOverride":"manual"}' \
+  https://<ADMIN_HOST>/lbr-api/admin/billing/tenants/<TENANT_ID>/set-plan | jq
+```
+
+`billingModeOverride` accepts **only** `'manual'`. There is no override in the
+other direction, because putting a library onto Stripe billing means creating a
+Stripe subscription, which is a checkout and not a flag. It travels through the
+same owner-only guard as every other plan change and writes the same audit row,
+with `overrodeBillingMode: true` on it.
+
+Why it exists: the founding offer is twelve months of Municipal at no charge, and
+Municipal is a `stripe` plan — so moving a tenant onto it set
+`billingMode: 'stripe'`, and `applyManualPayment` then refused the paid-until
+date the offer is made of (_"Manual paid-until only applies to manually-billed
+plans"_). The advertised offer could not be granted through the product at all
+(`launch-readiness-02`).
+
+Then set the date, which is a **separate** call and is the half that writes the
+audit row and invalidates the plan cache:
+
+```bash
+curl -s -b "$ADMIN_COOKIE" -X POST -H 'content-type: application/json' \
+  -d '{"paidUntil":"2027-08-28T00:00:00.000Z"}' \
+  https://<ADMIN_HOST>/lbr-api/admin/billing/tenants/<TENANT_ID>/set-paid-until | jq
+```
+
+Good looks like: `status` flips to `active` and `graceUntil` clears.
+
+> **Nothing warns anyone before `paidUntil` lapses, and the drop is instant.** No
+> scheduled job reads the column — none of the eleven in `apps/api/src/jobs/`
+> mentions it. And the drop is not "eventually": the effective-plan query carries
+> `AND (s."billingMode" <> 'manual' OR s."paidUntil" IS NULL OR s."paidUntil" > NOW() …)`,
+> and the plan cache TTL is clamped to the soonest of
+> `{override expiry, graceUntil, paidUntil}` — so at the second the date passes,
+> the library falls through to the conservative `plan_features` defaults, which
+> is effectively Starter. Mid-morning, mid-accession, with no email and no
+> banner. The one-month-ahead contact the published offer terms promise is a
+> calendar entry or it does not happen. Put every contract library's `paidUntil`
+> in your calendar the day you set it.
+>
+> This bites only once subscriptions are on: while `BILLING_ENABLED` is false
+> every limit on every tenant is the unlimited sentinel. Which is exactly why
+> §4.3b's over-cap check reads the **contracted** plan and not the effective one.
+
 **Relocating a tenant off-box silently stops all backups.** `backup.sh` aborts
 the whole nightly run if any tenant's `dbUrl` host is not
 `postgres`/`pgbouncer`/`localhost`/`127.0.0.1`, unless
@@ -1854,9 +3381,14 @@ Everything below is **Berlin time**.
 
 **First, once — none of this exists yet:**
 
+- [ ] backup encryption decided and a key held off-host (§8.1a)
 - [ ] backup cron (§8.2) and a verified first backup
 - [ ] off-site remote (`RCLONE_REMOTE`) — see the caveats in §8.1
-- [ ] `BACKUP_HEARTBEAT_URL` (§7.3)
+- [ ] `BACKUP_HEARTBEAT_URL` (§8.1b) — today it is the only channel that reaches
+      a person
+- [ ] real receivers in `infra/monitoring/alertmanager.yml`, then a deploy (§7.3)
+- [ ] the origin lockdown applied, installed as a boot unit, and proved from
+      outside over both address families (§3.2c)
 - [ ] origin-certificate expiry in your calendar
 - [ ] `unattended-upgrades` and `fail2ban` active (§3.2d)
 
@@ -1868,24 +3400,25 @@ dc ps
 docker system df
 ls -lh /mnt/libriant/backups/ | tail -5
 tail -30 /var/log/libriant/backup.log
-# ↓ requires supply-chain-06 to be fixed; `pnpm` exits 1 in that image today (§6.4)
+cat /var/lib/node_exporter/textfile/libriant_backup.prom   # the metric, not the log
 dc run --rm --no-deps migrate sh -lc 'cd /app && pnpm tsx scripts/fleet-report.ts'
 ```
 
 Good looks like:
 
-| Signal                | Good                                       | Act                                        |
-| --------------------- | ------------------------------------------ | ------------------------------------------ |
-| `/proc/mdstat`        | `[UU]` on both arrays                      | anything else → §9                         |
-| load average          | < 4.0 (4 cores / 8 threads)                | > 8 sustained                              |
-| `free -h` available   | > 40 GiB of 62                             | < 8 GiB                                    |
-| swap used             | 0                                          | any sustained use                          |
-| `df -h /`             | < 60% of 79 G                              | > 80% → §9.5                               |
-| `df -h /mnt/libriant` | < 60% of 246 G                             | > 70% → §10.1                              |
-| `dc ps`               | 7 × `Up (healthy)`; `migrate` `Exited (0)` | any `unhealthy`, `Restarting` or `Created` |
-| backups               | a directory for last night, 4 files        | missing → §8                               |
-| PG connections        | < 150 of 200                               | > 160                                      |
-| PG cache hit ratio    | > 0.95 (the alert threshold)               | below                                      |
+| Signal                 | Good                                                                  | Act                                        |
+| ---------------------- | --------------------------------------------------------------------- | ------------------------------------------ |
+| `/proc/mdstat`         | `[UU]` on both arrays                                                 | anything else → §9                         |
+| load average           | < 4.0 (4 cores / 8 threads)                                           | > 8 sustained                              |
+| `free -h` available    | > 40 GiB of 62                                                        | < 8 GiB                                    |
+| swap used              | 0                                                                     | any sustained use                          |
+| `df -h /`              | < 60% of 79 G                                                         | > 80% → §9.5                               |
+| `df -h /mnt/libriant`  | < 60% of 246 G                                                        | > 70% → §10.1                              |
+| `dc ps`                | 8 × `Up (healthy)`; `migrate` `Exited (0)`                            | any `unhealthy`, `Restarting` or `Created` |
+| backups                | a directory for last night, 4 files                                   | missing → §8                               |
+| `libriant_backup.prom` | `libriant_backup_last_success_timestamp_seconds` within the last 36 h | older, or absent → §8.1b                   |
+| PG connections         | < 150 of 200                                                          | > 160                                      |
+| PG cache hit ratio     | > 0.95 (the alert threshold)                                          | below                                      |
 
 Note `migrate` showing `Exited (0)` is **correct**, not a fault.
 
@@ -1894,7 +3427,8 @@ Note `migrate` showing `Exited (0)` is **correct**, not a fault.
 - Origin certificate: `sudo openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -checkend 2592000 -dates`
   → good looks like `Certificate will not expire`.
 - External scan from your laptop: `nmap -Pn -p 22,80,443,5432,6379 195.201.13.95`
-  and the `-6` equivalent → only 22, 80, 443.
+  and the `-6` equivalent → 22 open; 80 and 443 **filtered** once the origin
+  lockdown is in place (§3.2c); nothing else, ever.
 - `docker system df`; prune if images exceed a few GB.
 - Read `dc logs --since 720h api | grep -i error | sort | uniq -c | sort -rn | head -20`.
 - Confirm `.env.prod` in the password manager still matches the box.
@@ -1923,27 +3457,41 @@ If you reboot _without_ `dc stop`, the stack comes back on its own — but check
 
 ### 7.1 What exists, and what is switched off
 
-| Thing                     | State                                                                                                                                                                                                                                                                                           |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prometheus, node-exporter | Started by **every deploy** — `scripts/deploy-on-host.sh` and the `Bring up the monitoring stack` step in `deploy.yml` both compose `infra/monitoring/docker-compose.monitoring.yml`, then assert both containers are still running ten seconds later.                                          |
-| Grafana, cAdvisor         | Behind `profiles: ['dashboards']`, which **no deploy path passes**. Opt in deliberately for a diagnosis with `--profile dashboards`. No alert rule reads a cAdvisor metric, and Prometheus labels that target `optional: 'true'` so `TargetDown` does not page about it while it is off.        |
-| Alertmanager              | Exists, behind `profiles: ['alerting']`. The deploy passes that profile **only when `alertmanager.yml` carries no `[PLACEHOLDER]` receiver** — so today it does not start, and the deploy prints an `ALERTING=off` banner instead. Fill in the two receiver URLs and the next deploy starts it. |
-| Alert rules               | 25, including backup freshness/encryption, Redis memory, and a `Watchdog` dead-man's switch routed to its own receiver. `pnpm check:alerts` proves every `libriant_*` metric they name is actually emitted. None can express an error rate or a latency.                                        |
-| Grafana dashboards        | **Zero.** Provisioning contains one datasource file and nothing else.                                                                                                                                                                                                                           |
-| Grafana contact points    | **Zero.**                                                                                                                                                                                                                                                                                       |
-| Error tracker / APM       | **None.** No Sentry, no OTel, nothing. The only durable record of an exception is container stdout.                                                                                                                                                                                             |
-| Uptime monitor            | **None.** Nothing in the repo names a provider, an endpoint or an on-call address.                                                                                                                                                                                                              |
-| Caddy metrics             | **None** — `admin off`, no `metrics` directive. The only publicly exposed component exports nothing.                                                                                                                                                                                            |
+| Thing                     | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prometheus, node-exporter | Started by **every deploy** — `scripts/deploy-on-host.sh` and the `Bring up the monitoring stack` step in `deploy.yml` both compose `infra/monitoring/docker-compose.monitoring.yml`, then assert both containers are still running ten seconds later.                                                                                                                                                                                                                                  |
+| Grafana, cAdvisor         | Behind `profiles: ['dashboards']`, which **no deploy path passes**. Opt in deliberately for a diagnosis with `--profile dashboards`. No alert rule reads a cAdvisor metric, and Prometheus labels that target `optional: 'true'` so `TargetDown` does not page about it while it is off.                                                                                                                                                                                                |
+| Alertmanager              | Exists, behind `profiles: ['alerting']`. The deploy passes that profile **only when `alertmanager.yml` carries no `[PLACEHOLDER]` receiver** — so today it does not start, and the deploy prints the red `ALERTS ARE NOT BEING DELIVERED.` banner instead (`deploy-on-host.sh:242-253`; the CI workflow emits `ALERTING=off` for the same state, `.github/workflows/deploy.yml:602`, and this box does not use that path). Fill in the two receiver URLs and the next deploy starts it. |
+| Alert rules               | 25, including a 5xx **ratio**, a per-route error rate and a p95 **latency** rule, backup freshness/encryption, e-mail-outbox dead letters, Redis memory, and a `Watchdog` dead-man's switch routed to its own receiver. `pnpm check:alerts` proves every `libriant_*` metric they name is actually emitted.                                                                                                                                                                             |
+| Grafana dashboards        | **Zero.** Provisioning contains one datasource file and nothing else.                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Grafana contact points    | **Zero.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Error tracker / APM       | **None.** No Sentry, no OTel, nothing. The only durable record of an exception is container stdout.                                                                                                                                                                                                                                                                                                                                                                                     |
+| Uptime monitor            | **None.** Nothing in the repo names a provider, an endpoint or an on-call address.                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Caddy metrics             | **None** — `admin off`, no `metrics` directive. The only publicly exposed component exports nothing.                                                                                                                                                                                                                                                                                                                                                                                    |
 
-**What reaches a human today: nothing.** Detection time for any outage is _until
-you next look_, which the weekly rhythm sets at seven days.
+**What reaches a human today: nothing.** Prometheus evaluates all 25 rules on
+every scrape and they are visible at `/alerts` over an SSH tunnel; Alertmanager
+is not running, so none of them wakes anybody up. Detection time for any outage
+is _until you next look_, which the weekly rhythm sets at seven days. The one
+exception is `BACKUP_HEARTBEAT_URL`, which is an external service and does not
+depend on anything on this box (§8.1b) — which is why §7.3 puts it first.
 
-The 10 rules, for when delivery exists: `TargetDown`, `LibriantApiDown`,
-`HostLowMemory`, `HostSwapping`, `HostDiskFilling` (<15% free 15 m),
-`HostDiskCritical` (<7% free 5 m), `HostHighCPU`, `LibriantPgConnectionsHigh`,
-`LibriantPgConnectionsCritical`, `LibriantPgCacheHitLow` (<0.95). The Postgres
-ones read `libriant_pg_*` gauges from the API's own `/metrics`, so they work
-without the commented-out exporters.
+The 25, by group, for when delivery exists:
+
+| Group                    | Rules                                                                                                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Reachability             | `TargetDown`, `LibriantApiDown`                                                                                                             |
+| Host                     | `HostLowMemory`, `HostSwapping`, `HostDiskFilling` (<15% free 15 m), `HostDiskCritical` (<7% free 5 m), `HostHighCPU`                       |
+| Postgres / Redis         | `LibriantPgConnectionsHigh`, `LibriantPgConnectionsCritical`, `LibriantPgCacheHitLow` (<0.95), `LibriantRedisMemoryHigh`, `…MemoryCritical` |
+| Application errors       | `LibriantApi5xxRate` (>5% of requests, 5 m), `LibriantApiRouteErrors` (one route, 10 m), `LibriantApiLatencyHigh` (p95 > 2 s, 15 m)         |
+| Mail that was never sent | `LibriantEmailOutboxDeadLetters`, `LibriantEmailOutboxStalled`, `LibriantEmailOutboxCensusMissing`                                          |
+| Backup                   | the six in §8.1b                                                                                                                            |
+| Alerting itself          | `Watchdog`                                                                                                                                  |
+
+The Postgres and Redis ones read `libriant_pg_*` / `libriant_redis_*` gauges from
+the API's own `/metrics`, so they work without the commented-out exporters. The
+Redis thresholds are **absolute byte counts** derived from `REDIS_MAXMEMORY`;
+move that and you must move them (§4.2d).
 
 `HostSwapping` is guarded by `SwapTotal > 0`; this box has 8 GiB of swap, so the
 guard is satisfied and the rule is live. Note its actual trigger is **swap more
@@ -1951,12 +3499,19 @@ than 50% used for 10 minutes** — 4 GiB — which is far past the point the wee
 sweep's "any sustained swap use" would have you act. The rule is a backstop, not
 an early warning.
 
-The API's `/metrics` exposes eight gauges — uptime, build info, tenants by
-status, storage bytes, PG connections / max / cache hit ratio, Redis memory.
-**No request counter, no status-code breakdown, no latency histogram.** The
-worker exposes uptime and running jobs per queue, and no success/failure gauge.
-Gauges are TTL-cached 15 s and isolated with `Promise.allSettled`, so a _missing_
-gauge means that subsystem failed, not that the API is down.
+The API's `/metrics` exposes the eight gauges it always did — uptime, build info,
+tenants by status, storage bytes, PG connections / max / cache hit ratio, Redis
+memory — **and, since `HttpMetricsMiddleware`, a request counter
+(`libriant_api_requests_total`, labelled by route and status) and a latency
+histogram (`libriant_api_request_duration_seconds`)**, which is what the three
+application-error rules above sit on. It also exposes the e-mail-outbox gauges.
+The worker exposes uptime, running jobs per queue, and per-job
+`libriant_worker_job_last_ok` / `_last_run_timestamp_seconds` — a job that has
+never run in this process emits **nothing at all** rather than a fabricated 1 or
+0, so pair the two in any rule you write. `libriant_worker_jobs_total` is
+referenced in the code's types and does **not** exist. Gauges are TTL-cached 15 s
+and isolated with `Promise.allSettled`, so a _missing_ gauge means that subsystem
+failed, not that the API is down.
 
 ### 7.2 The monitoring stack (started by every deploy)
 
@@ -2010,10 +3565,12 @@ port and is not published at all.)
 
 Two cautions:
 
-- **No monitoring service declares any resource limit**, while every app service
-  does. You would be adding unbounded memory demand next to a capped stack. On 62
-  GiB that is survivable; add `mem_limit`s anyway.
-- The four image pins date from 2024/early-2025 and none is pinned by digest.
+- **Every monitoring service now declares `mem_limit` and `cpus`** — Prometheus
+  512m/0.5, node-exporter 128m/0.25, Alertmanager 128m/0.25, cAdvisor 256m/0.5,
+  Grafana 384m/0.5, plus `PROM_RETENTION_SIZE=2GB` on the TSDB. All are
+  overridable from `.env.prod` (§10.2) and none is in the template. This section
+  used to say the opposite; it was true when it was written.
+- The five image pins are by **tag, not digest**, and date from 2024/early-2025.
   **UNVERIFIED** on Ubuntu 26.04 — cAdvisor v0.49.1 in particular has not been
   checked against this host's cgroup version, and a broken cAdvisor silently
   removes all per-container metrics.
@@ -2036,15 +3593,16 @@ a grace of 6 hours. Put its ping URL in `/srv/libriant/.env.prod`:
 BACKUP_HEARTBEAT_URL=https://hc-ping.com/<uuid>
 ```
 
-`backup.sh` pings it **on success only, at the very end**, after the rclone push.
-That is enough for the failure that matters — a backup that stops happening —
-because the check goes red when the ping stops. It is **not** enough for a
-partial failure: none of `backup.sh`'s five abort gates ping anything. Improve it
-by adding failure pings to the cron line:
+`backup.sh` pings it **three** times per run — `/start` at the top, the bare URL
+on a clean success, and `/fail` with the last 9000 bytes of the run log as the
+body on any other exit. So it covers both failures that matter: a backup that
+**stops happening** (the check goes red when the ping stops) and a backup that
+**runs and fails** (you get the tail of the log, in the notification, without an
+SSH session at 03:00). Nothing needs adding to the cron line for that any more.
 
-```
-... ; /srv/libriant/app/scripts/backup.sh >> /var/log/libriant/backup.log 2>&1 || curl -fsS -m 10 https://hc-ping.com/<uuid>/fail
-```
+This is the **only alerting channel on this box that survives losing this box**,
+and today it is the only one that reaches a person at all — read §8.1b before you
+decide it is optional.
 
 Good looks like: the check turns green tomorrow morning and stays green.
 
@@ -2058,49 +3616,90 @@ Point it at a URL that **traverses to the app**, never at `/healthz`:
 Expect 200. If Cloudflare's Bot Fight Mode returns 403, add a WAF custom rule
 skipping that path — otherwise the monitor is silently useless.
 
-**3. Delivery for the ten rules that already exist.**
+**3. Delivery for the 25 rules that already exist.**
 
-Either add an Alertmanager container to the monitoring compose and uncomment the
-`alerting:` block, or use Grafana OSS 11.4's unified alerting with a contact
-point. **Use a webhook-style contact point** (ntfy, Telegram, a Slack webhook):
-Grafana's own SMTP is separate from the app's `EMAIL_DRIVER`, and with no mail
-provider configured, email contact points do not work.
+Nothing needs to be added to the compose file and nothing needs uncommenting.
+Alertmanager is already a service and Prometheus's `alerting:` block is already
+live, pointed at `alertmanager:9093`. The service sits behind the `alerting`
+compose profile, and `deploy-on-host.sh` turns that profile on **by itself** the
+moment `infra/monitoring/alertmanager.yml` no longer contains a `[PLACEHOLDER`
+(comments stripped first, so the file's own explanation of what a placeholder is
+does not keep it off). So:
 
-Until step 3 lands, do not use the word "page" about anything in this system.
+1. Put a real destination in **both** receivers in
+   `infra/monitoring/alertmanager.yml`. **Use a webhook-style receiver** (ntfy,
+   Telegram, a Slack webhook): Alertmanager's SMTP is separate from the app's
+   `EMAIL_DRIVER`, and with no mail provider configured an e-mail receiver does
+   not work. The second receiver is the `Watchdog` route — the dead-man's switch
+   for alerting itself — and it should go somewhere different from the first, or
+   it cannot tell you that the first one is broken.
+2. Commit it. It is a tracked file, and `deploy-on-host.sh` runs `git reset
+--hard`, so a host-local edit is destroyed on the next deploy.
+3. Deploy. The run validates the file with `amtool check-config` before starting
+   anything, and prints
+   `▸ Alerting is live: Prometheus is evaluating alerts.yml and Alertmanager is delivering it`
+   instead of the red banner.
+
+Until that lands, every deploy prints **ALERTS ARE NOT BEING DELIVERED** in red
+and names `BackupNeverRan` in it, and you should not use the word "page" about
+anything in this system.
+
+**[PLACEHOLDER: the two alert destinations the owner chooses — the primary
+receiver, and a different one for `Watchdog`.]**
 
 ### 7.4 The health surfaces that lie
 
 Know these before you trust a dashboard:
 
-| Surface                                  | Lie                                                                                                                                                                                                                                                                             |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `https://<any host>/healthz`             | Static 200 from Caddy. Green through a total outage.                                                                                                                                                                                                                            |
-| caddy container health                   | Hits its own static `:80` probe. Cannot go red while the process lives.                                                                                                                                                                                                         |
-| web container health                     | Constant `{status:'ok'}`. A deep probe (`/api/readyz`) exists and **nothing uses it**.                                                                                                                                                                                          |
-| pgbouncer container health               | The pooler answers `pg_isready` itself. Nothing gates on it.                                                                                                                                                                                                                    |
-| worker `/healthz` `scheduledLastResults` | **Actively wrong.** The runner stores `{at, message, ok:true}` and discards `counts`, so a sweep where 100% of tenants failed reports `ok:true` with a success-shaped message. Measured: `tenantsFailed: 49 of 49` alongside _"49 tenant(s) scanned; no member reminders due"_. |
-| `libriant_worker_jobs_total`             | Referenced in the code's types. Does not exist.                                                                                                                                                                                                                                 |
+| Surface                        | Lie                                                                                                                                                                                                                                                  |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `https://<any host>/healthz`   | Static 200 from Caddy. Green through a total outage. Still the most contagious wrong idea in this system.                                                                                                                                            |
+| caddy container health         | Hits its own static `:80` probe. Cannot go red while the process lives.                                                                                                                                                                              |
+| `web` `/api/healthz`           | A constant `{status:'ok'}` that touches nothing. It is **not** the container's healthcheck any more (that is `/api/readyz`, which does cross to the API) — but it is still there, and probing it by hand proves nothing.                             |
+| `libriant_worker_jobs_total`   | Referenced in the code's types. Does not exist. Use `libriant_worker_job_last_ok` and `libriant_worker_job_last_run_timestamp_seconds`, and pair them: a job that has never run in this process emits no series at all.                              |
+| a green `dc ps` after a deploy | It says the containers are up. It says nothing about whether `ingest:help` ingested into a corpus somebody has since archived, whether uploads work, or whether the origin certificate expires next week. That is what §3.9 is for, on every deploy. |
 
-And two things with no operator surface at all: abandoned email-outbox rows
-(recoverable only by SQL; dormant while `EMAIL_DRIVER=console`) and per-tenant
-scheduled-job failures.
+Three surfaces this table used to list have been fixed, and are named here so
+nobody re-derives the old fear from an old memory:
 
-> **`BLOCKER reliability-01` — the thing that `scheduledLastResults` row is
-> hiding.** It is not only that the reporting is wrong; the job underneath it
-> has never worked. `sendMemberNotifications()` constructs a fresh
-> `RedisService` and the first statement of the per-tenant loop is a Redis
-> `GET`. With `enableOfflineQueue: false` a command issued while the socket is
-> still connecting rejects synchronously, so **every** tenant throws on its
-> first await and the whole sweep drains in microseconds before the socket is
-> ready. Measured against the live control plane: `tenantsScanned: 49,
-tenantsFailed: 49`. `stripe-retry.job.ts` has the identical defect.
+- **`web` container health** is real now (`boot-and-config-08`): it fetches
+  `${API_INTERNAL_URL}/readyz` and 503s on failure, so a wrong `API_INTERNAL_URL`
+  or a broken `app` network fails the deploy gate instead of passing it green.
+- **`pgbouncer` container health** was removed and replaced by the
+  `pgbouncer-probe` sidecar, which runs a real statement through the pooler
+  (`boot-and-config-15`, §2). The deploy gate asserts it.
+- **`scheduledLastResults`** now carries the handler's own `counts` verbatim and
+  computes `ok` from the failure keys in them, so a sweep where every tenant
+  failed reports `ok: false` with `FAILED — tenantsFailed=49` in the message. It
+  also distinguishes "this run broke" from "there is a backlog nobody has
+  cleared", because an alert that is always firing gets silenced and a silenced
+  alert is the same blindness from the other side.
+
+One thing still has no operator surface at all: **abandoned e-mail-outbox rows
+per tenant**. The fleet-wide count does — `LibriantEmailOutboxDeadLetters` fires
+on `> 0`, because one abandoned password reset is one person locked out — but
+finding out _whose_ is SQL. Dormant while `EMAIL_DRIVER=console`.
+
+> **`reliability-01` — closed, and worth knowing about because the shape recurs.**
+> `sendMemberNotifications()` used to construct a fresh `RedisService` and issue
+> its first Redis `GET` microseconds later. The client is built with
+> `enableOfflineQueue: false`, so a command issued while the socket is still
+> `connecting` rejects **synchronously** — every tenant fell into the catch on
+> every hourly tick, the whole sweep drained in microseconds, and `/healthz`
+> reported `{"member-notifications":{"ok":true}}` while it happened. Measured at
+> the time: `tenantsScanned: 49, tenantsFailed: 49`. Due-soon reminders, overdue
+> notices and hold-ready notifications reached nobody, for as long as the product
+> had existed.
 >
-> Operationally: **due-soon reminders, overdue notices and hold-ready
-> notifications have never been sent to anyone**, and `/healthz` reports
-> `{"member-notifications":{"ok":true}}` while it happens. Do not tell a
-> library that reminders are running. This is independent of
-> `launch-readiness-01` — fixing the email driver will not fix it, because the
-> job fails before it ever reaches the outbox.
+> Both halves are fixed. The jobs take the runner's long-lived client out of
+> their context and `await redis.ready()` when they must make their own, and the
+> reporting no longer discards `counts`. `stripe-retry.job.ts` had the identical
+> defect and the identical fix.
+>
+> **UNVERIFIED that reminders are actually arriving**, and they are not: with
+> `EMAIL_DRIVER=console` the sweep now writes rows into `email_outbox` that
+> nothing delivers (`launch-readiness-01`). The job works; the last hop does not.
+> Do not tell a library that reminders are being sent.
 
 ---
 
@@ -2110,15 +3709,30 @@ tenantsFailed: 49`. `stripe-retry.job.ts` has the identical defect.
 
 `scripts/backup.sh` writes four artefacts to `$BACKUP_ROOT/$(date +%Y%m%d)/`:
 
-| File                | Contents                                                                                                                                                                                                |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `postgres.sql.gz`   | `pg_dumpall --clean --if-exists` of the **whole cluster** — `libriant_control`, every `tenant_*` database, and all globals including role SCRAM verifiers. Restored with `psql -f`, never `pg_restore`. |
-| `storage.tar.gz`    | the uploads tree                                                                                                                                                                                        |
-| `caddy-logs.tar.gz` | best-effort; **never read by `restore.sh`**                                                                                                                                                             |
-| `manifest.txt`      | host, completed_at, image_tag, file list                                                                                                                                                                |
+| File                                  | Contents                                                                                                                                                                                                |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `postgres.sql.gz`**`{.age\|.gpg}`**   | `pg_dumpall --clean --if-exists` of the **whole cluster** — `libriant_control`, every `tenant_*` database, and all globals including role SCRAM verifiers. Restored with `psql -f`, never `pg_restore`. |
+| `storage.tar.gz`**`{.age\|.gpg}`**    | the uploads tree                                                                                                                                                                                        |
+| `caddy-logs.tar.gz`**`{.age\|.gpg}`** | best-effort; **never read by `restore.sh`**                                                                                                                                                             |
+| `manifest.txt`                        | plaintext, on purpose: host, completed_at, image_tag, **encryption**, **encryption_key_id**, storage_dir, keep_days, and one line per artefact with its byte size and its **sha256**                    |
+
+**The suffix is not cosmetic.** Every artefact but the manifest carries `.age`
+or `.gpg` unless you deliberately chose plaintext (§8.1a). An operator globbing
+for the literal `postgres.sql.gz` on an encrypted day finds nothing, concludes
+the backup did not run, and is wrong. The manifest is left unencrypted because
+during a recovery you need to know **which key opens the archives** before you
+have the key.
 
 `pg_dumpall` runs **inside** the postgres container, so no client is needed on the
 host and version skew cannot occur for the nightly.
+
+**A day is atomic and re-running it is safe.** Everything lands under
+`$BACKUP_ROOT/YYYYMMDD/` and a second run on the same day overwrites in place, so
+a missed cron plus a manual catch-up is not a problem. The local prune runs
+**first**, on directories older than `BACKUP_KEEP_DAYS` by mtime; the off-site
+push runs last and is verified before anything remote is pruned — push, verify,
+prune, in that order and never any other, because pruning before verifying is how
+one bad night plus one good prune becomes no backup at all.
 
 **Not backed up, at all:**
 
@@ -2131,74 +3745,500 @@ host and version skew cannot occur for the nightly.
 | WAL / PITR                           | **There is no WAL archiving and no point-in-time recovery.** RPO is the cron interval: **up to 24 hours of loss.**                                                                                                                                  |
 
 **Retention.** Local: `BACKUP_KEEP_DAYS` (14), pruned at the start of each run.
-Off-site: `rclone copy` into a per-day path with **no prune, no `--delete`, no
-lifecycle rule** — off-site dailies accumulate forever.
+Off-site: the same window — after a **verified** push, `backup.sh` runs
+`rclone delete --min-age ${BACKUP_KEEP_DAYS}d` against the remote, lists every
+file it is about to remove into the run log, and then `rmdirs --leave-root` to
+clear the empty day directories. If that delete fails the run is marked
+**degraded** and says so: _"the remote retention delete failed — off-site copies
+are NOT ageing out."_ That closes the half of `privacy-legal-02` that made an
+Art. 17 erasure never propagate off-site.
 
-> **`BLOCKER privacy-legal-02`.** No artefact is encrypted, anywhere, and the
-> off-site copy is never pruned. The DPA promises _"regular encrypted backups"_
-> and the privacy notice promises deleted copies _"age out of backups"_ on a
-> 14-day cycle. Local dailies genuinely do age out; off-site ones never do, so an
-> Art. 17 erasure never propagates out of the off-site copy. Both statements are
-> untrue as deployed.
+> **`privacy-legal-02` — closed, and this is what closed it.** This section used
+> to open "No artefact is encrypted, anywhere, and the off-site copy is never
+> pruned", against a DPA that promises _"regular encrypted backups"_ and a
+> privacy notice that promises deleted copies _"age out of backups"_ on a 14-day
+> cycle. Both halves are now true of the code: `backup.sh` **refuses to run**
+> without an encryption decision (§8.1a), and the off-site copy is pruned to the
+> same window (above).
 >
-> Compounding it: the Caddy access log is tarred into the same unencrypted
-> archive, and password-reset / email-verification URLs carry their raw token in
-> the query string through a JSON access log with no URI filter. **The backup
-> contains live account-takeover tokens in cleartext.**
+> The reason it mattered is unchanged and worth keeping in front of you when you
+> choose a mode: a `pg_dumpall` from this host is the complete member registry of
+> every library on it, and the Caddy access log is tarred into the same archive —
+> password-reset and email-verification URLs used to carry their raw token in the
+> query string through a JSON access log with no URI filter, so **the backup
+> contained live account-takeover tokens**. The access log now drops the `?token=`
+> value (§4.3a), and the archive is encrypted; neither on its own would have been
+> enough.
 >
-> Fix before any real library's data lands here: encrypt each artefact before it
-> leaves the host (`age -r <recipient>` with the key held off-host, or an rclone
-> crypt remote), record key management in DPA Annex II, and add remote retention
-> (`rclone delete --min-age ${BACKUP_KEEP_DAYS}d` or a storage-box lifecycle
-> policy). Encrypting _on_ the app host is of limited value against an attacker
-> who already has the host — the exposure that matters is the off-site leg.
+> What is still owed: key management recorded in DPA Annex II.
+> **[PLACEHOLDER: the key-custody statement the owner files in DPA Annex II —
+> who holds the age identity, where, and who else can reach it.]**
+
+### 8.1a Encryption — the decision `backup.sh` will not make for you
+
+`backup.sh` **refuses to start** without an encryption decision. There is no
+default and there is deliberately no fallback: a silent fallback to plaintext is
+the defect the whole file exists to remove (`scripts/_lib/backup-crypt.sh:83-87`).
+With nothing set you get this, before a single byte is dumped:
+
+```
+backup-crypt: NO ENCRYPTION CONFIGURED.
+              The DPA we ask municipalities to sign says backups are encrypted,
+              and a plaintext pg_dumpall is the entire member registry of every
+              library on this host. Set ONE of:
+                BACKUP_AGE_RECIPIENT=age1...        (preferred: key stays off-host)
+                BACKUP_GPG_PASSPHRASE_FILE=/path    (fallback: passphrase on-host)
+              or BACKUP_ALLOW_PLAINTEXT=1 to take a deliberate local-only,
+              unencrypted backup (which may NOT be pushed off-site).
+[…] ABORT: backup encryption is not configured (see the message above).
+```
+
+Exit 1. **No backup was taken.** This is `privacy-legal-02`, and the reason is
+in `backup-crypt.sh`'s header: a `pg_dumpall` from this host is the complete
+member registry of every library on it — names, dates of birth, home addresses,
+phone numbers, staff notes and the loan history of named children, school
+libraries included — and the Art. 28 DPA a municipal committee files says
+"regular **encrypted** backups".
+
+The three modes, resolved by `backup_crypt_mode`:
+
+| Mode   | Set                                                          | Artefact suffix | Who can decrypt                                |
+| ------ | ------------------------------------------------------------ | --------------- | ---------------------------------------------- |
+| `age`  | `BACKUP_AGE_RECIPIENT` or `BACKUP_AGE_RECIPIENTS_FILE`       | `.age`          | whoever holds the identity — **not this host** |
+| `gpg`  | `BACKUP_GPG_PASSPHRASE_FILE` (a file holding the passphrase) | `.gpg`          | anyone who can read that file on this host     |
+| `none` | `BACKUP_ALLOW_PLAINTEXT=1`                                   | none            | everyone                                       |
+
+Set exactly one. Setting an age recipient **and** a gpg passphrase file is
+refused, by name, for a reason worth repeating:
+
+```
+backup-crypt: both an age recipient and a gpg passphrase file are set.
+              Pick one — two half-configured schemes are how a backup ends up
+              encrypted to a key nobody kept. Unset the one you do not use.
+```
+
+**Why `age` and not `gpg`.** Encrypting on the app host does not protect you
+against an attacker who owns the app host — they have the live database anyway,
+and anyone selling this as "encryption at rest protects the server" is wrong.
+What it protects is **the copy that leaves**: the Storage Box, its snapshots, a
+stolen rclone credential, a mis-set permission on the remote, and the backup file
+an operator copies onto a laptop during an incident. In `age` mode the host holds
+only the recipient — a public key — so a host compromise cannot open yesterday's
+off-site copy. In `gpg` mode the passphrase file sits on the same disk as the
+ciphertext, so it defends the off-site leg and nothing else. `gpg` is the
+fallback for a host where `age` cannot be installed.
+
+**The age model, in the order you must do it.**
+
+1. **Generate the keypair off this host.** On your laptop, never over SSH, never
+   in a shell whose history is on the box:
+
+   ```bash
+   age-keygen -o libriant-backup-identity.txt
+   ```
+
+   The file it writes contains the identity, the secret half, one line beginning
+   `AGE-SECRET-KEY-1`. It also prints the matching recipient — one lowercase
+   line beginning `age1`, between 50 and 80 characters
+   (`scripts/install-server.sh:884-891` is what validates it). UNVERIFIED: `age`
+   is not installed in this repository's environment and nothing in the tree
+   invokes `age-keygen`, so the exact wording of its stdout has not been
+   observed here; the two key prefixes have been, in the installer's validators.
+
+2. **The `age1…` recipient goes on the box**, into `/srv/libriant/.env.prod` as
+   `BACKUP_AGE_RECIPIENT`. That is the whole of what the host ever needs.
+
+3. **The `AGE-SECRET-KEY-1…` identity goes into the password manager and
+   nowhere else.** Not in `.env.prod`. Not in `/root`. Not in the repository.
+   Not in a Cloudflare-fronted paste. The installer refuses it if you paste it:
+   `is_age_identity` matches `AGE-SECRET-KEY-*` and dies with _"That is an age
+   IDENTITY (the SECRET half). Putting it on this host defeats the point"_
+   (`scripts/install-server.sh:896-898, 4170-4172`).
+
+4. **A restore needs `BACKUP_AGE_IDENTITY_FILE`** pointing at that file, fetched
+   from the password manager onto whatever machine is doing the recovery, and
+   deleted afterwards.
+
+> **Lose the identity and every encrypted backup you hold is permanently
+> unreadable.** There is no recovery, no escrow, no support path and nothing on
+> the host that helps: the host is holding a public key. The local dailies, the
+> off-site dailies and the Storage Box snapshots all become 14 days of noise
+> simultaneously. This belongs in the §4.4 irrecoverable table and it is now in
+> it. If the thought of one password-manager entry standing between you and
+> every library's data is uncomfortable, that is the correct reaction —
+> `BACKUP_AGE_RECIPIENT` accepts several recipients, comma- or space-separated
+> (`backup-crypt.sh:200-211`), and the second one should be an escrow key held
+> by a different person in a different place. Losing the single key is the most
+> common way an encrypted backup dies.
+
+**Plaintext, and what it costs.** `BACKUP_ALLOW_PLAINTEXT=1` is a real option
+for a host with no off-site leg, and the script says what it thinks of it:
+
+```
+[…] WARN: artefacts are NOT encrypted (BACKUP_ALLOW_PLAINTEXT=1). The DPA says they are.
+```
+
+It also sets `degraded=1`, which makes the run exit **1** at the end however well
+it went, fires the `/fail` heartbeat, and holds `libriant_backup_encrypted` at 0
+so the `BackupNotEncrypted` rule stays firing (`infra/monitoring/alerts.yml:296`).
+Combining it with an off-site remote is refused outright:
+
+```
+[…] ABORT: BACKUP_ALLOW_PLAINTEXT=1 with RCLONE_REMOTE set.
+[…]        That would put a plaintext dump of every member registry on a third-party
+[…]        storage box, which is the exact exposure the DPA rules out. Configure
+[…]        BACKUP_AGE_RECIPIENT (preferred) or BACKUP_GPG_PASSPHRASE_FILE.
+```
+
+**Check the decision without touching data.** `--preflight` runs every
+configuration gate and exits before the dump.
+
+> **On a host that has never taken a backup, this command exits 1 and prints
+> nothing at all.** Not a warning, not an error — zero bytes, exit 1. The
+> installer's `dirs` step creates `/var/lib/node_exporter/textfile` but never
+> seeds a metric file in it, so on a fresh box the directory is empty and
+> `obs_init` dies on its last line under `set -e`. Seed it once, first:
+>
+> ```bash
+> sudo -u deploy touch /var/lib/node_exporter/textfile/libriant_backup.prom
+> ```
+>
+> Then run the block below and you get the three-line output. §8.1b is the full
+> diagnosis; you do not need it to get past this, you need the `touch`.
+> Reproduced on this developer machine on 2026-08-28: fresh directory → exit 1,
+> no output; after the `touch`, the identical command → `preflight OK`, exit 0.
+
+```bash
+set -a; . /srv/libriant/.env.prod; set +a
+BACKUP_ROOT=/mnt/libriant/backups STORAGE_DIR=/mnt/libriant/storage \
+  BACKUP_TEXTFILE_DIR=/var/lib/node_exporter/textfile \
+  COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml \
+  bash /srv/libriant/app/scripts/backup.sh --preflight
+```
+
+Good looks like, for gpg:
+
+```
+[…] encryption: gpg (key gpg:sha256-16:2d72c1a8b7c9d3c8)
+[…] preflight OK — encryption gpg, storage /mnt/libriant/storage, remote <unset>
+[…]                dead man's switch: textfile=yes heartbeat=no
+```
+
+Those sixteen hex characters are derived from **your** passphrase file; the value
+above came from a throwaway one. For `age` the id is the recipient itself, in
+full — a public key is safe to write down. Expect one extra line in age mode:
+
+```
+[…] note: this host cannot decrypt its own backups (the identity is held off-host).
+[…]       Encryption is proven; decryption is proven only by the quarterly drill.
+```
+
+That is the correct production posture, not a fault. Say it out loud anyway,
+because it means the only proof of decryptability you will ever get is §8.5 run
+with the real identity.
+
+> `--preflight` exits **0** in plaintext mode. It runs the gates, not the
+> verdict: `degraded` is only judged at the end of a real run, long after
+> preflight has returned. A green preflight does not promise a green nightly.
+
+**What `backup-crypt.sh` does that is genuinely reassuring.** An encrypted
+archive nobody can open is not a backup, it is a slower way to lose the data, so:
+
+- `backup_crypt_selftest` runs a **full round trip on a canary before the real
+  dump**, and asserts the plaintext canary is _not_ present in the ciphertext
+  (`backup-crypt.sh:265-297`). A key misconfigured in January must not be
+  discovered in July.
+- Every artefact is checked after it is written. Where the host can decrypt
+  (gpg, or age with an identity present) `backup_crypt_verify_gz` decrypts it
+  and runs `gzip -t` through the result, catching a wrong key and a truncated
+  write in one pass. Where it cannot (age, production), `backup.sh:358-360`
+  asserts the first 64 bytes contain `age-encryption.org` and discards the file
+  if not.
+- The **manifest is deliberately not encrypted** and records which key opens the
+  archives, because during a recovery you need to know that _before_ you have
+  the key. `backup.sh:414-431` writes `host`, `completed_at`, `image_tag`,
+  `encryption`, `encryption_key_id`, `storage_dir`, `keep_days`, and then one
+  line per artefact with its byte size and its **sha256** — so the off-site copy
+  can be verified independently of rclone, and a silently corrupted transfer is
+  provable after the fact.
+
+> **The restore half of that promise does not exist yet.**
+> `backup-crypt.sh`'s header states that "every artefact set records a truncated
+> key id in the manifest, and restore.sh checks the key you supplied against it
+> BEFORE it drops a single database". The first half is true. The second is not:
+> `scripts/restore.sh` never sources `_lib/backup-crypt.sh`, reads the manifest
+> nowhere, and hard-codes the **plaintext** artefact names — so handed an `age`
+> or `gpg` day it would die with `no postgres.sql.gz in <dir>`. It does not get
+> that far, because it exits 127 on its second statement (§8.3, which carries the
+> reproduction).
+>
+> So the recovery you have today is by hand: fetch the day, decrypt it yourself
+> with `age -d -i <identity>` or `gpg --decrypt`, and drive
+> `_lib/pg-restore-filter.sh`'s preamble and filter into `psql` the way
+> `restore.sh` means to. **Prove that path in a drill (§8.5) before you need it,
+> not during.**
+
+### 8.1b The dead man's switch — `backup.sh` refuses to run without one
+
+The second gate. `backup.sh` requires **at least one of two channels**, and the
+reasoning in `_lib/backup-observability.sh:1-42` is the clearest statement of the
+problem in the tree: the script aborts on **fifteen** distinct conditions —
+count the `ABORT:` lines in `backup.sh` yourself, the two file headers say
+"eight" and "six" and both are behind the code — and every one of them used to
+write only a line into a log nobody reads, so the three states
+that actually matter were all silent — the cron was never installed, the run
+aborts every night, the run succeeds with no off-site copy. That is
+`reliability-09`, and the fix has to detect a backup that **did not happen**,
+which a failure notification structurally cannot do.
+
+With neither channel available:
+
+```
+backup: NO DEAD MAN'S SWITCH.
+        Neither BACKUP_HEARTBEAT_URL nor a writable BACKUP_TEXTFILE_DIR
+        (/var/lib/node_exporter/textfile) is available, so a backup that stops happening
+        would be discovered only when a restore is needed. Set one:
+          BACKUP_HEARTBEAT_URL=https://hc-ping.com/<uuid>   (external, survives host loss)
+          sudo install -d -o deploy -g deploy /var/lib/node_exporter/textfile
+```
+
+**Channel 1 — the node-exporter textfile metric.** `backup.sh` writes
+`$BACKUP_TEXTFILE_DIR/libriant_backup.prom` (default
+`/var/lib/node_exporter/textfile`) atomically, from the `finish` EXIT trap — so
+on every exit path reached after that trap is installed at `backup.sh:215`,
+which is all fifteen aborts but **not** the one in the second blockquote below.
+A failed run must leave evidence that it ran and failed, or `absent()` cannot
+tell it apart from a cron that was never installed. On a failed run the previous `last_success` value is carried forward
+on purpose, so `time() - last_success` keeps growing instead of resetting to now.
+
+The wiring is real, and both halves of it are needed:
+`infra/monitoring/docker-compose.monitoring.yml:105` gives node-exporter
+`--collector.textfile.directory=/var/lib/node_exporter/textfile`, and line 108
+bind-mounts `/var/lib/node_exporter/textfile` into the container read-only.
+Without the flag the file would be written every night and scraped by nothing.
+
+Six rules in `infra/monitoring/alerts.yml` consume it:
+
+| Alert                        | Expression                                                                    | Severity | For |
+| ---------------------------- | ----------------------------------------------------------------------------- | -------- | --- |
+| `BackupNeverRan`             | `absent(libriant_backup_last_success_timestamp_seconds)`                      | critical | 30m |
+| `BackupStale`                | `time() - libriant_backup_last_success_timestamp_seconds > 36 * 3600`         | critical | 15m |
+| `BackupOffsiteStale`         | `time() - libriant_backup_offsite_last_success_timestamp_seconds > 36 * 3600` | critical | 15m |
+| `BackupNotEncrypted`         | `libriant_backup_encrypted == 0`                                              | critical | 15m |
+| `BackupDegraded`             | `libriant_backup_degraded == 1`                                               | warning  | 1h  |
+| `BackupOffsiteNotConfigured` | `libriant_backup_offsite_configured == 0`                                     | warning  | 6h  |
+
+`absent()` is the point of the first one, and the reason the metric exists at
+all: a rule written as `time() - metric > threshold` evaluates to nothing on a
+host that has never taken a backup, which is precisely the fresh-deploy case.
+36 hours on the two staleness rules means one missed night alerts and one late
+run does not — the cron is 02:15.
+
+**Channel 2 — `BACKUP_HEARTBEAT_URL`.** The healthchecks.io convention, three
+pings per run (`_lib/backup-observability.sh:124-144`):
+
+| When                      | URL          | Body                               |
+| ------------------------- | ------------ | ---------------------------------- |
+| top of the run            | `$URL/start` | —                                  |
+| success, and not degraded | `$URL`       | —                                  |
+| any other exit            | `$URL/fail`  | the last 9000 bytes of the run log |
+
+The tail of the log as the `/fail` body is what turns "the backup failed" into
+"the backup failed because the storage dir moved", without an SSH session at
+03:00. A ping is never fatal — a heartbeat provider having a bad day must not
+fail a backup that worked; it logs `WARN: heartbeat ping failed (the backup
+itself was fine)` and carries on. `obs_init` strips trailing slashes from the
+URL before use, because `$url//fail` is a 404 that `curl -f` reports as a failed
+ping: a broken alarm that looks like a broken backup.
+
+> **Today, channel 1 detects and delivers to nobody.**
+> `infra/monitoring/alertmanager.yml` still carries `[PLACEHOLDER]` in both
+> receiver URLs (lines 73 and 81), Alertmanager refuses to start on an
+> unparseable webhook URL, and the service is therefore held behind the
+> `alerting` compose profile and is not started
+> (`docker-compose.monitoring.yml:135`). Prometheus is up, its `alerting:` block
+> is live (`prometheus.yml:20-23`), and it evaluates all 25 rules — they are
+> visible at `/alerts` and they reach no human being. Every deploy prints the
+> red banner `ALERTS ARE NOT BEING DELIVERED.` and names `BackupNeverRan` in it
+> (`deploy-on-host.sh:242-253`). **So `BACKUP_HEARTBEAT_URL` is the only channel that
+> currently reaches a person, and it is not optional in practice.** Set it in
+> `/srv/libriant/.env.prod` before you walk away from a new host. Note it is
+> absent from `.env.prod.example`, and `scripts/secrets.ts:292-304` catalogues
+> it as `requirement: 'optional'` and describes it as "pinged after a successful
+> backup" — that description predates the `/start` and `/fail` pings and is
+> wrong.
+
+> **The first nightly run on a fresh host exits 1, silently, and stays that
+> way.** `obs_init` ends with `[ -f "$_OBS_TEXTFILE" ] && _OBS_PREV="$(cat …)"`
+> (`_lib/backup-observability.sh:68`). When the textfile directory exists and is
+> writable but holds no `libriant_backup.prom` — exactly what
+> `install-server.sh` leaves behind, since it creates the directory
+> (line 3338/4212) and nothing seeds the file — that test is the function's last
+> command and its **return status is 1**. `obs_init` is called at
+> `backup.sh:144` as a simple command under `set -euo pipefail`, so the script
+> exits there: before `trap finish EXIT` is installed at line 215, before the
+> `/start` ping at 217, before any log line. No metric is written, no heartbeat
+> is sent, `/var/log/libriant/backup.log` gains **nothing at all**, and because
+> the `.prom` file is only ever written by the trap that was never installed,
+> tomorrow night is identical. Forever.
+>
+> Reproduced here against `scripts/backup.sh` on 2026-08-28, under bash 3.2.57;
+> the `set -e` rule involved is a function call returning non-zero as a simple
+> command, which behaves identically under the bash 5 on the box, but that has
+> not been executed here — UNVERIFIED on Ubuntu.
+>
+> Until it is fixed in `backup-observability.sh`, seed the file once, as the
+> account the cron runs as:
+>
+> ```bash
+> sudo -u deploy touch /var/lib/node_exporter/textfile/libriant_backup.prom
+> ```
+>
+> An empty `.prom` parses to zero metrics, `BackupNeverRan` keeps firing until a
+> real run overwrites it, and the next invocation gets past `obs_init`.
+> Verified: the same command that exits 1 with no output before the `touch`
+> prints `preflight OK` after it.
+>
+> The reason you may not have noticed is that `install-server.sh --only backup`
+> offers to run the backup once by hand and then checks the result, so an
+> interactive install dies loudly on this. Read that `die`
+> (`install-server.sh:4344-4348`) carefully: its last cause **does** name "the
+> encryption / dead-man's-switch gates above them" — but on this failure that
+> gate never ran, so the message it points you at is not in the log, and you go
+> looking for an abort that was never printed. Note also that on the
+> `--only backup` path a failed `--preflight` is a `warn` plus _"Continue to the
+> real run anyway?"_ (`:4288-4290`), not a die; the die fires only if you say
+> yes and no dump lands. An operator who declined that prompt gets the silent
+> version.
 
 ### 8.2 Installing the nightly backup
 
-**Nothing installs this.** Not the deploy, not any script, not CI. And nothing
-warns you it is missing.
+**Nothing in the deploy path installs this.** Not `deploy-on-host.sh`, not any
+compose file, not CI. And nothing warns you it is missing. `install-server.sh`'s
+`backup` step is the only thing in this repository that does it, which is why
+that step exists (§3.10).
+
+Settle §8.1a and §8.1b **first**. `backup.sh` refuses to start without an
+encryption decision and without a dead man's switch, so a cron installed before
+those two answers is a cron that fails every night.
 
 There are two cron lines in the repo and one of them is wrong — the header
 comment in `backup.sh` sets no `BACKUP_ROOT` and would write to
-`/srv/libriant/backups` on the **boot disk**. Use exactly this one:
+`/srv/libriant/backups` on the **boot disk**. Use exactly this one, which is what
+`install-server.sh` writes:
 
 ```bash
 sudo tee /etc/cron.d/libriant-backup >/dev/null <<'EOF'
-# Libriant nightly backup — 02:15 Europe/Berlin
+# Libriant nightly backup — 02:15 HOST time (docs/RUNBOOK.md §8.2).
+# BACKUP_ROOT is explicit on purpose: it cannot be set from .env.prod
+# (ensure-env.sh never writes it and the compose layer never reads it), and
+# backup.sh's own default is the boot disk.
 SHELL=/bin/bash
-15 2 * * * deploy bash -lc 'set -a; . /srv/libriant/.env.prod; set +a; BACKUP_ROOT=/mnt/libriant/backups STORAGE_DIR=/mnt/libriant/storage COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml /srv/libriant/app/scripts/backup.sh >> /var/log/libriant/backup.log 2>&1'
+MAILTO=""
+15 2 * * * deploy bash -lc 'set -a; . /srv/libriant/.env.prod; set +a; BACKUP_ROOT=/mnt/libriant/backups STORAGE_DIR=/mnt/libriant/storage COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml BACKUP_TEXTFILE_DIR=/var/lib/node_exporter/textfile /srv/libriant/app/scripts/backup.sh >> /var/log/libriant/backup.log 2>&1'
 EOF
 sudo chmod 644 /etc/cron.d/libriant-backup
 ```
 
-Then run it once by hand, immediately, and read the output:
+Two lines in there postdate the version this section used to carry, and both
+matter:
+
+- **`MAILTO=""`.** cron mails every line of output to the crontab user by
+  default. With `EMAIL_DRIVER=console` and no MTA on the box that mail goes
+  nowhere, or fills a spool nobody reads.
+- **`BACKUP_TEXTFILE_DIR`.** `backup.sh` refuses to run when it has neither a
+  writable textfile directory nor `BACKUP_HEARTBEAT_URL` (§8.1b), and the default
+  path is not writable by `deploy` unless something created it — §3.5's
+  `install -d -m 755 -o deploy /var/lib/node_exporter/textfile`.
+
+`STORAGE_DIR` is stated explicitly even though `backup.sh` can usually resolve
+the uploads directory itself (it asks Docker for the bind **source**, not the
+mountpoint). "Usually" is doing a lot of work in a line that runs unattended at
+02:15.
+
+**02:15 is host time**, and the host is on Europe/Berlin (§1). Change the zone
+and this window moves with it.
+
+Then check the configuration without touching data, and only then run it for
+real:
 
 ```bash
 set -a; . /srv/libriant/.env.prod; set +a
 BACKUP_ROOT=/mnt/libriant/backups STORAGE_DIR=/mnt/libriant/storage \
   COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml \
+  BACKUP_TEXTFILE_DIR=/var/lib/node_exporter/textfile \
+  bash /srv/libriant/app/scripts/backup.sh --preflight
+
+set -a; . /srv/libriant/.env.prod; set +a
+BACKUP_ROOT=/mnt/libriant/backups STORAGE_DIR=/mnt/libriant/storage \
+  COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml \
+  BACKUP_TEXTFILE_DIR=/var/lib/node_exporter/textfile \
   bash /srv/libriant/app/scripts/backup.sh
 ls -lh /mnt/libriant/backups/$(date +%Y%m%d)/
 ```
 
-Good looks like: four files, `postgres.sql.gz` comfortably over 1 KiB, and no
+Good looks like: `preflight OK` on the first, then four files — three artefacts
+carrying the suffix your mode implies plus `manifest.txt` — with the Postgres
+artefact comfortably over 1 KiB, exit 0, and no
 `WARN: RCLONE_REMOTE unset` if you have configured off-site.
 
 > **`BACKUP_ROOT` cannot be set from `.env.prod`** — `ensure-env.sh` never writes
 > it and the compose layer never reads it. It exists only in this cron line and
 > in whatever you type by hand. The script's default is the boot disk. Carry the
 > full env prefix on **every** manual invocation, every time.
+> `backup.sh --print-cron` with no prefix bakes the boot-disk default straight
+> into the line it prints; do not paste that one.
 
-`backup.sh` aborts the whole run — silently, apart from a line in a log nobody
-reads — on any of five gates: the control-DB tenant query failing; an
-off-host tenant (unless `BACKUP_ALLOW_OFFHOST_TENANTS=1`); a `postgres.sql.gz`
-under 1024 bytes; `gzip -t` failing on either archive; a missing `STORAGE_DIR`
-(unless `BACKUP_ALLOW_NO_STORAGE=1`). The only notification is `BACKUP_HEARTBEAT_URL`, and
-it fires **on success only**. Set it (§7.3).
+**`backup.sh` has fifteen abort paths, not the five this section used to list.**
+Count them with `grep -c 'ABORT:' scripts/backup.sh`; the two file headers say
+"eight" and "six" and both are behind the code. Two of them stop the run before
+the first byte and are the ones a new host meets: **no encryption configured**
+(§8.1a) and **no dead man's switch** (§8.1b). The rest are the ones that stop a
+run that had already started: the control-DB tenant query failing; an off-host
+tenant (unless `BACKUP_ALLOW_OFFHOST_TENANTS=1`); `rclone` missing or the remote
+judged unsafe; an unresolvable `STORAGE_DIR` (unless `BACKUP_ALLOW_NO_STORAGE=1`);
+a `postgres.sql.gz` under 1024 bytes; an artefact that fails its decrypt-and-gzip
+check, or that does not begin with `age-encryption.org` where it must; the
+encryption self-test; and the off-site copy failing or not matching.
+
+An abort is not silent any more — that is what §8.1b's two channels are for — but
+neither channel wakes anybody up on its own today. Read §8.1b before you decide
+which one you are relying on.
 
 ### 8.3 Restoring
 
 **Destructive. It drops and recreates every database.** Requires `--yes`.
+
+> **`restore.sh` does not run today. Read this before you need it, not during.**
+> Line 44 calls `storage_resolve_dir`; the library that defines it is sourced at
+> line 51. Under `set -euo pipefail` the script therefore dies on its second
+> statement, with any arguments, on any host:
+>
+> ```
+> $ bash /srv/libriant/app/scripts/restore.sh
+> /srv/libriant/app/scripts/restore.sh: line 44: storage_resolve_dir: command not found
+> ```
+>
+> Exit 127. Reproduced in this repository on 2026-08-28. Nothing is touched — it
+> fails before it decides anything — so it is not dangerous, it is simply
+> unavailable.
+>
+> There is a second, independent gap behind it: `restore.sh` never sources
+> `_lib/backup-crypt.sh`, never reads the manifest, and hard-codes the
+> **plaintext** artefact names. Handed an `age` or `gpg` day it would die with
+> `no postgres.sql.gz in <dir>`. `backup-crypt.sh`'s own header claims restore
+> checks the supplied key against the manifest's key id "before it drops a single
+> database"; the manifest half is true, the restore half is not written yet.
+>
+> **Treat the rest of §8.3 as a description of intent and a map of the hazards,
+> not as a procedure.** → **The procedure you actually run is [§8.3a](#83a-the-restore-you-actually-have-today), and it is
+> written out in full.** Read the rest of this section first if you have the
+> minutes — the three traps under "Three things that will bite on a rebuilt
+> host" apply to the manual path exactly as they would have to the script — but
+> if you do not, §8.3a repeats them as a checklist. Prove that path in a drill
+> (§8.5) before you need it.
+
+The command it is meant to be:
 
 ```bash
 set -a; . /srv/libriant/.env.prod; set +a
@@ -2208,19 +4248,22 @@ COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml \
   bash /srv/libriant/app/scripts/restore.sh 20260823 --yes
 ```
 
-> **`STORAGE_DIR=/mnt/libriant/storage` is mandatory and is the single most
-> dangerous omission in this document.** `restore.sh` defaults it to
-> `/srv/libriant/storage` — the **in-container** path. Omit it and the script
-> `mkdir -p`s a fresh empty directory on the host, untars into it, prints
-> _"storage restored"_ and _"restore complete"_, and exits 0 having recovered
-> **zero uploads**. The tenant-count sanity check only counts databases, so it
-> stays green. (Open high, `reliability-05`. `backup.sh` got the
-> docker-volume-inspect resolution and a hard abort; `restore.sh` got neither.)
+> **`STORAGE_DIR` is no longer the trap it was, and the old warning here was
+> wrong.** `reliability-05` — "restore.sh defaults `STORAGE_DIR` to the
+> in-container path, recovers zero uploads and tells you it succeeded" — is
+> closed in code: `restore.sh:44` calls the same `storage_resolve_dir` that
+> `backup.sh` uses (docker volume inspect for the bind **source**, correct while
+> the app containers are stopped), asserts the directory is visible to the
+> container, counts the files in the archive before unpacking and **refuses** if
+> fewer land. An explicit `STORAGE_DIR=` still wins, for the operator who knows
+> better, and the line above still carries it — belt and braces, and one less
+> thing to remember at 4am.
 
 What it does, in order — this is the 2026-08-22 fix and it is worth knowing:
 
 1. Resolve the day directory, require `postgres.sql.gz`, require `--yes`.
-2. `gunzip -t` **both** archives before touching anything.
+2. `gunzip -t` **both** archives before touching anything. **Plaintext only**:
+   there is no decrypt step anywhere in the file, which is the second gap above.
 3. Pre-flight the stream filter and **refuse to run** unless exactly **2**
    self-role statements match, having changed nothing.
 4. `dc stop api worker web pgbouncer`.
@@ -2258,12 +4301,12 @@ both were worse.
    otherwise show up as _"password authentication failed"_ long after anyone is
    looking.
 
-> **`restore.sh` will not bring the app back up today.** Its EXIT trap runs
-> `dc up -d api worker web`, and `api` gates on `migrate` completing —
-> `supply-chain-06`. The database work will finish and the application will stay
-> down. Also note the fallback path `dc start api worker web` does not start
-> dependencies, so `pgbouncer`, which the script stopped, would stay down on that
-> branch.
+> **Watch what the EXIT trap brings back.** It runs `dc up -d api worker web`,
+> which re-runs the `migrate` one-shot `api` gates on — fine now that
+> `supply-chain-06` is closed (§3.0), and still the slowest part of the recovery.
+> The fallback path `dc start api worker web` does **not** start dependencies, so
+> `pgbouncer`, which the script stopped, would stay down on that branch. Check
+> `dc ps` afterwards rather than trusting "restore complete".
 
 **Rebuilding this box from nothing — the ordering that matters.** You need three
 things from three different places:
@@ -2281,6 +4324,171 @@ local-driver bind volume still reports `/var/lib/docker/volumes/<name>/_data`
 (which holds no `PG_VERSION`), and after a boot-disk rebuild `/var/lib/docker` is
 gone entirely and docker may not even be installed. The guard returns "not
 initialised" and overwrites your `.env.prod` in the act of failing.
+
+### 8.3a The restore you actually have today
+
+This is `restore.sh`'s own sequence with the two broken statements removed and
+the decrypt step it never had put in. Every function named here is real: all
+three libraries source cleanly on their own, with no side effects, and
+`type -t` reports each as a function (run here, 2026-08-28).
+
+> **UNVERIFIED end to end.** No restore has ever completed on a real host, with
+> real artefacts, in any mode. What has been executed here is the sourcing, the
+> filter and the preamble against a synthetic `pg_dumpall` prologue (output
+> below is that run). Everything else is `restore.sh`'s own statements, in its
+> own order. This is unknowns register #23, and with #12 (real RTO) it is the
+> most expensive unknown in this document: the value of every backup taken so
+> far rests on a path nobody has walked.
+
+**Work as `deploy`, in `/srv/libriant/app`, with `dc` from §6.1 defined.**
+
+**0. Load the libraries.** All three, before anything else. This is the step
+`restore.sh` gets wrong.
+
+```bash
+cd /srv/libriant/app
+. scripts/_lib/pg-restore-filter.sh    # pg_restore_filter_count, pg_restore_filter, pg_restore_preamble
+. scripts/_lib/storage-archive.sh      # storage_resolve_dir, storage_archive_file_count, storage_untar_into
+. scripts/_lib/backup-crypt.sh         # backup_crypt_decrypt
+set -a; . /srv/libriant/.env.prod; set +a
+DAY=/mnt/libriant/backups/20260823     # the day you are restoring
+PG_ROLE=libriant
+```
+
+**1. Decrypt into a working copy.** The artefacts carry the suffix of the mode
+they were written in — `.age`, `.gpg`, or nothing (`backup_crypt_ext`,
+`backup-crypt.sh:147-152`). `manifest.txt` is always plaintext; read it first
+and check its key id against the key you hold, because that is the difference
+between "wrong key" and "corrupt archive".
+
+```bash
+cat "$DAY/manifest.txt"
+ls -la "$DAY"
+
+# age mode — the identity comes from the password manager, NOT from this host:
+export BACKUP_AGE_IDENTITY_FILE=/path/to/identity.txt
+backup_crypt_decrypt age "$DAY/postgres.sql.gz.age" > /tmp/postgres.sql.gz
+backup_crypt_decrypt age "$DAY/storage.tar.gz.age"  > /tmp/storage.tar.gz
+
+# gpg mode instead:
+#   export BACKUP_GPG_PASSPHRASE_FILE=/path/to/passphrase
+#   backup_crypt_decrypt gpg "$DAY/postgres.sql.gz.gpg" > /tmp/postgres.sql.gz
+# plaintext mode: the files are already named postgres.sql.gz / storage.tar.gz.
+```
+
+`backup_crypt_decrypt` refuses with a named message rather than a silent empty
+file when the identity variable is unset or unreadable
+(`backup-crypt.sh:228-248`). Then prove the plaintext is intact **before** you
+drop anything:
+
+```bash
+gunzip -t /tmp/postgres.sql.gz && echo GZIP-OK
+```
+
+**2. The count assertion. This is the one that stands between a restore and a
+wiped cluster — do not skip it and do not "fix" it by proceeding.**
+
+```bash
+gunzip -c /tmp/postgres.sql.gz | pg_restore_filter_count "$PG_ROLE"
+```
+
+**It must print exactly `2`.** Two is one `DROP ROLE` plus one `CREATE ROLE` in
+the globals prologue. Any other number means the filter's patterns no longer
+match this dump's wording — and a filter that matches nothing removes nothing,
+so the restore would issue the full `DROP DATABASE` wave and _then_ abort on the
+self-role statements, leaving you with no databases and no restore. That is not
+theoretical: it was reproduced as psql exit 3 with zero databases remaining
+(`_lib/pg-restore-filter.sh:10-16`). If it prints anything but 2, **stop**, and
+read the prologue yourself: `gunzip -c /tmp/postgres.sql.gz | sed -n '1,60p'`.
+
+Verified here on a synthetic prologue: `count=2`, the filter removed the `DROP
+ROLE`/`CREATE ROLE` pair, **kept** the `ALTER ROLE … PASSWORD` line (that is
+deliberate — it restores the role's password hash), and stopped at `\connect`,
+leaving a `CREATE ROLE libriant;` that appeared _after_ the boundary untouched.
+That scope guard is why the filter is safe to run over a whole dump.
+
+**3. Stop everything that holds a connection.** Postgres refuses to drop a
+database with sessions on it, and `pgbouncer` pools connections to
+`libriant_control`, so it must go too. Postgres itself stays up.
+
+```bash
+dc stop api worker web pgbouncer
+dc exec -T postgres psql -U "$PG_ROLE" -d postgres -v ON_ERROR_STOP=0 -c \
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+   WHERE datname IS NOT NULL AND datname <> 'template0' AND pid <> pg_backend_pid();"
+```
+
+> **A `psql -d postgres` you left open to watch the restore is the likeliest
+> session in the building**, and it is fatal late rather than early: the dump
+> drops `postgres` and `template1` with a bare `DROP DATABASE` near the end, so
+> one lingering session there aborts the restore _after_ every tenant database
+> is already gone. Terminate everything, then close your own extra shells.
+
+**4. Restore, preamble first.** The preamble is not optional — it is what makes
+the `template1` drop survivable on a rebuilt host, and what resets the role
+attributes `pg_dumpall` omits.
+
+```bash
+{ pg_restore_preamble "$PG_ROLE"
+  gunzip -c /tmp/postgres.sql.gz | pg_restore_filter "$PG_ROLE"
+} | dc exec -T postgres psql -U "$PG_ROLE" -d postgres -v ON_ERROR_STOP=1
+```
+
+The preamble is three statements, and you can print them first to see exactly
+what you are about to send:
+
+```
+UPDATE pg_catalog.pg_database SET datistemplate = false WHERE datname = 'template1';
+ALTER ROLE "libriant" RESET ALL;
+ALTER ROLE "libriant" WITH CONNECTION LIMIT -1 VALID UNTIL 'infinity';
+```
+
+**5. The uploads.** Resolve the directory the way `backup.sh` does — never type
+`/srv/libriant/storage`, which is the **in-container** path and the whole of
+`reliability-05`:
+
+```bash
+STORAGE_DIR="$(storage_resolve_dir "${COMPOSE_PROJECT_NAME:-libriant}" "")"
+echo "$STORAGE_DIR"        # expect /mnt/libriant/storage
+storage_assert_visible_to_containers "$STORAGE_DIR" || echo "REFUSE — containers cannot see this path"
+
+want="$(tar -tzf /tmp/storage.tar.gz | storage_archive_file_count)"
+echo "archive holds $want file(s)"
+storage_untar_into "$STORAGE_DIR" "$want" < /tmp/storage.tar.gz
+```
+
+Note the two stream shapes, and do not swap them: `storage_archive_file_count`
+reads tar's **listing** on stdin, `storage_untar_into` reads the **gzipped
+stream**. Getting either backwards produces a confident count of zero or an
+untar of nothing — both of which look exactly like the bug this counting exists
+to prevent (`_lib/storage-archive.sh:175-181`). `storage_untar_into` moves any
+existing tree aside into `$STORAGE_DIR/.pre-restore.<timestamp>/` rather than
+deleting it, then **fails** if fewer files land than the archive holds.
+
+**6. Bring it back and check.** Nothing here has an EXIT trap, so this is on you:
+
+```bash
+dc up -d api worker web pgbouncer
+dc ps
+```
+
+Then §3.9's probes, and §6.6's tenant count against the control plane.
+
+**The three hazards from §8.3 apply unchanged**, and two of them will not
+announce themselves:
+
+1. **`template1`** — handled by the preamble in step 4. Skip the preamble on a
+   rebuilt host and you get `cannot drop a template database`, after the drop
+   wave.
+2. **The restore overwrites the target's superuser password with the source's
+   hash.** After a cross-host restore the freshly minted `POSTGRES_PASSWORD` in
+   the new `.env.prod` is **wrong**; the correct value is the password-manager
+   entry for the **source** host. Set it before you deploy, and see the
+   `ensure-env.sh` guard warning at the end of §8.3.
+3. **`ALTER ROLE` only overlays** — the preamble's `RESET ALL` and explicit
+   `CONNECTION LIMIT -1 VALID UNTIL 'infinity'` are what stop target-side drift
+   surviving a "successful" restore and surfacing weeks later as
+   `password authentication failed`.
 
 ### 8.4 What CI actually proves
 
@@ -2311,14 +4519,23 @@ had never been run. Do not quote a number until you have one.
 ### 8.5 The drill — quarterly, and it has never been done
 
 1. Take a fresh backup by hand (§8.2) and note its size and duration.
-2. On a throwaway host, or a second cluster on this one, restore it with the
+2. **Decrypt it with the real key**, on a machine that is not this host, using
+   the identity out of the password manager. In `age` mode this is the **only**
+   proof of decryptability you will ever get — the production host deliberately
+   cannot decrypt its own backups and says so on every run (§8.1a). Check the
+   artefact's sha256 against `manifest.txt` while you are there.
+3. On a throwaway host, or a second cluster on this one, restore it with the
    **full** env prefix and `time` it. Record the Postgres leg and the storage
-   untar separately.
-3. Verify: control-plane tenant count matches tenant database count; each
+   untar separately. Until `restore.sh` is fixed (§8.3) this leg is by hand —
+   **follow §8.3a step by step**, which is the same sequence written out with
+   the two broken statements removed. Doing it by hand once is the point of a
+   drill, and this drill is currently the only way §8.3a will ever be proven
+   (unknowns register #23).
+4. Verify: control-plane tenant count matches tenant database count; each
    `tenant_*` DB has 4/4 extensions; a spot-checked cover image actually opens.
-4. Prove the off-site leg by pulling a day back down from `RCLONE_REMOTE` and
+5. Prove the off-site leg by pulling a day back down from `RCLONE_REMOTE` and
    restoring **that** copy, not the local one.
-5. Write down the wall-clock. That number is your RTO.
+6. Write down the wall-clock. That number is your RTO.
 
 Two drill hazards: an aborted `dr-drill.sh` leaves the shared role with
 `statement_timeout=1s` and `CONNECTION LIMIT 7` (the EXIT trap restores only the
@@ -2326,6 +4543,124 @@ password), which later shows up as _"canceling statement due to statement
 timeout"_ and _"too many connections for role"_ pointing nowhere near a shell
 script that exited hours earlier. And `restore.sh` must never be pointed at
 production to "test" it.
+
+### 8.6 The other retention — the control database, and the five names that govern it
+
+`BACKUP_KEEP_DAYS` (§8.1) is how long an **archive** lives. This is a different
+thing with a confusingly similar name: how long the **data inside the running
+control database** lives before the nightly `retention-sweep` deletes it. (§4.2f
+is the configuration half — which of the five names is really a variable, and why
+none of them reaches a container as written.) It is
+in this chapter because every row it does not delete is in tonight's backup, and
+in every backup after that, forever.
+
+The sweep is real and registered — `apps/api/src/jobs/registry.ts:110-113`,
+`intervalMs: 24 * 60 * 60_000`, running in the **worker**. It is
+`privacy-legal-05` / GDPR Art. 5(1)(e), and it is the only thing in the product
+that deletes personal data on age. Every limb is age-bounded and idempotent:
+running it twice changes nothing the second time.
+
+Five names appear in `.env.prod.example` lines 149-153 under
+`# --- retention (performance-07 / privacy-legal-05) ---`. **Only three of them
+are variables.**
+
+| Name                               | Reads env? | Floor  | What it deletes                                                                                                                                                                                                                                                                                                                               | Shipped              |
+| ---------------------------------- | ---------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| `CONTROL_AUDIT_RETENTION_DAYS`     | yes        | 1 day  | Rows in the control-plane `audit_log` older than N days, batched 5 000 × 40 per tick. Skips `tenant.legal_accepted` and `tenant.deleted` **forever** — the Art. 7(1) consent evidence and the one deletion event you most need to prove.                                                                                                      | unset — no-op        |
+| `EMAIL_OUTBOX_BODY_RETENTION_DAYS` | yes        | 2 days | The `bodyMarkdown` of `email_outbox` rows older than N days, and only where `status` is `delivered` or `dead`, replaced with `_(Body removed by the retention sweep.)_`. **The row stays**: `idempotencyKey` is the dedup ledger, and deleting rows would make the hourly job re-send every overdue notice it has ever sent, to real patrons. | unset — no-op        |
+| `SUPPORT_ATTEMPT_RETENTION_DAYS`   | yes        | 1 day  | Rows in `support_redemption_attempts` older than N days — one per support-key redemption attempt, each carrying the admin's IP.                                                                                                                                                                                                               | unset — no-op        |
+| `STRIPE_PAYLOAD_RETENTION_DAYS`    | **no**     | —      | Hard-coded `30` (`retention.job.ts:544`). Blanks `payloadJson` to `'{}'` on **processed** `stripe_webhook_events` older than 30 days; the ~100-byte row stays because `processedAt` is the durable replay guard.                                                                                                                              | 30 days, always on   |
+| `APPLICATION_RETENTION_MONTHS`     | **no**     | —      | Hard-coded `12` (`retention.job.ts:103`). Deletes non-`accepted` site applications 12 months after `reviewedAt` (or `createdAt`), **and** the admin notification in `email_outbox` that restates the same applicant's name, e-mail and phone.                                                                                                 | 12 months, always on |
+
+The two bottom rows are exported TypeScript constants, not `process.env` reads.
+Putting a number next to them in `.env.prod` changes nothing, anywhere, and
+nothing warns you. `APPLICATION_RETENTION_MONTHS = 12` is published on
+libriant.com — `apps/site/content/privacy.en.md:76` and `privacy.el.md:80`, §5
+_"How long we keep it"_, both say the details go at the latest **12 months**
+after we have been in touch — so it is not a tunable at all: change the number
+and you have changed what applicants were told, in two languages, on a public
+page.
+
+The three that _are_ variables floor themselves and refuse anything else. A
+value that is not a whole number of days, or is below the floor, is logged and
+the limb is treated as unconfigured — a retention job acting on a value it does
+not understand can do more damage than one that never runs:
+
+```
+refusing to enforce CONTROL_AUDIT_RETENTION_DAYS="0": it must be a whole number of days, at least 1. Nothing was deleted for that limb.
+```
+
+`EMAIL_OUTBOX_BODY_RETENTION_DAYS`'s floor of 2 is computed, not chosen:
+`ceil(LONGEST_ONE_TIME_LINK_TTL_SEC / 86400) + 1`, where the longest one-time
+link is the 24-hour e-mail verification token
+(`apps/api/src/auth/one-time-link-ttl.ts`). With `EMAIL_DRIVER=console` — what
+this box runs — the admin outbox **is** the delivery channel, so the body of the
+message is the only copy of a reset link that exists. Blanking it early strands
+the librarian it was written for.
+
+**In the shipped configuration every configurable limb is off, and the control
+database grows without bound.** The sweep says so on every run rather than
+reporting a clean zero; this is what the `retention-sweep` message looks like
+today, in full:
+
+```
+applications: 0 deleted past 12 months; stripe payloads: 0 pruned past 30 days; audit_log: 0 row(s) across 0 tenant(s); control audit_log: not configured (CONTROL_AUDIT_RETENTION_DAYS unset — Privacy Policy §6); email bodies: not configured (EMAIL_OUTBOX_BODY_RETENTION_DAYS unset — Privacy Policy §6); support attempts: not configured (SUPPORT_ATTEMPT_RETENTION_DAYS unset — Privacy Policy §6)
+```
+
+That is by design, and the design is honest about whose decision it is: how long
+Libriant keeps an audit row, a sent e-mail body or an operator's IP address is a
+**Privacy Policy §6** question — that is §6 _"How long we keep data"_ of the
+tenant-facing policy in `locales/{en,el}/legal/privacy.md`, not §5 of the
+marketing-site one — and it still holds four bracketed placeholders: `[30]` days
+of post-termination export, a `[14]`-day backup cycle, `[up to 5–10]` years of
+billing records, `[a limited period, e.g. 90 days]` of security logs. An engineer
+inventing those numbers is how a library's records get deleted on a schedule
+nobody agreed to. The owner must supply them:
+`[PLACEHOLDER: the retention period, in days, the owner publishes in Privacy
+Policy §6 for the control-plane audit log]`, `[PLACEHOLDER: … for sent e-mail
+bodies, at least 2]`, `[PLACEHOLDER: … for support redemption attempts]`.
+
+> **Setting them in `.env.prod` is not enough, and this is the trap.** The
+> worker's environment is `x-app-env` in
+> `infra/compose/docker-compose.prod.yml`, and that block carries its own
+> warning: _"Compose only injects variables referenced in this block, so an
+> unlisted .env.prod key is silently dropped"_ (the A5-01 note, added after
+> `RESEND_API_KEY` was lost the same way). None of
+> `CONTROL_AUDIT_RETENTION_DAYS`, `EMAIL_OUTBOX_BODY_RETENTION_DAYS` or
+> `SUPPORT_ATTEMPT_RETENTION_DAYS` appears anywhere under `infra/` — grep the
+> tree and you get zero hits outside `apps/api`, the test, and
+> `.env.prod.example`. There is no `env_file:` on any service. So a number
+> written into `.env.prod` today never reaches the process that would act on it,
+> the sweep keeps printing "not configured", and the only visible symptom is
+> that nothing changes.
+>
+> Turning a limb on is therefore **two edits in one commit**: the number in
+> `/srv/libriant/.env.prod`, and a matching
+> `CONTROL_AUDIT_RETENTION_DAYS: ${CONTROL_AUDIT_RETENTION_DAYS:-}` line in
+> `x-app-env`. Then `dc up -d api worker` to recreate the containers, and read
+> the next run's message — the limb must stop saying "not configured" before you
+> believe anything was deleted. Nothing in `.env.prod.example` mentions the
+> second edit; it presents the three keys as if filling them in were the whole
+> job.
+
+**Good looks like**, once §6 is filled in and both edits are deployed — the
+`retention-sweep` message with no "not configured" clause left in it:
+
+```
+applications: 0 deleted past 12 months; stripe payloads: 0 pruned past 30 days; audit_log: 0 row(s) across N tenant(s); control audit_log: 0 past 365 days; email bodies: 0 past 30 days; support attempts: 0 past 90 days
+```
+
+(The numbers after "past" are whatever the owner published; the zeros are what a
+steady state looks like on a young host.) One caveat that is not a fault: the
+per-tenant `audit_log` limb reads `audit_log_retention_days` through
+`EffectivePlanService`, and `retention.job.ts`'s header states that with
+subscriptions off — `BILLING_ENABLED` defaults to `false` in `x-app-env`, which
+is what this box runs — every integer feature resolves to the `UNLIMITED_INT`
+sentinel. Retention is **lifted**, not zero;
+the job skips those tenants and reports `N tenant(s) on unlimited retention —
+nothing to enforce`. Deleting a library's audit history while the product tells
+them their retention is unlimited would be the same class of bug as not deleting
+at all.
 
 ---
 
@@ -2380,23 +4715,46 @@ uses the same guard for the same reason.
 | **502/504**   | Caddy reached, upstream failed                         | §9.2                       |
 | Redirect loop | SSL/TLS mode is Flexible, not Full (strict)            | fix the zone setting, §5.4 |
 
-For a 522, from the box:
+For a 522, from the box — these are the checks that mean something:
 
 ```bash
 dc ps caddy
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost/healthz
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost/healthz   # expect 200
 sudo ss -tlnp | grep -E ':(80|443)'
+sudo bash /srv/libriant/app/scripts/prod-bootstrap.sh --firewall-status
 ```
 
-Then from your laptop: `nmap -Pn -p 80,443 195.201.13.95`.
+> **Do not start with `nmap` from your laptop, and do not read `open` as good.**
+> Once §3.2c's `firewall` step has run, the origin drops everything that is not
+> a Cloudflare range — so from your laptop `nmap -Pn -p 22,80,443 195.201.13.95`
+> **should** report 22 open and 80/443 **filtered**, on both address families,
+> and that is the _healthy_ state. `filtered` here is not evidence of a fault.
+> `open` on 80/443 means the lockdown is **not** applied, which is a different
+> problem (an exposed origin) and never the cause of a 522.
 
-**Fix.**
+**Fix**, in the order these actually occur:
 
 - Caddy not running → `dc up -d caddy`, then `dc logs --tail=100 caddy`.
-- Caddy running but ports closed externally → something changed in
-  `DOCKER-USER`/ufw. `sudo iptables -S DOCKER-USER; sudo ip6tables -S DOCKER-USER`.
-- Ports open and Caddy healthy → the fault is Cloudflare-side: check the record
-  still points at `195.201.13.95` and is proxied, and check SSL/TLS mode.
+- `curl` to `localhost/healthz` does not return 200 → the edge itself is broken,
+  not the network. §9.2.
+- **Everything above is healthy, the lockdown is applied, and it was working
+  yesterday → the Cloudflare range list has drifted.** This is the failure
+  §3.2c warns about and it presents as _a 522 with a perfectly healthy stack
+  behind it_: Cloudflare added an egress range, your DROP rule does not know it,
+  and the origin now refuses the very traffic the edge is sending. Check
+  <https://www.cloudflare.com/ips> against **all three** places that carry the
+  list (§3.2c's table — the two `Caddyfile` snippets and `prod-bootstrap.sh`)
+  before touching anything else. Updating the Caddyfile and forgetting the
+  script produces exactly this.
+- `--firewall-status` reports the chain exists but the jump is in only one
+  parent → an interrupted lockdown run. The script inserts into both `INPUT`
+  and `DOCKER-USER`; a partial state is §3.2c's territory.
+- Origin healthy, lockdown correct, ranges current → the fault is
+  Cloudflare-side: check the record still points at `195.201.13.95` and is
+  proxied, and check SSL/TLS mode (§5.4).
+- **A 522 on the v6 path only, while every v4 check passes** → somebody created
+  an `AAAA` record. There must not be one; the origin publishes on IPv4 only
+  (§5.4 step 5).
 
 **Tell the customer.** This is a full outage of the app _and_ the marketing site.
 `MAINTENANCE_HARD` cannot help — it lives in the thing that is down. Use email
@@ -2434,21 +4792,37 @@ a system-mode window (§9.10) — but read the caveats there first.
 
 ### 9.3 Redis down
 
-**This is the worst failure mode in the system and it does not look like Redis.**
+**This used to be the worst failure mode in the system, and it did not look like
+Redis.** `boot-and-config-01` / `reliability-02`: `SystemModeMiddleware` runs on
+`forRoutes('*')` and its `ALWAYS_PASS` branch awaited `resolveGlobal()` → a Redis
+`GET` with `enableOfflineQueue: false`, and `readCache`/`writeCache` had no
+catch. Every route returned 500 — including `/healthz`, `/readyz`, `/metrics`,
+and the `/admin/system-mode` recovery lever itself.
 
-**Confirm.** Every route returns 500 — including `/healthz`, `/readyz`,
-`/metrics`, and the `/admin/system-mode` recovery lever itself.
+**It is closed, and the rule it was closed with is worth carrying:**
+
+- a **cache** that cannot be read is a **miss** — read through to the source,
+  which is still reachable, and do not fail the request;
+- a **store** that cannot be written must **fail**, loudly and by name — Redis is
+  where a password-reset token actually lives, so a swallowed write means a link
+  that can never be redeemed, which is worse than an error.
+
+So expect a Redis outage to be **degraded, not fatal**: pages render, sign-in
+still works, rate limiting and system mode fall back to their last known values,
+and anything that mints a token refuses with a named error. The first fix for
+this was refuted once, because the middleware and the tenant resolver had been
+made resilient while five other services still called `redis.client` bare, so:
+**if a Redis outage does take the site down, that is a regression, and the shape
+to look for is a bare `redis.client` call on a request path.**
+
+**Confirm.**
 
 ```bash
 dc ps redis
 dc exec -T redis redis-cli ping        # expect PONG
 dc logs --tail=100 redis
+dc logs --since 10m api | grep -i 'degraded\|Stream isn'"'"'t writeable'
 ```
-
-**Why.** `SystemModeMiddleware` runs on `forRoutes('*')` and its `ALWAYS_PASS`
-branch still awaits `resolveGlobal()` → a Redis `GET` with
-`enableOfflineQueue: false`. `readCache`/`writeCache` have no catch, in both
-`SystemModeService` and `TenantResolverService`. `BLOCKER boot-and-config-01`.
 
 **Fix.**
 
@@ -2462,9 +4836,12 @@ is needed, no data is lost. If Redis was OOM-killed, see §9.6; if its data volu
 is corrupt, `dc stop redis && sudo mv /mnt/libriant/redis/appendonlydir{,.bad} && dc up -d redis`
 — you lose queued jobs and rate-limit counters, not durable data.
 
-**During the outage, the in-app maintenance lever does not work.** The only
-maintenance mode available is `MAINTENANCE_HARD` on Caddy — and see §9.10 about
-whether even that fires.
+**During the outage the in-app maintenance lever still answers**, because
+`/admin/system-mode/*` is in `ALWAYS_PASS` and that branch degrades rather than
+throwing. What it cannot do is _persist_ a new window if the write leg needs
+Redis, so read the response rather than assuming. If you need a takeover that
+touches nothing behind Caddy, that is `MAINTENANCE_HARD` — and see §9.10 about
+whether it fires at all.
 
 ### 9.4 Postgres down
 
@@ -2562,12 +4939,21 @@ docker stats --no-stream
 free -h; swapon --show
 ```
 
-**The usual cause is the export worker.** `BLOCKER performance-01`: it buffers
-every row of every table in memory **before** the `MAX_EXPORT_ROWS` check. One
-table alone reached RSS 1462 MB against `WORKER_MEM_LIMIT=1g`. All five queue
-consumers live in **one process**, so the kill takes down the email outbox,
-imports and all nine cron sweeps for **every** tenant. BullMQ's stalled checker
-re-runs it once and then fails it — two kills, not a loop.
+**The usual cause used to be the export worker, and `performance-01` closed
+it.** It buffered every row of every table in memory **before** the row-count
+check, so one table alone reached RSS 1462 MB against `WORKER_MEM_LIMIT=1g`. The
+export now refuses an oversized run **before a single row is read** — using
+`reltuples` and `pg_table_size` out of `pg_class`, which is an estimate that
+costs no scan and no allocation — and then streams with a cursor whose batch
+targets **8 MiB of row payload**, deriving the row count from what the previous
+FETCH actually measured. A fixed row count is not a memory bound; the tenant
+schema has unbounded `text` columns, so the tenant, not the constant, decided how
+much memory 5,000 rows was.
+
+It still matters that **all five queue consumers live in one process**: whatever
+kills the worker takes down the email outbox, the imports and all the cron sweeps
+for **every** tenant with it. BullMQ's stalled checker re-runs the job once and
+then fails it — two kills, not a loop.
 
 **Fix now.**
 
@@ -2576,9 +4962,10 @@ dc up -d worker
 docker inspect --format '{{.State.Health.Status}}' libriant-worker-1
 ```
 
-Then find and cancel the offending export. Raising `WORKER_MEM_LIMIT` in
-`.env.prod` (§10.2) buys headroom on a 62 GiB box and is a reasonable stopgap —
-it does not fix the unbounded buffer.
+Then find what was running. Raising `WORKER_MEM_LIMIT` in `.env.prod` (§10.2)
+buys headroom on a 62 GiB box and is cheap; with the buffer bounded, a worker
+that is still being OOM-killed is telling you about something new, so read
+`dmesg` for what was actually resident rather than assuming exports.
 
 `next build` during a deploy can also be OOM-killed (exit 137). On this box, with
 62 GiB and 8 GiB of swap, that is unlikely; if it happens, build one service at a
@@ -2596,17 +4983,18 @@ dc ps
 dc logs migrate | tail -80
 ```
 
-| Failure                                                                      | Meaning                                                                                                              | Fix                                                                                                           |
-| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `is not a git checkout` / `.env.prod is missing` / `$DATA_ROOT/x is missing` | preflight                                                                                                            | §3.5–3.7                                                                                                      |
-| `origin certificate missing`                                                 | preflight                                                                                                            | §3.7b                                                                                                         |
-| `dc build` exit 137                                                          | OOM                                                                                                                  | build one service at a time                                                                                   |
-| `dc build` fails in the site build                                           | a `[PLACEHOLDER]` in `apps/site/site.config.json`                                                                    | fix the config; this fails the **Caddy image**, not just a page                                               |
-| `Caddyfile is invalid`                                                       | usually **not** the Caddyfile — the origin cert is missing, and `validate` provisions file certificates              | §3.7b                                                                                                         |
-| `permission denied … docker daemon socket`                                   | `deploy` is not effectively in the `docker` group                                                                    | §3.4                                                                                                          |
-| migrate log ends in `FATAL: control-plane migration failed … P3009`          | **`supply-chain-06`.** Ignore the P3009 advice. Scroll up for `Failed to create cache directory … /opt/corepack/v1`. | §3.0                                                                                                          |
-| genuine P3009 / drift                                                        | a real failed migration                                                                                              | `dc run --rm --no-deps migrate sh -lc 'cd /app && pnpm prisma migrate status'` and resolve before redeploying |
-| gate times out at 180 s with api unhealthy                                   | app-level                                                                                                            | §9.2                                                                                                          |
+| Failure                                                                                                                                                             | Meaning                                                                                                                                                                                                           | Fix                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `is not a git checkout` / `.env.prod is missing` / `$DATA_ROOT/x is missing`                                                                                        | preflight                                                                                                                                                                                                         | §3.5–3.7                                                                                                      |
+| `origin certificate missing`                                                                                                                                        | preflight                                                                                                                                                                                                         | §3.7b                                                                                                         |
+| `dc build` exit 137                                                                                                                                                 | OOM                                                                                                                                                                                                               | build one service at a time                                                                                   |
+| `dc build` fails in the site build                                                                                                                                  | a `[PLACEHOLDER]` in `apps/site/site.config.json`                                                                                                                                                                 | fix the config; this fails the **Caddy image**, not just a page                                               |
+| `Caddyfile is invalid`                                                                                                                                              | usually **not** the Caddyfile — the origin cert is missing, and `validate` provisions file certificates                                                                                                           | §3.7b                                                                                                         |
+| `permission denied … docker daemon socket`                                                                                                                          | `deploy` is not effectively in the `docker` group                                                                                                                                                                 | §3.4                                                                                                          |
+| migrate log ends in `[bootstrap] FATAL: control-plane migration failed … P3009`                                                                                     | a real failed migration or drift. (This used to be `supply-chain-06` masquerading as P3009; corepack is gone, so take the P3009 at face value now — but scroll up anyway and read the first error, not the last.) | `dc run --rm --no-deps migrate sh -lc 'cd /app && pnpm prisma migrate status'` and resolve before redeploying |
+| migrate log ends in `[bootstrap] FATAL: help-centre ingest failed` / `… one or more tenant databases did not migrate` / `… could not create/verify the first admin` | all three are **fatal** now (`launch-readiness-15`, `boot-and-config-04`)                                                                                                                                         | §3.9's table                                                                                                  |
+| deploy dies **after** `▸ Healthy:`                                                                                                                                  | the monitoring stack — step 11. `alerts.yml` did not parse, `alertmanager.yml` is missing or invalid, or prometheus/node-exporter was not running ten seconds after `up -d`                                       | read the message; it names which. The app is up and unaffected.                                               |
+| gate times out at 180 s with api unhealthy                                                                                                                          | app-level                                                                                                                                                                                                         | §9.2                                                                                                          |
 
 **Rollback:** `bash scripts/deploy-on-host.sh --ref <previous-sha>`. Get the sha
 from `git -C /srv/libriant/app log --oneline -10`.
@@ -2659,19 +5047,24 @@ dc exec -T postgres psql -U libriant -d libriant_control -c \
 | tenant DB missing extensions (after a restore)                                    | `postgres-init.sql` only runs on an empty PGDATA — create them by hand                     |
 | stale cached tenant record                                                        | the Redis key is `tenant:slug:<slug>`; `dc exec -T redis redis-cli del tenant:slug:<slug>` |
 | this tenant only, needs a window                                                  | per-tenant system mode: `POST /admin/system-mode/tenants/:tenantId` (§9.10)                |
-| uploads 500                                                                       | `BLOCKER data-integrity-01` — see below                                                    |
+| uploads 500                                                                       | not tenant-specific — see below                                                            |
 
-> **`BLOCKER data-integrity-01`: every file upload returns HTTP 500 in the launch
-> configuration.** The unlimited-plan `MAX_SAFE_INTEGER` sentinel overflows a
-> Postgres `bigint`. If a library reports that cover images will not upload, this
-> is why, and it is not tenant-specific — it is the configuration.
+> **`data-integrity-01` — closed, and it is the first thing to rule out if
+> uploads 500 for everybody.** With subscriptions off every int limit resolves to
+> the unlimited sentinel, whose byte ceiling was ~1024× the `int8` maximum;
+> Prisma bound it into the quota reservation as an `int8` and Postgres refused
+> the statement with SQLSTATE 22003, so every cover, member photo, logo and MARC
+> upload came back as an opaque 500. There is now always a real ceiling — on the
+> unlimited path simply what the column can hold — and a second guard behind it.
+> If uploads 500 again, look for SQLSTATE 22003 in the api log first: the failure
+> is a **configuration**-wide one, not a tenant's.
 
 ### 9.10 The customer-facing levers
 
 The product ships three. **The incident docs it replaces never mention any of
 them.** Each has a caveat you need before you pull it.
 
-**a. System mode (the normal lever).** Owner-only, in the admin panel at
+**9.10a System mode (the normal lever).** Owner-only, in the admin panel at
 `https://admin.libriant.com/admin/system-mode`, or via the API on the admin host.
 
 | Mode                     | Effect                                                                         |
@@ -2702,17 +5095,26 @@ but at 3am, use the UI.
 a window can always be lifted. `/admin/*` and `/auth/admin/*` honour
 `allowAdminBypass`, and active impersonation sessions pass.
 
-> **Two caveats before you pull it.**
+> **Two things that used to make this lever unusable, and are now fixed. Both
+> are worth knowing, because both failure shapes recur.**
 >
-> 1. **If Redis is down, the lever itself 500s** (`boot-and-config-01`, §9.3).
-> 2. **Signed-in tenant users currently crash instead of seeing the takeover
->    screen** (`frontend-03`, high): the tenant layout awaits
->    `Promise.all([currentSystemMode, currentImpersonation])` before the takeover
->    branch, and `currentImpersonation` rethrows non-401/403. Anonymous visitors
->    are fine. Prefer `read_only` over `maintenance` where it will do, and expect
->    complaints from logged-in staff.
+> 1. **A Redis outage no longer 500s the lever** (`boot-and-config-01`, §9.3).
+>    `/admin/system-mode/*` is in `ALWAYS_PASS` and that branch degrades to the
+>    last known mode rather than throwing.
+> 2. **Signed-in tenant users see the takeover screen** (`frontend-03`). The
+>    tenant layout used to resolve `currentSystemMode` and `currentImpersonation`
+>    in one `Promise.all`; the always-pass list does not cover
+>    `/support/impersonation/me`, so that probe 503s during a maintenance window
+>    and the combined promise rejected before the takeover branch could be
+>    evaluated — every signed-in librarian got a crash instead of the page. System
+>    mode now resolves first, on its own, and the impersonation probe fails soft
+>    to `null`.
+>
+> **UNVERIFIED end to end**: nobody has opened a real maintenance window against
+> a running stack and watched what a signed-in librarian sees. Do it on a calm
+> afternoon with one tenant, not during an incident.
 
-**b. `MAINTENANCE_HARD` (the edge fallback).** Caddy-only, meant to survive a
+**9.10b `MAINTENANCE_HARD` (the edge fallback).** Caddy-only, meant to survive a
 total app outage — it serves `maintenance.html` from disk without touching
 upstream, on the app and admin vhosts. The marketing site deliberately keeps
 serving.
@@ -2748,13 +5150,13 @@ the placeholder is substituted by the Caddyfile lexer at parse time.
 
 Turn it off by setting `MAINTENANCE_HARD=false` and recreating caddy again.
 
-**c. Announcements.** A banner pushed to tenants, managed at
+**9.10c Announcements.** A banner pushed to tenants, managed at
 `/admin/announcements` (`POST /admin/announcements`, `POST /admin/announcements/:id/expire`,
 `GET /admin/announcements/:id/stats`), with per-tenant tag targeting. Use this
 for planned work and for the "we're back" message. Users can dismiss and
 acknowledge.
 
-**d. What you cannot do.** `EMAIL_DRIVER=console` means the platform sends
+**9.10d What you cannot do.** `EMAIL_DRIVER=console` means the platform sends
 **nothing** — no incident mail, no status update, no password reset. Every
 customer communication is you, from a personal mailbox, by hand. Plan for that.
 
@@ -2779,7 +5181,7 @@ than a matter of taste.
 platform composes mail and delivers none of it (§9.10d). Nothing here may be
 left to the product to send.
 
-#### a. Does anyone have to be told?
+#### 9.11a Does anyone have to be told?
 
 | Situation                                                                   | Tell them | How                                            |
 | --------------------------------------------------------------------------- | --------- | ---------------------------------------------- |
@@ -2792,7 +5194,7 @@ left to the product to send.
 Greek public libraries open in the morning. An outage at 03:00 that is fixed by
 07:00 is an incident-log entry; the same outage at 10:00 is an e-mail.
 
-#### b. Who, and where their addresses are
+#### 9.11b Who, and where their addresses are
 
 There is no mailing list. The addresses are rows in the control plane, and this
 is how you get them out:
@@ -2816,7 +5218,7 @@ first is often a shared departmental mailbox nobody reads on a Saturday.
 query cannot be run. Export it after each new library is provisioned and keep it
 where you can reach it from a phone.
 
-#### c. Personal-data breach — the one with a clock
+#### 9.11c Personal-data breach — the one with a clock
 
 The DPA we sign with every library says, in full
 (`locales/{en,el}/legal/dpa.md` §10):
@@ -2858,11 +5260,24 @@ a wish-list:
    `[DPO EMAIL]` / `[CONTACT EMAIL]` and the libraries are entitled to a real
    one before they sign.]**
 
+**`BLOCKER privacy-legal-01`** lives here. `pnpm check:legal` passes — it only
+proves no author-facing text escapes into the rendered pages — and then prints
+the register of unfilled brackets, which today is dozens across both locales:
+the registered entity, its address and VAT number, the DPO and contact
+addresses, the liability cap, the sub-processor list, the retention periods
+§8.6 needs. Until that register is empty and counsel has reviewed the result,
+**the legal pages must not go live and no library may be asked to sign the
+DPA.** Run it and read the list:
+
+```bash
+pnpm check:legal
+```
+
 If members' data is involved, remember whose it is: for their members the
 library is the controller and we are the processor. We do not contact their
 members. They do, and we give them what they need to do it.
 
-#### d. The holding message
+#### 9.11d The holding message
 
 Send this before you know the cause. Fill in the four blanks, send it, and do
 not wait for a fifth.
@@ -2899,7 +5314,7 @@ Two rules, and they are the whole point of having a template: **the next-update
 time is a promise you keep even when there is no progress**, and **never write
 "your data is safe" until you have checked that it is.**
 
-#### e. Afterwards
+#### 9.11e Afterwards
 
 Within a working day of the fix: one more message saying what happened, what was
 affected, and what changed so it does not happen again. Same recipients, no
@@ -2955,32 +5370,37 @@ the drive is a Hetzner Robot ticket. Do not reboot casually while degraded.
 
 ### 10.2 Resource caps, and when to raise them
 
-Eight knobs, all interpolated by compose from `.env.prod`, all **undocumented in
-the template** — add them yourself:
+Eight pairs on the app stack, all interpolated by compose from `.env.prod`, all
+**undocumented in the template** — add them yourself:
 
 ```
-CADDY_MEM_LIMIT=256m    CADDY_CPUS=1
-API_MEM_LIMIT=1g        API_CPUS=1.5
-WEB_MEM_LIMIT=768m      WEB_CPUS=1
-WORKER_MEM_LIMIT=1g     WORKER_CPUS=1
-PG_MEM_LIMIT=2g         PG_CPUS=2
-PGBOUNCER_MEM_LIMIT=256m PGBOUNCER_CPUS=0.5
-REDIS_MEM_LIMIT=512m    REDIS_CPUS=1
+CADDY_MEM_LIMIT=256m           CADDY_CPUS=1
+API_MEM_LIMIT=1g               API_CPUS=1.5
+WEB_MEM_LIMIT=768m             WEB_CPUS=1
+WORKER_MEM_LIMIT=1g            WORKER_CPUS=1
+PG_MEM_LIMIT=2g                PG_CPUS=2
+PGBOUNCER_MEM_LIMIT=256m       PGBOUNCER_CPUS=0.5
+PGBOUNCER_PROBE_MEM_LIMIT=128m PGBOUNCER_PROBE_CPUS=0.25
+REDIS_MEM_LIMIT=512m           REDIS_CPUS=1
 ```
 
-Defaults total **5.75 GiB** against 62 GiB, and **8.0 cpus** against 8 threads.
-Memory is nowhere near the ceiling; CPU is fully committed at the caps, which is
-fine (they are limits, not reservations) but means a busy Postgres and a busy
-build compete.
+Five more live on the monitoring overlay — `PROM_MEM_LIMIT=512m` / `PROM_CPUS=0.5`,
+`NODE_EXPORTER_*` 128m/0.25, `ALERTMANAGER_*` 128m/0.25, `CADVISOR_*` 256m/0.5,
+`GRAFANA_*` 384m/0.5 — plus `PROM_RETENTION_SIZE=2GB` for the TSDB.
+
+Defaults on the app stack total **5.875 GiB** against 62 GiB, and **8.25 cpus**
+against 8 threads. Memory is nowhere near the ceiling; CPU is slightly
+over-committed at the caps, which is fine (they are limits, not reservations) but
+means a busy Postgres and a busy build compete.
 
 Raise when:
 
-| Signal                                    | Change                                                                                                                                           |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| worker OOM-killed on exports (§9.6)       | `WORKER_MEM_LIMIT=3g` — a stopgap, not a fix for `performance-01`                                                                                |
-| Postgres cache hit ratio < 0.95 sustained | `PG_MEM_LIMIT=8g` **and** actual Postgres tuning                                                                                                 |
-| `next build` exit 137                     | not a cap — that is the host; build one service at a time                                                                                        |
-| Redis memory climbing toward 512m         | raise `REDIS_MEM_LIMIT` **and** set a real `--maxmemory` below it. Measured at 50 seeded tenants: 1.4 MB. A long-horizon risk, not a launch one. |
+| Signal                                         | Change                                                                                                                                                                                                                                                              |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| worker OOM-killed (§9.6)                       | `WORKER_MEM_LIMIT=3g`. `performance-01` bounded the export buffer, so a kill now means something else — read `dmesg` before you raise anything.                                                                                                                     |
+| Postgres cache hit ratio < 0.95 sustained      | `PG_MEM_LIMIT=8g` **and** actual Postgres tuning                                                                                                                                                                                                                    |
+| `next build` exit 137                          | not a cap — that is the host; build one service at a time                                                                                                                                                                                                           |
+| Redis memory climbing toward `REDIS_MAXMEMORY` | raise **four numbers together**, never one: `REDIS_MEM_LIMIT`, `REDIS_MAXMEMORY`, and both `LibriantRedisMemory*` thresholds in `alerts.yml`, which are absolute byte counts. §4.2d. Measured at 50 seeded tenants: 1.4 MB — a long-horizon risk, not a launch one. |
 
 > **Postgres tuning is not settable from `.env.prod`.** The compose file sets the
 > Postgres command inline to only `shared_preload_libraries=pg_stat_statements`
@@ -3032,6 +5452,35 @@ CONTROL_DATABASE_URL=… REDIS_URL=… pnpm tenant:relocate \
   --tenant=<slug> --drop-source --allow-remote --yes
 ```
 
+**Moving a tenant's files is a second, separate operation.**
+`tenant-relocate.ts` moves the database and rewrites `tenants.db_url`; it does
+not touch `tenants.storage_url`. Covers, member photos and branding stay exactly
+where they were.
+
+```bash
+CONTROL_DATABASE_URL=… REDIS_URL=… pnpm storage:migrate \
+  --tenant=<slug> \
+  --to-storage-url='file:///mnt/libriant-2/storage/<tenant-id>' \
+  --dry-run
+```
+
+Same env prefix and the same reason as `tenant:relocate` — without
+`CONTROL_DATABASE_URL` it dies with `Error: CONTROL_DATABASE_URL is not set`
+before doing anything.
+
+It has the same lifecycle: it opens a per-tenant `read_only` window,
+`rsync -a --delete`s source→destination, verifies with a second `rsync` in
+dry-run/itemize mode that the two are identical, updates `storage_url`, busts the
+`TenantResolver` Redis cache (the storage URL is baked into `TenantContext`),
+then closes the window. A failure leaves the window **open** so a human
+can investigate while librarians see a clean 503-with-explanation rather than
+500s or stale reads.
+
+**`file://` → `file://` only.** Any other scheme dies immediately and cleanly
+with `only file://→file:// is implemented today. Got s3://… → file://…`. The
+wiring for `s3://` and `smb://` is in place; the per-scheme sync command is not.
+Do not plan a storage-backend swap around this script today.
+
 And do NOT write `pnpm tenant:relocate -- --tenant=…`. pnpm 11 forwards that
 literal `--` to the script, where `node:util#parseArgs` reads it as the
 end-of-options marker and discards every flag after it: the run dies with
@@ -3060,21 +5509,31 @@ ssh -L 3300:127.0.0.1:3300 deploy@195.201.13.95     # Grafana tunnel
 
 ### Paths
 
-|                            |                                                                     |
-| -------------------------- | ------------------------------------------------------------------- |
-| Checkout                   | `/srv/libriant/app`                                                 |
-| Secrets                    | `/srv/libriant/.env.prod` (600 deploy:deploy)                       |
-| Data root                  | `/mnt/libriant` (`vg0-data`, 250 GiB)                               |
-| Postgres / Redis / uploads | `/mnt/libriant/{postgres,redis,storage}`                            |
-| Origin cert                | `/mnt/libriant/caddy/origin/{origin.crt,origin.key}`                |
-| Backups                    | `/mnt/libriant/backups/YYYYMMDD/`                                   |
-| Backup log                 | `/var/log/libriant/backup.log` (rotated by nothing; kilobytes/year) |
-| Container logs             | `dc logs` — json-file on the **boot disk**                          |
-| Caddy access log           | inside `caddy_logs`, on the **boot disk**                           |
+|                              |                                                                                                                                                                                                                           |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Checkout                     | `/srv/libriant/app`                                                                                                                                                                                                       |
+| **This runbook, on the box** | `/srv/libriant/app/docs/RUNBOOK.md` — but only after §3.6's `checkout` (step 9 of 16). Before that, the only copy is the one on your laptop; §3's "Getting the script onto a box with no checkout" is the same situation. |
+| Secrets                      | `/srv/libriant/.env.prod` (600 deploy:deploy)                                                                                                                                                                             |
+| Secrets, on-volume copy      | `/mnt/libriant/env/.env.prod` (700 dir; the first recovery source)                                                                                                                                                        |
+| Data root                    | `/mnt/libriant` (`vg0-data`, 250 GiB)                                                                                                                                                                                     |
+| Postgres / Redis / uploads   | `/mnt/libriant/{postgres,redis,storage}`                                                                                                                                                                                  |
+| Origin cert                  | `/mnt/libriant/caddy/origin/{origin.crt,origin.key}`                                                                                                                                                                      |
+| Backups                      | `/mnt/libriant/backups/YYYYMMDD/`                                                                                                                                                                                         |
+| Backup log                   | `/var/log/libriant/backup.log` (rotated by nothing; kilobytes/year)                                                                                                                                                       |
+| Backup metric                | `/var/lib/node_exporter/textfile/libriant_backup.prom` (§8.1b)                                                                                                                                                            |
+| Backup cron                  | `/etc/cron.d/libriant-backup` (§8.2)                                                                                                                                                                                      |
+| Installer state + log        | `/var/lib/libriant-install/` (0700 root; `install.log` at 0600)                                                                                                                                                           |
+| Container logs               | `dc logs` — json-file on the **boot disk**                                                                                                                                                                                |
+| Caddy access log             | inside `caddy_logs`, on the **boot disk**                                                                                                                                                                                 |
 
 ### Commands
 
 ```bash
+# provisioning / verification (root; the script is self-contained)
+sudo bash /srv/libriant/app/scripts/install-server.sh --status        # what is done
+sudo bash /srv/libriant/app/scripts/install-server.sh --verify-only   # read-only checks
+sudo bash /srv/libriant/app/scripts/install-server.sh --from <step>   # resume
+
 # state
 dc ps
 docker inspect --format '{{.Name}} {{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' $(docker ps -q)
@@ -3115,14 +5574,24 @@ echo | openssl s_client -connect 127.0.0.1:443 -servername libriant.com 2>/dev/n
   | openssl x509 -noout -subject -dates -ext subjectAltName
 sudo openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -checkend 2592000 -dates
 
-# backup / restore  (env prefix is NOT optional)
+# backup  (env prefix is NOT optional)
 set -a; . /srv/libriant/.env.prod; set +a
 BACKUP_ROOT=/mnt/libriant/backups STORAGE_DIR=/mnt/libriant/storage \
   COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml \
-  bash scripts/backup.sh
+  BACKUP_TEXTFILE_DIR=/var/lib/node_exporter/textfile \
+  bash scripts/backup.sh --preflight        # config gates only, no data touched
 BACKUP_ROOT=/mnt/libriant/backups STORAGE_DIR=/mnt/libriant/storage \
   COMPOSE_FILE=/srv/libriant/app/infra/compose/docker-compose.prod.yml \
-  bash scripts/restore.sh <YYYYMMDD> --yes
+  BACKUP_TEXTFILE_DIR=/var/lib/node_exporter/textfile \
+  bash scripts/backup.sh
+cat /var/lib/node_exporter/textfile/libriant_backup.prom
+
+# restore — scripts/restore.sh EXITS 127 BEFORE DOING ANYTHING TODAY.
+#   The working path is §8.3a, by hand. Load the libraries FIRST:
+#     . scripts/_lib/pg-restore-filter.sh; . scripts/_lib/storage-archive.sh
+#     . scripts/_lib/backup-crypt.sh
+#   Then decrypt, and DO NOT SKIP the count assertion — it must print exactly 2:
+#     gunzip -c /tmp/postgres.sql.gz | pg_restore_filter_count libriant
 
 # grow the data volume (online)
 sudo vgs && sudo lvextend -L +50G /dev/vg0/data && sudo resize2fs /dev/mapper/vg0-data
@@ -3132,17 +5601,20 @@ nmap -Pn -p 22,80,443,5432,6379 195.201.13.95
 nmap -6 -Pn -p 22,80,443 2a01:4f8:13b:ac8::2
 ```
 
-### Five things to remember
+### Six things to remember
 
 1. `/healthz` is a **static 200 from Caddy** on every host. It proves nothing.
 2. Docker **does not restart an unhealthy container**, and `dc stop` + reboot
    leaves the stack down. `dc up -d`.
 3. `deploy-on-host.sh` runs **`git reset --hard`**. Host-local edits to tracked
    files are gone.
-4. **`STORAGE_DIR=/mnt/libriant/storage` on every restore**, or it recovers zero
-   uploads and tells you it succeeded.
-5. `MFA_MASTER_KEY`, `POSTGRES_PASSWORD` and the origin cert are **in no backup**.
-   The password manager is the only copy.
+4. **Carry the full env prefix on every backup invocation** — `BACKUP_ROOT` is
+   not in `.env.prod` and the script's own default is the boot disk.
+5. `MFA_MASTER_KEY`, `POSTGRES_PASSWORD`, the origin cert **and the backup key**
+   are in no backup. The password manager is the only copy — and losing the
+   backup key makes every backup you hold unreadable.
+6. **The origin has no `AAAA` records, on purpose.** Adding one gives you a 522
+   on the v6 path only, intermittently. §5.4.
 
 ---
 
@@ -3152,36 +5624,75 @@ Things nobody has measured. Each is flagged inline where you would use it; this
 is the list to work through on a calm afternoon.
 
 This is **not** the complete set. The recon that produced this document recorded
-88 unknowns across seven areas; the 16 below are the ones that sit under an
+88 unknowns across seven areas; the 21 below are the ones that sit under an
 instruction someone will actually follow. The full register is the `unknowns`
 arrays in `docs/runbook-rewrite-2026-08-23/RECON.json`.
 
-| #   | Unknown                                                                                                                                                                                                         | How to settle it                                                                          |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| 1   | Does the corepack fix actually make `migrate` pass end to end?                                                                                                                                                  | §3.0 build probe with `--network none`                                                    |
-| 2   | Caddy directive order — does `/lbr-api/*` really win over the catch-all?                                                                                                                                        | §2, `caddy adapt`                                                                         |
-| 3   | Does `MAINTENANCE_HARD` fire at all, or is the `vars` matcher dead?                                                                                                                                             | §9.10b, `caddy adapt` with the flag on                                                    |
-| 4   | Does `edoburu/pgbouncer:v1.25.2-p0` contain `pg_isready`?                                                                                                                                                       | `docker run --rm --entrypoint sh edoburu/pgbouncer:v1.25.2-p0 -c 'command -v pg_isready'` |
-| 5   | Is `LANG=el_GR.UTF-8` a no-op on `postgres:16-alpine`?                                                                                                                                                          | `docker run --rm postgres:16-alpine locale -a`                                            |
-| 6   | Which Postgres client major do the api/worker images carry? A 17/18 client emits `SET transaction_timeout = 0;` which 16 rejects — it would break the customer-facing SQL export the way it once broke restore. | `dc run --rm --no-deps --entrypoint sh api -c 'pg_dump --version; psql --version'`        |
-| 7   | Does Docker's apt repo publish a suite for Ubuntu 26.04?                                                                                                                                                        | §3.3                                                                                      |
-| 8   | What IP do the `@` and `admin` records actually point at?                                                                                                                                                       | Cloudflare dashboard → DNS                                                                |
-| 9   | Zone SSL/TLS mode, Always Use HTTPS source, Bot Fight Mode, security level                                                                                                                                      | Cloudflare dashboard / API                                                                |
-| 10  | Does an Origin CA cert for `libriant.com, *.libriant.com` already exist? Is it in the password manager?                                                                                                         | Cloudflare → SSL/TLS → Origin Server                                                      |
-| 11  | Does `docker volume inspect libriant_storage` report the bind target or the `/var/lib/docker` path — and does the bind persist while api/worker are stopped (i.e. during a restore)?                            | §8, `findmnt` before and after `dc stop api worker`                                       |
-| 12  | Real RTO, at production data volume                                                                                                                                                                             | §8.5 drill                                                                                |
-| 13  | `next build` peak memory and `/var/lib/docker` growth on this box                                                                                                                                               | `docker system df` after the first cold build                                             |
-| 14  | Does the web container's baked-asset fallback resolve inside the Next.js server bundle? Nothing checks it — `/api/healthz` does not read assets.                                                                | `dc exec -T web sh -c 'ls -l /app/assets/manifest.json /app/locales/el/common.json'`      |
-| 15  | Do the four monitoring image pins still work on this host's cgroup version?                                                                                                                                     | §7.2                                                                                      |
-| 16  | Does `DEPLOY_KNOWN_HOSTS` still pin the dead box?                                                                                                                                                               | `gh secret list`, then `ssh-keyscan` compared out-of-band against the Hetzner console     |
+| #   | Unknown                                                                                                                                                                                                                                           | How to settle it                                                                                                                                                 |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Does the corepack fix actually make `migrate` pass end to end?                                                                                                                                                                                    | §3.0 build probe with `--network none`                                                                                                                           |
+| 2   | Caddy directive order — does `/lbr-api/*` really win over the catch-all?                                                                                                                                                                          | §2, `caddy adapt`                                                                                                                                                |
+| 3   | Does `MAINTENANCE_HARD` fire at all, or is the `vars` matcher dead?                                                                                                                                                                               | §9.10b, `caddy adapt` with the flag on                                                                                                                           |
+| 4   | Does the origin lockdown actually hold? It has never run on a live box, and a wrong range list takes the site down.                                                                                                                               | §3.2c, then the external `nmap` over both families                                                                                                               |
+| 5   | Did initdb really record `el-GR` ICU collation? It is asserted once, on the first run, and cannot be changed afterwards without a full reindex.                                                                                                   | `dc exec postgres psql -U libriant -d libriant_control -c "SHOW lc_collate; SELECT datcollate, daticulocale FROM pg_database WHERE datname='libriant_control';"` |
+| 6   | Which Postgres client major do the api/worker images carry? A 17/18 client emits `SET transaction_timeout = 0;` which 16 rejects — it would break the customer-facing SQL export the way it once broke restore.                                   | `dc run --rm --no-deps --entrypoint sh api -c 'pg_dump --version; psql --version'`                                                                               |
+| 7   | Does Docker's apt repo publish a suite for Ubuntu 26.04?                                                                                                                                                                                          | §3.3                                                                                                                                                             |
+| 8   | What IP do the `@` and `admin` records actually point at?                                                                                                                                                                                         | Cloudflare dashboard → DNS                                                                                                                                       |
+| 9   | Zone SSL/TLS mode, Always Use HTTPS source, Bot Fight Mode, security level                                                                                                                                                                        | Cloudflare dashboard / API                                                                                                                                       |
+| 10  | Does an Origin CA cert for `libriant.com, *.libriant.com` already exist? Is it in the password manager?                                                                                                                                           | Cloudflare → SSL/TLS → Origin Server                                                                                                                             |
+| 11  | Does `docker volume inspect libriant_storage` report the bind target or the `/var/lib/docker` path — and does the bind persist while api/worker are stopped (i.e. during a restore)?                                                              | §8, `findmnt` before and after `dc stop api worker`                                                                                                              |
+| 12  | Real RTO, at production data volume                                                                                                                                                                                                               | §8.5 drill                                                                                                                                                       |
+| 13  | `next build` peak memory and `/var/lib/docker` growth on this box                                                                                                                                                                                 | `docker system df` after the first cold build                                                                                                                    |
+| 14  | Does the web container's baked-asset fallback resolve inside the Next.js server bundle? Nothing checks it — `/api/healthz` does not read assets.                                                                                                  | `dc exec -T web sh -c 'ls -l /app/assets/manifest.json /app/locales/el/common.json'`                                                                             |
+| 15  | Do the four monitoring image pins still work on this host's cgroup version?                                                                                                                                                                       | §7.2                                                                                                                                                             |
+| 16  | Does `DEPLOY_KNOWN_HOSTS` still pin the dead box?                                                                                                                                                                                                 | `gh secret list`, then `ssh-keyscan` compared out-of-band against the Hetzner console                                                                            |
+| 17  | Does `scripts/install-server.sh` work against a real Ubuntu box? Its own logic is exercised (`--self-test` → `195 passed, 0 failed`, on a developer machine, 2026-08-28); **the box is not.**                                                     | §3 — run it, in tmux, with a second SSH session open                                                                                                             |
+| 18  | Is `age` installable with `apt-get install -y age` on Ubuntu 26.04? The installer runs it and dies if `age` is still missing afterwards.                                                                                                          | `apt-cache policy age` on the box                                                                                                                                |
+| 19  | Does fail2ban's `sshd` jail start on Ubuntu 26.04?                                                                                                                                                                                                | `fail2ban-client status sshd`                                                                                                                                    |
+| 20  | Does node-exporter's textfile collector accept an **empty** `libriant_backup.prom` without raising `node_textfile_scrape_error`? §8.1b's workaround creates one.                                                                                  | `curl -s localhost:9100/metrics \| grep node_textfile_scrape_error`                                                                                              |
+| 21  | Does a signed-in librarian actually see the takeover screen during a maintenance window (`frontend-03`'s fix)?                                                                                                                                    | §9.10a, one tenant, on a calm afternoon                                                                                                                          |
+| 22  | Does a file upload actually succeed end to end? `data-integrity-01` is closed in code (`storage.service.ts:90`), but no cover image has ever been attached on a real host, and `--verify-only` still prints a stale BLOCKER banner for it (§3.9). | Attach a cover image to one book as a librarian, on one tenant                                                                                                   |
+| 23  | Does the §8.3a manual restore work end to end, against real artefacts, in the mode this host actually uses? The libraries source and the filter/preamble were exercised here on a synthetic prologue; nothing else has been run.                  | §8.5's drill, with the real identity, on a scratch box                                                                                                           |
 
 ---
 
 ## How this document was built and checked
 
-Written 2026-08-23, then fact-checked against its sources on the same day. This
-section exists so the next operator knows exactly how much of the document is
-load-bearing evidence and how much is still inference.
+Written 2026-08-23, then fact-checked against its sources on the same day, then
+extended on 2026-08-28. This section exists so the next operator knows exactly
+how much of the document is load-bearing evidence and how much is still
+inference.
+
+**What the 2026-08-28 pass did.** It folded in `scripts/install-server.sh`
+(committed 2026-08-28, five days after this document was written, and mentioned
+here exactly once before that pass), added the complete `.env.prod` variable
+reference (§4.2a–§4.2g), backup encryption and the dead man's switch
+(§8.1a/§8.1b), control-database retention (§8.6), the price catalogue and the
+`stripeReady` banner (§4.3c), putting an existing library on a contract (§6.6),
+the fourth layer of the origin lockdown and the boot unit for it (§3.2c), and
+moving a tenant's files (§10.3). It then **deleted the five documents this one
+replaced** — `deployment-hetzner`, `server-handbook`, `cutover-three-hosts`,
+`deploy-from-the-server`, `billing-go-live` — after confirming their surviving
+facts are here, and trimmed `README.md`'s server-operations block down to
+developer material. Every claim added in that pass was read out of the file it
+lives in, and the things that could be executed on a developer machine were
+(`install-server.sh --self-test`, `--status`, `--list-steps`; `backup.sh
+--preflight` in three configurations; `restore.sh`).
+
+The remediation waves of 2026-08-24 onward also closed nine of the twelve
+blockers, and the 2026-08-28 pass corrected every place this document still
+described them as open: `supply-chain-06` (§3.0, fixed in the repo and unproven
+on a box), `boot-and-config-01` (§9.3), `reliability-01` (§7.4),
+`data-integrity-01` (§3.9, §9.9), `billing-02` and `billing-03` (§4.3),
+`privacy-legal-02` (§8.1), `performance-01` (§9.6) and `frontend-03` (§9.10).
+Three remain open: `launch-readiness-01`, `privacy-legal-01`, `billing-04`.
+
+**Dangling citations, deliberately left.**
+`docs/audit/**` and `docs/runbook-rewrite-2026-08-23/RECON.json` cite the five
+deleted documents by path about twenty times. Those are **dated evidence
+records** describing the documents as they were on the day of the audit;
+rewriting them would falsify the record. A citation that leads nowhere in those
+files is expected — the content is in git history.
 
 ### Sources
 
@@ -3189,7 +5700,7 @@ load-bearing evidence and how much is still inference.
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `docs/runbook-rewrite-2026-08-23/HOST-FACTS.md`                         | Every hardware, storage, network and installed-package claim in §1, §9.5, §10.1 and §10.3. Measured on the box on 2026-08-23.                                                                                                                                                                     |
 | `docs/runbook-rewrite-2026-08-23/RECON.json`                            | 323 verified facts across seven areas (stack-topology, first-deploy, env-and-secrets, dns-tls, backup-dr, day2-ops, monitoring-incident), each carrying a `file:line` or the command that produced it. Also the 122 recorded errors in the documents this one replaces, and 88 recorded unknowns. |
-| `docs/audit/pre-release-2026-08-23/BLOCKERS.json` and `FINAL-REPORT.md` | The twelve blockers, of which nine block public launch and three block the first paying customer.                                                                                                                                                                                                 |
+| `docs/audit/pre-release-2026-08-23/BLOCKERS.json` and `FINAL-REPORT.md` | The twelve blockers as they stood on 2026-08-23 (nine blocking public launch, two the first paying customer, one scale). **Nine are now closed** — the status here is re-derived from the code, not from that file, which is a dated record and was not edited.                                   |
 | The repository itself                                                   | Every command, path, port, image tag and default was read out of the file it lives in, not from RECON's summary of it.                                                                                                                                                                            |
 
 ### What was verified, and how
@@ -3201,31 +5712,45 @@ load-bearing evidence and how much is still inference.
   `2a01:4f8:13b:ac8::2/64`, `git` 2.53.0 / `curl` 8.18.0 / `ufw` 0.36.2. **No
   invented numbers survive.** In particular the dead box's "64 GB DDR4" appears
   nowhere.
-- **Compose and Caddy.** Read directly: all eight services, the seven
-  healthchecks and their exact intervals, the three network tiers and
-  `internal: true` on `data`, the six named volumes and the four the overlay
-  rebinds, all seven `mem_limit`/`cpus` pairs (summing to 5888 MiB and 8.0
-  cpus), the `json-file` 50m × 5 logging anchor, `restart: unless-stopped` vs
-  `migrate`'s `restart: 'no'`, the four vhosts, the `(maintenance_check)` and
+- **Compose and Caddy.** Read directly: all nine services, their healthchecks
+  and exact intervals, the three network tiers and `internal: true` on `data`,
+  the six named volumes and the four the overlay rebinds, all eight
+  `mem_limit`/`cpus` pairs (summing to 6016 MiB and 8.25 cpus), the `json-file`
+  50m × 5 logging anchor, `restart: unless-stopped` vs `migrate`'s
+  `restart: 'no'`, the four vhosts, the `(maintenance_check)` and
   `(maintenance_takeover)` snippets, and the `tls` line that rules out ACME.
+  Re-read on 2026-08-28, which is where the ninth service (`pgbouncer-probe`),
+  the explicit IPv4 publish, the Postgres timeouts and the Redis `maxmemory`
+  came from.
 - **Scripts.** `deploy-on-host.sh`, `ensure-env.sh`, `prod-bootstrap.sh`,
-  `backup.sh`, `restore.sh` and `bootstrap-admin.ts` were read end to end. The
-  deploy order in §3.8, the five backup abort gates, the restore sequence in
-  §8.3 and the 12-character admin-password minimum all come from the code.
-- **Env categories.** The 27 pass-through / 13 compose-literal / 20
-  never-injected split was cross-checked against the `x-app-env` block. The six
-  `${VAR:?}` hard-requires were confirmed at their compose lines.
+  `backup.sh`, `restore.sh`, `install-server.sh`, `_lib/backup-crypt.sh`,
+  `_lib/backup-observability.sh` and `bootstrap-admin.ts` were read end to end.
+  The deploy order in §3.8, the fifteen backup abort paths, the restore sequence
+  in §8.3 and the 12-character admin-password minimum all come from the code.
+  Two script defects documented here were **reproduced**, not inferred:
+  `restore.sh` exiting 127 at line 44 (§8.3), and `obs_init` exiting 1 silently
+  on a fresh host (§8.1b).
+- **Env categories.** Now a five-way split (§4.1), re-derived on 2026-08-28
+  against the `x-app-env` block, every service `environment:` block, and the
+  monitoring overlay. The **seven** `${VAR:?}` hard-requires were confirmed at
+  their compose lines, and the eighth (`GRAFANA_ADMIN_PASSWORD`) on the
+  monitoring overlay. The claim that none of the five retention keys reaches a
+  container was established by `grep` over all of `infra/` returning zero hits
+  and no `env_file:` on any service.
 - **Citations.** All seven `file:line` references were opened. Two were off and
   are corrected here: the SNI-broken CI health check is
-  `.github/workflows/deploy.yml:375` (was cited as `:373`, which is a comment
-  line), and the `openssl s_client` defect is `docs/server-handbook.md:683`
-  (was `:681`). The other five — `package.json:6`,
-  `apps/api/Dockerfile:30`, `apps/web/Dockerfile:9`,
-  `infra/caddy/Dockerfile:16`, `docs/deploy-from-the-server.md:113` — are
-  exact. A further eleven unnumbered claims (Grafana's `127.0.0.1:3300`, the
-  ten alert-rule names, the eight API gauges, `admin_users`, the four
-  `postgres-init.sql` extensions, the `tenant:slug:<slug>` Redis key, and
-  others) were confirmed in the repo.
+  `.github/workflows/deploy.yml:417` (cited as `:373` and then as `:375`; both
+  are comment lines, and `:417` is the `site=` assignment itself. Line 434 of
+  the same block already uses `--resolve` correctly, which is what makes the
+  precise line worth having), and the `openssl s_client` defect was at `docs/server-handbook.md:683`
+  (was `:681`). The other five — `package.json:6`, `apps/api/Dockerfile:30`,
+  `apps/web/Dockerfile:9`, `infra/caddy/Dockerfile:16` and
+  `docs/deploy-from-the-server.md:113` — were exact. The two that point into
+  deleted files are marked as such where they appear; read them with
+  `git log --follow -p -- docs/<name>.md`. A further eleven unnumbered claims
+  (Grafana's `127.0.0.1:3300`, the alert-rule names, the API gauges,
+  `admin_users`, the four `postgres-init.sql` extensions, the
+  `tenant:slug:<slug>` Redis key, and others) were confirmed in the repo.
 - **Inherited errors.** Checked against every `existing_doc_errors` entry in
   RECON. The two most contagious are handled explicitly and repeatedly: the
   `/healthz` static-200 trap (§2, §7.4, §9, §11) and Grafana's port, which is
@@ -3262,24 +5787,30 @@ an operator cold:
 
 Also corrected: a fabricated "good looks like" deploy output that used the
 _waiting_ line rather than the script's real success strings; "four pulled"
-images (it is three); the backup abort-gate count (five, not six); the
-`HostSwapping` threshold, which is 50% of swap for 10 minutes and is a backstop
-rather than an early warning; the missing `--filter until=72h` on the builder
-prune; the two citation line numbers; and the unstated `IMAGE_OWNER` prompt in
-`ensure-env.sh`.
+images (it is three); the `HostSwapping` threshold, which is 50% of swap for 10
+minutes and is a backstop rather than an early warning; the missing
+`--filter until=72h` on the builder prune; the two citation line numbers; and the
+unstated `IMAGE_OWNER` prompt in `ensure-env.sh`.
 
-Three blockers that touch an instruction were not flagged at the instruction and
-now are:
+The 2026-08-28 pass corrected a further set, each of which would have read as a
+different fault at 3am: the health gate polls **six** signals and not five, and
+both of its literal strings carry the sixth; the deploy has an **eleventh** step
+(the monitoring stack) that runs after the health gate and can fail the deploy;
+`ensure_rand K 32` is `openssl rand -hex 32`, i.e. **64 hex characters**, not 32,
+and `GRAFANA_ADMIN_PASSWORD` was missing from §3.7a's list entirely; §3.5 did not
+create `/var/lib/node_exporter/textfile`, without which the nightly backup
+refuses to run; the backup has **fifteen** abort paths, not five; the origin has
+**no AAAA records** while §5.4 told you to create four; there are **nine**
+compose services, not eight; `web`'s healthcheck is real now and `pgbouncer` has
+none; and `restore.sh`'s central `STORAGE_DIR` warning described a trap that has
+been closed while missing that the script does not execute at all.
 
-- **`reliability-01`** at §7.4 — member notifications fail for 100% of tenants
-  on every run and report success. Due-soon, overdue and hold-ready notices have
-  never been sent to anyone. Fixing `EMAIL_DRIVER` will not fix it.
-- **`billing-03` and `billing-04`** at the `BILLING_ENABLED` row in §4.3 — plan
-  changes double-charge, and there is no VAT anywhere in the billing path. Both
-  block the first paying customer, and the admin Subscriptions toggle that
-  triggers them is one click.
-- **`data-integrity-01`** additionally at §3.9, because the `STORAGE-OK` probe
-  goes green while every upload 500s.
+Every blocker that touches an instruction is flagged **at the instruction**, not
+only in a table: `billing-04` at the `BILLING_ENABLED` row in §4.3,
+`launch-readiness-01` at §4.3a and §6.6, `privacy-legal-01` at §9.11c. The nine
+that have since been closed are flagged there too, and say so — because an
+operator who remembers a blocker and finds no mention of it assumes the document
+is stale, and an operator who finds the old warning still standing acts on it.
 
 One instruction was found to be **not executable as written and was rewritten
 rather than trimmed**: "log into the admin panel once, over the local resolve,
@@ -3289,21 +5820,93 @@ trusts; and the apex's `includeSubDomains` HSTS pin — probably already in your
 browser — makes that error non-bypassable. §3.9 now names the two real options
 and gives the from-the-box check that _is_ possible.
 
+**The 2026-08-28 review pass.** Two independent reviews were run against the
+consolidated document and their findings applied here. Fourteen corrections, of
+which four were commands whose stated result an operator would not have got:
+
+1. **§4.2b's own example contradicted its own lesson.** It grepped for
+   `PUBLIC_HOST` in the `api` container and called four lines a pass.
+   `PUBLIC_HOST` is a key only on `caddy` (`docker-compose.prod.yml:277`);
+   `api` is `<<: *app-env` plus `PORT` and nothing else. The section whose job
+   is teaching "injected" from "consumed" was demonstrating the failure and
+   calling it success. Now it names the absence and explains it.
+2. **§8.1a's `--preflight` recipe exits 1 with no output on a fresh box** —
+   reproduced here, twice. `obs_init` dies under `set -e` when the textfile
+   directory holds no `.prom`, which is exactly the state `install-server.sh`'s
+   `dirs` step leaves. The `touch` workaround now sits above the block that
+   needs it, not only in §8.1b below it.
+3. **§8.3 had no commands.** It proved `restore.sh` is dead and then said the
+   real path "is by hand", naming none of the four functions that hand requires.
+   §8.3a now writes the whole pipeline out, with the count assertion in bold.
+4. **§9.1's 522 triage read backwards once the origin lockdown is on.** It told
+   you to `nmap` from your laptop and treated `filtered` as a fault — after
+   §3.2c, `filtered` is the healthy answer — and it had no entry at all for the
+   drifted Cloudflare range list, which is the cause §3.2c says produces a 522
+   with a healthy stack behind it. Both fixed.
+
+Also corrected: `satisfied_deploy()` checks five of the six health signals, not
+six (the script's own comment claims six and is wrong); `install-server.sh`
+exits 0 or 1 and never a count or 90; four modes run without root, not two; the
+`ALERTS ARE NOT BEING DELIVERED.` banner is the host deploy's, while `ALERTING=off`
+is the CI workflow's; a §3.2c scan that promised "22 open" did not scan port 22;
+§4.2f quoted three clauses of a one-line message as though they were three
+lines; the `-H 'Host:'` defect is at `deploy.yml:417`, not `:375`; §3.2d now
+lists all ten packages so "four more" was wrong; §8.1b overstated the installer's
+`die`; §4.4 miscounted its own five rows; the `dirs` assertion checks six parents,
+not `caddy/origin`; and two blockquotes had lost their `>` continuation.
+
+Rejected, after checking: the claim that `apps/site/content/privacy.en.md:76` was
+the wrong line for the "12 months" sentence. It is the right line, in both
+locales (`privacy.el.md:80`).
+
+Three things outside the runbook were fixed because leaving them would have
+recreated the drift this consolidation exists to end:
+`docs/runbook-rewrite-2026-08-23/HOST-FACTS.md:45` told the reader to add `AAAA`
+records, which §5.4 forbids and which produces a v6-only 522 — the measurement
+stands, the inference is marked superseded;
+`marketing/campaigns/launch-offer/reply-playbook.md` said the job registry has
+ten entries (it has eleven) and now states that §6.6 is authoritative where they
+disagree.
+
+**Navigation.** The document had no table of contents at 5,500+ lines, and its
+lettered sub-parts (`§3.2c`, `§9.10a`, `§9.11c`) were headed `**c. …**` — so
+searching for the number an operator was sent to found only references, never the
+target. There is now a "Where to look" index with a symptom-to-section router,
+and every lettered sub-part carries its own number the way §9.4b already did.
+
 ### What remains unverified
 
 Nothing in this document has been executed on 195.201.13.95. It has never been
 deployed to, and this pass did not change that.
 
-- **The whole of §3 is untested end to end**, and §3.8 cannot succeed at all
-  until `supply-chain-06` is fixed and the images rebuilt.
-- The 16 items in the appendix, all of which are flagged inline where they
+- **The whole of §3 is untested end to end**, by hand and by script.
+  `scripts/install-server.sh --self-test` printed `195 passed, 0 failed` on a
+  developer machine on 2026-08-28 — that exercises its parsers, its lockout
+  counter, its PEM and certificate checks, the `--firewall-status` verdict, and
+  the cron line and `dc` block it writes. It does not exercise a box.
+- **The origin lockdown has never run on a live box**, and it inserts a DROP at
+  `INPUT` position 1. Run it with a second SSH session open.
+- The 23 items in the appendix, all of which are flagged inline where they
   matter. Chief among them: whether the corepack fix actually makes `migrate`
   pass, whether Caddy's directive order puts `/lbr-api/*` ahead of the
   catch-all, whether `MAINTENANCE_HARD`'s `vars` matcher fires at all, whether
   Docker's apt repo publishes a suite for Ubuntu 26.04, and the four Cloudflare
   dashboard settings nobody has read.
-- **RTO is unknown.** No restore has ever run to completion on a real host. CI
-  proves the Postgres restore stream and nothing else.
+- **RTO is unknown, and the restore path is worse than unknown.** No restore has
+  ever run to completion on a real host, CI proves the Postgres restore stream
+  and nothing else, and `scripts/restore.sh` exits 127 before doing anything
+  (§8.3). The recovery you have today is by hand, and it is now written out in
+  full in §8.3a — but **§8.3a itself has never been run end to end.** What was
+  executed for it on 2026-08-28 was: the three libraries source cleanly and
+  every function it names is defined; `pg_restore_filter_count` returns exactly
+  `2` on a synthetic `pg_dumpall` prologue; and `pg_restore_filter` removes the
+  self-role pair, keeps the `ALTER ROLE … PASSWORD` line, and stops at
+  `\connect`. Nothing was run against a real artefact, in any encryption mode,
+  against a real cluster. That is unknowns register #23.
+- **Decryptability is unproven.** In `age` mode the production host deliberately
+  cannot decrypt its own backups. Encryption is proven on every run by a canary
+  round trip; decryption is proven only by §8.5's drill, run with the real
+  identity, which has never been done.
 - The build-cost figures in §3.8 (10–20 min, ~15–20 GB of `/var/lib/docker`)
   were measured on the dead machine and are marked UNVERIFIED where they appear.
 - Correctness of this document's _reasoning_ about code it read but did not run
