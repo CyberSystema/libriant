@@ -829,15 +829,22 @@ dc logs migrate | tail -40
 ```
 
 Read the migrate log properly. Only two steps are **fatal**: control-plane
-`db:migrate:deploy` and `db:seed`. These are **best-effort and still exit 0**:
+`db:migrate:deploy` and `db:seed` — and, since the findings below, so are the
+three steps this table used to call best-effort:
 
-| Step              | If it silently fails                                             |
-| ----------------- | ---------------------------------------------------------------- |
-| `ingest:help`     | help articles missing — the check below is what catches it       |
-| `tenant:migrate`  | **live libraries left on an old schema** — re-run by hand (§6.5) |
-| `admin:bootstrap` | **a green deploy nobody can log into**                           |
+| Step              | Now                | Why it changed                                                                                                                                                                                                    |
+| ----------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ingest:help`     | **FATAL**          | launch-readiness-15. A deploy shipping no help articles looked exactly like one that shipped them, while the site sells in-app help as one of only four support mechanisms.                                       |
+| `tenant:migrate`  | **FATAL**          | boot-and-config-04. The one-shot exited 0, `service_completed_successfully` was satisfied, and api + worker started against tenant databases that never got the migration.                                        |
+| `admin:bootstrap` | **FATAL when set** | Runs only when `ADMIN_BOOTSTRAP_EMAIL` and `ADMIN_BOOTSTRAP_PASSWORD` are both non-empty. If they are unset it still logs and exits 0 — which is the one remaining way to get a green deploy nobody can log into. |
 
-Any line reading `skipped (non-fatal)` is a job for you.
+**Do not grep for `skipped (non-fatal)`.** That string was removed from every
+one of those steps and appears nowhere in the repo; a search for it returns
+nothing on a broken deploy exactly as it does on a healthy one, which reads as
+reassurance and is not. What is still worth reading for is
+`ADMIN_BOOTSTRAP_* not set - skipping` — the case above that exits 0 — and
+`[bootstrap] FATAL`, which is what the other five now emit.
+`scripts/install-server.sh` checks for both.
 
 Then prove the things nothing else proves:
 
