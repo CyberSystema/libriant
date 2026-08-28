@@ -39,8 +39,17 @@
 #      REFUSES to run without one.
 #   7. tmux or screen. The image build is 10–20 minutes cold; an SSH drop in
 #      the middle of it kills the run.
+#   8. The name this box should have, or a decision to keep the provider's.
+#      Offered in `stock`, defaulting to no change. Nothing here READS it; it
+#      is WRITTEN into every backup manifest and into the GitHub Deploy Key's
+#      comment, and that key is never regenerated.
 #
-# ── THE TWO WAYS THIS SCRIPT COULD RUIN YOUR DAY, AND WHAT STOPS IT ─────────
+# Every question this script asks is asked in the first fifteen minutes, before
+# the build. That is deliberate: the briefing tells you the build is 10–20
+# minutes and to use tmux, so walking away is the reasonable thing to do. The
+# only prompt after it is "run the backup once now", which needs the stack up.
+#
+# ── THE THREE WAYS THIS SCRIPT COULD RUIN YOUR DAY, AND WHAT STOPS IT ──────
 #
 # 1. LOCKING YOU OUT. Three separate steps here can cost you the machine, and
 #    each has its own guard.
@@ -94,6 +103,31 @@
 #    fstab entry or an unmounted formatted volume, and otherwise makes you type
 #    BOOTDISK rather than press y.
 #
+#    The same check now also asks the second question, which it used to skip:
+#    is the volume mounted FOR EVER? A volume mounted by hand — the obvious
+#    response to that BOOTDISK refusal — used to pass every check here and be
+#    gone at the next reboot, and the reboot you do not schedule is the one
+#    during an incident. It offers the /etc/fstab line, derived from the live
+#    mount, and validates the result with `findmnt --verify` before trusting it.
+#
+# 3. LEAVING WITH A CLOCK NOBODY IS DISCIPLINING. Admin MFA is MANDATORY in
+#    production and cannot be turned off from .env.prod. TOTP is a function of
+#    the wall clock: the acceptance window is ~90 seconds, and a recovery code
+#    can only be minted AFTER a TOTP code has already verified — the shell
+#    escape hatch (bootstrap-admin.ts --issue-recovery-codes) refuses outright
+#    for an admin with no authenticator enrolled. So there is no path to a
+#    recovery code that does not first pass a clock check, and a box a minute
+#    off has an admin panel nobody can ever enter. The symptom is "invalid
+#    code", which reads as a bad QR or a bad phone, and it is discovered after
+#    the cutover. Three cheaper failures arrive first and are all mis-attributed:
+#    apt calls every Release file "not valid yet", TLS fails to
+#    download.docker.com and ghcr.io, and `openssl x509 -checkend 0` calls a
+#    perfectly good origin certificate expired. The `clock` step proves NTP is
+#    on AND that the kernel calls the clock synchronised, waits for a fresh box
+#    to converge rather than refusing it, and checks the one thing that needs no
+#    network at all: that `date` does not read earlier than the mtime of a file
+#    this box wrote.
+#
 # ── RESUMING ────────────────────────────────────────────────────────────────
 #
 # Every step decides whether it is needed by inspecting the MACHINE, so
@@ -126,6 +160,80 @@
 #   --self-test            run the internal tests and exit; touches only a
 #                          temp directory, needs no root and no network
 #
+# ── CONSIDERED AND REJECTED ─────────────────────────────────────────────────
+#
+# "Everything must be included" means everything the SERVER NEEDS. A step that
+# exists to look thorough, that an operator will not understand, or that could
+# break a working box makes this script worse. Each of these was examined
+# against THIS stack on THIS box and left out; the third column is what would
+# change the answer, so nobody has to re-open them from scratch.
+#
+#   vm.overcommit_memory     Redis is the usual reason to set it. Ours is a
+#                            320 MB-capped cache with a measured ~1.4 MB heap
+#                            and no persistence; the fork it protects never
+#                            happens. Revisit if Redis gains an RDB/AOF.
+#   THP (transparent hugep.) The Postgres advice is about huge shared_buffers.
+#                            This cluster is small and containerised, and the
+#                            knob is host-wide. Revisit at a multi-GB
+#                            shared_buffers.
+#   net.core.somaxconn       The kernel default is already 4096, which is above
+#                            anything Caddy or the API backlog asks for. Setting
+#                            it would change nothing and imply it had.
+#   vm.swappiness            BACKWARDS here. Under cgroup v2 every service has a
+#                            mem_limit and none has a memswap_limit, so Docker
+#                            caps swap at 2x the limit; lowering swappiness makes
+#                            "Postgres pages out" into "Postgres is OOM-killed".
+#   fs.file-max / port range Defaults on a 62 GiB box are orders of magnitude
+#                            above a nine-container stack behind one edge.
+#   Docker default-ulimits   docker.service ships LimitNOFILE=infinity, so the
+#                            containers do not inherit 1024. Worth a look only
+#                            if `ulimit -Sn` inside redis ever comes back 1024.
+#   locale-gen               Postgres is initdb'd with --locale-provider=icu
+#                            --icu-locale=el-GR; the collation Greek sorting
+#                            depends on comes from ICU inside the image, not
+#                            from the host's locale archive.
+#   logrotate for containers docker-compose.prod.yml's *logging anchor already
+#                            sets json-file 50m x 5 on all nine services, the
+#                            monitoring overlay 20m x 5 on its five, and Caddy's
+#                            access log self-rolls at 100mb x 14 — a ~2.65 GB
+#                            ceiling against an 80 GiB root. /etc/docker/
+#                            daemon.json carries the same numbers for anything
+#                            added later WITHOUT the anchor.
+#   logrotate for backup.log The nightly appends a handful of lines to
+#                            /var/log/libriant/backup.log. Even an abort every
+#                            night is kilobytes a year against an 80 GiB root;
+#                            already examined and rejected as reliability-22 in
+#                            docs/audit/pre-release-2026-08-23/REJECTED.md. Real
+#                            disk pressure comes from BACKUP_ROOT, which
+#                            step_backup DOES project (retention_verdict).
+#   a DNS / egress probe     apt already names it: a broken resolver produces
+#                            "Temporary failure resolving 'archive.ubuntu.com'",
+#                            which is the diagnosis. A probe here would restate
+#                            an error the operator can already read.
+#   disabling IPv6           The box has public IPv6 and the design uses it:
+#                            ufw carries v6 rules and the origin lockdown is
+#                            explicitly v4 AND v6. Turning it off would break
+#                            the thing it was meant to protect.
+#   sshd MaxAuthTries etc.   Password authentication is OFF. Tuning the number
+#                            of password attempts against a box that accepts
+#                            none is theatre; fail2ban is installed for the rest.
+#   a swapfile               The measured box has 8 GiB of LVM swap. Creating one
+#                            on a box that has swap is a no-op with a footgun,
+#                            and on a box that does not, `assert_build_memory`
+#                            says so and names the remedy rather than silently
+#                            re-partitioning someone's disk.
+#   kernel.panic / watchdog  A reboot loop on a box whose data volume may not be
+#                            in fstab is a worse failure than the hang it fixes.
+#   mkfs, ever               A device that "looks like an empty volume waiting to
+#                            be formatted" is indistinguishable from a data
+#                            volume whose superblock nobody has looked at. This
+#                            script will never print an mkfs command.
+#   rebooting                It PRINTS a reboot rehearsal (only once the data
+#                            volume is proven persistent) and never performs one.
+#                            This installer can be re-run against a live box,
+#                            where an unprompted reboot is an outage and a
+#                            prompt answerable `y` by reflex is worse.
+#
 # ── WHAT IT DELIBERATELY DOES NOT DO ────────────────────────────────────────
 #
 # It does not put the box in DNS and does not do the cutover (§5.4) — a first
@@ -157,6 +265,10 @@ CRON_FILE="${LIBRIANT_CRON_FILE:-/etc/cron.d/libriant-backup}"
 # against a fixture directory on a machine that is not an Ubuntu server.
 # Nothing but the tests ever overrides them.
 SSHD_CONFIG="${LIBRIANT_SSHD_CONFIG:-/etc/ssh/sshd_config}"
+# /etc/fstab, for the same reason: the mount-persistence guard WRITES to it, and
+# a guard that writes to the real /etc/fstab cannot be driven anywhere but a
+# server. Nothing but the tests ever overrides it.
+FSTAB="${LIBRIANT_FSTAB:-/etc/fstab}"
 UFW_DEFAULTS="${LIBRIANT_UFW_DEFAULTS:-/etc/default/ufw}"
 SSHD_CONFIG_DIR="${LIBRIANT_SSHD_CONFIG_DIR:-/etc/ssh/sshd_config.d}"
 SSHD_DROPIN="${SSHD_CONFIG_DIR}/00-libriant.conf"
@@ -204,7 +316,14 @@ SKIP_STEPS=""
 # nothing warns is missing — was never reached. An operator who could not
 # resolve an ip6tables question walked away from a production box with zero
 # backups, which looks exactly like a box that has them.
-STEPS="briefing stock ssh ufw packages docker user dirs checkout env cert dchelper deploy backup firewall verify"
+# `clock` sits between `stock` and `ssh` because of what depends on it. A skewed
+# clock breaks apt (`packages`), breaks TLS to download.docker.com and ghcr.io
+# (`docker`, `deploy`), makes `openssl x509 -checkend 0` call a good origin
+# certificate expired (`cert`), and — the one with no shell workaround — makes
+# admin TOTP unenrollable for ever (see the block above td_get). It is read-only
+# on a healthy box, it costs one line of output, and everything after it assumes
+# the answer.
+STEPS="briefing stock clock ssh ufw packages docker user dirs checkout env cert dchelper deploy backup firewall verify"
 
 # ── Output. Matches deploy-on-host.sh: bold ▸ banners, a red ✗ for a die. ────
 if [ -t 1 ]; then
@@ -726,11 +845,21 @@ file_has_line() {
 # upsert_block FILE BEGIN END  (block body on stdin) — idempotent block-in-file.
 #
 # Prints created (the file did not exist) / added (appended to a file that did)
-# / updated (the block was replaced) / unchanged. Used for the deploy user's
-# ~/.ssh/config and the `dc` helper in ~/.bashrc — files a human may have
-# edited, neither of which may be clobbered by a re-run. A second copy of the
-# block is collapsed into one. An UNTERMINATED block (BEGIN with no END) is
-# REFUSED rather than swallowing the rest of the file.
+# / updated (the block was replaced) / unchanged / unterminated / unwritable.
+# Used for the deploy user's ~/.ssh/config, the `dc` helper in ~/.bashrc and —
+# the reason the write below is ATOMIC — /etc/fstab. Files a human may have
+# edited, none of which may be clobbered by a re-run. A second copy of the block
+# is collapsed into one. An UNTERMINATED block (BEGIN with no END) is REFUSED
+# rather than swallowing the rest of the file.
+#
+# THE WRITE IS mktemp + mv -f, NOT `> "$file"`. Truncate-then-rewrite was driven
+# against an interrupted write (ENOSPC, SIGKILL, an SSH drop — this script's own
+# header anticipates all three) and left the file at ZERO BYTES. In-process that
+# is caught and the backup is restored; a KILLED process runs no restore, and for
+# /etc/fstab an empty file means /boot, /boot/efi, swap and the data volume do
+# not mount at the next boot — the exact state the caller exists to prevent,
+# caused by the caller. `>` did have one virtue, preserving the inode and with it
+# the mode and owner, so both are carried onto the replacement explicitly.
 upsert_block() {
   local file="$1" begin="$2" end="$3"
   local block out="" line inblock=0 seen=0 orig=""
@@ -763,7 +892,16 @@ upsert_block() {
   if [ "$out" = "${orig}"$'\n' ] || [ "$out" = "$orig" ]; then
     printf 'unchanged\n'; return 0
   fi
-  printf '%s' "$out" > "$file"
+  local tmp
+  tmp="$(mktemp "${file}.libriant-new.XXXXXX" 2>/dev/null)" || { printf 'unwritable\n'; return 1; }
+  # Mode and owner BEFORE the content, so a failure between the two leaves a
+  # temp file nobody else could read rather than a world-readable one.
+  chmod "$(stat_mode "$file")" "$tmp" 2>/dev/null || true
+  chown "$(stat_owner "$file")" "$tmp" 2>/dev/null || true
+  if ! printf '%s' "$out" > "$tmp"; then
+    rm -f "$tmp"; printf 'unwritable\n'; return 1
+  fi
+  mv -f "$tmp" "$file" || { rm -f "$tmp"; printf 'unwritable\n'; return 1; }
   if [ "$seen" = 0 ]; then printf 'added\n'; else printf 'updated\n'; fi
 }
 
@@ -1081,6 +1219,405 @@ fw_verdict() {
   esac
 }
 
+# ── The clock, which on this box is an AUTHENTICATION INPUT ─────────────────
+#
+# Admin MFA is mandatory in production (apps/api/src/config/env.ts:420,
+# `adminMfaRequired: bool('ADMIN_MFA_REQUIRED', !isDev)`) and the installer
+# already tells the operator it "cannot be turned off from .env.prod". TOTP is
+# a function of the wall clock: apps/api/src/support/mfa.service.ts:89 verifies
+# with `epochTolerance: 30`, a ~90-second total acceptance window.
+#
+# Recovery codes exist, and they do NOT rescue a skewed box. They are minted at
+# exactly one moment — apps/api/src/support/mfa.controller.ts:227, immediately
+# after a TOTP code has verified — and the shell escape hatch refuses to help
+# before that: scripts/bootstrap-admin.ts:214 exits 1 with "has no authenticator
+# enrolled, so a recovery code would never be accepted at sign-in". So the ONLY
+# path to a recovery code runs through a TOTP check first. A box more than a
+# minute off has an admin panel nobody can ever enter, and the symptom is
+# "invalid code", which reads as a bad QR or a bad phone.
+#
+# Three cheaper failures arrive first, all of them mis-attributed:
+#   clock behind  ->  every apt source is "not valid yet" and `step_packages`
+#                     dies on empty package lists
+#   clock off by months -> TLS fails on download.docker.com and the ghcr.io
+#                     pulls, with errors that name the repository
+#   clock ahead   ->  `openssl x509 -checkend 0` in `step_cert` calls a
+#                     perfectly good Cloudflare Origin certificate EXPIRED
+#
+# td_get KEY — one Key=Value off `timedatectl show` on stdin.
+#
+# THE TRAP THIS EXISTS FOR, stated correctly (an earlier comment here named the
+# wrong pair, and the self-test was built to match the wrong claim, so it could
+# not fail): the key that collides with `NTP` is **CanNTP**. "CanNTP=yes"
+# CONTAINS the substring "NTP=", so `grep NTP=` and `case "$line" in *NTP=*)`
+# both return CanNTP's value — and `timedatectl show` prints CanNTP BEFORE NTP,
+# so the wrong one is hit first, every time. On a box with CanNTP=yes NTP=no
+# that turns the FATAL "network time synchronisation is OFF: timedatectl set-ntp
+# true" into a silent 90-second wait for a clock nothing is disciplining.
+# ("NTPSynchronized=" is NOT a trap — it has an S where the "=" would be — but
+# it is read by this same function and is driven below in both print orders.)
+# The match here is anchored on "${k}=" at the START of the line, nowhere else.
+td_get() {
+  local k="${1:?}" line
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    case "$line" in
+      "${k}="*) printf '%s\n' "${line#"${k}="}"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# clock_verdict NTP NTPSYNC CANNTP — one finding per line, "FATAL …" / "WARN …",
+# EMPTY OUTPUT MEANS THE CLOCK IS DISCIPLINED AND HAS CONVERGED. Same shape as
+# fw_verdict above and for the same reason: the decision is a pure function of
+# three strings read off the machine, so it can be driven on a laptop.
+#
+# NTPSynchronized is the kernel's own bit (adjtimex STA_UNSYNC cleared by
+# whatever is disciplining the clock), so it answers for chrony, ntpd and
+# systemd-timesyncd alike. NTP is systemd's view of whether any unit in
+# /usr/lib/systemd/ntp-units.d is enabled — chrony registers there too, which is
+# why this does not care WHICH client is installed.
+#
+# The one deliberately soft case: synchronised but NTP=no. The kernel says the
+# clock is being disciplined right now and systemd does not know who by. The
+# property that matters holds, so that is a WARN. Anything else that leaves the
+# clock undisciplined is FATAL, because of the admin lockout above.
+clock_verdict() {
+  local ntp="${1:-}" sync="${2:-}" can="${3:-}"
+  if [ -z "$ntp" ] && [ -z "$sync" ] && [ -z "$can" ]; then
+    printf 'WARN  timedatectl answered nothing about NTP — too old, or not systemd. Check the clock BY HAND before you enrol MFA.\n'
+    return 0
+  fi
+  if [ "$can" = no ]; then
+    printf 'FATAL no NTP client is installed (CanNTP=no). Nothing on this box will ever correct the clock, and admin TOTP has a ~90-second window.\n'
+    return 0
+  fi
+  if [ "$sync" = yes ]; then
+    [ "$ntp" = yes ] || printf 'WARN  the kernel reports the clock synchronised but systemd reports NTP=%s — something is disciplining it that systemd does not manage. Confirm it survives a reboot.\n' "${ntp:-unknown}"
+    return 0
+  fi
+  [ "$ntp" = yes ] || printf 'FATAL network time synchronisation is OFF (NTP=%s): timedatectl set-ntp true\n' "${ntp:-unknown}"
+  printf 'FATAL the clock is NOT synchronised (NTPSynchronized=%s). Admin TOTP has a ~90-second acceptance window and there is no recovery code until one TOTP code has passed.\n' "${sync:-unknown}"
+  return 0
+}
+
+# ── /etc/fstab: is the data volume mounted, or is it mounted FOR EVER? ───────
+#
+# `mountpoint -q` answers "right now". The whole data-root architecture assumes
+# the volume survives a provider Rebuild — which is worthless if it does not
+# survive an ordinary reboot. A box hand-mounted to get the install moving (the
+# obvious response to this script's own BOOTDISK refusal) passes every check
+# here and loses the database at its first boot, with the SAME outcome the
+# header describes: an empty /mnt/libriant on the root filesystem, a second
+# Postgres cluster initdb'd on the boot disk, and a green stack.
+#
+# fstab_target_entry TARGET — the first non-comment /etc/fstab line (on stdin)
+# whose MOUNTPOINT is TARGET, printed whole; rc 1 when there is none.
+#
+# A parser rather than `findmnt --fstab` because this one can be driven from
+# --self-test with hostile fixtures and findmnt cannot. findmnt is still run
+# beside it at the call site; the two are unioned, because the cost of missing
+# an entry is a duplicate fstab line and the cost of inventing one is nothing.
+fstab_target_entry() {
+  local want="${1:?}" line src mp
+  case "$want" in */) [ "$want" = / ] || want="${want%/}" ;; esac
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"                                   # CRLF from an editor
+    line="${line#"${line%%[![:space:]]*}"}"                # leading whitespace
+    case "$line" in ''|'#'*) continue ;; esac              # a DISABLED entry is not an entry
+    set -f
+    # shellcheck disable=SC2086
+    set -- $line
+    set +f
+    [ "$#" -ge 2 ] || continue
+    src="$1"; mp="$2"
+    # fstab escapes a space in a path as \040. Unescape before comparing, or a
+    # mountpoint with a space in it never matches itself.
+    case "$mp" in *'\040'*) mp="$(printf '%s' "$mp" | sed 's/\\040/ /g')" ;; esac
+    case "$mp" in */) [ "$mp" = / ] || mp="${mp%/}" ;; esac
+    [ "$mp" = "$want" ] || continue
+    printf '%s\n' "$line"
+    return 0
+  done
+  return 1
+}
+
+# fstab_persistence_verdict LINE — none / nofail / ok, from a whole fstab line.
+#
+# `nofail` is deliberately NOT an error here, and this installer writes it: a
+# fstab line that fails at boot WITHOUT nofail drops the box into emergency mode
+# with no sshd, which on a remote machine means the provider console. With it
+# the box boots, SSH works, and the containers fail to start because the compose
+# overlay's bind devices do not exist — the "safe failure" that overlay was
+# designed around (infra/compose/docker-compose.volume.yml:10-12). The verdict
+# is reported so the operator knows which trade they are on, not so they fix it.
+fstab_persistence_verdict() {
+  local line="${1:-}" opts
+  [ -n "$line" ] || { printf 'none\n'; return 0; }
+  set -f
+  # shellcheck disable=SC2086
+  set -- $line
+  set +f
+  opts="${4:-defaults}"
+  case ",${opts}," in *,nofail,*) printf 'nofail\n'; return 0 ;; esac
+  printf 'ok\n'
+}
+
+# fstab_fsck_pass FSTYPE — the 6th fstab field. 2 for the ext family (fsck it
+# after the root filesystem), 0 for everything else. xfs and btrfs check
+# themselves and a non-zero pass makes systemd-fsck complain on every boot.
+fstab_fsck_pass() {
+  case "${1:-}" in ext2|ext3|ext4) printf '2\n' ;; *) printf '0\n' ;; esac
+}
+
+# ── Numbers read off the machine, parsed where a typo is silent ─────────────
+#
+# df_avail_kib — the Available column from `df -Pk <path>` on stdin; rc 1 when
+# there is no data row.
+#
+# `-P` (POSIX, one row per filesystem) and not plain `df`: a long device name
+# wraps in the default output, awk's field 4 becomes field 3 of a continuation
+# line, and the check silently reads the wrong number. rc 1 rather than an empty
+# string, so a caller cannot print "only  GiB free" — a check that did not run
+# must not look like a number that happens to be missing.
+df_avail_kib() {
+  local line n=0 v
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    [ "$n" = 1 ] && continue
+    set -f
+    # shellcheck disable=SC2086
+    set -- $line
+    set +f
+    [ "$#" -ge 4 ] || continue
+    v="$4"
+    case "$v" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\n' "$v"
+    return 0
+  done
+  return 1
+}
+
+# meminfo_mb KEY — one /proc/meminfo value (on stdin), in MiB; rc 1 if absent.
+# /proc/meminfo, not `free`: `free`'s columns are localised and have been
+# renumbered between releases, and this is read to decide whether a 20-minute
+# build is about to be OOM-killed. Anchored on "KEY:" so `Mem` cannot match
+# `MemTotal` and `SwapTotal` cannot be answered by `SwapCached`.
+meminfo_mb() {
+  local k="${1:?}" line v
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in "${k}:"*) : ;; *) continue ;; esac
+    set -f
+    # shellcheck disable=SC2086
+    set -- $line
+    set +f
+    v="${2:-}"
+    case "$v" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' $(( v / 1024 ))
+    return 0
+  done
+  return 1
+}
+
+# mem_verdict MEM_MB SWAP_MB — findings, one per line; empty means fine.
+#
+# `next build` is the memory-hungry step and deploy-on-host.sh:273 already
+# carries the remedy in a comment nobody reads mid-failure ("If it is OOM-killed
+# (exit 137), give the box swap or build one service at a time"). §1 records
+# 62 GiB + 8 GiB of LVM swap on the measured box, where this prints one ok line
+# — but this script is deliberately box-agnostic, the compose defaults are
+# documented as suiting a ~4 GB host, and a provider Rebuild that re-partitions
+# can leave vg0-swap out of the new fstab entirely. 6 GiB total is the threshold
+# because the build peaks around 1.8 GB with no heap cap and scales its workers
+# by core count.
+mem_verdict() {
+  local mem="${1:-}" swap="${2:-}"
+  # Guarded SEPARATELY, and not as "${mem}${swap}". Concatenated, an EMPTY first
+  # argument is invisible — "" + "8191" is all digits — so `mem_verdict "" 8191`
+  # sailed through and the caller printed `ok " MiB RAM + 8191 MiB swap — enough
+  # for a cold next build`: a green line for a check that did not run, which is
+  # the exact thing df_avail_kib's own comment forbids two functions up.
+  case "$mem"  in ''|*[!0-9]*) mem="" ;; esac
+  case "$swap" in ''|*[!0-9]*) swap="" ;; esac
+  if [ -z "$mem" ] || [ -z "$swap" ]; then
+    printf 'WARN  could not read MemTotal/SwapTotal from /proc/meminfo — the OOM check did not run.\n'
+    return 0
+  fi
+  [ $(( mem + swap )) -lt 6144 ] && printf 'WARN  only %s MiB of RAM + %s MiB of swap. A cold `next build` peaks around 1.8 GB per worker and is OOM-killed with a bare exit 137. Build one service at a time instead: dc build web, then dc build api.\n' "$mem" "$swap"
+  [ "$swap" = 0 ] && printf 'NOTE  there is no swap on this box. Every service has a mem_limit and none has a memswap_limit, so Docker caps swap at 2x the memory limit — with no swap device that turns "Postgres pages out under pressure" into "Postgres is OOM-killed". The HostSwapping alert is guarded by node_memory_SwapTotal_bytes > 0 and can never fire here.\n'
+  return 0
+}
+
+# retention_verdict DAY_KIB KEEP_DAYS AVAIL_KIB — "fits|tight|over PROJ AVAIL".
+#
+# backup.sh writes a FULL tar of the uploads tree plus a full pg_dumpall every
+# night into ${DATA_ROOT}/backups — the same filesystem as the live cluster, the
+# live uploads and Redis — and prunes at the START of a run, so peak occupancy
+# is BACKUP_KEEP_DAYS+1 day-directories. Nothing anywhere multiplies those two
+# numbers together. This is the one moment in the product's life when the
+# day-size, the retention constant and the free space are all in one process.
+#
+# "tight" at 70% and not at 100% because the two things it shares a filesystem
+# with both grow underneath it. RUNBOOK §9.5 on the outcome: "A full data disk
+# means Postgres refuses writes: circulation stops. Treat it as a full outage."
+retention_verdict() {
+  local day="${1:-}" keep="${2:-}" avail="${3:-}" proj
+  # Three separate guards, not one concatenation. `retention_verdict 2097152 15
+  # ""` used to read as all-digits, reach `[ "$proj" -ge "" ]`, print "integer
+  # expression expected" to stderr, fall through to the elif — where an empty
+  # avail arithmetically becomes 0 — and report `tight … against 0 GiB free` on a
+  # volume nobody measured. `retention_verdict "" 15 262144000` reported `fits`
+  # for a day size that was never read.
+  case "$day"   in ''|*[!0-9]*) printf 'unknown 0 0\n'; return 1 ;; esac
+  case "$keep"  in ''|*[!0-9]*) printf 'unknown 0 0\n'; return 1 ;; esac
+  case "$avail" in ''|*[!0-9]*) printf 'unknown 0 0\n'; return 1 ;; esac
+  proj=$(( day * keep ))
+  if   [ "$proj" -ge "$avail" ];               then printf 'over %s %s\n'  "$proj" "$avail"
+  elif [ $(( proj * 10 )) -ge $(( avail * 7 )) ]; then printf 'tight %s %s\n' "$proj" "$avail"
+  else printf 'fits %s %s\n' "$proj" "$avail"; fi
+  return 0
+}
+
+# hostname_label_ok NAME — a syntactically valid host name.
+#
+# Interpolated into `hostnamectl set-hostname` and into an /etc/hosts line, so
+# anything outside [A-Za-z0-9.-] is refused rather than quoted around. The
+# leading/trailing and empty-label rules are RFC 1123's; a name ending in '-'
+# is accepted by hostnamectl on some releases and then breaks resolution.
+# 64, not DNS's 253: `hostnamectl set-hostname` goes through sethostname(2), and
+# Linux's HOST_NAME_MAX is 64. A 127-character name passed a 253 cap here and
+# then died at `run hostnamectl set-hostname` with a bare "command failed" —
+# after the validator had said yes, which is the worst place to find out.
+hostname_label_ok() {
+  local n="${1:-}"
+  [ -n "$n" ] || return 1
+  [ "${#n}" -le 64 ] || return 1
+  case "$n" in
+    *[!A-Za-z0-9.-]*) return 1 ;;
+    -*|*-|.*|*.)      return 1 ;;
+    *..*)             return 1 ;;
+  esac
+  local part rest="$n"
+  while [ -n "$rest" ]; do
+    part="${rest%%.*}"
+    case "$rest" in *.*) rest="${rest#*.}" ;; *) rest="" ;; esac
+    [ -n "$part" ] || return 1
+    [ "${#part}" -le 63 ] || return 1
+    case "$part" in -*|*-) return 1 ;; esac
+  done
+  return 0
+}
+
+# fstab_line_for SOURCE TARGET FSTYPE — the /etc/fstab line this installer
+# OFFERS for a data volume that is mounted but not persistent.
+#
+# `nofail` is a DELIBERATE choice and the trade deserves stating once, here,
+# rather than being discovered at 3am. WITHOUT it a mount that fails at boot
+# fails local-fs.target and drops the box into emergency mode — no sshd, which
+# on a remote machine means the provider's console. WITH it the box boots, SSH
+# works, and the STACK refuses to start: the compose overlay binds
+# ${DATA_ROOT}/postgres and friends BY PATH, and a bind to a path that does not
+# exist is a hard mount failure, which is the "safe failure (no silently-fresh
+# database on the boot disk)" that file's own header claims
+# (infra/compose/docker-compose.volume.yml:9-12). Loud, recoverable, remote.
+#
+# `x-systemd.device-timeout=30` bounds the wait for a device that never comes
+# back; the default is 90 seconds per device, spent before any login prompt.
+# The markers around the line this installer writes into /etc/fstab. KEYED ON
+# THE MOUNTPOINT, not just "Libriant": upsert_block REPLACES the block it finds,
+# so a run with a different $LIBRIANT_DATA_ROOT would otherwise silently delete
+# the previous mountpoint's line while appearing to add its own.
+fstab_block_begin() { printf '# --- Libriant data volume BEGIN (installer): %s ---\n' "$DATA_ROOT"; }
+fstab_block_end()   { printf '# --- Libriant data volume END: %s ---\n' "$DATA_ROOT"; }
+
+fstab_line_for() {
+  local src="${1:?}" target="${2:?}" fstype="${3:-auto}"
+  # fstab writes a space in a path as \040. Nothing on this box has one today;
+  # the day something does, an unescaped line is a boot failure.
+  target="${target// /\\040}"
+  [ -n "$fstype" ] || fstype=auto
+  printf '%s  %s  %s  defaults,nofail,x-systemd.device-timeout=30  0  %s\n' \
+    "$src" "$target" "$fstype" "$(fstab_fsck_pass "$fstype")"
+}
+
+# build_headroom_verdict AVAIL_KIB — "ok <GiB>" / "low <GiB>" / "unknown 0".
+#
+# §3.8 step 6 budgets ~15-20 GiB in /var/lib/docker for a cold build and the
+# runbook marks that figure UNVERIFIED ON THIS BOX (it was measured on the dead
+# machine), so 25 GiB is a margin over a guess and the callers say so. rc 1 and
+# the word "unknown" rather than an empty string, because "only  GiB free"
+# reads as a number that happens to be missing rather than a check that did not
+# run.
+build_headroom_verdict() {
+  local kib="${1:-}" gib
+  case "$kib" in ''|*[!0-9]*) printf 'unknown 0\n'; return 1 ;; esac
+  gib=$(( kib / 1024 / 1024 ))
+  if [ "$gib" -lt 25 ]; then printf 'low %s\n' "$gib"; else printf 'ok %s\n' "$gib"; fi
+  return 0
+}
+
+# clock_sanity_verdict NOW_EPOCH NEWEST_MTIME_EPOCH — the one clock check that
+# needs NO network and no time server, and the only one available on a box whose
+# apt and TLS are already broken BY the clock.
+#
+# A file cannot have been written in the future. If `date` reads earlier than
+# the mtime of something this box itself wrote (/var/lib/dpkg/status is touched
+# by every apt operation, so on a fresh install that is the install date), the
+# clock is BEHIND, and that is not an opinion. It is also the case that breaks
+# apt first: every Release file becomes "not valid yet" and step_packages dies
+# on empty package lists.
+#
+# The ahead case is a guess, not a proof, so it is a WARN with a deliberately
+# generous threshold — a real box CAN sit two years past its last dpkg write.
+#
+# THE BEHIND CASE HAS A THRESHOLD TOO, and it was added after this fired FATAL on
+# a perfectly synchronised box. The caller used to include $SELF — this installer
+# file — in "a file this box wrote". It is by definition the file the operator
+# COPIED ONTO the box, and `scp -p`, `rsync -a`, `tar -x` and `curl -R` all
+# preserve the laptop's mtime; a laptop one second ahead of a correct server then
+# produced the SKEW prompt, which is the one acknowledgement in this script that
+# must never become reflex. $SELF is gone from that list. The threshold is the
+# second lock on the same door: NTP stepping the clock backwards mid-run is real,
+# and a few seconds of it is not the failure this exists to catch. 300 seconds is
+# comfortably below every consequence — apt's Valid-Until, TLS notBefore, and a
+# TOTP window of ~90 seconds are all far past it by the time the difference
+# against a file's mtime can even be measured.
+CLOCK_BEHIND_FATAL_SECONDS=300
+clock_sanity_verdict() {
+  local now="${1:-}" mtime="${2:-}" d
+  # Guarded SEPARATELY, not as "${now}${mtime}": concatenating them makes an
+  # empty second argument invisible ("1000" + "" is all digits), and the very
+  # next line then feeds an empty string to `[ -lt ]`. Found by the fixture
+  # below, which is the "stat could not read that file" case.
+  case "$now"   in ''|*[!0-9]*) return 0 ;; esac
+  case "$mtime" in ''|*[!0-9]*) return 0 ;; esac
+  if [ "$now" -lt "$mtime" ]; then
+    d=$(( mtime - now ))
+    if [ "$d" -lt "$CLOCK_BEHIND_FATAL_SECONDS" ]; then
+      printf 'WARN  the clock reads %s seconds earlier than the mtime of a file this box wrote. Under %s seconds that is more likely a clock step mid-run than real skew, but check it.\n' "$d" "$CLOCK_BEHIND_FATAL_SECONDS"
+      return 0
+    fi
+    printf 'FATAL the clock reads %s seconds EARLIER than the mtime of a file this box wrote. A file cannot be written in the future: this clock is wrong, and apt will call every Release file "not valid yet".\n' "$d"
+    return 0
+  fi
+  d=$(( now - mtime ))
+  [ "$d" -gt 63072000 ] && printf 'WARN  the clock is more than two years past the last package operation on this box. If that is not right, `openssl x509 -checkend 0` will call a perfectly good origin certificate expired.\n'
+  return 0
+}
+
+# json_names_key KEY — does this JSON (on stdin) mention "KEY": at all?
+#
+# DELIBERATELY CRUDE, and the crudeness is the point. There is no jq in
+# BASE_PACKAGES, and this is only ever used to REPORT what an existing
+# /etc/docker/daemon.json already carries so the operator can merge by hand. It
+# never decides to edit anything: a half-merged daemon.json stops dockerd from
+# starting at all, which is a worse outcome than any setting it could fix.
+json_names_key() {
+  local k="${1:?}"
+  grep -q "\"${k}\"[[:space:]]*:"
+}
+
 # valid_step — a typo in --from/--only/--skip must not read as "nothing to do".
 # Without this, `--only orgin_cert` walks the whole list, matches nothing, and
 # prints the closing summary as though the box had been provisioned.
@@ -1200,6 +1737,50 @@ backup_cron_line() {
 SHELL=/bin/bash
 MAILTO=""
 15 2 * * * ${DEPLOY_USER} bash -lc 'set -a; . ${ENV_FILE}; set +a; BACKUP_ROOT=${DATA_ROOT}/backups STORAGE_DIR=${DATA_ROOT}/storage COMPOSE_FILE=${APP_DIR}/infra/compose/docker-compose.prod.yml BACKUP_TEXTFILE_DIR=${TEXTFILE_DIR} ${APP_DIR}/scripts/backup.sh >> ${LOG_DIR}/backup.log 2>&1'
+EOF
+}
+
+# /etc/docker/daemon.json, as a function so --self-test can read what would be
+# written without a Docker daemon anywhere near it.
+#
+# WHY THIS FILE EXISTS AT ALL, given that it is NOT about log rotation:
+#
+#   ip6tables    step_firewall DIES on "ip6tables has no jump from DOCKER-USER",
+#                and its own message punts the operator to "a docker daemon.json
+#                question, not a Libriant one" — a file that, until now, this
+#                installer never wrote. Docker Engine has defaulted this to true
+#                since v28, so on a current docker-ce the honest answer to "what
+#                breaks without it" is "probably nothing". What it buys is
+#                DETERMINISM and the removal of a documented failure branch, and
+#                it is written before the daemon's first start so no restart is
+#                ever needed on a first install.
+#
+#   log-opts     NOT because the stack needs it. infra/compose/docker-compose.prod.yml:140
+#                already sets json-file 50m x 5 on all nine services via the
+#                *logging anchor, and the monitoring overlay sets 20m x 5 on its
+#                five — a ~2.65 GB ceiling against an 80 GiB root, plus Caddy's
+#                own 100mb x 14 self-rolling access log. The daemon default
+#                cannot fill this disk from this stack. It is here so that a
+#                service added later WITHOUT the anchor, and any ad-hoc
+#                `docker run` an operator leaves detached, is bounded too. Same
+#                numbers as the anchor on purpose: two different ceilings for
+#                the same thing is a question nobody wants at 3am.
+#
+# `"ipv6": true` is deliberately ABSENT. It is a different setting from
+# ip6tables, and the compose networks leave enable_ipv6 unset on purpose —
+# infra/compose/docker-compose.prod.yml:817 explains that turning it on is one
+# of four changes that must be made together, and the userland-proxy path it
+# reopens is the bypass that defeated the first fix for authn-authz-01.
+docker_daemon_json() {
+  cat <<'EOF'
+{
+  "ip6tables": true,
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "50m",
+    "max-file": "5"
+  }
+}
 EOF
 }
 
@@ -1481,6 +2062,40 @@ B=2" "$(env_set_stream A 999 < "$d/env3")"
   t_eq "refuses an unterminated block" "unterminated" "$(printf 'x\n' | upsert_block "$d/bl4" "$B" "$E" || true)"
   t_eq "…and leaves the file untouched" "$before4" "$(cat "$d/bl4")"
 
+  # ── THE WRITE IS ATOMIC, because one caller of this is /etc/fstab.
+  #
+  # `printf … > "$file"` truncates first. Driven under `ulimit -f 0` — which is
+  # the same shape as ENOSPC, a SIGKILL, or the SSH drop this script's own header
+  # anticipates — it left the file at ZERO BYTES. For /etc/fstab that means
+  # /boot, /boot/efi, swap and the data volume do not mount at the next boot: the
+  # exact state assert_data_root_persistent exists to prevent, caused by it.
+  printf 'UUID=1 / ext4 defaults 0 1\nUUID=2 /home ext4 defaults 0 2\nUUID=3 /srv ext4 defaults 0 2\n' > "$d/fstab-atomic"
+  chmod 644 "$d/fstab-atomic"
+  local before_atomic; before_atomic="$(cat "$d/fstab-atomic")"
+  local res_atomic
+  res_atomic="$( ( ulimit -f 0 2>/dev/null; printf 'UUID=4 /mnt/libriant ext4 defaults,nofail 0 2\n' \
+    | upsert_block "$d/fstab-atomic" "$B" "$E" ) 2>/dev/null || true )"
+  t_eq "an interrupted write leaves the ORIGINAL file byte-for-byte" \
+    "$before_atomic" "$(cat "$d/fstab-atomic")"
+  t_eq "…and it is still three lines, not zero" "3" "$(wc -l < "$d/fstab-atomic" | tr -d ' ')"
+  case "$res_atomic" in
+    unwritable|'') T_PASS=$((T_PASS + 1)); printf '  ok   …and it reports a failure rather than success\n' ;;
+    added|updated) T_FAIL=$((T_FAIL + 1)); printf '  FAIL …but it reported [%s], i.e. success\n' "$res_atomic" ;;
+    *) T_PASS=$((T_PASS + 1)); printf '  ..   (ulimit -f 0 not enforced here; write reported [%s])\n' "$res_atomic" ;;
+  esac
+  # `>` had one virtue — it preserved the inode, and with it the mode and owner.
+  # mktemp creates at 0600, so both are carried across explicitly or /etc/fstab
+  # would silently become root-only-readable.
+  printf 'UUID=1 / ext4 defaults 0 1\n' > "$d/fstab-mode"
+  chmod 644 "$d/fstab-mode"
+  t_eq "a real write succeeds" "added" \
+    "$(printf 'UUID=4 /mnt/libriant ext4 defaults,nofail 0 2\n' | upsert_block "$d/fstab-mode" "$B" "$E")"
+  t_eq "…and the mode survives the atomic replace" "644" "$(stat_mode "$d/fstab-mode")"
+  t_true "…and the original line is still there" grep -qx 'UUID=1 / ext4 defaults 0 1' "$d/fstab-mode"
+  t_true "…and so is the new one"                grep -q  '/mnt/libriant' "$d/fstab-mode"
+  t_eq "…and no temp file was left beside it" "0" \
+    "$(find "$d" -maxdepth 1 -name 'fstab-mode.libriant-new.*' 2>/dev/null | wc -l | tr -d ' ')"
+
   printf '\n== ufw parsing — the enable gate ==\n'
   local UFWST UFWADD
   UFWST='Status: active
@@ -1700,9 +2315,316 @@ tcp   LISTEN 0  4096   0.0.0.0:443   0.0.0.0:*
   t_eq "the dc preamble sources .env.prod before exporting IMAGE_TAG too" "0" \
     "$(awk '/^set -a; \. /{s=NR} /^export IMAGE_TAG=/{t=NR} END{ if (s && t && s<t) print 0; else print 1 }' "$d/preamble")"
 
+  printf '\n== td_get — the CanNTP= / NTP= substring trap ==\n'
+  # "CanNTP=yes" CONTAINS the substring "NTP=", so `grep NTP=` and
+  # `case *NTP=*` return CanNTP's value — and `timedatectl show` prints CanNTP
+  # FIRST. NTPSynchronized is read by the same function and is driven in both
+  # print orders beside it.
+  local TD1 TD2 TD3
+  TD1='NTPSynchronized=no
+NTP=yes
+CanNTP=yes'
+  TD2='NTP=yes
+NTPSynchronized=no
+Timezone=Europe/Berlin'
+  # THE FIXTURE THAT CAN ACTUALLY FAIL. `timedatectl show` prints CanNTP BEFORE
+  # NTP, and "CanNTP=yes" CONTAINS the substring "NTP=" — so an unanchored reader
+  # returns CanNTP's value for NTP. The two fixtures above were built around a
+  # misremembered claim (that NTPSynchronized was the collision) and are arranged
+  # so they cannot catch it: TD1 puts CanNTP last, TD2 omits it. Replacing
+  # td_get's anchored match with a naive one left all of them green.
+  #
+  # This is the box the trap costs something on: CanNTP=yes, NTP=no. Read
+  # wrongly, the FATAL "network time synchronisation is OFF: timedatectl set-ntp
+  # true" disappears and step_clock waits 90 seconds instead.
+  TD3='Timezone=Europe/Athens
+LocalRTC=no
+CanNTP=yes
+NTP=no
+NTPSynchronized=no'
+  t_eq "NTPSynchronized printed FIRST: NTP is still yes" "yes" "$(printf '%s\n' "$TD1" | td_get NTP)"
+  t_eq "…and NTPSynchronized is still no"                "no"  "$(printf '%s\n' "$TD1" | td_get NTPSynchronized)"
+  t_eq "NTP printed FIRST: NTP is yes"                   "yes" "$(printf '%s\n' "$TD2" | td_get NTP)"
+  t_eq "…and NTPSynchronized is no"                      "no"  "$(printf '%s\n' "$TD2" | td_get NTPSynchronized)"
+  t_eq "a key that is absent yields NOTHING, not 'no'"   ""    "$(printf '%s\n' "$TD2" | td_get CanNTP || true)"
+  t_false "…and says so with rc 1"                       eval "printf '%s\n' \"\$TD2\" | td_get CanNTP"
+  t_eq "a value containing ="  "a=b" "$(printf 'X=a=b\n' | td_get X)"
+  t_eq "CRLF from a captured log" "yes" "$(printf 'NTP=yes\r\n' | td_get NTP)"
+  t_eq "empty input" "" "$(printf '' | td_get NTP || true)"
+  # In systemd's own print order, with the value that matters.
+  t_eq "CanNTP printed BEFORE NTP: NTP is 'no', NOT CanNTP's 'yes'" "no" \
+    "$(printf '%s\n' "$TD3" | td_get NTP)"
+  t_eq "…and CanNTP is still readable as itself"        "yes" "$(printf '%s\n' "$TD3" | td_get CanNTP)"
+  # And the consequence, through the verdict, so the assertion is about an
+  # outcome rather than a string: this box must be told to run set-ntp true.
+  t_eq "…so the box gets the set-ntp remediation line" "1" \
+    "$(clock_verdict "$(printf '%s\n' "$TD3" | td_get NTP)" \
+                     "$(printf '%s\n' "$TD3" | td_get NTPSynchronized)" \
+                     "$(printf '%s\n' "$TD3" | td_get CanNTP)" | grep -c 'timedatectl set-ntp true')"
+
+  printf '\n== clock_verdict — admin TOTP has a ~90-second window ==\n'
+  t_eq "on and converged: NOTHING to report"     "" "$(clock_verdict yes yes yes)"
+  t_eq "NTP off and not synced: two FATALs"      "2" "$(clock_verdict no no yes | grep -c '^FATAL')"
+  t_eq "NTP on but not converged: one FATAL"     "1" "$(clock_verdict yes no yes | grep -c '^FATAL')"
+  t_eq "no NTP client at all (CanNTP=no)"        "1" "$(clock_verdict no no no | grep -c '^FATAL')"
+  t_eq "…and it names CanNTP, not the sync bit"  "1" "$(clock_verdict no no no | grep -c 'CanNTP=no')"
+  # The one deliberately SOFT case: the kernel says the clock is disciplined and
+  # systemd does not know who by. The property that matters holds.
+  t_eq "synced by something systemd does not manage: WARN, not FATAL" "0" \
+    "$(clock_verdict no yes yes | grep -c '^FATAL')"
+  t_eq "…and it does warn"                       "1" "$(clock_verdict no yes yes | grep -c '^WARN')"
+  # A systemd too old to answer must not produce an unactionable FATAL.
+  t_eq "timedatectl said nothing: WARN"          "1" "$(clock_verdict '' '' '' | grep -c '^WARN')"
+  t_eq "…and no FATAL"                           "0" "$(clock_verdict '' '' '' | grep -c '^FATAL')"
+
+  printf '\n== clock_sanity_verdict — no network, no time server ==\n'
+  # A file cannot be written in the future. This is the ONLY clock check still
+  # available on a box whose apt and TLS the clock has already broken.
+  t_eq "clock BEHIND a file this box wrote: FATAL" "1" "$(clock_sanity_verdict 1000 2000 | grep -c '^FATAL')"
+  t_eq "…and it says how far"                      "1" "$(clock_sanity_verdict 1000 2000 | grep -c '1000 seconds')"
+  # THE THRESHOLD. This used to FATAL at one second behind, and the caller fed it
+  # $SELF's mtime — the installer file the operator scp'd onto the box, whose
+  # mtime `scp -p` and `rsync -a` copy from the laptop. A laptop one second ahead
+  # of a CORRECT server therefore produced the SKEW prompt, which is the one
+  # acknowledgement in this script that must never become reflex. $SELF is gone
+  # from the caller's list; this is the second lock on the same door.
+  t_eq "1 second behind is a WARN, not a FATAL"    "0" "$(clock_sanity_verdict 1000 1001 | grep -c '^FATAL')"
+  t_eq "…and it does say something"                "1" "$(clock_sanity_verdict 1000 1001 | grep -c '^WARN')"
+  t_eq "299 seconds behind is still a WARN"        "0" "$(clock_sanity_verdict 1000 1299 | grep -c '^FATAL')"
+  t_eq "300 seconds behind IS a FATAL"             "1" "$(clock_sanity_verdict 1000 1300 | grep -c '^FATAL')"
+  t_eq "…and a year behind, emphatically"          "1" "$(clock_sanity_verdict 1000 31537000 | grep -c '^FATAL')"
+  t_eq "clock a day ahead of it: nothing"          "" "$(clock_sanity_verdict 1086400 1000000)"
+  t_eq "clock three years ahead: a WARN, not a FATAL" "1" "$(clock_sanity_verdict 100000000 1000 | grep -c '^WARN')"
+  t_eq "…and never a FATAL for the ahead case"     "0" "$(clock_sanity_verdict 100000000 1000 | grep -c '^FATAL')"
+  t_eq "unreadable mtime: no finding at all"       "" "$(clock_sanity_verdict 1000 '')"
+
+  printf '\n== fstab_target_entry — mounted is not the same as mounted FOR EVER ==\n'
+  cat > "$d/fstab" <<'EOF'
+# /etc/fstab
+UUID=11111111-1111-1111-1111-111111111111 /               ext4  errors=remount-ro 0 1
+# UUID=deadbeef-0000-0000-0000-000000000000 /mnt/libriant ext4 defaults 0 2
+#UUID=cafef00d-0000-0000-0000-000000000000 /mnt/libriant ext4 defaults 0 2
+/dev/mapper/vg0-old  /mnt/libriant-old   ext4  defaults        0  2
+UUID=abcd-1234       /mnt/libriant/      ext4  defaults,nofail 0  2
+/dev/mapper/vg0-swap none                swap  sw              0  0
+EOF
+  t_eq "the entry for the data root, trailing slash and all" \
+    "UUID=abcd-1234       /mnt/libriant/      ext4  defaults,nofail 0  2" \
+    "$(fstab_target_entry /mnt/libriant < "$d/fstab")"
+  t_eq "a COMMENTED-OUT entry is not an entry" "0" \
+    "$(fstab_target_entry /mnt/libriant < "$d/fstab" | grep -c 'deadbeef' || true)"
+  # …and the NO-SPACE form, which is what people actually type. With a space,
+  # `# UUID=…` shifts every field by one and the mountpoint match misses anyway,
+  # so the fixture above passes even with the comment-skip line DELETED. This one
+  # does not: `#UUID=… /mnt/libriant …` puts the target in field 2 exactly where
+  # a live entry would be.
+  t_eq "…including the no-space '#UUID=' form"  "0" \
+    "$(fstab_target_entry /mnt/libriant < "$d/fstab" | grep -c 'cafef00d' || true)"
+  t_eq "…and /mnt/libriant-old must not match /mnt/libriant" "0" \
+    "$(fstab_target_entry /mnt/libriant < "$d/fstab" | grep -c 'vg0-old' || true)"
+  t_false "a target with no entry at all" eval "fstab_target_entry /mnt/nothing < '$d/fstab'"
+  # fstab escapes a space as \040. Unescaped, a mountpoint with a space in it
+  # never matches itself and the persistence check silently says "not there".
+  printf 'UUID=x /mnt/my\\040data ext4 defaults 0 2\n' > "$d/fstab2"
+  t_eq "a \\040-escaped space in the mountpoint" "1" \
+    "$(fstab_target_entry '/mnt/my data' < "$d/fstab2" | grep -c 'UUID=x' || true)"
+  printf 'UUID=y /mnt/libriant ext4 defaults 0 2\r\n' > "$d/fstab3"
+  t_eq "CRLF from an editor"                    "1" "$(fstab_target_entry /mnt/libriant < "$d/fstab3" | grep -c 'UUID=y' || true)"
+  printf '   UUID=z /mnt/libriant ext4 defaults 0 2\n' > "$d/fstab4"
+  t_eq "leading whitespace"                     "1" "$(fstab_target_entry /mnt/libriant < "$d/fstab4" | grep -c 'UUID=z' || true)"
+  printf '/dev/sda1 /mnt/libriant\n' > "$d/fstab5"
+  t_eq "a two-field line still identifies the target" "1" \
+    "$(fstab_target_entry /mnt/libriant < "$d/fstab5" | grep -c 'sda1' || true)"
+  printf 'garbage\n\n\n' > "$d/fstab6"
+  t_false "a one-field line is not an entry"    eval "fstab_target_entry /mnt/libriant < '$d/fstab6'"
+  t_false "an empty file"                       eval "fstab_target_entry /mnt/libriant < /dev/null"
+
+  printf '\n== fstab_persistence_verdict / fstab_fsck_pass / fstab_line_for ==\n'
+  t_eq "no entry at all"    "none"   "$(fstab_persistence_verdict '')"
+  t_eq "a plain entry"      "ok"     "$(fstab_persistence_verdict 'UUID=x /mnt/libriant ext4 defaults 0 2')"
+  t_eq "nofail is reported, not condemned" "nofail" \
+    "$(fstab_persistence_verdict 'UUID=x /mnt/libriant ext4 defaults,nofail 0 2')"
+  t_eq "…and nofail in the middle of the list" "nofail" \
+    "$(fstab_persistence_verdict 'UUID=x /mnt/libriant ext4 rw,nofail,noatime 0 2')"
+  # "nofailsafe" must not read as "nofail".
+  t_eq "an option that merely STARTS with nofail" "ok" \
+    "$(fstab_persistence_verdict 'UUID=x /mnt/libriant ext4 nofailsafe 0 2')"
+  t_eq "ext4 gets fsck pass 2" "2" "$(fstab_fsck_pass ext4)"
+  t_eq "ext2 too"              "2" "$(fstab_fsck_pass ext2)"
+  # xfs and btrfs check themselves; a non-zero pass makes systemd-fsck complain
+  # on every boot about a filesystem it cannot check.
+  t_eq "xfs gets 0"            "0" "$(fstab_fsck_pass xfs)"
+  t_eq "an unknown fstype gets 0" "0" "$(fstab_fsck_pass '')"
+  t_eq "the offered line is UUID-first and carries nofail" "1" \
+    "$(fstab_line_for UUID=abc /mnt/libriant ext4 | grep -c 'UUID=abc  /mnt/libriant  ext4  defaults,nofail,x-systemd.device-timeout=30  0  2')"
+  t_eq "…and a space in the target is escaped as \\040" "1" \
+    "$(fstab_line_for UUID=abc '/mnt/my data' ext4 | grep -c '/mnt/my\\040data')"
+  t_eq "…and an unknown fstype becomes 'auto' with pass 0" "1" \
+    "$(fstab_line_for /dev/sdb1 /mnt/libriant '' | grep -c 'auto  defaults,nofail,x-systemd.device-timeout=30  0  0')"
+
+  printf '\n== fstab_source_is_plain — sources that must NEVER reach /etc/fstab ==\n'
+  # `findmnt -no SOURCE` does not always print a block device. On a btrfs
+  # subvolume it prints /dev/sda2[/@sub], on a bind /dev/mapper/vg0-root[/srv/…],
+  # on NFS host:/export. blkid fails on all three, and the "name the device
+  # instead" branch then wrote that literal string into /etc/fstab, where it
+  # cannot mount. Offering nothing beats offering a line that is wrong.
+  t_true  "a plain device"            fstab_source_is_plain /dev/mapper/vg0-data
+  t_true  "a UUID tag"                fstab_source_is_plain UUID=abcd-1234
+  t_true  "a PARTUUID tag"            fstab_source_is_plain PARTUUID=0001-02
+  t_true  "a LABEL tag"               fstab_source_is_plain LABEL=libriant
+  t_false "a btrfs subvolume"         fstab_source_is_plain '/dev/sda2[/@sub]'
+  t_false "a bind mount"              fstab_source_is_plain '/dev/mapper/vg0-root[/srv/libriant-data]'
+  t_false "an NFS export"             fstab_source_is_plain 'nas.example:/export/libriant'
+  t_false "a source with a space"     fstab_source_is_plain '/dev/my disk'
+  t_false "something that is not a device at all" fstab_source_is_plain tmpfs
+  t_false "empty"                     fstab_source_is_plain ''
+  # fstab_source_device resolves a source field to the device it names, and
+  # answers NOTHING when it cannot — because silence at the call site means
+  # "could not compare", never "matches". /dev/null and /dev/zero exist
+  # everywhere this is driven.
+  t_eq "a plain device resolves to itself"  "/dev/null" "$(fstab_source_device /dev/null)"
+  t_false "a device that does not exist"     fstab_source_device /dev/definitely-not-here
+  t_false "a UUID with no by-uuid link"      fstab_source_device UUID=0000-not-a-real-uuid
+  t_false "a source form we do not parse"    fstab_source_device 'nas.example:/export'
+  t_false "empty"                            fstab_source_device ''
+  # The whole point: two different devices must not compare equal.
+  t_false "…/dev/null and /dev/zero are not the same device" \
+    eval "[ \"\$(fstab_source_device /dev/null)\" = \"\$(fstab_source_device /dev/zero)\" ]"
+
+  printf '\n== fstab_verify_available — the baseline and the check must agree ==\n'
+  # A baseline taken under different conditions from the check it is compared
+  # against is not a baseline. One predicate gates both.
+  ( FSTAB=/etc/fstab; LIBRIANT_FSTAB_VERIFY=""
+    command -v findmnt >/dev/null 2>&1 && fstab_verify_available ) \
+    && t_eq "on a real box with findmnt: available" 1 1 \
+    || t_eq "no findmnt here, so the real-box path is not driveable" 1 1
+  t_false "an overridden FSTAB with no stub: NOT available (it would read /etc/fstab)" \
+    eval "FSTAB=/tmp/somewhere-else LIBRIANT_FSTAB_VERIFY= fstab_verify_available"
+  t_true  "…but an injected verifier makes it available, which is what makes the
+         restore-and-die branch driveable at all" \
+    eval "FSTAB=/tmp/somewhere-else LIBRIANT_FSTAB_VERIFY=true fstab_verify_available"
+
+  printf '\n== the fstab block markers are keyed on the MOUNTPOINT ==\n'
+  # upsert_block REPLACES the block it finds. Keyed on "Libriant" alone, a run
+  # with a different $LIBRIANT_DATA_ROOT would silently delete the previous
+  # mountpoint's line while appearing to add its own.
+  t_eq "BEGIN names the data root"   "1" "$(fstab_block_begin | grep -c -F "$DATA_ROOT")"
+  t_eq "END names it too"            "1" "$(fstab_block_end   | grep -c -F "$DATA_ROOT")"
+  t_false "…and the two are not the same line" eval "[ \"\$(fstab_block_begin)\" = \"\$(fstab_block_end)\" ]"
+
+  printf '\n== df_avail_kib / build_headroom_verdict — the ENOSPC gate ==\n'
+  # `df -Pk` (POSIX) and not plain `df`: a long device name WRAPS in the default
+  # output and field 4 becomes field 3 of a continuation line, which is the
+  # classic way this check silently reads the wrong number.
+  t_eq "a POSIX df row" "51424540" "$(printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/mapper/vg0-root 82043824 26374132 51424540 34%% /\n' | df_avail_kib)"
+  t_eq "…and the header alone is not an answer" "" "$(printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n' | df_avail_kib || true)"
+  t_false "…with rc 1, so a caller cannot print 'only  GiB free'" \
+    eval "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n' | df_avail_kib"
+  t_false "empty input" eval "printf '' | df_avail_kib"
+  t_eq "a wrapped (non-POSIX) row is REFUSED rather than misread" "" \
+    "$(printf 'Filesystem 1K-blocks Used Available Use%% Mounted on\n/dev/mapper/a-very-long-device-name\n 82043824 26374132 51424540 34%% /\n' | df_avail_kib || true)"
+  t_eq "25 GiB exactly is enough"  "ok 25"  "$(build_headroom_verdict 26214400)"
+  t_eq "24 GiB is not"             "low 24" "$(build_headroom_verdict 25165824)"
+  t_eq "nothing readable"          "unknown 0" "$(build_headroom_verdict '' || true)"
+  t_false "…and says so with rc 1" eval "build_headroom_verdict '' >/dev/null"
+
+  printf '\n== meminfo_mb / mem_verdict — exit 137 is a bare number ==\n'
+  local MEMINFO
+  MEMINFO='MemTotal:       65798060 kB
+MemFree:         1234567 kB
+MemAvailable:   60000000 kB
+SwapCached:            0 kB
+SwapTotal:       8388604 kB
+SwapFree:        8388604 kB'
+  t_eq "MemTotal in MiB (integer division, so 64255 not 64256)" "64255" "$(printf '%s\n' "$MEMINFO" | meminfo_mb MemTotal)"
+  # `Mem` must not answer for `MemTotal`, and `SwapCached` must not answer for
+  # `SwapTotal` — both are real prefixes/neighbours in this exact file.
+  t_eq "SwapTotal, NOT SwapCached" "8191" "$(printf '%s\n' "$MEMINFO" | meminfo_mb SwapTotal)"
+  t_false "a key that is absent"   eval "printf '%s\n' \"\$MEMINFO\" | meminfo_mb Nope"
+  t_false "empty input"            eval "printf '' | meminfo_mb MemTotal"
+  t_eq "62 GiB + 8 GiB of swap: nothing to say" "" "$(mem_verdict 64256 8192)"
+  t_eq "a 4 GB box with no swap: a WARN"        "1" "$(mem_verdict 3900 0 | grep -c '^WARN')"
+  t_eq "…and it names the one-service-at-a-time remedy" "1" "$(mem_verdict 3900 0 | grep -c 'dc build web')"
+  # Losing swap silently converts "Postgres pages out" into "Postgres is
+  # OOM-killed", and the HostSwapping alert is guarded by SwapTotal > 0.
+  t_eq "no swap on a BIG box: still a NOTE"     "1" "$(mem_verdict 64256 0 | grep -c '^NOTE')"
+  t_eq "…and no WARN, because 62 GiB is plenty" "0" "$(mem_verdict 64256 0 | grep -c '^WARN')"
+  t_eq "unreadable /proc/meminfo: a WARN, not a crash" "1" "$(mem_verdict '' '' | grep -c '^WARN')"
+  # ONE argument missing is the case the concatenated guard could not see: "" and
+  # "8191" concatenate to "8191", which is all digits, so mem_verdict said
+  # nothing and the caller printed `ok " MiB RAM + 8191 MiB swap — enough for a
+  # cold next build`. A green line for a check that did not run.
+  t_eq "MemTotal unreadable but swap fine: still a WARN" "1" "$(mem_verdict '' 8191 | grep -c '^WARN')"
+  t_eq "…and the reverse"                                "1" "$(mem_verdict 64256 '' | grep -c '^WARN')"
+  t_eq "…and non-numeric input"                          "1" "$(mem_verdict x 8191 | grep -c '^WARN')"
+  # The anchor's real job is the PREFIX case: without it, `meminfo_mb Mem` would
+  # be answered by MemTotal. (Asserting SwapTotal != SwapCached does not test the
+  # anchor at all — no other line in that file contains the string "SwapTotal".)
+  t_false "'Mem' must NOT be answered by 'MemTotal'" eval "printf '%s\n' \"\$MEMINFO\" | meminfo_mb Mem"
+  t_false "…nor 'Swap' by 'SwapTotal'"               eval "printf '%s\n' \"\$MEMINFO\" | meminfo_mb Swap"
+
+  printf '\n== retention_verdict — 15 full copies on the same filesystem ==\n'
+  # 250 GiB volume, in KiB.
+  local VOL=262144000
+  t_eq "15 x 2 GiB fits"          "1" "$(retention_verdict 2097152 15 "$VOL" | grep -c '^fits')"
+  t_eq "15 x 14 GiB is TIGHT"     "1" "$(retention_verdict 14680064 15 "$VOL" | grep -c '^tight')"
+  t_eq "15 x 20 GiB is OVER"      "1" "$(retention_verdict 20971520 15 "$VOL" | grep -c '^over')"
+  t_eq "a day-one, zero-size backup still answers" "1" "$(retention_verdict 0 15 "$VOL" | grep -c '^fits')"
+  # Non-numeric input must be REFUSED, not fed to an arithmetic expansion that
+  # aborts the whole script under set -e.
+  t_eq "non-numeric input is refused"  "unknown 0 0" "$(retention_verdict x 15 "$VOL" || true)"
+  t_false "…and says so with rc 1"     eval "retention_verdict x 15 $VOL >/dev/null"
+  # EACH ARGUMENT SEPARATELY. Concatenated, `2097152` + `15` + `""` is all
+  # digits: the guard passed, `[ "$proj" -ge "" ]` printed "integer expression
+  # expected" to stderr, the elif then read the empty avail as 0, and the caller
+  # warned `RETENTION PROJECTION IS tight … against 0 GiB free` about a volume
+  # nobody had measured. The mirror case reported `fits` for an unread day size.
+  t_eq "df produced nothing: refused, not 'tight against 0 GiB'" "unknown 0 0" \
+    "$(retention_verdict 2097152 15 '' || true)"
+  t_eq "du produced nothing: refused, not 'fits'"                "unknown 0 0" \
+    "$(retention_verdict '' 15 "$VOL" || true)"
+  t_eq "an unreadable BACKUP_KEEP_DAYS is refused"               "unknown 0 0" \
+    "$(retention_verdict 2097152 '' "$VOL" || true)"
+
+  printf '\n== hostname_label_ok — interpolated into /etc/hosts and hostnamectl ==\n'
+  t_true  "a plain label"            hostname_label_ok libriant-1
+  t_true  "a dotted FQDN"            hostname_label_ok box.libriant.example
+  t_false "an empty name"            hostname_label_ok ''
+  t_false "a space"                  hostname_label_ok 'my box'
+  t_false "a shell metacharacter"    hostname_label_ok 'box;rm -rf /'
+  t_false "an underscore"            hostname_label_ok box_1
+  t_false "a trailing hyphen"        hostname_label_ok 'box-'
+  t_false "a leading hyphen"         hostname_label_ok '-box'
+  t_false "a leading dot"            hostname_label_ok '.box'
+  t_false "an empty label"           hostname_label_ok 'a..b'
+  t_false "a label over 63 chars"    hostname_label_ok "$(printf 'a%.0s' $(seq 1 64))"
+  t_true  "…63 is fine"              hostname_label_ok "$(printf 'a%.0s' $(seq 1 63))"
+  # HOST_NAME_MAX is 64 on Linux, not DNS's 253. A 127-character dotted name
+  # passed the old 253 cap and then died at `hostnamectl set-hostname` with a
+  # bare "command failed" — after the validator had said yes.
+  t_false "a dotted name over 64 characters"  hostname_label_ok "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.ccccccc"
+  t_true  "…and one of exactly 64 is fine"    hostname_label_ok "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+  printf '\n== /etc/docker/daemon.json ==\n'
+  docker_daemon_json > "$d/daemon.json"
+  t_eq "it sets ip6tables true — step_firewall dies without the chains" "1" \
+    "$(grep -c '"ip6tables": true' "$d/daemon.json")"
+  # "ipv6" is a DIFFERENT setting. Turning it on is one of four changes that
+  # must be made together, and it reopens the userland-proxy path that defeated
+  # the first fix for authn-authz-01.
+  t_eq "…and does NOT set ipv6"  "0" "$(grep -c '"ipv6"' "$d/daemon.json" || true)"
+  t_eq "…and bounds ad-hoc container logs at the same 50m x 5 as the compose anchor" "1" \
+    "$(grep -c '"max-size": "50m"' "$d/daemon.json")"
+  t_true  "json_names_key finds ip6tables"  eval "json_names_key ip6tables < '$d/daemon.json'"
+  t_false "…and does not invent ipv6"       eval "json_names_key ipv6 < '$d/daemon.json'"
+  t_false "…nor a key in an empty file"     eval "json_names_key ip6tables < /dev/null"
+  t_true  "…and tolerates a space before the colon" \
+    eval "printf '{ \"ip6tables\" : true }\n' | json_names_key ip6tables"
+
   printf '\n== step-name validation ==\n'
   t_true  "'deploy' is a step"      valid_step deploy
   t_true  "'ssh' is a step"         valid_step ssh
+  t_true  "'clock' is a step"       valid_step clock
   t_false "'orgin_cert' is a typo"  valid_step orgin_cert
   t_false "an empty name"           valid_step ''
 
@@ -2040,8 +2962,359 @@ scan_v6() {
 # THE OTHER ONE: a smaller box that genuinely has no separate volume. Legitimate
 # — but it is a decision, so it is typed out, not a keystroke.
 DATA_ROOT_ACKED=0
+DATA_ROOT_FSTAB_ACKED=0
+
+# data_root_mounted — "is it a filesystem RIGHT NOW". Two sources because
+# `mountpoint` is not installed on every minimal image and findmnt is.
+data_root_mounted() {
+  mountpoint -q "$DATA_ROOT" 2>/dev/null || findmnt -rno TARGET "$DATA_ROOT" >/dev/null 2>&1
+}
+
+# data_root_fstab_entry — the /etc/fstab line that makes $DATA_ROOT survive a
+# reboot, or nothing. The UNION of a hand parser and findmnt, and the union is
+# deliberate: missing an entry that exists costs a duplicate line an operator has
+# to notice, while inventing one that does not exist costs nothing at all. The
+# hand parser is here because it can be driven from --self-test with hostile
+# fixtures (a commented-out entry, a /mnt/libriant-old prefix, a \040-escaped
+# space, CRLF from an editor) and findmnt cannot.
+data_root_fstab_entry() {
+  local line=""
+  if [ -r "$FSTAB" ]; then
+    line="$(fstab_target_entry "$DATA_ROOT" < "$FSTAB" 2>/dev/null || true)"
+  fi
+  # ONLY when $FSTAB is the real one. `findmnt --fstab` reads /etc/fstab
+  # unconditionally and takes no file argument, so on a fixture-driven run it
+  # would silently consult the HOST's fstab and answer a question nobody asked.
+  # The same care is taken around `findmnt --verify` below; it was missed here.
+  if [ -z "$line" ] && [ "$FSTAB" = /etc/fstab ] && command -v findmnt >/dev/null 2>&1; then
+    line="$(findmnt --fstab -rno SOURCE,TARGET,FSTYPE,OPTIONS "$DATA_ROOT" 2>/dev/null | head -1 || true)"
+  fi
+  printf '%s' "$line"
+}
+
+# fstab_source_device SOURCEFIELD — the block device an fstab source field names,
+# resolved through its symlinks; empty when it cannot be resolved.
+#
+# Used to answer the question the mountpoint match cannot: is the entry that
+# claims to bring $DATA_ROOT back pointing at the RIGHT VOLUME? The BOOTDISK
+# refusal prints a line for the operator to hand-write with a UUID they copy by
+# eye, and a typo there produces a green "it comes back after a reboot" from the
+# one check written to catch exactly that — then an empty directory on the root
+# disk at the next boot, because `nofail` lets the box come up regardless.
+fstab_source_device() {
+  local s="${1:-}" dev=""
+  case "$s" in
+    UUID=*)        dev="/dev/disk/by-uuid/${s#UUID=}" ;;
+    PARTUUID=*)    dev="/dev/disk/by-partuuid/${s#PARTUUID=}" ;;
+    LABEL=*)       dev="/dev/disk/by-label/${s#LABEL=}" ;;
+    PARTLABEL=*)   dev="/dev/disk/by-partlabel/${s#PARTLABEL=}" ;;
+    /dev/*)        dev="$s" ;;
+    *)             return 1 ;;
+  esac
+  [ -e "$dev" ] || return 1
+  readlink -f "$dev" 2>/dev/null || printf '%s\n' "$dev"
+}
+
+# fstab_source_is_plain SOURCE — refuse anything that is not a plain block
+# device or a tag naming one.
+#
+# `findmnt -no SOURCE` prints `/dev/sda2[/@subvol]` for a btrfs subvolume and
+# `/dev/mapper/vg0-root[/srv/…]` for a bind, and `host:/export` for NFS. blkid
+# fails on all three, the "name the device instead" branch then writes that
+# literal string into /etc/fstab, and the line cannot mount. Offering nothing is
+# strictly better than offering a line that is wrong.
+# Can `findmnt --verify` (or the injected stand-in) be run at all, and against
+# the file this run is actually editing? One predicate, used for BOTH the
+# baseline and the post-write check, because a baseline taken under different
+# conditions from the check it is compared against is not a baseline.
+#
+# LIBRIANT_FSTAB_VERIFY is a test hook, and it is the reason the restore-and-die
+# path below — the most dangerous branch in this file — can be driven off-box at
+# all. Without it that branch was gated on `FSTAB = /etc/fstab`, i.e. excluded
+# from the only override that makes any of this testable.
+fstab_verify_available() {
+  [ -n "${LIBRIANT_FSTAB_VERIFY:-}" ] && return 0
+  [ "$FSTAB" = /etc/fstab ] || return 1
+  command -v findmnt >/dev/null 2>&1
+}
+
+fstab_source_is_plain() {
+  local s="${1:-}"
+  [ -n "$s" ] || return 1
+  case "$s" in
+    *'['*|*']'*|*:*|*' '*) return 1 ;;
+  esac
+  case "$s" in
+    /dev/*|UUID=*|PARTUUID=*|LABEL=*|PARTLABEL=*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# A systemd .mount unit is the other legitimate way to make a mount persistent,
+# and a box provisioned by configuration management may well use one. Not
+# finding an fstab line is not the same as not being persistent.
+data_root_mount_unit_enabled() {
+  local unit
+  command -v systemd-escape >/dev/null 2>&1 || return 1
+  unit="$(systemd-escape -p --suffix=mount "$DATA_ROOT" 2>/dev/null || true)"
+  [ -n "$unit" ] || return 1
+  systemctl is-enabled "$unit" >/dev/null 2>&1
+}
+
+# ── MOUNTED IS NOT THE SAME AS MOUNTED FOR EVER, and until now nothing here
+#    asked the second question.
+#
+# `mountpoint -q` answers "right now". The fstab probe below used to live inside
+# the NOT-mounted branch, so a volume mounted BY HAND — which is the obvious
+# response to this script's own BOOTDISK refusal, and also what an operator does
+# after a Rebuild to get the install moving — short-circuited to
+# "ok, a mounted filesystem" and was never examined again.
+#
+# What that costs, precisely, on the next reboot: /mnt/libriant is an empty
+# directory on the 80 GiB root. The compose overlay binds
+# ${DATA_ROOT}/postgres, /redis, /storage and /caddy BY PATH, and a bind to a
+# path that does not exist is a hard mount failure, so the whole cell refuses to
+# start. That much is the "safe failure" the overlay's header claims and it is
+# survivable. The catastrophe is one command later, and it is the command that
+# file itself tells you to run: `mkdir -p ${LIBRIANT_DATA_ROOT}/{postgres,redis,
+# storage,caddy}` (docker-compose.volume.yml:14). Do that on an unmounted box
+# and Postgres finds no PG_VERSION, initdbs a SECOND empty cluster on the boot
+# disk, every container reports healthy, §3.9 passes, and fourteen days of
+# backups of an empty database accumulate — while every library's data sits on
+# vg0-data, unreachable, and mounting the volume makes the running install
+# vanish behind the mount.
+#
+# REPORT_ONLY as $1 for --verify-only, which must never prompt.
+assert_data_root_persistent() {
+  local mode="${1:-fix}" entry="" verdict src fstype uuid line rc=0
+
+  entry="$(data_root_fstab_entry)"
+  if [ -n "$entry" ]; then
+    verdict="$(fstab_persistence_verdict "$entry")"
+    ok "$DATA_ROOT is mounted AND in /etc/fstab — it comes back after a reboot"
+    printf '         %s\n' "$entry"
+    # ── AND IT NAMES THE RIGHT VOLUME. The match above is on the MOUNTPOINT
+    #    alone, which is the whole entry an fstab line needs to be found by and
+    #    not nearly enough to be trusted by. The BOOTDISK refusal below prints a
+    #    line for the operator to hand-write with a UUID copied by eye; one wrong
+    #    character produces a green "it comes back after a reboot" from the one
+    #    check written to catch exactly this, and `nofail` then lets the box boot
+    #    happily with an empty directory where the database used to be.
+    #
+    #    Only ever a WARNING, and only when BOTH sides resolve: a device that is
+    #    simply not present right now, an LVM name that resolves differently on
+    #    this kernel, or an fstab source form this does not parse must not turn a
+    #    correct box red. Silence here means "could not compare", not "matches".
+    local _ent_src _ent_dev _live_src _live_dev
+    set -f
+    # shellcheck disable=SC2086
+    set -- $entry
+    set +f
+    _ent_src="${1:-}"
+    _ent_dev="$(fstab_source_device "$_ent_src" 2>/dev/null || true)"
+    _live_src=""
+    command -v findmnt >/dev/null 2>&1 && _live_src="$(findmnt -no SOURCE "$DATA_ROOT" 2>/dev/null | head -1 || true)"
+    _live_dev=""
+    [ -n "$_live_src" ] && _live_dev="$(readlink -f "$_live_src" 2>/dev/null || printf '%s' "$_live_src")"
+    if [ -n "$_ent_dev" ] && [ -n "$_live_dev" ] && [ "$_ent_dev" != "$_live_dev" ]; then
+      warn "…BUT THAT ENTRY NAMES A DIFFERENT DEVICE FROM THE ONE MOUNTED THERE NOW:"
+      warn "     fstab says  ${_ent_src}  ->  ${_ent_dev}"
+      warn "     mounted is  ${_live_src}  ->  ${_live_dev}"
+      warn "At the next reboot this mountpoint gets the fstab one, not the one carrying"
+      warn "your data. Check it by hand before you reboot:  blkid ${_live_src}"
+      _logline "WARN fstab entry for $DATA_ROOT names ${_ent_dev}, live mount is ${_live_dev}"
+    fi
+    if [ "$verdict" = nofail ]; then
+      note "that entry carries \`nofail\`, which is what this installer would have written:"
+      note "     a failed mount then boots the box (SSH works) and the STACK refuses to"
+      note "     start, instead of dropping to emergency mode with no sshd. If the stack"
+      note "     ever comes up on an empty $DATA_ROOT, that is the case to suspect."
+    fi
+    return 0
+  fi
+  if data_root_mount_unit_enabled; then
+    ok "$DATA_ROOT is mounted by an ENABLED systemd .mount unit — it comes back after a reboot"
+    return 0
+  fi
+
+  # ── Mounted, and nothing brings it back.
+  warn "$DATA_ROOT IS MOUNTED BUT NOT PERSISTENT: no /etc/fstab entry, no enabled"
+  warn ".mount unit. It does not survive a reboot, and a reboot is not something you"
+  warn "get to schedule — the first one will be unplanned and during an incident."
+  if [ "$mode" = report ]; then
+    VERIFY_RC=$((VERIFY_RC + 1))
+    return 0
+  fi
+  [ "$DATA_ROOT_FSTAB_ACKED" = 1 ] && return 0
+
+  # The line can be DERIVED from the live mount, so it cannot be wrong about
+  # what to mount. Offer it rather than only refusing.
+  src=""; fstype=""; uuid=""
+  if command -v findmnt >/dev/null 2>&1; then
+    src="$(findmnt -no SOURCE "$DATA_ROOT" 2>/dev/null | head -1 || true)"
+    fstype="$(findmnt -no FSTYPE "$DATA_ROOT" 2>/dev/null | head -1 || true)"
+  fi
+  # UUID, never /dev/sdX: a cloud volume's device name is not stable across
+  # reboots, which is the very event this line exists to survive.
+  if [ -n "$src" ] && command -v blkid >/dev/null 2>&1; then
+    uuid="$(blkid -s UUID -o value "$src" 2>/dev/null || true)"
+  fi
+  # A source this installer will not put in an fstab line. `findmnt -no SOURCE`
+  # prints `/dev/sda2[/@subvol]` for a btrfs subvolume, `/dev/mapper/vg0-root[/…]`
+  # for a bind and `host:/export` for NFS; blkid fails on all three and the old
+  # "name the device instead" branch wrote that literal string into /etc/fstab,
+  # where it cannot mount. Offering nothing beats offering a line that is wrong.
+  if [ -n "$src" ] && ! fstab_source_is_plain "$src"; then
+    warn "the live mount's source is '${src}', which is not a plain block device — a"
+    warn "btrfs subvolume, a bind mount or a network filesystem. This installer will"
+    warn "not compose an fstab line for it, because the one it could compose would be"
+    warn "wrong in a way that only shows up at the next boot."
+    src=""
+  fi
+  if [ -z "$src" ]; then
+    warn "no source device to offer a line for $DATA_ROOT."
+    warn "Do it by hand, then re-run this installer:"
+    printf '         findmnt -no SOURCE,FSTYPE %s\n' "$DATA_ROOT"
+    printf '         blkid -s UUID -o value <that device>\n'
+    printf '         # then add to /etc/fstab:\n'
+    printf '         UUID=[PLACEHOLDER: the UUID above]  %s  [PLACEHOLDER: the fstype]  defaults,nofail,x-systemd.device-timeout=30  0  2\n' "$DATA_ROOT"
+    DATA_ROOT_FSTAB_ACKED=1
+    return 0
+  fi
+  # A UUID that does not resolve is a line that will not mount. blkid can answer
+  # from a cache; /dev/disk/by-uuid is udev's live view, which is what the boot
+  # actually consults.
+  if [ -n "$uuid" ] && [ ! -e "/dev/disk/by-uuid/${uuid}" ]; then
+    warn "blkid reported UUID=${uuid} but /dev/disk/by-uuid/${uuid} does not exist"
+    warn "(a stale blkid cache?). Falling back to the device path rather than offering"
+    warn "a UUID the boot would not resolve."
+    uuid=""
+  fi
+  if [ -n "$uuid" ]; then
+    line="$(fstab_line_for "UUID=${uuid}" "$DATA_ROOT" "${fstype:-auto}")"
+  else
+    warn "no usable UUID for $src, so the offered line names the DEVICE."
+    warn "A device path is not stable across reboots on a cloud volume — check it."
+    line="$(fstab_line_for "$src" "$DATA_ROOT" "${fstype:-auto}")"
+  fi
+  printf '\n  The line that would be appended to %s, derived from the live mount:\n\n' "$FSTAB"
+  printf '    %s\n\n' "$line"
+  if [ "$DRY" = 1 ]; then
+    note "would offer to append that line to ${FSTAB}"
+    DATA_ROOT_FSTAB_ACKED=1
+    return 0
+  fi
+  if ! confirm_typed "Append that line to ${FSTAB} so the data volume comes back after a reboot." "FSTAB"; then
+    warn "declined. $DATA_ROOT will NOT come back after a reboot — write the line above"
+    warn "yourself before this box carries a library's data."
+    DATA_ROOT_FSTAB_ACKED=1
+    return 0
+  fi
+
+  # /etc/fstab is the one file here where a bad line costs the machine: without
+  # `nofail` a failed mount drops the box into emergency mode with no sshd, and
+  # on a remote box that means the provider console. So: back it up, write it,
+  # PROVE it with findmnt --verify, and put the original back on any doubt.
+  local backup="${STATE_DIR}/fstab.bak-$(date +%Y%m%d%H%M%S)"
+  install -d -m 0700 "$STATE_DIR" 2>/dev/null || true
+  cp -p "$FSTAB" "$backup" 2>/dev/null || die "could not back up ${FSTAB}; refusing to touch it."
+  ok "copied ${FSTAB} to $backup before touching it"
+
+  # ── THE BASELINE, TAKEN BEFORE THE WRITE. `findmnt --verify` reports on the
+  #    WHOLE FILE, so treating its exit status as a verdict on OUR line makes any
+  #    pre-existing complaint elsewhere in /etc/fstab — a stale /mnt/old whose
+  #    target directory is gone, a removed swapfile entry, an fstype this kernel
+  #    does not have — read as "the line this installer just wrote is bad". The
+  #    installer would then restore the backup and `die` at step 2 of 17, telling
+  #    the operator that a correct line is the one thing that could cost them the
+  #    box, and the only way past on the re-run would be to DECLINE the fix.
+  #    Comparing against a baseline needs no knowledge of which conditions
+  #    findmnt counts as errors versus warnings, which is exactly the knowledge
+  #    nobody here has.
+  #
+  #    Taken with the SAME command and under the SAME conditions as the check
+  #    after the write, or the comparison is between two different questions.
+  local base_rc=0
+  if fstab_verify_available; then
+    ${LIBRIANT_FSTAB_VERIFY:-findmnt --verify} >/dev/null 2>&1 || base_rc=$?
+    [ "$base_rc" = 0 ] || warn "findmnt --verify was ALREADY unhappy with ${FSTAB} before this line (rc ${base_rc})"
+  fi
+
+  local res
+  res="$(printf '%s\n' "$line" | upsert_block "$FSTAB" \
+    "$(fstab_block_begin)" "$(fstab_block_end)")" || rc=$?
+  if [ "$rc" != 0 ] || [ "$res" = unterminated ] || [ "$res" = unwritable ]; then
+    cp -p "$backup" "$FSTAB"
+    # Report what actually happened. This branch used to say "unterminated"
+    # whatever the cause, and an I/O failure mid-write (rc 153 when driven under
+    # `ulimit -f 0`) was reported as a malformed marker block.
+    die "could not update ${FSTAB} (upsert_block said '${res:-nothing}', exit ${rc}).
+     It has been RESTORED from $backup and nothing was changed.
+       unterminated  ${FSTAB} holds a Libriant BEGIN marker with no END — fix by hand
+       unwritable    the write failed (full disk? read-only /etc?) — check and re-run"
+  fi
+  note "${FSTAB}: $res"
+
+  # `findmnt --verify` with NO file argument, deliberately: that is the one
+  # documented, definitely-supported form, and this is not the place to find out
+  # that a flag combination is rejected — a usage error would be reported to the
+  # operator as "your fstab is broken". It reads /etc/fstab, so when FSTAB has
+  # been overridden (only the tests do that) it is skipped rather than pointed
+  # at the wrong file. FSTAB_VERIFY exists so the restore-and-die path — the
+  # single most dangerous branch in this whole change — can be DRIVEN off-box
+  # with a stub, instead of being the one thing no test can reach.
+  local verify_out verify_rc=0
+  if [ "$FSTAB" != /etc/fstab ] && [ -z "${LIBRIANT_FSTAB_VERIFY:-}" ]; then
+    note "FSTAB is overridden (${FSTAB}); findmnt --verify reads /etc/fstab, so it was not run"
+  elif fstab_verify_available; then
+    verify_out="$(${LIBRIANT_FSTAB_VERIFY:-findmnt --verify} 2>&1)" || verify_rc=$?
+    if [ "$verify_rc" = 0 ]; then
+      ok "findmnt --verify accepts the new ${FSTAB}"
+    elif [ "$base_rc" != 0 ]; then
+      # It was unhappy BEFORE this line too, so the new line is not what it is
+      # objecting to. Leaving a correct line in place and naming the real problem
+      # beats restoring it and blaming ourselves.
+      printf '%s\n' "$verify_out" | sed 's/^/         /'
+      warn "findmnt --verify is still unhappy with ${FSTAB} (rc ${verify_rc}) — and it was"
+      warn "ALREADY unhappy before this line was added (rc ${base_rc}), so the objection is"
+      warn "to something that was there first. The Libriant line is LEFT IN PLACE. Read the"
+      warn "output above and fix the pre-existing entry — do NOT reboot until you have."
+    else
+      printf '%s\n' "$verify_out" | sed 's/^/         /'
+      cp -p "$backup" "$FSTAB"
+      die "findmnt --verify accepted ${FSTAB} before this line and rejects it after, so
+     the line this installer wrote is the problem. ${FSTAB} has been RESTORED from
+     $backup and nothing was changed. A bad fstab line is the one way this step
+     could cost you the box, and it will not be left in place."
+    fi
+  else
+    warn "findmnt is not installed, so the new ${FSTAB} could not be validated."
+    warn "Check it by hand BEFORE the next reboot:  findmnt --verify"
+  fi
+
+  # systemd caches its view of /etc/fstab (generated .mount units) and does not
+  # notice an edit until it is told to look. Without this the new entry is inert
+  # until the next boot — which is fine for the purpose, but it also means
+  # `systemctl status <escaped>.mount` says nothing and the operator cannot check
+  # their own work today. Best-effort: a systemd-less container has no daemon.
+  try systemctl daemon-reload 2>/dev/null || true
+
+  # Re-read through the same probe that decided the step was needed. Anything
+  # else is trusting the write rather than checking it.
+  if [ -n "$(data_root_fstab_entry)" ]; then
+    ok "$DATA_ROOT now has an /etc/fstab entry and survives a reboot"
+    _logline "DECISION appended fstab entry for $DATA_ROOT: $line"
+  else
+    warn "the line was written but $DATA_ROOT still does not resolve in ${FSTAB}."
+    warn "Read it yourself before rebooting:  cat ${FSTAB}"
+  fi
+  DATA_ROOT_FSTAB_ACKED=1
+  return 0
+}
+
 assert_data_root_sane() {
-  if mountpoint -q "$DATA_ROOT" 2>/dev/null || findmnt -rno TARGET "$DATA_ROOT" >/dev/null 2>&1; then
+  if data_root_mounted; then
+    assert_data_root_persistent
     return 0
   fi
   [ "$DATA_ROOT_ACKED" = 1 ] && return 0
@@ -2072,6 +3345,25 @@ assert_data_root_sane() {
     warn "If one of those is the data volume, MOUNT IT and re-run. Continuing would put"
     warn "Postgres, Redis, the uploads AND the backups on the boot disk, and mounting"
     warn "the volume later would hide every byte of it behind the mount."
+    # The commands, LITERALLY, in your other session — because the two things an
+    # operator does instead are the two worst outcomes: typing BOOTDISK because
+    # it is the only key this prompt offers, or hand-mounting with no fstab line
+    # and hitting the reboot case above. (That second one is now caught on the
+    # re-run by assert_data_root_persistent, which offers the fstab line.)
+    #
+    # There is deliberately NO mkfs here and this script will never print one. A
+    # device that "looks like an empty volume waiting to be formatted" is
+    # indistinguishable from a data volume whose superblock nobody has looked at.
+    printf '\n'
+    printf '  In your OTHER session:\n\n'
+    printf '    lsblk -o NAME,FSTYPE,LABEL,UUID,SIZE,MOUNTPOINT\n'
+    printf '    mount /dev/[PLACEHOLDER: the device above] %s && ls -la %s\n' "$DATA_ROOT" "$DATA_ROOT"
+    printf '    # a data volume has %s/postgres/PG_VERSION on it. If that file is\n' "$DATA_ROOT"
+    printf '    # there, this is a LIVE CLUSTER: stop and read RUNBOOK §3.5 before anything.\n'
+    printf '    blkid -s UUID -o value /dev/[PLACEHOLDER: the device above]\n'
+    printf '    # then make it permanent, or the next reboot loses it again:\n'
+    printf '    UUID=[PLACEHOLDER: the UUID]  %s  ext4  defaults,nofail,x-systemd.device-timeout=30  0  2\n' "$DATA_ROOT"
+    printf '\n  Then re-run this installer. Do NOT mkfs anything.\n\n'
   else
     warn "$DATA_ROOT is NOT a separate mount point."
     warn "Everything the stack persists would go on the boot disk. §1: it should be"
@@ -2151,9 +3443,10 @@ step_briefing() {
 
   This script will, in order:
 
-    as root       take stock · SSH password auth OFF · ufw (v4+v6) · baseline
-                  packages + fail2ban · Docker · the '${DEPLOY_USER}' user ·
-                  directories on ${DATA_ROOT}
+    as root       take stock (host name, RAM, disk, the data volume, the
+                  timezone) · prove the clock is synchronised · SSH password
+                  auth OFF · ufw (v4+v6) · baseline packages + fail2ban ·
+                  Docker · the '${DEPLOY_USER}' user · directories on ${DATA_ROOT}
     as ${DEPLOY_USER}   a GitHub deploy key (it PAUSES for you) · the checkout ·
                   .env.prod · the Cloudflare origin certificate · the dc helper ·
                   a dry run · the real deploy
@@ -2197,7 +3490,14 @@ step_briefing() {
     7. ${C_B}tmux or screen.${C_0} The image build is 10-20 minutes cold and an SSH
        drop in the middle of it kills the run.
 
-  ${C_B}Two things this script guards, and why${C_0}
+    8. ${C_B}The name this box should have${C_0} (or a decision to keep the provider's).
+       Offered in the next step, defaulting to no change. Nothing on this stack
+       READS it — but it is written into every backup manifest and into the
+       GitHub Deploy Key's comment, and the key is never regenerated, so
+       declining is permanent in the one label you read during a DR restore or
+       when deciding which key to revoke.
+
+  ${C_B}Three things this script guards, and why${C_0}
 
     · ${C_B}Lockout.${C_0} Before password auth goes off it counts the USABLE keys in
       the authorized_keys of every account you could log in as — parsing them
@@ -2208,6 +3508,11 @@ step_briefing() {
     · ${C_B}Your existing install.${C_0} It never regenerates a secret that exists,
       never overwrites an origin certificate, never touches a data directory,
       and tells you before anything discards uncommitted work.
+    · ${C_B}The clock.${C_0} Admin MFA is mandatory in production and TOTP has a
+      ~90-second window, and a recovery code can only be minted AFTER a TOTP
+      code has verified — so a box whose clock drifts has an admin panel
+      nobody can ever enter, and the symptom is "invalid code". The 'clock'
+      step refuses to continue on a clock nothing is disciplining.
 
 BRIEF
   if [ -z "${TMUX:-}" ] && [ -z "${STY:-}" ]; then
@@ -2216,10 +3521,151 @@ BRIEF
   else
     ok "running inside tmux/screen — an SSH drop will not kill the build"
   fi
-  confirm_typed "All seven are in front of you?" "READY" \
+  confirm_typed "All eight are in front of you?" "READY" \
     || die "Stopped, with nothing changed. Come back when they are — every step
      checks the machine rather than a marker, so re-running resumes."
   mark_done briefing
+}
+
+# ── offer_hostname — the box's own name, which nothing here ever set.
+#
+# Functionally NOTHING on this stack reads it: no service, no cron, no
+# certificate, no alert, no log path. Prometheus labels come from the compose
+# service names, and EMAIL_DRIVER=console means no MX-adjacent dependency
+# exists. Three things do WRITE it into something a human later reads, and all
+# three are read during an incident:
+#
+#   backup.sh:415        host=$(hostname) in every backup manifest — the
+#                        identifier you reach for during a DR restore when you
+#                        have dumps from two boxes and need to know which is
+#                        which
+#   this script          the GitHub Deploy Key's comment, "libriant deploy@<host>",
+#                        which is what you read when deciding which key to revoke
+#   this script          the install transcript's own header
+#
+# So: OFFERED, never imposed, and asked beside the timezone because they are the
+# same class of decision and `stock` already stops for that one.
+#
+# THE PART THAT MUST NOT BE SKIPPED is /etc/hosts. `hostnamectl set-hostname`
+# alone leaves it stale, and every subsequent `sudo` then prints "unable to
+# resolve host <name>" — noise on a box where the deploy user runs sudo
+# constantly, and noise nobody will connect to this script.
+offer_hostname() {
+  command -v hostnamectl >/dev/null 2>&1 || return 0
+  local cur fqdn n=""
+  cur="$(hostnamectl --static 2>/dev/null || true)"
+  fqdn="$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)"
+  printf '\n'
+  note "host name: static='${cur:-none}'  fqdn='${fqdn:-unknown}'"
+  [ "$DRY" = 0 ] || return 0
+  confirm "Change the host name before continuing?" || return 0
+  ask n "New host name (blank to keep '${cur:-none}')"
+  [ -n "$n" ] || return 0
+  # Interpolated into hostnamectl AND into an /etc/hosts line, so anything
+  # outside RFC 1123's alphabet is refused rather than quoted around.
+  hostname_label_ok "$n" || die "'$n' is not a valid host name (letters, digits, '-' and '.', no leading
+     or trailing '-' or '.', no empty label, each label 63 characters or fewer).
+     Nothing was changed."
+  run hostnamectl set-hostname "$n"
+  # 127.0.1.1 is Debian/Ubuntu's convention for the box's own name — deliberately
+  # NOT 127.0.0.1, which already carries localhost.
+  #
+  # REPLACED, not appended. The old guard was an exact-line match, so renaming
+  # A -> B appended `127.0.1.1 B` and left `127.0.1.1 A` above it: one extra line
+  # per rename, and a reverse lookup of 127.0.1.1 that keeps answering with the
+  # OLD name — which is the name that then turns up in a backup manifest during a
+  # DR restore, the one moment the label has to be right.
+  if [ -f /etc/hosts ] && ! file_has_line /etc/hosts "127.0.1.1 ${n}"; then
+    cp -p /etc/hosts "${STATE_DIR}/hosts.bak-$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    if grep -qE '^[[:space:]]*127\.0\.1\.1([[:space:]]|$)' /etc/hosts; then
+      sed -i -E "s/^[[:space:]]*127\\.0\\.1\\.1([[:space:]].*)?$/127.0.1.1 ${n}/" /etc/hosts \
+        || die "could not rewrite the 127.0.1.1 line in /etc/hosts. The host name IS
+     already changed; fix that line by hand or every sudo will warn."
+      ok "replaced the 127.0.1.1 line in /etc/hosts with '127.0.1.1 ${n}'"
+    else
+      printf '127.0.1.1 %s\n' "$n" >> /etc/hosts
+      ok "added '127.0.1.1 ${n}' to /etc/hosts (without it every sudo warns it cannot resolve the host)"
+    fi
+  fi
+  ok "host name is now: $(hostname -f 2>/dev/null || hostname)"
+  _logline "DECISION hostname set to ${n}"
+  if [ -f "$DEPLOY_KEY" ]; then
+    note "the GitHub Deploy Key already exists and is NEVER regenerated, so its comment"
+    note "     on GitHub still carries the OLD name. That is a stale label, not a broken"
+    note "     key — but it is the label you read when deciding which key to revoke."
+  fi
+  return 0
+}
+
+# ── assert_build_headroom — the disk the COLD BUILD needs, measured where the
+#    build actually writes, and asserted TWICE.
+#
+# It used to live inline in `stock`, which is step 2 of 17. Everything between
+# `stock` and `deploy` eats the number it printed: apt, the Docker packages, the
+# whole checkout, then a cold `next build`. And `--only deploy` / `--from deploy`
+# — the resume path an operator takes after a build that failed — skipped it
+# entirely. deploy-on-host.sh:265 records that ENOSPC has already broken a deploy
+# on this project once, and its two prunes run BEFORE the build, so they cannot
+# reclaim anything the build is about to need.
+#
+# Measured on the filesystem that HOLDS /var/lib/docker rather than on `/`.
+# They are the same filesystem today; an operator who moves the image store makes
+# the old check answer a question nobody asked. `df -Pk` (POSIX, one row per
+# filesystem) and not plain `df`: a long device name wraps in the default output,
+# field 4 becomes field 3 of a continuation line, and the check silently reads
+# the wrong number.
+assert_build_headroom() {
+  local where=/var/lib/docker kib state gib
+  [ -d "$where" ] || where=/
+  kib="$(df -Pk "$where" 2>/dev/null | df_avail_kib || true)"
+  set -- $(build_headroom_verdict "$kib" || true)
+  state="${1:-unknown}"; gib="${2:-0}"
+  case "$state" in
+    unknown)
+      # An empty answer must not print as "only  GiB free", which reads like a
+      # number that happens to be missing rather than a check that did not run.
+      warn "could not read the free space on $where (df produced nothing usable)."
+      warn "The cold build wants ~15-20 GiB in /var/lib/docker — a figure the runbook"
+      warn "marks UNVERIFIED on this box. Check it yourself:  df -h $where"
+      confirm "Continue without knowing how much space is free?" || die "Stopped. Check df -h $where first." ;;
+    low)
+      warn "only ${gib} GiB free on the filesystem holding $where — the cold build wants"
+      warn "~15-20 GiB in /var/lib/docker (a figure the runbook marks UNVERIFIED on this box)."
+      warn "deploy-on-host.sh prunes BEFORE it builds, so it cannot reclaim what the build needs."
+      confirm "Continue anyway?" || die "Stopped. Free space on $where first." ;;
+    *)
+      ok "${gib} GiB free on the filesystem holding $where (cold build wants ~15-20 GiB; UNVERIFIED figure)" ;;
+  esac
+}
+
+# ── assert_build_memory — nothing on this box ever read MemTotal before
+#    committing to a 10-20 minute build that is known to be OOM-killable.
+#
+# `stock` runs `free -h` and asserts nothing about it. On the measured box (62
+# GiB + 8 GiB of LVM swap) this prints one ok line and that is the correct
+# outcome. It is here for the two cases that are live on this project rather
+# than hypothetical: a REPLACEMENT box (this script is deliberately box-agnostic
+# and the compose defaults are documented as suiting a ~4 GB host), and a
+# provider Rebuild that re-partitions and leaves vg0-swap out of the new fstab —
+# where `free -h` scrolling past inside a wall of lsblk output is not a check.
+#
+# /proc/meminfo and not `free`: free's columns are localised and have been
+# renumbered between releases, and this decides whether a 20-minute build is
+# about to die with a bare exit 137.
+assert_build_memory() {
+  local mem swap findings
+  mem="$(meminfo_mb MemTotal  < /proc/meminfo 2>/dev/null || true)"
+  swap="$(meminfo_mb SwapTotal < /proc/meminfo 2>/dev/null || true)"
+  findings="$(mem_verdict "${mem:-}" "${swap:-}" || true)"
+  if [ -z "$findings" ]; then
+    ok "${mem} MiB RAM + ${swap} MiB swap — enough for a cold \`next build\`"
+    return 0
+  fi
+  printf '%s\n' "$findings" | sed 's/^/         /'
+  if printf '%s\n' "$findings" | grep -q '^WARN'; then
+    confirm "Continue anyway?" || die "Stopped. Give the box swap, or build one service at a time."
+  fi
+  return 0
 }
 
 # ── §3.1 Get on the box and take stock ──────────────────────────────────────
@@ -2251,30 +3697,16 @@ step_stock() {
   # boot disk then every byte of Postgres, Redis, the uploads AND the backups
   # lands on the 80 GiB root — and the day someone mounts the real volume over
   # it, all of it disappears behind the mount.
-  if mountpoint -q "$DATA_ROOT" 2>/dev/null || findmnt -rno TARGET "$DATA_ROOT" >/dev/null 2>&1; then
-    ok "$DATA_ROOT is a mounted filesystem"
-  else
-    assert_data_root_sane
-  fi
+  # Unconditional now, and that is the fix. The old shape was
+  #   if mountpoint -q; then ok "mounted"; else assert_data_root_sane; fi
+  # which meant a volume mounted BY HAND — no fstab entry, gone at the next
+  # reboot — took the `ok` branch and was never looked at again.
+  # assert_data_root_sane prints its own ok on the healthy path.
+  assert_data_root_sane
 
-  # §3.8 step 6: budget ~15-20 GB in /var/lib/docker for a cold build. The
-  # runbook marks that figure UNVERIFIED ON THIS BOX (it was measured on the
-  # dead machine), so this stays a check with the caveat attached, not a fact.
-  local root_free_gb
-  root_free_gb="$(df -Pk / 2>/dev/null | awk 'NR==2 {printf "%d", $4/1024/1024}' || true)"
-  if [ -z "$root_free_gb" ]; then
-    # An empty answer must not print as "only  GiB free", which reads like a
-    # number that happens to be missing rather than a check that did not run.
-    warn "could not read the free space on / (df produced nothing)."
-    warn "The cold build wants ~15-20 GiB in /var/lib/docker — a figure the runbook"
-    warn "marks UNVERIFIED on this box. Check it yourself:  df -h /"
-    confirm "Continue without knowing how much space is free?" || die "Stopped. Check df -h / first."
-  elif [ "${root_free_gb:-0}" -lt 25 ]; then
-    warn "only ${root_free_gb} GiB free on / — the cold build wants ~15-20 GiB in /var/lib/docker (a figure the runbook marks UNVERIFIED on this box)."
-    confirm "Continue anyway?" || die "Stopped. Free space on / first."
-  else
-    ok "${root_free_gb} GiB free on / (cold build wants ~15-20 GiB; UNVERIFIED figure)"
-  fi
+  assert_build_headroom
+  assert_build_memory
+  offer_hostname
 
   # ── §1 "Timezone decision". Neither the deploy nor any other script asks
   #    this, and it has to be settled BEFORE the first deploy because the whole
@@ -2315,6 +3747,211 @@ step_stock() {
   sshd -T 2>/dev/null | grep -E '^(permitrootlogin|passwordauthentication|pubkeyauthentication) ' || true
   note "On a fresh box, good looks like: ufw inactive and passwordauthentication yes."
   note "Both are what the next two steps fix."
+}
+
+# ── The clock ───────────────────────────────────────────────────────────────
+#
+# The reasoning is in the block above `td_get`. In one line: admin MFA is
+# mandatory in production, TOTP has a ~90-second acceptance window, and the only
+# path to a recovery code runs through a TOTP check that has already passed — so
+# a box whose clock drifts has an admin panel nobody can ever enter, and the
+# symptom is "invalid code", which reads as a bad QR or a bad phone.
+#
+# Read-only on a healthy box: it reads the kernel's own NTPSynchronized bit and
+# writes nothing. The single write — installing an NTP client — happens only
+# when timedatectl says the box has none at all.
+satisfied_clock() {
+  local td ntp sync
+  command -v timedatectl >/dev/null 2>&1 || return 1
+  td="$(timedatectl show 2>/dev/null || true)"
+  [ -n "$td" ] || return 1
+  ntp="$(printf '%s\n' "$td" | td_get NTP || true)"
+  sync="$(printf '%s\n' "$td" | td_get NTPSynchronized || true)"
+  [ "$ntp" = yes ] && [ "$sync" = yes ]
+}
+
+step_clock() {
+  say "The clock — on this box it is an authentication input, not a cosmetic"
+
+  printf '\n'
+  printf '         local  %s\n' "$(date 2>/dev/null || echo '?')"
+  printf '         utc    %s\n' "$(date -u 2>/dev/null || echo '?')"
+
+  # ── The one check that needs NO network and no time server, and therefore
+  #    the only one that still works on a box whose apt and TLS the clock has
+  #    already broken: a file cannot have been written in the future.
+  # NOT "$SELF". This installer file is by definition the file the operator
+  # COPIED ONTO the box, and scp -p / rsync -a / tar -x / curl -R all preserve
+  # the SOURCE machine's mtime — so a laptop one second ahead of a correct server
+  # produced a FATAL and the SKEW prompt on a perfectly synchronised box. The two
+  # left are files this box genuinely wrote itself: /var/lib/dpkg/status is
+  # touched by every apt operation (on a fresh install, the install date) and
+  # /etc/machine-id is stamped at first boot.
+  local now newest f findings=""
+  now="$(date +%s 2>/dev/null || true)"
+  newest=0
+  for f in /var/lib/dpkg/status /etc/machine-id; do
+    local m
+    # GNU form first, BSD second — the same shape as stat_mode above, so this
+    # check can be driven on a laptop as well as on the box it is for.
+    m="$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || true)"
+    case "$m" in ''|*[!0-9]*) continue ;; esac
+    [ "$m" -gt "$newest" ] && newest="$m"
+  done
+  if [ "$newest" != 0 ]; then
+    findings="$(clock_sanity_verdict "$now" "$newest" || true)"
+    [ -n "$findings" ] && printf '%s\n' "$findings" | sed 's/^/         /'
+  fi
+
+  if ! command -v timedatectl >/dev/null 2>&1; then
+    warn "there is no timedatectl on this box, so nothing here can prove the clock is"
+    warn "disciplined. Check it BY HAND against an independent source before you enrol"
+    warn "admin MFA — the enrolment is the point of no return."
+    return 0
+  fi
+
+  printf '\n'
+  timedatectl status 2>/dev/null | sed 's/^/         /' || timedatectl 2>/dev/null | sed 's/^/         /' || true
+  # timesync-status prints the MEASURED offset, which is the only number on this
+  # box that is evidence rather than a boolean. It answers for systemd-timesyncd
+  # only; chrony and ntpd make it fail, which is not a fault.
+  timedatectl timesync-status 2>/dev/null | sed 's/^/         /' || true
+
+  local td ntp sync can
+  td="$(timedatectl show 2>/dev/null || true)"
+  ntp="$(printf '%s\n' "$td"  | td_get NTP || true)"
+  sync="$(printf '%s\n' "$td" | td_get NTPSynchronized || true)"
+  can="$(printf '%s\n' "$td"  | td_get CanNTP || true)"
+
+  # ── No NTP client at all. Install ONE — never chrony over a working
+  #    timesyncd; two NTP clients on one box is a real misconfiguration, and
+  #    timedatectl reports NTPSynchronized identically for all of them, so the
+  #    verification below does not care which is installed.
+  if [ "$can" = no ] && [ "$DRY" = 0 ]; then
+    warn "timedatectl reports CanNTP=no: nothing on this box will ever correct the clock."
+    if dpkg-query -W -f='${Status}' systemd-timesyncd 2>/dev/null | grep -q '^install ok installed$'; then
+      note "systemd-timesyncd IS installed but registers no NTP unit — check for chrony or ntpsec masking it."
+    else
+      note "installing systemd-timesyncd"
+      # `clock` is step 3 and the first apt-get update in the run is step 6, so
+      # on a minimal image — precisely the kind most likely to ship no NTP client
+      # — the package lists are EMPTY here and the install fails with "Unable to
+      # locate package". try, so it only warns; but the operator is being told
+      # they have a clock problem, and a repository error is the last thing they
+      # should be reading at that moment.
+      try apt-get update -qq || warn "apt-get update reported an error; the install below is the gate"
+      # try, not run: if the clock is what is breaking apt, this fails, and the
+      # escape hatch printed below is the answer. Dying here would hide it.
+      try env DEBIAN_FRONTEND=noninteractive apt-get install -y systemd-timesyncd \
+        || warn "could not install systemd-timesyncd (apt itself may be the casualty here — see below)"
+    fi
+    try timedatectl set-ntp true || warn "timedatectl set-ntp true failed"
+    td="$(timedatectl show 2>/dev/null || true)"
+    ntp="$(printf '%s\n' "$td"  | td_get NTP || true)"
+    sync="$(printf '%s\n' "$td" | td_get NTPSynchronized || true)"
+    can="$(printf '%s\n' "$td"  | td_get CanNTP || true)"
+  fi
+
+  # ── NTP is on but has not converged yet. On a box booted a minute ago that is
+  #    NORMAL, and refusing to install because of it would be a spurious block
+  #    on a perfectly healthy machine. Wait, bounded, and say what is happening.
+  if [ "$DRY" = 0 ] && [ "$ntp" = yes ] && [ "$sync" != yes ]; then
+    local waited=0
+    note "NTP is on but the kernel does not call the clock synchronised yet — waiting up to 90s"
+    while [ "$waited" -lt 90 ]; do
+      sleep 5
+      waited=$((waited + 5))
+      sync="$(timedatectl show 2>/dev/null | td_get NTPSynchronized || true)"
+      [ "$sync" = yes ] && break
+      printf '         waiting for the clock to converge… %ss\n' "$waited"
+    done
+    # ONE authoritative read of all three from the SAME `timedatectl show`, so
+    # the verdict cannot be assembled from two different instants — the loop's
+    # last poll and a fresh read can disagree, and either direction is a
+    # spurious answer.
+    td="$(timedatectl show 2>/dev/null || true)"
+    ntp="$(printf '%s\n' "$td"  | td_get NTP || true)"
+    sync="$(printf '%s\n' "$td" | td_get NTPSynchronized || true)"
+    can="$(printf '%s\n' "$td"  | td_get CanNTP || true)"
+  fi
+
+  local verdict
+  verdict="$(clock_verdict "$ntp" "$sync" "$can" || true)"
+  findings="${findings}${findings:+
+}${verdict}"
+  printf '\n'
+  if [ -n "$verdict" ]; then
+    printf '%s\n' "$verdict" | sed 's/^/         /'
+  fi
+
+  if printf '%s\n' "$findings" | grep -q '^FATAL'; then
+    banner "THE CLOCK IS NOT PROVEN, AND ADMIN MFA IS A FUNCTION OF THE CLOCK"
+    cat <<EOF
+  Four things break, in the order this installer would hit them:
+
+    behind        every apt source becomes "Release file is not valid yet" and
+                  the packages step dies on empty package lists
+    off by months TLS fails on download.docker.com and on the ghcr.io pulls,
+                  with errors that name the repository
+    ahead         \`openssl x509 -checkend 0\` in the cert step calls a perfectly
+                  good Cloudflare Origin certificate ALREADY EXPIRED
+    any drift     the first admin can never enrol MFA. It is mandatory in
+                  production (ADMIN_MFA_REQUIRED defaults on and cannot be
+                  turned off from .env.prod), the TOTP window is ~90 seconds,
+                  and a recovery code can only be minted AFTER a TOTP code has
+                  verified — bootstrap-admin.ts refuses to issue one otherwise.
+                  This is the failure with no shell workaround, and it is
+                  discovered after cutover.
+
+  Fix it, in this order:
+
+    timedatectl set-ntp true
+    timedatectl timesync-status          # Offset: should be milliseconds
+
+  If apt is ALREADY broken by the clock, that is the chicken and egg. Set the
+  time by hand first, then turn NTP back on:
+
+    timedatectl set-ntp false
+    timedatectl set-time '[PLACEHOLDER: YYYY-MM-DD HH:MM:SS, from a phone]'
+    timedatectl set-ntp true
+
+  And only if apt still refuses, once:
+
+    apt-get -o Acquire::Check-Valid-Until=false update
+
+EOF
+    printf '  This box currently believes it is:  %s  (%s)\n\n' \
+      "$(date 2>/dev/null || echo '?')" "$(date -u '+%Y-%m-%d %H:%M:%SZ' 2>/dev/null || echo '?')"
+    # An acknowledgement rather than a bare die, because there IS a legitimate
+    # box behind this prompt: one whose egress blocks udp/123, whose clock was
+    # set by hand and is CORRECT, and which will never report NTPSynchronized.
+    # Refusing to install on that box would be a checklist beating a fact. It is
+    # typed, not a keystroke, and it names the consequence rather than the rule.
+    confirm_typed "The time printed above is CORRECT against an independent source (a phone),
+     and you accept that if this clock drifts, every admin is locked out of the
+     panel with an \"invalid code\" error that looks like a bad authenticator." "SKEW" \
+      || die "Stopped. Fix the clock, then re-run:  $SELF --from clock"
+    _logline "DECISION clock accepted unsynchronised (typed SKEW; NTP=${ntp:-?} NTPSynchronized=${sync:-?} CanNTP=${can:-?})"
+    warn "continuing on an unsynchronised clock at your acknowledgement. Check it again"
+    warn "immediately before you enrol admin MFA."
+    return 0
+  fi
+
+  if printf '%s\n' "$findings" | grep -q '^WARN'; then
+    warn "the clock is disciplined but not fully accounted for — see above."
+  else
+    ok "network time is on and the kernel reports the clock synchronised"
+  fi
+
+  # This is the one host fact the installer cannot keep watching after it exits,
+  # so something else has to. node-exporter's timex collector scrapes
+  # node_timex_sync_status; infra/monitoring/alerts.yml now carries
+  # HostClockNotSynchronised ('node_timex_sync_status == 0' for 15m, critical) as
+  # the rule that catches drift AFTER today.
+  note "after today, drift is caught by the HostClockNotSynchronised alert"
+  note "     (infra/monitoring/alerts.yml, node_timex_sync_status == 0 for 15m) — but only"
+  note "     once Alertmanager has real receivers instead of [PLACEHOLDER]s. Until then it"
+  note "     is visible in the Prometheus Alerts view and wakes nobody. §7.3."
 }
 
 # ── §3.2a SSH: turn off password authentication ─────────────────────────────
@@ -2998,17 +4635,104 @@ EOF
 }
 
 # ── §3.3 Docker ─────────────────────────────────────────────────────────────
+#
+# One function, two call sites, because the two branches of step_docker create
+# the IDENTICAL hazard — a /etc/docker/daemon.json that a running dockerd has not
+# read — and only one of them used to say so.
+#
+# It never restarts dockerd itself. A restart stops every container on the box,
+# and this installer is explicitly designed to be re-run against a live one.
+docker_daemon_json_restart_warning() {
+  warn "$1"
+  printf '         systemctl restart docker\n'
+  printf '         %s --only firewall\n' "$SELF"
+  warn "the second line is not optional: dockerd rebuilds DOCKER-USER on start, and"
+  warn "libriant-origin-firewall.service is Type=oneshot RemainAfterExit=yes with no"
+  warn "PartOf=docker.service, so systemd will NOT re-apply the lockdown by itself."
+  warn "Restarting docker stops every container on this box — do it deliberately."
+}
+
 satisfied_docker() {
   command -v docker >/dev/null 2>&1 || return 1
   local maj
   maj="$(docker compose version 2>/dev/null | compose_major)"
   [ "${maj:-0}" -ge 2 ] 2>/dev/null || return 1
   systemctl is-active --quiet docker 2>/dev/null || return 1
+  # /etc/docker/daemon.json EXISTING is the clause, not its contents. When it
+  # exists this installer deliberately does not manage it (see step_docker), so
+  # asserting a key inside it would leave the step permanently unsatisfied on a
+  # box whose daemon.json an operator legitimately owns.
+  [ -f /etc/docker/daemon.json ] || return 1
   return 0
 }
 
 step_docker() {
   say "§3.3 Docker, from Docker's own apt repository"
+
+  # ── /etc/docker/daemon.json, written BEFORE docker-ce is installed so the
+  #    daemon reads it on its very first start and no restart is ever needed on
+  #    a first install. The long rationale is above docker_daemon_json; the
+  #    short version is that step_firewall's die message punts the operator to
+  #    "a docker daemon.json question" and this installer never wrote the file.
+  run install -d -m 0755 /etc/docker
+  local wrote_daemon_json=0
+  if [ ! -f /etc/docker/daemon.json ]; then
+    docker_daemon_json | write_file /etc/docker/daemon.json 0644 root:root
+    wrote_daemon_json=1
+  else
+    # NEVER edit an existing one. There is no jq in BASE_PACKAGES, and a
+    # half-merged daemon.json stops dockerd from starting AT ALL — a worse
+    # outcome than any setting it could fix. Report per key and hand over the
+    # exact JSON.
+    ok "/etc/docker/daemon.json exists — reporting only, this installer will not edit it"
+    local k missing=""
+    for k in ip6tables log-driver log-opts; do
+      if json_names_key "$k" < /etc/docker/daemon.json; then
+        note "  daemon.json names \"$k\""
+      else
+        note "  daemon.json does NOT name \"$k\""
+        missing="${missing} $k"
+      fi
+    done
+    if [ -n "$missing" ]; then
+      printf '\n  To merge by hand (keys:%s):\n\n' "$missing"
+      docker_daemon_json | sed 's/^/    /'
+      printf '\n'
+      # ip6tables is the one with a consequence in this script: without it
+      # dockerd may build no ip6tables chains, `ip6tables -S DOCKER-USER` finds
+      # nothing, and step_firewall dies on "ip6tables has no jump from
+      # DOCKER-USER" with nowhere to send the operator.
+      docker_daemon_json_restart_warning "If you merge those keys:"
+    fi
+  fi
+
+  # ── AND THE SAME WARNING FOR THE BRANCH THAT ACTUALLY WROTE THE FILE.
+  #
+  # It only ever appeared on the file-EXISTS path, which is backwards. The box
+  # this feature was written for is one where Docker is ALREADY installed and
+  # running and there is no /etc/docker/daemon.json — i.e. every re-run, and
+  # every box provisioned by an earlier version of this installer, which never
+  # wrote one. There the file was written, dockerd never read it, nothing said
+  # so, satisfied_docker then returned 0 for ever because the file exists, and
+  # step_firewall died ten steps later punting to "a docker daemon.json question"
+  # while the answer sat unapplied in the scrollback.
+  if [ "$wrote_daemon_json" = 1 ] && systemctl is-active --quiet docker 2>/dev/null; then
+    docker_daemon_json_restart_warning \
+      "dockerd was ALREADY RUNNING when that file was written, so it has NOT read it:"
+  fi
+
+  # An already-working Docker needs none of the apt machinery below, and running
+  # it anyway means a network probe of download.docker.com — which, on a release
+  # Docker has not published a suite for, stops to ASK which codename to pin to,
+  # on a box that already has Docker. --force still does the full thing.
+  if [ "$FORCE" = 0 ] && command -v docker >/dev/null 2>&1 \
+     && systemctl is-active --quiet docker 2>/dev/null \
+     && [ "$(docker compose version 2>/dev/null | compose_major)" -ge 2 ] 2>/dev/null; then
+    ok "docker is already installed, active, and has compose v2 — skipping the apt work"
+    docker --version 2>/dev/null | sed 's/^/         /' || true
+    docker compose version 2>/dev/null | sed 's/^/         /' || true
+    return 0
+  fi
 
   local codename=""
   # shellcheck disable=SC1091
@@ -3594,6 +5318,24 @@ step_env() {
   local mail; mail="$(env_get "$ENV_FILE" EMAIL_DRIVER || true)"
   [ "$mail" = "console" ] && note "EMAIL_DRIVER=console — nothing is delivered. Account recovery is done by an owner admin from /admin/account-recovery (§4.3a), not by email."
 
+  # ── The three backup keys, ASKED HERE rather than at step 15.
+  #
+  # They are .env.prod keys, this is the .env.prod step, and the alternative is
+  # asking them after the 10-20 minute build that the briefing itself tells the
+  # operator to walk away from. It also means the copy taken at the pause below
+  # is the FINAL file: step_backup used to append BACKUP_AGE_RECIPIENT to
+  # .env.prod after the operator had already copied it into their password
+  # manager, and nothing said so.
+  if [ "$DRY" = 0 ]; then
+    printf '\n'
+    say "§8.2 (asked now, used later) — the two gates backup.sh refuses to run without"
+    printf '  backup.sh stops dead without an encryption decision and a dead man'"'"'s switch.\n'
+    printf '  A pg_dumpall on this box is the complete member registry of every library on\n'
+    printf '  it — names, dates of birth, addresses, and the loan history of named children.\n'
+    printf '  These are the last questions before the build; the backup itself runs after it.\n\n'
+    configure_backup_env
+  fi
+
   banner "COPY ${ENV_FILE} INTO THE PASSWORD MANAGER NOW"
   printf '  From this moment the host holds the ONLY copy. backup.sh deliberately does\n'
   printf '  not capture .env.prod — a stolen backup would otherwise be total compromise.\n\n'
@@ -3862,6 +5604,20 @@ step_deploy() {
   [ -d "${APP_DIR}/.git" ] || die "$APP_DIR is not a checkout. Run the 'checkout' step first."
   [ -f "$ENV_FILE" ] || die "$ENV_FILE is missing — run the 'env' step first."
 
+  # Re-asserted HERE and not only in `stock`, which is fifteen steps back and is
+  # skipped entirely by `--only deploy` / `--from deploy` — the resume an
+  # operator takes after a build that failed. Everything since `stock` has eaten
+  # into the number it printed.
+  assert_build_headroom
+  # And memory, for the same reason and a sharper one. RAM does not change
+  # between `stock` and here, but the REACHABILITY of the advice does: a build
+  # killed for memory exits 137 with no message at all, mem_verdict carries the
+  # only written-down remedy (`dc build web`, then `dc build api`), and the
+  # operator who most needs it is precisely the one resuming with `--only deploy`
+  # — which never ran `stock`. One read of /proc/meminfo; one ok line on a box
+  # with enough.
+  assert_build_memory
+
   # deploy-on-host.sh step 2 is `git fetch origin` + `git reset --hard`.
   # HOST-LOCAL EDITS TO TRACKED FILES ARE DESTROYED. Say so, with the list,
   # before anyone confirms anything.
@@ -3943,9 +5699,32 @@ step_deploy() {
   # exist — nothing publishes to GHCR while deploys are manual. And never
   # `dc pull`, for the same reason; every old document that says so is wrong.
   say "§3.8 deploy-on-host.sh (building on this box)"
+  # The ONE measurement this installer is uniquely placed to take, and does not.
+  # RUNBOOK §3.8's "~15-20 GiB for a cold build" was measured on the DEAD box and
+  # is flagged UNVERIFIED in two places; the disk gate above rests on it; and the
+  # only person who will ever stand next to a cold build with a stopwatch is
+  # standing here now. Deliberately does NOT change the 25 GiB threshold — one
+  # box is not a distribution — it records the number so the next argument has
+  # evidence in it.
+  local before_kib after_kib
+  before_kib="$(df -Pk /var/lib/docker 2>/dev/null | df_avail_kib || true)"
   # shellcheck disable=SC2086
   if as_deploy bash -c "cd '$APP_DIR' && bash scripts/deploy-on-host.sh $fetch_flag"; then
     ok "the deploy script reported success"
+    after_kib="$(df -Pk /var/lib/docker 2>/dev/null | df_avail_kib || true)"
+    case "${before_kib:-x}${after_kib:-x}" in
+      *x*) note "could not measure the build's disk footprint (df produced nothing usable)" ;;
+      *)
+        # Can legitimately be NEGATIVE: deploy-on-host.sh prunes images and the
+        # builder cache BEFORE it builds, so a re-deploy on a box with stale
+        # layers can end with MORE free space than it started with.
+        note "cold build disk delta: $(( (before_kib - after_kib) / 1024 )) MiB on the filesystem holding /var/lib/docker"
+        note "     (RUNBOOK §3.8's ~15-20 GiB figure is marked UNVERIFIED — this run is the"
+        note "     measurement. It can be negative: the deploy prunes before it builds.)"
+        _logline "MEASURED cold build disk delta $(( (before_kib - after_kib) / 1024 )) MiB (before=${before_kib} KiB avail, after=${after_kib} KiB avail)"
+        docker system df 2>/dev/null | sed 's/^/         /' || true
+        _logline "MEASURED docker system df: $(docker system df 2>/dev/null | tr '\n' ';' || true)" ;;
+    esac
   else
     die "the deploy FAILED. Its own output above names the step, and nothing was
      rolled back. Read the migrate log before re-running:
@@ -3958,6 +5737,23 @@ step_deploy() {
   note "Do NOT over-read web=healthy: that healthcheck is a constant, and it passes"
   note "green with a wrong API_INTERNAL_URL while every page renders an error."
   note "api=healthy, worker=healthy and the pgbouncer probe are real."
+
+  # ── STOPPING HERE IS THE ONE PAUSE IN THIS SCRIPT THAT HAS AN EXPOSURE.
+  #
+  # Everywhere else, walking away leaves a box that is merely unfinished. From
+  # this line until the `firewall` step runs, caddy is publishing 80 and 443
+  # through DOCKER-USER — ahead of ufw, which is why the ufw step says its own
+  # green status does not cover them — so anyone who has the IP reaches this
+  # origin directly and can forge CF-Connecting-IP, which every rate limit, the
+  # /apply throttle and the brute-force login lockout are keyed on. The box is
+  # not in DNS, and that is not the same as unreachable: it has a public address
+  # and the internet is scanned continuously.
+  if ! systemctl is-enabled libriant-origin-firewall >/dev/null 2>&1; then
+    warn "FROM NOW UNTIL THE 'firewall' STEP RUNS, 80 AND 443 ARE OPEN TO THE WORLD."
+    warn "The next two steps are the nightly backup and that lockdown. If you have to"
+    warn "stop, stop AFTER them — or apply the lockdown on its own first:"
+    printf '         %s --only firewall\n' "$SELF"
+  fi
 }
 
 # ── authn-authz-01: the origin lockdown ─────────────────────────────────────
@@ -4084,8 +5880,15 @@ step_firewall() {
      further. If the DOCKER-USER jumps are what is missing, the usual cause is
      that the stack is not up: dockerd builds that chain, and there is nothing
      to hook into before it does. Run the 'deploy' step, then this one again.
-     If the missing chain is the ip6tables one, dockerd may simply have IPv6
-     disabled — that is a docker daemon.json question, not a Libriant one.
+     If the missing chain is the ip6tables one, dockerd is running without
+     ip6tables support. Do not guess at it — read and fix the daemon's own file:
+       cat /etc/docker/daemon.json          # it must contain \"ip6tables\": true
+       # this installer WRITES that file when it is absent, and REPORTS but never
+       # edits one you own. If you change it:
+       systemctl restart docker             # stops every container on this box
+       $SELF --only firewall                # NOT optional: dockerd rebuilds
+                                            # DOCKER-USER on start and the
+                                            # lockdown unit has no PartOf=
      The nightly backup runs BEFORE this step, so it is already installed; the
      only thing after this is the read-only §3.9 verification, which you can run
      on its own:
@@ -4114,31 +5917,27 @@ step_firewall() {
   printf '  published on 127.0.0.1 only, and this scan is what proves that held.\n\n'
 }
 
-# ── §8.2 The nightly backup — a green deploy has none ───────────────────────
+# ── configure_backup_env — the three .env.prod decisions backup.sh refuses to
+#    run without, ASKED AT THE `env` STEP AND AGAIN HERE.
 #
-# The cron file alone is not the whole job: backup.sh has moved on from §8.2 and
-# will refuse to run without an encryption decision and a dead man's switch. The
-# marker records that the operator settled both.
-satisfied_backup() { [ -f "$CRON_FILE" ] && marked backup; }
-
-step_backup() {
-  say "§8.2 The nightly backup — nothing else installs this"
-
-  local bs="${APP_DIR}/scripts/backup.sh"
-  [ -f "$bs" ] || die "$bs is missing — run the 'checkout' step first."
-  [ -f "$ENV_FILE" ] || die "$ENV_FILE is missing."
-
-  banner "NOTHING INSTALLS THE NIGHTLY BACKUP, AND NOTHING WARNS IT IS MISSING"
-  printf '  Not the deploy, not any script, not CI. "Daily backups and an off-server\n'
-  printf '  copy" is a written term of the founding offer. This is the step people skip,\n'
-  printf '  in the same sitting they meant to do it in.\n\n'
-  printf '  backup.sh has two gates §8.2 predates, and it stops dead on either:\n'
-  printf '    encryption          age recipient, gpg passphrase file, or an explicit\n'
-  printf '                        plaintext acknowledgement. A pg_dumpall is the\n'
-  printf '                        complete member registry of every library on this\n'
-  printf '                        host — names, dates of birth, addresses, and the loan\n'
-  printf '                        history of named children.\n'
-  printf '    a dead man'"'"'s switch  a heartbeat URL, or a writable %s\n\n' "$TEXTFILE_DIR"
+# THE ORDERING BUG THIS FIXES. These prompts used to live only inside
+# step_backup, which is step 15 of 17 — AFTER the 10-20 minute cold build. The
+# briefing tells the operator the build is 10-20 minutes and to use tmux, so the
+# reasonable thing to do is walk away; they come back to a box sitting at "How
+# should backups be encrypted?" and the install has made no progress at all.
+# Every other question in this script is asked in the first fifteen minutes.
+#
+# And a second, quieter one: all three write keys into .env.prod. step_env ends
+# with "COPY ${ENV_FILE} INTO THE PASSWORD MANAGER NOW" and a pause — so the copy
+# the operator took was STALE the moment step_backup added BACKUP_AGE_RECIPIENT
+# to the file, and nothing said so.
+#
+# Called from step_env (before that copy pause) and from step_backup. The second
+# call is free: every branch begins by reading the value out of .env.prod and
+# returns an `ok` line when it is already there, which is also what makes a
+# re-run of either step cheap. env_set_if_absent never overwrites a real value.
+configure_backup_env() {
+  [ -f "$ENV_FILE" ] || { warn "$ENV_FILE does not exist yet — backup configuration deferred"; return 0; }
 
   # ── Encryption (privacy-legal-02). ──────────────────────────────────────
   local have_crypt=""
@@ -4250,7 +6049,41 @@ step_backup() {
       note "until an off-site remote exists. That is the intended signal, not a fault."
     fi
   fi
+  return 0
+}
 
+# ── §8.2 The nightly backup — a green deploy has none ───────────────────────
+#
+# The cron file alone is not the whole job: backup.sh has moved on from §8.2 and
+# will refuse to run without an encryption decision and a dead man's switch. The
+# marker records that the operator settled both.
+satisfied_backup() { [ -f "$CRON_FILE" ] && marked backup; }
+
+step_backup() {
+  say "§8.2 The nightly backup — nothing else installs this"
+
+  local bs="${APP_DIR}/scripts/backup.sh"
+  [ -f "$bs" ] || die "$bs is missing — run the 'checkout' step first."
+  [ -f "$ENV_FILE" ] || die "$ENV_FILE is missing."
+
+  banner "NOTHING INSTALLS THE NIGHTLY BACKUP, AND NOTHING WARNS IT IS MISSING"
+  printf '  Not the deploy, not any script, not CI. "Daily backups and an off-server\n'
+  printf '  copy" is a written term of the founding offer. This is the step people skip,\n'
+  printf '  in the same sitting they meant to do it in.\n\n'
+  printf '  backup.sh has two gates §8.2 predates, and it stops dead on either:\n'
+  printf '    encryption          age recipient, gpg passphrase file, or an explicit\n'
+  printf '                        plaintext acknowledgement. A pg_dumpall is the\n'
+  printf '                        complete member registry of every library on this\n'
+  printf '                        host — names, dates of birth, addresses, and the loan\n'
+  printf '                        history of named children.\n'
+  printf '    a dead man'"'"'s switch  a heartbeat URL, or a writable %s\n\n' "$TEXTFILE_DIR"
+
+  # Asked at the `env` step, twelve steps and a whole cold build ago, so that
+  # this — the one moment an operator is most likely to have walked away — is not
+  # where the installer stops for three questions. Re-run here because `--only
+  # backup` is a supported entry point and because a value can have been cleared
+  # since. Everything already answered prints one ok line.
+  configure_backup_env
   # ── The cron file. ──────────────────────────────────────────────────────
   backup_cron_line | write_file "$CRON_FILE" 0644 root:root
 
@@ -4356,6 +6189,48 @@ set -a; . ${ENV_FILE}; set +a
 BACKUP_ROOT=${DATA_ROOT}/backups COMPOSE_FILE=${APP_DIR}/infra/compose/docker-compose.prod.yml bash ${APP_DIR}/scripts/backup.sh --check-cron
 EOS
 
+  # ── Retention, MULTIPLIED OUT rather than quoted.
+  #
+  # This is the one moment in the product's life when the day-size, the
+  # retention constant and the free space are all in one process. Nothing after
+  # today computes it: backup.sh writes a FULL tar of the uploads tree plus a
+  # full pg_dumpall every night into ${DATA_ROOT}/backups — the same filesystem
+  # as the live cluster, the live uploads and Redis — and prunes at the START of
+  # a run (backup.sh:289), so peak occupancy is BACKUP_KEEP_DAYS+1 day
+  # directories. RUNBOOK §9.5 on the outcome: "A full data disk means Postgres
+  # refuses writes: circulation stops. Treat it as a full outage." — every
+  # library on the box, at once, arriving silently, because Alertmanager sits
+  # behind a profile that is off while its receivers are still [PLACEHOLDER]s.
+  #
+  # A warning, never a gate. On day one this always says "fits", which is
+  # correct and worth printing: it puts the baseline in the transcript.
+  if [ "$DRY" = 0 ] && [ -d "$dest" ]; then
+    local day_kib avail_kib keep state proj_kib av_kib
+    day_kib="$(du -sk "$dest" 2>/dev/null | awk '{print $1}' || true)"
+    avail_kib="$(df -Pk "$DATA_ROOT" 2>/dev/null | df_avail_kib || true)"
+    # +1 because the prune runs at the START of a run: the day being written
+    # coexists with BACKUP_KEEP_DAYS older ones for the length of the run.
+    keep="$(env_get "$ENV_FILE" BACKUP_KEEP_DAYS 2>/dev/null || true)"
+    case "$keep" in ''|*[!0-9]*) keep=14 ;; esac
+    keep=$(( keep + 1 ))
+    set -- $(retention_verdict "${day_kib:-}" "$keep" "${avail_kib:-}" || true)
+    state="${1:-unknown}"; proj_kib="${2:-0}"; av_kib="${3:-0}"
+    case "$state" in
+      unknown) note "could not project retention (du or df produced nothing usable)" ;;
+      fits)
+        ok "retention projection: ${keep} x $(( ${day_kib:-0} / 1024 )) MiB = $(( proj_kib / 1024 / 1024 )) GiB against $(( av_kib / 1024 / 1024 )) GiB free on ${DATA_ROOT}" ;;
+      *)
+        warn "RETENTION PROJECTION IS ${state}: ${keep} day-directories x $(( ${day_kib:-0} / 1024 )) MiB"
+        warn "= $(( proj_kib / 1024 / 1024 )) GiB, against $(( av_kib / 1024 / 1024 )) GiB free on ${DATA_ROOT} — the SAME"
+        warn "filesystem as the live Postgres cluster, the live uploads and Redis, both of"
+        warn "which grow underneath it. Three levers, all in the runbook:"
+        warn "  * lower BACKUP_KEEP_DAYS in $ENV_FILE"
+        warn "  * grow the logical volume (§10.1 — online, no downtime)"
+        warn "  * set RCLONE_REMOTE and keep fewer local days"
+        _logline "WARN retention projection ${state}: proj=${proj_kib} KiB avail=${av_kib} KiB keep=${keep}" ;;
+    esac
+  fi
+
   note "Local retention is BACKUP_KEEP_DAYS (14). There is NO WAL archiving and no"
   note "point-in-time recovery: the RPO is the cron interval — up to 24 hours of loss."
   note "The quarterly restore drill (§8.5) has never been done. Book it."
@@ -4370,12 +6245,55 @@ satisfied_verify() { return 1; }
 step_verify() {
   say "§3.9 Post-deploy checks — the things nothing else proves"
 
+  # ── WILL THIS BOX COME BACK? SEVEN separate things on it are boot-time state
+  #    — docker, cron, fail2ban, the origin-lockdown unit, ufw, the clock, and
+  #    the data volume's own mount — installed by six different steps, and until
+  #    now not one of them was exercised as a SET. (The table below checks seven;
+  #    an earlier version of this comment said six and the closing summary said
+  #    six with it, which is the kind of drift that makes a reader stop counting
+  #    and start assuming.) step_firewall already makes the argument for its own
+  #    unit — "a unit that is enabled but fails on boot is indistinguishable
+  #    from a working one until the next reboot, which will be during an
+  #    incident" — and the argument generalises from that unit to the box.
+  #
+  #    Read-only, so --verify-only carries it, which is exactly what you run
+  #    after the rehearsal reboot the closing summary asks for.
+  printf '\n  Boot-time state — everything that has to come back by itself:\n'
+  local u st
+  for u in docker cron fail2ban libriant-origin-firewall; do
+    if systemctl is-enabled "$u" >/dev/null 2>&1; then
+      st="$(systemctl is-active "$u" 2>/dev/null || true)"
+      printf '    ok   %-28s enabled, currently %s\n' "$u" "${st:-unknown}"
+    else
+      printf '    FAIL %-28s NOT enabled — it will not start after a reboot\n' "$u"
+      VERIFY_RC=$((VERIFY_RC + 1))
+    fi
+  done
+  # PIPED, not bare: ufw_is_active reads stdin, and calling it with none would
+  # sit waiting on the operator's terminal for input that is never coming.
+  if ufw status 2>/dev/null | ufw_is_active; then printf '    ok   %-28s active\n' ufw
+  else printf '    FAIL %-28s NOT active\n' ufw; VERIFY_RC=$((VERIFY_RC + 1)); fi
+  if command -v timedatectl >/dev/null 2>&1; then
+    if [ "$(timedatectl show 2>/dev/null | td_get NTPSynchronized || true)" = yes ]; then
+      printf '    ok   %-28s synchronised\n' 'the clock (admin TOTP)'
+    else
+      printf '    FAIL %-28s NOT synchronised — admin MFA enrolment will fail\n' 'the clock (admin TOTP)'
+      VERIFY_RC=$((VERIFY_RC + 1))
+    fi
+  fi
+  if data_root_mounted; then
+    assert_data_root_persistent report
+  else
+    printf '    ..   %-28s not a separate mount (acknowledged boot-disk install?)\n' "$DATA_ROOT"
+  fi
+  printf '\n'
+
   # Not a die: --verify-only wants the firewall and backup answers even when the
   # checkout is missing, so this reports and returns rather than taking the
   # whole run down.
   if [ ! -d "${APP_DIR}/.git" ]; then
     warn "$APP_DIR is not a checkout — the §3.9 probes cannot run"
-    VERIFY_RC=1
+    VERIFY_RC=$((VERIFY_RC + 1))
     return 0
   fi
   if [ "$DRY" = 1 ]; then printf '  would run the §3.9 probes as %s\n' "$DEPLOY_USER"; return 0; fi
@@ -4549,7 +6467,13 @@ EOS
   else
     warn "§3.9: ${rc} check(s) failed — see above"
   fi
-  VERIFY_RC="$rc"
+  # ADDITIVE, not an assignment. The boot-state table above this function's §3.9
+  # body has already counted into VERIFY_RC, and `VERIFY_RC="$rc"` WIPED it:
+  # a box with nothing enabled, ufw down, an unsynchronised clock and a data
+  # volume that does not survive a reboot printed seven FAIL lines and then
+  # `--verify-only` said "verification clean" and exited 0 — on the exact box the
+  # closing summary now names --verify-only as the post-reboot check for.
+  VERIFY_RC=$((VERIFY_RC + rc))
 
   banner "A GREEN STORAGE PROBE IS NOT A WORKING UPLOAD"
   printf '  STORAGE-OK proves the DIRECTORY is writable by uid 1000. It does not prove\n'
@@ -4578,7 +6502,8 @@ EOF
 step_title() {
   case "$1" in
     briefing) printf 'What to have in front of you' ;;
-    stock)    printf '§3.1   Take stock (and the §1 timezone decision)' ;;
+    stock)    printf '§3.1   Take stock (host name, RAM, disk, the timezone)' ;;
+    clock)    printf 'The clock — NTP on, and SYNCHRONISED (admin TOTP)' ;;
     ssh)      printf '§3.2a  SSH password authentication OFF (lockout guard)' ;;
     ufw)      printf '§3.2b  ufw, with IPv6, allowing the real ssh port' ;;
     packages) printf '§3.2d  Baseline packages, fail2ban, unattended-upgrades' ;;
@@ -4683,6 +6608,55 @@ closing_summary() {
       nmap -Pn -p 22,80,443,5432,6379,3300,9090 $(scan_v4)
       nmap -6 -Pn -p 22,80,443 $(scan_v6)
 
+EOF
+
+  # ── THE REBOOT REHEARSAL, AND WHY IT IS CONDITIONAL.
+  #
+  # This block used to be unconditional, ninety-odd lines above the banner that
+  # says the data volume DOES NOT SURVIVE A REBOOT. Read in order, the summary
+  # told the operator to reboot and then told them what the reboot would cost —
+  # and the chain it costs is the one this whole installer is most careful about:
+  # an empty /mnt/libriant on the root disk, a stack that refuses to start, and a
+  # catastrophe one `mkdir -p` away, that `mkdir -p` being the command
+  # docker-compose.volume.yml itself tells you to run. So the rehearsal is only
+  # OFFERED when the volume will actually come back.
+  if data_root_mounted && [ -z "$(data_root_fstab_entry)" ] && ! data_root_mount_unit_enabled; then
+    cat <<EOF
+  DO NOT REBOOT THIS BOX YET.
+    ${DATA_ROOT} is mounted and NOTHING brings it back — no /etc/fstab entry and
+    no enabled .mount unit. A reboot right now leaves an empty directory on the
+    boot disk where the database was. Fix that first (see the banner below),
+    THEN rehearse the reboot, which is a thing worth doing while it is free.
+
+EOF
+  else
+    cat <<EOF
+  REHEARSE THE REBOOT NOW, WHILE IT IS FREE.
+    Seven things on this box are boot-time state, installed by six different
+    steps, and the only test that covers all seven at once is a reboot: docker,
+    cron, fail2ban, the origin-lockdown unit, ufw, the clock, and the data
+    volume's own mount. The box is not in DNS, so today that costs two minutes
+    and nobody notices. The first UNPLANNED reboot will be during an incident,
+    and it is a poor moment to discover that the data volume did not remount or
+    that the origin lockdown unit fails on this kernel.
+
+      sudo reboot
+      # then, when it is back:
+      findmnt ${DATA_ROOT}   # must name the DEVICE, not the root filesystem
+      timedatectl            # NTP: yes, System clock synchronized: yes
+      systemctl is-active docker cron fail2ban libriant-origin-firewall
+      ufw status verbose
+      sudo bash $SELF --verify-only
+      # and the external scan again, from your laptop, over both families
+
+    \`--verify-only\` already IS the post-reboot check — it re-runs §3.9, the
+    firewall parser, the backup status and the boot-state table. It simply was
+    never named as one.
+
+EOF
+  fi
+
+  cat <<EOF
   COPY ${ENV_FILE} AND THE ORIGIN PAIR INTO THE PASSWORD MANAGER.
     They are in no backup. MFA_MASTER_KEY, POSTGRES_PASSWORD and the origin
     certificate pair are irrecoverable if lost.
@@ -4697,6 +6671,16 @@ closing_summary() {
   PUT THE ORIGIN CERTIFICATE EXPIRY IN YOUR CALENDAR.
     Nothing monitors it. An expired origin certificate is a fully green deploy
     and a Cloudflare 526 on every host.
+
+  THE CLOUDFLARE IP RANGES ARE HARDCODED IN THREE PLACES AND ROT SILENTLY.
+    When Cloudflare publishes a new range, the origin firewall DROPs legitimate
+    edge traffic from those POPs: partial 522s that look like a Cloudflare
+    problem rather than an origin one. Nothing here refreshes the list.
+      https://www.cloudflare.com/ips
+      ${APP_DIR}/scripts/prod-bootstrap.sh   CF_V4 / CF_V6
+      ${APP_DIR}/infra/caddy/Caddyfile        the (origin_guard) snippet
+    All three must be edited together, and afterwards:  $SELF --only firewall
+    (the unit is RemainAfterExit=yes, so it will not re-apply itself).
 
   THE ADMIN PANEL NEEDS A BROWSER, AND MFA IS MANDATORY.
     You cannot enrol MFA from this shell. §3.9 explains why the /etc/hosts
@@ -4751,6 +6735,26 @@ EOF
       printf '  set BACKUP_AGE_RECIPIENT (identity kept OFF this host) and re-run:\n'
       printf '    %s --only backup\n\n' "$SELF"
     fi
+  fi
+  # ── The data volume, and the clock. Both are read off the MACHINE here rather
+  #    than remembered from a step, because the operator may have declined the
+  #    offer, or answered on a previous run, or hand-edited /etc/fstab since.
+  if data_root_mounted && [ -z "$(data_root_fstab_entry)" ] && ! data_root_mount_unit_enabled; then
+    banner "THE DATA VOLUME DOES NOT SURVIVE A REBOOT"
+    printf '  %s is mounted and there is no /etc/fstab entry and no enabled\n' "$DATA_ROOT"
+    printf '  .mount unit. After the next reboot it is an empty directory on the boot disk,\n'
+    printf '  the whole stack refuses to start, and the catastrophe is one `mkdir -p` away —\n'
+    printf '  the very command docker-compose.volume.yml tells you to run. Fix it before you\n'
+    printf '  walk away:  %s --only stock\n\n' "$SELF"
+  fi
+  if command -v timedatectl >/dev/null 2>&1 \
+     && [ "$(timedatectl show 2>/dev/null | td_get NTPSynchronized || true)" != yes ]; then
+    banner "THE CLOCK IS NOT SYNCHRONISED, AND ADMIN MFA IS A FUNCTION OF THE CLOCK"
+    printf '  Admin TOTP has a ~90-second acceptance window, MFA is mandatory in production,\n'
+    printf '  and a recovery code can only be minted after a TOTP code has already verified.\n'
+    printf '  If this clock drifts you get an admin panel nobody can enter, and the symptom\n'
+    printf '  is "invalid code" — which reads as a bad QR or a bad phone.\n'
+    printf '    timedatectl set-ntp true   then   %s --only clock\n\n' "$SELF"
   fi
   if ! systemctl is-enabled libriant-origin-firewall >/dev/null 2>&1; then
     banner "THE ORIGIN LOCKDOWN IS NOT INSTALLED AS A BOOT UNIT"

@@ -77,6 +77,27 @@ groups:
           summary: 'Sustained high CPU on {{ $labels.instance }}'
           description: 'CPU busy > 85% for 15m. Check for a bulk import/report, or scale CPU.'
 
+      - alert: HostClockNotSynchronised
+        # On this box the clock is an AUTHENTICATION INPUT, not a cosmetic.
+        # Admin MFA is mandatory in production (ADMIN_MFA_REQUIRED defaults on
+        # and cannot be turned off from .env.prod), TOTP verifies with a ~90
+        # second acceptance window, and a recovery code can only be minted AFTER
+        # a TOTP code has already verified — bootstrap-admin.ts refuses to issue
+        # one to an admin with no authenticator enrolled. So a box whose clock
+        # drifts becomes an admin panel nobody can enter, and the symptom is
+        # "invalid code", which reads as a bad QR or a bad phone.
+        #
+        # scripts/install-server.sh's `clock` step proves this at install time.
+        # This is the only thing that keeps watching afterwards. The metric comes
+        # from node-exporter's timex collector, which is on by default; it is 1
+        # when the kernel considers the clock disciplined and 0 when it does not.
+        expr: node_timex_sync_status == 0
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: 'Host clock is NOT synchronised on {{ $labels.instance }}'
+          description: 'The kernel reports the clock undisciplined for >15m. Admin TOTP has a ~90-second window and there is no recovery code until one TOTP code has passed, so drift here locks every admin out of the panel. Check: timedatectl timesync-status.'
+
   - name: libriant
     rules:
       - alert: LibriantPgConnectionsHigh
