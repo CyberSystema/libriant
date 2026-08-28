@@ -6112,15 +6112,44 @@ step_backup() {
   # dead man's switch exists at all. Seconds, against minutes for the real run.
   printf '\n'
   say "§8.2 backup.sh --preflight (config only; touches no data)"
-  if as_deploy_sh <<EOS
+  # Captured, not just streamed. "read its message above" was written for a
+  # terminal that has not moved; by the time the operator reaches the prompt they
+  # have answered two more questions and watched a dump attempt scroll past, so
+  # the one line that explains the failure is off-screen exactly when it decides
+  # something. Full output still prints live; the DECIDING lines are repeated
+  # immediately above the prompt that asks what to do about them.
+  local pf_log="" pf_rc=0
+  pf_log="$(mktemp 2>/dev/null)" || pf_log=""
+  if [ -n "$pf_log" ]; then
+    as_deploy_sh >"$pf_log" 2>&1 <<EOS || pf_rc=$?
 set -a; . ${ENV_FILE}; set +a
 $(backup_env_prefix) bash ${APP_DIR}/scripts/backup.sh --preflight
 EOS
-  then
-    ok "preflight passed"
+    cat "$pf_log"
   else
-    warn "preflight FAILED — read its message above. The nightly would fail the same way."
-    confirm "Continue to the real run anyway?" || return 0
+    as_deploy_sh <<EOS || pf_rc=$?
+set -a; . ${ENV_FILE}; set +a
+$(backup_env_prefix) bash ${APP_DIR}/scripts/backup.sh --preflight
+EOS
+  fi
+  if [ "$pf_rc" = 0 ]; then
+    ok "preflight passed"
+    [ -n "$pf_log" ] && rm -f "$pf_log"
+  else
+    warn "preflight FAILED. The nightly would fail the same way, and so will the run below."
+    if [ -n "$pf_log" ] && grep -qE 'ABORT|refus' "$pf_log" 2>/dev/null; then
+      printf '\n'
+      grep -E 'ABORT|refus' "$pf_log" | tail -6 | sed 's/^/         /'
+      printf '\n'
+    fi
+    [ -n "$pf_log" ] && rm -f "$pf_log"
+    warn "Fix it, then:  $SELF --only backup"
+    # Default NO, and the wording says why: preflight checks CONFIG, so a config
+    # that fails here fails identically after the minutes the real dump costs.
+    # The offer remains only for the operator who has read the reason above and
+    # knows it does not apply to them.
+    confirm "Continue to the real run anyway (it will almost certainly fail the same way)?" \
+      || return 0
   fi
 
   printf '\n'
@@ -6149,7 +6178,21 @@ EOS
   # rather than match the plaintext name.
   local pg n_files sz
   pg="$(ls -1 "$dest" 2>/dev/null | grep '^postgres\.sql\.gz' | head -1 || true)"
-  n_files="$(ls -1 "$dest" 2>/dev/null | wc -l | tr -d ' ' || echo 0)"
+  # `|| echo 0` inside a command substitution whose body is a PIPELINE is a trap
+  # under `set -o pipefail`, and it bit here for real: when $dest does not exist,
+  # `ls` fails, `wc -l` has ALREADY printed 0, and pipefail then makes the whole
+  # pipeline fail — so the fallback appends a SECOND 0 and n_files becomes the
+  # two-line string "0\n0". The next test said
+  #     [: 0
+  #     0: integer expected
+  # and the operator saw "0\n0 artefacts — expected four" in the middle of a
+  # failed backup, which is exactly the moment to be legible. Count the entries
+  # only when the directory is there; a missing directory is 0 by construction.
+  if [ -d "$dest" ]; then
+    n_files="$(find "$dest" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+  else
+    n_files=0
+  fi
   if [ -n "$pg" ]; then
     sz="$(wc -c < "${dest}/${pg}" | tr -d ' ')"
     if [ "${sz:-0}" -gt 1024 ]; then
