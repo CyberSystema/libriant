@@ -1,5 +1,14 @@
 export { FEATURES, FEATURE_KEYS, getFeature } from './features.js';
 export type { FeatureDescriptor, FeatureKey, FeatureType } from './features.js';
+export {
+  COUNTRIES,
+  PRIORITY_COUNTRY_CODES,
+  DEFAULT_COUNTRY_CODE,
+  countriesFor,
+  findCountry,
+  isCountryCode,
+} from './countries.js';
+export type { Country, CountryCode } from './countries.js';
 export { BILLING_MODES, SYSTEM_MODES } from './billing.js';
 export { SEARCH_MIN_CHARS } from './search.js';
 export type { BillingMode, SystemMode } from './billing.js';

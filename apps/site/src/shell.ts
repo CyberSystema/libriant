@@ -428,6 +428,13 @@ section { padding: clamp(52px, 7vw, 92px) 0; }
 }
 
 /* ---------- form ---------- */
+/* Read by two sections, so it lives above both: the pricing table's
+   screen-reader-only headers and cell labels, and the application form's
+   dial-code label. Deleting either one does not make this rule dead. */
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
 .form-section { scroll-margin-top: 24px; }
 .form-card {
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -437,6 +444,12 @@ section { padding: clamp(52px, 7vw, 92px) 0; }
 .field { margin-bottom: 20px; display: flex; flex-direction: column; }
 .field > label { font-weight: 600; font-size: .95rem; margin-bottom: 7px; }
 .field .hint { font-size: .86rem; color: var(--muted); margin: 6px 0 0; }
+/* The phone field: a dial-code select and the number, on one line, reading as
+   one control. The select is fixed and narrow, so its option text is clipped —
+   which is why the dial code is rendered before the country name and not after
+   it. Both tracks take a zero minimum because a grid item's automatic minimum
+   is its content, and an input's is wide enough to push the row off a phone. */
+.field-pair { display: grid; grid-template-columns: minmax(0, 11rem) minmax(0, 1fr); gap: 10px; }
 .req { color: #C2410C; margin-inline-start: 3px; }
 @media (prefers-color-scheme: dark) { .req { color: #FDA47A; } }
 input[type=text], input[type=email], input[type=tel], select, textarea {
@@ -463,6 +476,10 @@ input[aria-invalid=true], textarea[aria-invalid=true], select[aria-invalid=true]
   .form-error a { color: #FCA5A5; }
 }
 .field-error { color: #C2410C; font-size: .88rem; margin: 6px 0 0; font-weight: 600; }
+/* The consent error sits outside .consent (the box is the label's, not the
+   message's), so it pulls back up under it and restores the box's own margin. */
+.consent-error { margin-top: -16px; margin-bottom: 20px; }
+.required-note { margin: 0 0 18px; }
 @media (prefers-color-scheme: dark) { .field-error { color: #FDA47A; } }
 .form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
 .form-actions .btn--primary { color: #042522; }
@@ -502,10 +519,6 @@ input[aria-invalid=true], textarea[aria-invalid=true], select[aria-invalid=true]
 .powered { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 
 /* ---------- pricing ---------- */
-.visually-hidden {
-  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
-}
 .plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(224px, 1fr)); gap: 18px; align-items: start; }
 .plan {
   position: relative; background: var(--bg); border: 1px solid var(--border);
@@ -615,6 +628,18 @@ input[aria-invalid=true], textarea[aria-invalid=true], select[aria-invalid=true]
   .masthead nav::-webkit-scrollbar { display: none; }
   .masthead nav a { white-space: nowrap; padding: 10px 11px; font-size: .9rem; }
   .hero__actions .btn { width: 100%; }
+}
+/* Measured, not guessed: a 375px phone leaves the form card 225px of content,
+   so the 11rem dial code above would hand the number itself 79px — the field
+   the applicant actually types in, and the smaller of the two. Shrink the code
+   and pull its padding in around the arrow; the country name after it clips
+   away entirely, which is what it is there to do. */
+@media (max-width: 520px) {
+  .field-pair { grid-template-columns: minmax(0, 6.5rem) minmax(0, 1fr); }
+  .field-pair select {
+    padding-inline: 11px 28px;
+    background-position: calc(100% - 15px) 21px, calc(100% - 9px) 21px;
+  }
 }
 @media print {
   /* The pricing and security pages get forwarded to a δήμος finance office and

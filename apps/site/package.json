@@ -11,6 +11,9 @@
     "lint": "echo 'lint: ok'",
     "test": "echo 'tests: none yet' && exit 0"
   },
+  "dependencies": {
+    "@libriant/shared": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^26.2.0",
     "marked": "^18.0.10",

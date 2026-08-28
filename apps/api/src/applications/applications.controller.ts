@@ -46,7 +46,28 @@ export class ApplicationsController {
     const lang = langOf(req.path);
     const E = ERRORS[lang];
 
-    // Closed offer: answer before touching anything the visitor sent.
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body !== 'object') {
+      this.send(res, 400, lang, { values: {}, errors: {} }, E.invalidSubmission);
+      return;
+    }
+
+    // Honeypot: a field hidden off-screen and marked aria-hidden. A human never
+    // fills it; naive scrapers fill every input they find. Answer exactly as for
+    // a success so the bot learns nothing from the difference — never 400 it.
+    //
+    // FIRST, ahead of the offer-state query below. It used to sit after it, so
+    // every form-spam crawler — the exact caller this branch exists to discard
+    // for nothing — took a control-plane connection and ran a COUNT before
+    // anything looked at whether it was a bot. Nothing here needs the offer
+    // state: a bot gets the same 303 whether the offer is open or shut, which
+    // is the "learns nothing from the difference" property this branch wants.
+    if (typeof body.website === 'string' && body.website.trim() !== '') {
+      res.redirect(303, this.thankYou(lang));
+      return;
+    }
+
+    // Closed offer: answer before touching anything else the visitor sent.
     //
     // launch-readiness-11, both halves. The condition was
     // `config.offer.spotsRemaining <= 0` — a literal compiled into this file,
@@ -65,20 +86,6 @@ export class ApplicationsController {
     const offer = await this.svc.offerState();
     if (!offer.open) {
       this.sendClosed(res, lang);
-      return;
-    }
-
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    if (typeof body !== 'object') {
-      this.send(res, 400, lang, { values: {}, errors: {} }, E.invalidSubmission);
-      return;
-    }
-
-    // Honeypot: a field hidden off-screen and marked aria-hidden. A human never
-    // fills it; naive scrapers fill every input they find. Answer exactly as for
-    // a success so the bot learns nothing from the difference — never 400 it.
-    if (typeof body.website === 'string' && body.website.trim() !== '') {
-      res.redirect(303, localePath(lang, '/thank-you'));
       return;
     }
 
@@ -120,7 +127,21 @@ export class ApplicationsController {
 
     // Best-effort from here on. The application is already committed.
     await this.svc.notify(id, parsed).catch(() => undefined);
-    res.redirect(303, localePath(lang, '/thank-you'));
+    res.redirect(303, this.thankYou(lang));
+  }
+
+  /**
+   * Where a successful submission lands, fragment and all.
+   *
+   * The form posts to `/apply#form-error` so that a REJECTED submission scrolls
+   * to the reason and focuses it (apps/site/src/pages.ts explains why that is
+   * the only no-JS way to do it). A redirect inherits the request URL's
+   * fragment, so without naming one here the thank-you page would open scrolled
+   * to an anchor it does not have. `#main` is the skip-link target every page
+   * already carries, so success lands on the page's own content.
+   */
+  private thankYou(lang: Lang): string {
+    return `${localePath(lang, '/thank-you')}#main`;
   }
 
   /** Stray navigation to the form's action lands back on the form. */
@@ -147,8 +168,15 @@ export class ApplicationsController {
       'library_name',
       'library_type',
       'city',
+      // The ISO code, not the label — the same choice `library_type` makes by
+      // exporting the enum value. A code is the stable key a spreadsheet can
+      // sort and join on, and CLDR renames the labels underneath exports that
+      // were saved months apart (Turkey → Türkiye).
+      'country',
       'contact_name',
       'contact_email',
+      // Already composed as `+30 2410000000` on the way into the row, so this
+      // is one cell an operator can dial, not two they have to join.
       'phone',
       'collection_size',
       'current_system',
@@ -159,6 +187,15 @@ export class ApplicationsController {
     ] as const;
 
     const rows = await controlDb.application.findMany({ orderBy: { createdAt: 'desc' } });
+    // `neutralizeFormula` now fires on every phone, because a dialable number
+    // starts with `+` and Excel reads a leading `+` as the start of a formula
+    // (inherited from Lotus). Left alone, `+30 2410000000` is evaluated rather
+    // than displayed and the operator gets an error where the number should be;
+    // the apostrophe it prefixes forces the cell to text, which is the number
+    // back. Worth recording that the `+` is OURS — it comes from the canonical
+    // dial list, so the applicant's own text can never be the first character
+    // of that cell — and that this is therefore the guard doing its job on a
+    // value we compose, not a hole being papered over.
     const cell = (v: unknown): string => {
       const raw = v == null ? '' : String(v);
       return `"${neutralizeFormula(raw).replace(/"/g, '""')}"`;
@@ -171,6 +208,7 @@ export class ApplicationsController {
           cell(r.libraryName),
           cell(r.libraryType),
           cell(r.city),
+          cell(r.country),
           cell(r.contactName),
           cell(r.contactEmail),
           cell(r.phone),
@@ -205,10 +243,23 @@ export class ApplicationsController {
   }
 
   /** Re-render the real page with the visitor's answers and inline errors. */
+  /**
+   * The visitor's answers, back on the page they came from.
+   *
+   * `no-store` is set here and not only at the edge. infra/caddy/Caddyfile puts
+   * `header_down Cache-Control "no-store"` on the marketing vhost's `@apply`
+   * block, with a comment about this being the page that carries a named
+   * librarian's email address and telephone number back to them — but that
+   * matcher is not the only entrance. `app.<apex>/lbr-api/apply` proxies to this
+   * same handler through a `handle_path` block that sets no headers at all,
+   * which is the /webhooks/* shape the edge config's own comments are about. On
+   * the response, a third entrance cannot lose it.
+   */
   private send(res: Response, status: number, lang: Lang, parsed: Parsed, formError: string): void {
     res
       .status(status)
       .type('text/html; charset=utf-8')
+      .set('cache-control', 'no-store')
       .send(
         renderIndex(config, LANDING[lang], {
           lang,

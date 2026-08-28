@@ -2,11 +2,12 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { controlDb } from '@libriant/db-control';
 import type { LibraryType } from '@libriant/db-control';
+import { findCountry, isCountryCode } from '@libriant/shared';
 import { EmailService } from '../email/email.service.js';
 import { RateLimitService } from '../platform/rate-limit.service.js';
 import { RedisService } from '../platform/redis.service.js';
 import { loadEnv } from '../config/env.js';
-import { LIBRARY_TYPE_OPTIONS, type SiteConfig } from '@libriant/site';
+import { LIBRARY_TYPE_OPTIONS, type RequiredField, type SiteConfig } from '@libriant/site';
 import siteConfigRaw from '@libriant/site/site.config.json' with { type: 'json' };
 
 /**
@@ -20,13 +21,27 @@ export type FieldErrors = Partial<Record<string, string>>;
 export type FieldValues = Partial<Record<string, string>>;
 export type Parsed = { values: FieldValues; errors: FieldErrors };
 
-/** Longest accepted value per field, matched to the column widths. */
+/**
+ * Longest accepted value per field, matched to the column widths — and, since
+ * it is also the list of keys read off the submission, the definition of which
+ * fields exist at all.
+ *
+ * `country` and `phoneDialCode` are both capped at 2, because both carry an ISO
+ * 3166-1 alpha-2 code rather than free text — the dial `<select>` is valued by
+ * COUNTRY, not by digits, since 25 countries share `+1` and a select whose
+ * options do not distinguish the answers cannot give the applicant back the one
+ * they picked (apps/site/src/pages.ts, `phoneField`). Both are then looked up in
+ * the canonical list, so the cap is not what makes them safe; it is what bounds
+ * the string that reaches the lookup.
+ */
 const MAX_LEN: Record<string, number> = {
   libraryName: 200,
   libraryType: 40,
   city: 120,
+  country: 2,
   contactName: 160,
   contactEmail: 320,
+  phoneDialCode: 2,
   phone: 40,
   collectionSize: 40,
   currentSystem: 200,
@@ -34,6 +49,13 @@ const MAX_LEN: Record<string, number> = {
 };
 
 const FIELDS = Object.keys(MAX_LEN);
+
+/**
+ * The fields checked against a fixed list rather than a length. Their submitted
+ * value is either one of ours or it is nothing, so it is never truncated on the
+ * way back out to the form — see the end of {@link ApplicationsService.validate}.
+ */
+const WHITELISTED_FIELDS = new Set(['country', 'phoneDialCode', 'libraryType']);
 
 /**
  * Deliberately permissive: an address the sender can actually receive at is the
@@ -242,7 +264,58 @@ export class ApplicationsService {
     const type = values.libraryType;
     if (type && !LIBRARY_TYPE_VALUES.has(type)) errors.libraryType = messages.badType;
 
+    // A `<select>` guarantees the server nothing: this is the only
+    // unauthenticated write in the control plane, and the submitter is assumed
+    // not to have used the form at all. So both codes are looked up in the
+    // canonical list rather than trusted, exactly as `libraryType` is above.
+    //
+    // Guarded on truthiness for the same reason `libraryType` is: the country
+    // select opens on an empty «Επιλέξτε…» option, so a visitor really can
+    // submit nothing, and telling them "you have not chosen one" is the
+    // required loop's job. Only a country they did name reaches the lookup, so
+    // the two mistakes get the two different sentences they deserve.
+    const country = values.country;
+    if (country && !isCountryCode(country)) errors.country = messages.badCountry;
+
+    // The dial code is NOT guarded, because it has no `required` entry to fall
+    // through to and deliberately so (apps/site/src/copy.ts, ErrorCopy): its
+    // select carries no empty option and a native select cannot be cleared, so
+    // an empty one is a malformed submission rather than an answer a visitor
+    // can get wrong. It is also not checked against the country above — the two
+    // selects cannot be kept in step without JavaScript and the site ships
+    // none, and a Greek library whose contact carries a Cypriot mobile must not
+    // be told that pair is an error it has no way to resolve.
+    if (!isCountryCode(values.phoneDialCode)) errors.phoneDialCode = messages.badDialCode;
+
     if (values.consent !== 'yes') errors.consent = messages.consent;
+
+    // Echo back only what the field can hold.
+    //
+    // A rejected submission comes back as the whole page with the visitor's
+    // answers in it, so nothing has to be retyped — and an over-long value used
+    // to be echoed whole. A 100KB `message` (body-parser's default cap, which
+    // nothing here narrows) returned inside a ~540KB page, escaped and gzipped:
+    // five times the request that asked for it, on a path the controller
+    // deliberately does not meter, since the throttle runs after validation so
+    // an honest typo does not burn anyone's budget. Capping the echo takes the
+    // amplification away without taking that decision away — the response is
+    // now bounded by the form rather than by the request — and it is the honest
+    // answer to the visitor too, because what is missing is exactly what they
+    // have to delete.
+    //
+    // LAST, after every check above, and never for the three fields validated
+    // against a fixed list. Truncating first turned `country: 'GRC'` into a
+    // perfectly valid 'GR': the lookup then passed, the message became "too
+    // long" instead of "choose one of the available countries", and the form
+    // came back with Greece selected for someone who never chose it. Their caps
+    // are 2, 2 and 40 characters, so there is no amplification to prevent there
+    // anyway — an unusable code is simply echoed as nothing, which is what
+    // `options()` already does with a value that matches no entry.
+    for (const [key, max] of Object.entries(MAX_LEN)) {
+      if (WHITELISTED_FIELDS.has(key)) continue;
+      const v = values[key];
+      if (v && v.length > max) values[key] = v.slice(0, max);
+    }
 
     return { values, errors };
   }
@@ -346,9 +419,10 @@ export class ApplicationsService {
         libraryName: v.libraryName ?? '',
         libraryType: (v.libraryType ?? 'other') as LibraryType,
         city: v.city ?? '',
+        country: v.country || null,
         contactName: v.contactName ?? '',
         contactEmail: v.contactEmail ?? '',
-        phone: v.phone || null,
+        phone: dialablePhone(v) || null,
         collectionSize: v.collectionSize || null,
         currentSystem: v.currentSystem || null,
         message: v.message || null,
@@ -396,6 +470,11 @@ export class ApplicationsService {
     );
     const typeLabel =
       LIBRARY_TYPE_OPTIONS.el.find((o) => o.value === v.libraryType)?.label ?? v.libraryType ?? '—';
+    // The body is Greek throughout (the operator reads it), so the country is
+    // named the way the rest of the message is rather than left as 'GR'. An
+    // unresolvable code falls back to itself instead of to a dash: if this ever
+    // prints a raw code, the operator should see WHICH one.
+    const countryLabel = v.country ? (findCountry(v.country)?.el ?? v.country) : '';
     const line = (label: string, value?: string): string => `- **${label}:** ${value || '—'}`;
 
     const body = [
@@ -403,8 +482,9 @@ export class ApplicationsService {
       '',
       line('Τύπος', typeLabel),
       line('Πόλη', v.city),
+      line('Χώρα', countryLabel),
       line('Επικοινωνία', `${v.contactName ?? ''} <${v.contactEmail ?? ''}>`),
-      line('Τηλέφωνο', v.phone),
+      line('Τηλέφωνο', dialablePhone(v)),
       line('Μέγεθος συλλογής', v.collectionSize),
       line('Σημερινό σύστημα', v.currentSystem),
       '',
@@ -455,15 +535,66 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   }
 }
 
+/**
+ * The phone as it has to be dialled: the code the applicant chose in front of
+ * the number they typed — `+30 2410000000`.
+ *
+ * `phoneDialCode` is a COUNTRY, not digits — `CA` and `US` are different
+ * answers that both dial `+1`, and the form has to be able to hand back the one
+ * the applicant picked — so the digits are looked up here rather than sent.
+ *
+ * The two halves stay separate in {@link Parsed} because the form has two
+ * controls and a failed submission comes back with both of them still filled
+ * in. They are joined here, on the way out to Postgres and to the operator's
+ * notification, which is the last point at which either half is read alone.
+ *
+ * STORING THEM AS TWO COLUMNS WAS THE ALTERNATIVE, AND IT LOSES ON WHO HAS TO
+ * REMEMBER. `phone` is already read straight out of the row and dropped into a
+ * `tel:` link by the admin panel's ApplicationsClient.tsx, and exported as one
+ * CSV cell. Splitting it makes every one of those surfaces responsible for
+ * putting the number back together, and the first one that forgets shows a bare
+ * national number — a lead nobody outside the country can ring, which is the
+ * exact failure that making the phone compulsory exists to prevent. Composed
+ * here, both surfaces are right without either of them changing.
+ *
+ * The national part is stored EXACTLY as typed. Stripping spaces and
+ * punctuation would tidy `2410 000 000` and quietly ruin
+ * `2410000000 (εσωτ. 12)`; dropping a leading trunk zero is correct for the UK
+ * and wrong for Italy. Neither is a judgement to make on a stranger's phone
+ * number on their behalf.
+ */
+export function dialablePhone(v: FieldValues): string {
+  const national = v.phone?.trim() ?? '';
+  if (!national) return '';
+  // Already international, so do not prefix it again. The form asks for the
+  // code in a separate select and says so in the hint, but a fair number of
+  // people type it into the number anyway — and it is also the only way to
+  // express a number whose country is not the one the select is showing.
+  // Composing regardless produced '+30 +357 99123456', which is not a number
+  // anyone can ring: the exact silent-loss failure this function exists to
+  // avoid, manufactured by the function itself.
+  if (national.startsWith('+')) return national;
+  const dial = v.phoneDialCode ? findCountry(v.phoneDialCode)?.dial : undefined;
+  return dial ? `+${dial} ${national}` : national;
+}
+
 /** Enum values, identical in both languages — validation must not depend on locale. */
 export const LIBRARY_TYPE_VALUES: ReadonlySet<string> = new Set(
   LIBRARY_TYPE_OPTIONS.el.map((o) => o.value),
 );
 
 export type ErrorMessages = {
-  required: Record<string, string>;
+  /**
+   * Imported, not restated. This type mirrors `ErrorCopy` in
+   * apps/site/src/copy.ts so the service can be tested without the site's
+   * config; a locally-written `Record<string, string>` here would have widened
+   * the union straight back to the thing it exists to prevent.
+   */
+  required: Record<RequiredField, string>;
   tooLong: (max: number) => string;
   badEmail: string;
   badType: string;
+  badCountry: string;
+  badDialCode: string;
   consent: string;
 };

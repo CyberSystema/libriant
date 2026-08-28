@@ -20,6 +20,16 @@ process.env.HASH_PEPPER ||= 'integration-only-pepper';
 // is unit-tested in src/platform/rate-limit.service.spec.ts.
 process.env.RATE_LIMIT_DISABLED ||= 'true';
 
+// The marketing site's host, which OriginCheckMiddleware compares the
+// application form's `Origin` against. Unset, `siteHost` falls through
+// PUBLIC_APEX_DOMAIN to 'localhost', and a spec that posts /apply as a real
+// browser would — which is the only way to reach that handler now that
+// BROWSER_ONLY_PATHS refuses a missing Origin — would have to name a host that
+// exists nowhere else in the repository. Naming the real one keeps the
+// submission in retention-erasure.spec.ts shaped like the production request it
+// claims to be.
+process.env.SITE_HOST ||= 'libriant.com';
+
 // Admin tests bootstrap a password-only admin and exercise authorization, not
 // MFA enrollment. Mandatory-MFA (AUTH-06) defaults ON outside development, which
 // would 403 those admins onto the enrollment flow; opt the suite out so it

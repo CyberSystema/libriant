@@ -8,6 +8,7 @@
  * browser error — and there is only one copy of the form markup to maintain.
  */
 
+import { countriesFor, DEFAULT_COUNTRY_CODE } from '@libriant/shared/countries';
 import {
   esc,
   renderShell,
@@ -103,6 +104,115 @@ function field(opts: {
 </div>`;
 }
 
+type Choice = { value: string; label: string };
+
+/** `<option>` rows, with the visitor's own answer marked selected. */
+function options(list: ReadonlyArray<Choice>, selected: string): string {
+  return list
+    .map(
+      (o) =>
+        `<option value="${esc(o.value)}"${o.value === selected ? ' selected' : ''}>${esc(o.label)}</option>`,
+    )
+    .join('\n        ');
+}
+
+/**
+ * A labelled select, in the shape `field()` gives an input.
+ *
+ * Written the day the form went from one select to three. The hand-rolled
+ * `libraryType` block this replaces had already drifted from `field()` — its
+ * error paragraph had no id and the control never pointed at it — so a screen
+ * reader announced the field as invalid without reading why. Two more
+ * hand-rolled copies would have been two more places to fix that.
+ */
+function select(opts: {
+  name: string;
+  label: string;
+  choices: ReadonlyArray<Choice>;
+  /** Leading empty option, for a question the visitor must answer deliberately. */
+  placeholder?: string;
+  required?: boolean;
+  autocomplete?: string;
+  values: FieldValues;
+  errors: FieldErrors;
+}): string {
+  const err = opts.errors[opts.name];
+  const id = `f-${opts.name}`;
+  return `<div class="field">
+  <label for="${id}">${esc(opts.label)}${opts.required ? '<span class="req" aria-hidden="true">*</span>' : ''}</label>
+  <select id="${id}" name="${esc(opts.name)}"${opts.required ? ' required' : ''}
+    ${opts.autocomplete ? `autocomplete="${esc(opts.autocomplete)}"` : ''}
+    ${err ? ` aria-invalid="true" aria-describedby="${id}-err"` : ''}>
+    ${opts.placeholder ? `<option value="">${esc(opts.placeholder)}</option>` : ''}
+    ${options(opts.choices, opts.values[opts.name] ?? '')}
+  </select>
+  ${err ? `<p class="field-error" id="${id}-err">${esc(err)}</p>` : ''}
+</div>`;
+}
+
+/**
+ * Phone: one field wearing two controls.
+ *
+ * The dial code cannot follow the country select — that needs JavaScript, and
+ * this site ships none — so it is a second, separate question and the markup
+ * says so instead of pretending otherwise. What holds the pair together is the
+ * labelling: the visible label names the pair and is attached to the number,
+ * the hint under it says the code is chosen separately, and the select carries
+ * its own name for a screen reader, which would otherwise reach an unnamed list
+ * of 243 options. That name is a real `<label>`, clipped by `.visually-hidden`
+ * rather than an `aria-label`, so every control in this form is labelled the
+ * same way.
+ *
+ * The dial select opens on Greece. The country select above deliberately does
+ * not: a country is a claim about the applicant that we should not make for
+ * them, and a wrong one ends up on a Data Processing Agreement. A dial code is
+ * different — it sits in plain sight beside the number being typed, this
+ * campaign is addressed to 277 Greek libraries, and an empty option here would
+ * be a third «Επιλέξτε…» to clear before the form will send.
+ *
+ * Its value is the ISO country code and NOT the digits, because 25 countries
+ * share +1: a select whose options do not distinguish the answers cannot give
+ * the applicant back the one they picked when the form comes round again. The
+ * API turns the code into digits with `findCountry()`.
+ */
+function phoneField(opts: {
+  label: string;
+  hint: string;
+  dialLabel: string;
+  dialChoices: ReadonlyArray<Choice>;
+  values: FieldValues;
+  errors: FieldErrors;
+}): string {
+  const err = opts.errors.phone;
+  const dialErr = opts.errors.phoneDialCode;
+  const describedBy = [err ? 'f-phone-err' : '', 'f-phone-hint'].filter(Boolean);
+  // The hint — "the country code is chosen separately, in the field before the
+  // number" — is described by BOTH controls. It was attached only to the number
+  // input, which follows the select in DOM and tab order, so the sentence
+  // explaining why there are two controls arrived after the control it
+  // explains. No `required` on the select: it carries no empty option and a
+  // native select cannot be cleared, so the attribute can never fire and only
+  // announces a constraint the visitor cannot violate. The server still refuses
+  // an empty one — it just calls it a malformed submission, not a mistake.
+  const dialDescribedBy = [dialErr ? 'f-phoneDialCode-err' : '', 'f-phone-hint'].filter(Boolean);
+  return `<div class="field">
+  <label for="f-phone">${esc(opts.label)}<span class="req" aria-hidden="true">*</span></label>
+  <div class="field-pair">
+    <label class="visually-hidden" for="f-phoneDialCode">${esc(opts.dialLabel)}</label>
+    <select id="f-phoneDialCode" name="phoneDialCode" autocomplete="tel-country-code"
+      ${dialErr ? ` aria-invalid="true"` : ''} aria-describedby="${dialDescribedBy.join(' ')}">
+      ${options(opts.dialChoices, opts.values.phoneDialCode || DEFAULT_COUNTRY_CODE)}
+    </select>
+    <input id="f-phone" name="phone" type="tel" value="${esc(opts.values.phone ?? '')}" required
+      autocomplete="tel-national"${err ? ' aria-invalid="true"' : ''}
+      aria-describedby="${describedBy.join(' ')}">
+  </div>
+  <p class="hint" id="f-phone-hint">${esc(opts.hint)}</p>
+  ${dialErr ? `<p class="field-error" id="f-phoneDialCode-err">${esc(dialErr)}</p>` : ''}
+  ${err ? `<p class="field-error" id="f-phone-err">${esc(err)}</p>` : ''}
+</div>`;
+}
+
 function textarea(opts: {
   name: string;
   label: string;
@@ -121,49 +231,107 @@ function textarea(opts: {
 </div>`;
 }
 
+/**
+ * The order the error summary lists failures in — the order the fields are laid
+ * out below, so the summary reads down the form rather than in whatever order
+ * the API's validation happened to set them. Every name here is also the `id`
+ * suffix of a real control, which is what makes each entry a working link.
+ */
+const ERROR_FIELD_ORDER = [
+  'libraryName',
+  'libraryType',
+  'city',
+  'country',
+  'collectionSize',
+  'currentSystem',
+  'contactName',
+  'contactEmail',
+  'phoneDialCode',
+  'phone',
+  'message',
+  'consent',
+] as const;
+
 function applicationForm(c: SiteConfig, o: RenderOptions, lang: Lang): string {
   const f = FORM[lang];
   const errors = o.errors ?? {};
   const values = o.values ?? {};
-  const typeOptions = LIBRARY_TYPE_OPTIONS[lang]
-    .map(
-      (t) =>
-        `<option value="${esc(t.value)}"${values.libraryType === t.value ? ' selected' : ''}>${esc(t.label)}</option>`,
-    )
-    .join('\n      ');
 
+  // Every country, twice: once to be answered and once to be dialled. Both
+  // lists are `countriesFor(lang)`, so the two selects run in the same order
+  // and a visitor who scrolled to Κύπρος in one finds it in the same place in
+  // the other.
+  //
+  // The dial label leads with the NAME, not the code. It led with the code
+  // first, on the argument that the code is the part worth keeping when a
+  // narrow control clips the text — but both lists are ordered by country name,
+  // and a native select's type-ahead matches the option's text PREFIX. With
+  // every label starting with '+', pressing Ι did not jump to Ιταλία; nothing
+  // matched, and the only way through 243 options was to arrow down all of
+  // them. That is the whole control gone for a keyboard or screen-reader user,
+  // to save a sighted one a few clipped letters of a country they just chose in
+  // the field above. Name-first also makes the two selects behave identically,
+  // which is the point of their being the same list in the same order.
+  const countries = countriesFor(lang);
+  const countryChoices = countries.map((c) => ({ value: c.code, label: c[lang] }));
+  const dialChoices = countries.map((c) => ({ value: c.code, label: `${c[lang]} (+${c.dial})` }));
+
+  // The error summary, and the reason the form's action carries `#form-error`.
+  //
+  // A rejected submission comes back as the whole home page, and a browser
+  // renders it from the top — so the visitor landed on the hero with the reason
+  // they were bounced six screens below, looking at what appeared to be the
+  // page they had already filled in. `role="alert"` did not save it either:
+  // live regions announce on DOM mutation, and this markup is present at
+  // document load, so no screen reader ever spoke it. The `tabindex="-1"` here
+  // had never once been used.
+  //
+  // The fix is the fragment on the action below: the 400 is a response to a URL
+  // ending `#form-error`, so the browser scrolls here AND — because of that
+  // tabindex — puts focus on this div. A screen reader reads the heading, and
+  // the next Tab walks into the form. No JavaScript, which is the only kind of
+  // fix available here. The 303s in applications.controller.ts name their own
+  // fragment for the same reason: a redirect inherits the request URL's.
+  //
+  // Each failing field gets its own link. One generic sentence was tolerable at
+  // five required fields; a blank submission can now raise eight errors, and a
+  // list of links is the standard no-JS way to get a keyboard user to each one
+  // in a single hop. The generic sentence stays as the fallback for the errors
+  // that belong to no field — a rate-limit refusal, a failed save.
+  const listed = ERROR_FIELD_ORDER.filter((name) => errors[name]);
   const summary = o.formError
     ? `<div class="form-error" role="alert" tabindex="-1" id="form-error">
     <strong>${esc(f.errorTitle)}</strong>
-    <ul><li>${esc(o.formError)}</li></ul>
+    <ul>${
+      listed.length
+        ? listed
+            .map((name) => `<li><a href="#f-${name}">${esc(errors[name] ?? '')}</a></li>`)
+            .join('')
+        : `<li>${esc(o.formError)}</li>`
+    }</ul>
   </div>`
     : '';
 
-  return `<form class="form-card" method="post" action="${localePath(lang, '/apply')}" novalidate id="application-form">
+  return `<form class="form-card" method="post" action="${localePath(lang, '/apply')}#form-error" novalidate id="application-form">
   ${summary}
+  <p class="hint required-note">${esc(f.requiredNote)}</p>
   <div class="grid2">
     ${field({ name: 'libraryName', label: f.libraryName, required: true, values, errors, autocomplete: 'organization' })}
-    <div class="field">
-      <label for="f-libraryType">${esc(f.libraryType)}<span class="req" aria-hidden="true">*</span></label>
-      <select id="f-libraryType" name="libraryType" required${errors.libraryType ? ' aria-invalid="true"' : ''}>
-        <option value="">${esc(f.choose)}</option>
-        ${typeOptions}
-      </select>
-      ${errors.libraryType ? `<p class="field-error">${esc(errors.libraryType)}</p>` : ''}
-    </div>
+    ${select({ name: 'libraryType', label: f.libraryType, choices: LIBRARY_TYPE_OPTIONS[lang], placeholder: f.choose, required: true, values, errors })}
   </div>
   <div class="grid2">
     ${field({ name: 'city', label: f.city, required: true, values, errors, autocomplete: 'address-level2' })}
+    ${select({ name: 'country', label: f.country, choices: countryChoices, placeholder: f.choose, required: true, autocomplete: 'country', values, errors })}
+  </div>
+  <div class="grid2">
     ${field({ name: 'collectionSize', label: f.collectionSize, values, errors, hint: f.collectionSizeHint, inputmode: 'numeric' })}
+    ${field({ name: 'currentSystem', label: f.currentSystem, values, errors, hint: f.currentSystemHint })}
   </div>
   <div class="grid2">
     ${field({ name: 'contactName', label: f.contactName, required: true, values, errors, autocomplete: 'name' })}
     ${field({ name: 'contactEmail', label: f.contactEmail, type: 'email', required: true, values, errors, autocomplete: 'email' })}
   </div>
-  <div class="grid2">
-    ${field({ name: 'phone', label: f.phone, type: 'tel', values, errors, autocomplete: 'tel', hint: f.optional })}
-    ${field({ name: 'currentSystem', label: f.currentSystem, values, errors, hint: f.currentSystemHint })}
-  </div>
+  ${phoneField({ label: f.phone, hint: f.phoneHint, dialLabel: f.phoneDialCode, dialChoices, values, errors })}
   ${textarea({ name: 'message', label: f.message, values, errors, hint: f.messageHint })}
 
   <div class="hp" aria-hidden="true">
@@ -173,10 +341,10 @@ function applicationForm(c: SiteConfig, o: RenderOptions, lang: Lang): string {
 
 
   <div class="consent">
-    <input type="checkbox" id="f-consent" name="consent" value="yes" required${values.consent === 'yes' ? ' checked' : ''}${errors.consent ? ' aria-invalid="true"' : ''}>
+    <input type="checkbox" id="f-consent" name="consent" value="yes" required${values.consent === 'yes' ? ' checked' : ''}${errors.consent ? ' aria-invalid="true" aria-describedby="f-consent-err"' : ''}>
     <label for="f-consent">${esc(f.consentBefore)}<a href="${localePath(lang, '/privacy')}">${esc(f.consentLink)}</a>${f.consentAfter}<span class="req" aria-hidden="true">*</span></label>
   </div>
-  ${errors.consent ? `<p class="field-error" style="margin-top:-16px;margin-bottom:20px">${esc(errors.consent)}</p>` : ''}
+  ${errors.consent ? `<p class="field-error consent-error" id="f-consent-err">${esc(errors.consent)}</p>` : ''}
 
   <div class="form-actions">
     <button type="submit" class="btn btn--primary btn--lg">${esc(f.submit)}</button>

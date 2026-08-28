@@ -75,6 +75,15 @@ jobs:
       - name: Web imports @libriant/shared by subpath, never the barrel
         run: pnpm check:shared-imports
 
+      # The country list behind the application form's two selects: 243 dial
+      # codes drafted from memory, cross-checked here against ICU for the Greek
+      # and English names and against libphonenumber's metadata for every digit.
+      # A wrong dial code is not a rendering bug — it is a library whose number
+      # nobody can ring, and nothing downstream would ever report it. This ran
+      # only inside `pnpm check:all`, which CI does not call.
+      - name: Country list matches ICU and libphonenumber
+        run: pnpm check:countries
+
       # amtool is run against a COPY with the receiver placeholders substituted,
       # not against the file as committed.
       #

@@ -15,13 +15,20 @@ vi.mock('../config/env.js', () => ({
 // `offerState` counts accepted applications, which is the whole of
 // launch-readiness-11 — the unit suite has no database, so the count is the
 // thing under test's only collaborator here.
-const { applicationCount } = vi.hoisted(() => ({ applicationCount: vi.fn() }));
+const { applicationCount, applicationCreate } = vi.hoisted(() => ({
+  applicationCount: vi.fn(),
+  // `save` is the commit point, and what it puts in the row is worth asserting
+  // there rather than inferring from the columns further downstream.
+  applicationCreate: vi.fn(),
+}));
 vi.mock('@libriant/db-control', () => ({
-  controlDb: { application: { count: applicationCount, update: vi.fn() } },
+  controlDb: {
+    application: { count: applicationCount, create: applicationCreate, update: vi.fn() },
+  },
 }));
 
 import { ERRORS } from '@libriant/site';
-import { ApplicationsService, OFFER_TOTAL } from './applications.service.js';
+import { ApplicationsService, OFFER_TOTAL, dialablePhone } from './applications.service.js';
 
 /**
  * Validation is ported verbatim from the Cloudflare Worker this replaces, and
@@ -56,8 +63,15 @@ const complete = {
   libraryName: 'Δημοτική Βιβλιοθήκη Λάρισας',
   libraryType: 'public',
   city: 'Λάρισα',
+  country: 'GR',
   contactName: 'Μαρία Παπαδοπούλου',
   contactEmail: 'library@example.gr',
+  // An ISO code, not digits. Twenty-five countries share +1, so the dial
+  // `<select>` is valued by country: options that do not distinguish the
+  // answers cannot give the applicant back the one they picked when the form
+  // comes round again. See `phoneField` in apps/site/src/pages.ts.
+  phoneDialCode: 'GR',
+  phone: '2410000000',
   consent: 'yes',
 };
 
@@ -72,11 +86,93 @@ describe('ApplicationsService.validate', () => {
     expect(errors).toEqual({});
   });
 
-  it('requires the five fields the form marks required', () => {
+  it('requires every field the form marks required', () => {
     const { errors } = svc.validate({ consent: 'yes' }, E);
     expect(Object.keys(errors).sort()).toEqual(
-      ['city', 'contactEmail', 'contactName', 'libraryName', 'libraryType'].sort(),
+      [
+        'city',
+        'contactEmail',
+        'contactName',
+        'country',
+        'libraryName',
+        'libraryType',
+        'phone',
+        'phoneDialCode',
+      ].sort(),
     );
+  });
+
+  /**
+   * The country and the phone, which the form now insists on.
+   *
+   * These are the cases that matter most for a public write. `country` and
+   * `phoneDialCode` are `<select>`s on the page and nothing at all on the wire:
+   * this is the only unauthenticated write in the control plane, the submitter
+   * is assumed not to have used the form, and the canonical list in
+   * `@libriant/shared` is the only thing between an arbitrary string and the
+   * `applications` table.
+   */
+  it('asks for a country when none was chosen, and complains only when one was', () => {
+    // The country select opens on an empty «Επιλέξτε…» option, so a real
+    // visitor can submit nothing: "choose one" and "that is not one of them"
+    // are different sentences because they are different mistakes.
+    const { country: _dropped, ...noCountry } = complete;
+    expect(svc.validate(noCountry, E).errors.country).toBe(E.required.country);
+    expect(svc.validate({ ...complete, country: 'XX' }, E).errors.country).toBe(E.badCountry);
+  });
+
+  it('refuses a country that is not on the canonical list', () => {
+    // XK is the interesting one: ICU knows Kosovo, ISO does not assign the
+    // code, and `@libriant/shared` therefore does not offer it. 'Ελλάδα' is the
+    // other shape of the same mistake — a NAME where a code belongs.
+    for (const bogus of ['XX', 'XK', 'gr', 'GRC', 'Ελλάδα', '../../etc/passwd']) {
+      const { errors } = svc.validate({ ...complete, country: bogus }, E);
+      expect(errors.country, JSON.stringify(bogus)).toBe(E.badCountry);
+    }
+  });
+
+  it('accepts a country that is, including ones nobody expected to see here', () => {
+    for (const code of ['GR', 'CY', 'DE', 'TR', 'NZ', 'AX']) {
+      const { errors } = svc.validate({ ...complete, country: code }, E);
+      expect(errors.country, code).toBeUndefined();
+    }
+  });
+
+  it('refuses a dial code that is not a country, the bare digits included', () => {
+    // '30' is what a hand-written submission — or a renderer that forgot — would
+    // guess, and it is exactly what this select does not carry.
+    for (const bogus of ['30', '+30', '999', 'XX', 'gr', '../../etc/passwd']) {
+      const { errors } = svc.validate({ ...complete, phoneDialCode: bogus }, E);
+      expect(errors.phoneDialCode, JSON.stringify(bogus)).toBe(E.badDialCode);
+    }
+  });
+
+  it('refuses an empty dial code outright, since the select cannot produce one', () => {
+    // No `required` entry to fall through to, deliberately: the select carries
+    // no empty option and a native select cannot be cleared, so a blank one did
+    // not come from this form.
+    const { phoneDialCode: _dropped, ...noDial } = complete;
+    expect(svc.validate(noDial, E).errors.phoneDialCode).toBe(E.badDialCode);
+  });
+
+  it('requires a phone number, now that the campaign has to be able to ring back', () => {
+    expect(svc.validate({ ...complete, phone: '  ' }, E).errors.phone).toBe(E.required.phone);
+  });
+
+  it('does not require the dial code to match the country', () => {
+    // Two `<select>`s with no JavaScript between them: a Greek library whose
+    // contact carries a Cypriot mobile must not be told that pair is an error.
+    const { errors } = svc.validate({ ...complete, country: 'GR', phoneDialCode: 'CY' }, E);
+    expect(errors).toEqual({});
+  });
+
+  it('keeps both halves of the phone separate, so a failed form comes back filled in', () => {
+    const { values } = svc.validate({ ...complete, city: '', phoneDialCode: 'CA' }, E);
+    // 'CA', not '1'. Twenty-five countries dial +1 and the select has to
+    // re-open on the one the applicant actually picked.
+    expect(values.phoneDialCode).toBe('CA');
+    expect(values.phone).toBe('2410000000');
+    expect(values.country).toBe('GR');
   });
 
   it('treats consent as given ONLY for the literal "yes"', () => {
@@ -125,6 +221,24 @@ describe('ApplicationsService.validate', () => {
     expect(errors.message).toBe(E.tooLong(4000));
   });
 
+  it('echoes back only what the field can hold, so an oversized body cannot inflate the page', () => {
+    // 100KB in — body-parser's default, and the biggest thing that can reach
+    // here — must not become a 100KB value re-rendered into the response on a
+    // path the throttle deliberately does not meter.
+    const { values, errors } = svc.validate({ ...complete, message: 'x'.repeat(100_000) }, E);
+    expect(errors.message).toBe(E.tooLong(4000));
+    expect(values.message).toHaveLength(4000);
+  });
+
+  it('never truncates a list-checked field into a valid one', () => {
+    // 'GRC' capped to 2 would be 'GR' — a real country, which would flip the
+    // message from "choose one of the available countries" to "too long" and
+    // echo the form back with Greece selected by nobody.
+    const { values, errors } = svc.validate({ ...complete, country: 'GRC' }, E);
+    expect(errors.country).toBe(E.badCountry);
+    expect(values.country).toBe('GRC');
+  });
+
   it('trims values, so whitespace alone is not an answer', () => {
     const { values, errors } = svc.validate({ ...complete, city: '   ' }, E);
     expect(values.city).toBe('');
@@ -136,6 +250,111 @@ describe('ApplicationsService.validate', () => {
     // exactly why this does not use it.
     const { errors } = svc.validate({ ...complete, website: 'http://spam.example' }, E);
     expect(errors).toEqual({});
+  });
+
+  // The half of the requiredness contract a type cannot reach.
+  //
+  // `RequiredField` (apps/site/src/copy.ts) makes el and en agree at compile
+  // time, but it lives in a different package from `MAX_LEN`, which is what
+  // decides that a field is read off the submission at all. A name required
+  // there and absent here is never populated, so `!values[key]` is always true:
+  // the error is set on every submission, renders against no control because no
+  // input carries that name, and the only unauthenticated write in the product
+  // becomes permanently unsubmittable behind "check the fields marked below"
+  // with nothing marked. Both languages, because both are served.
+  it.each(['el', 'en'] as const)(
+    'collects every field %s declares required, so none can be unsatisfiable',
+    (lang) => {
+      const messages = ERRORS[lang];
+      const { errors } = svc.validate({ ...complete }, messages);
+      // `complete` answers every required field. Anything still failing is a
+      // key the service never reads.
+      expect(errors).toEqual({});
+      // And the two languages require the same set, which is what makes
+      // /en/apply as strict as /apply.
+      expect(Object.keys(messages.required).sort()).toEqual(Object.keys(ERRORS.el.required).sort());
+    },
+  );
+});
+
+/**
+ * The commit point, and the one decision here that is about shape rather than
+ * validity: the two halves of the phone are joined on the way in.
+ */
+describe('ApplicationsService.save', () => {
+  beforeEach(() => {
+    applicationCreate.mockReset();
+    applicationCreate.mockResolvedValue({ id: 'app-1' });
+  });
+
+  it('round-trips a complete application into the row the admin panel reads', async () => {
+    const { svc } = makeService();
+    const parsed = svc.validate(complete, E);
+    expect(parsed.errors).toEqual({});
+
+    await expect(svc.save(parsed, '2026-08-01')).resolves.toBe('app-1');
+
+    const data = applicationCreate.mock.calls[0]?.[0]?.data as Record<string, unknown>;
+    expect(data.country).toBe('GR');
+    // One column, dialable. The panel renders this straight into
+    // `<a href="tel:…">`, so a bare '2410000000' here is a lead nobody outside
+    // Greece can ring.
+    expect(data.phone).toBe('+30 2410000000');
+    expect(data.contactEmail).toBe('library@example.gr');
+    expect(data.consent).toBe(true);
+    expect(data.privacyVersion).toBe('2026-08-01');
+  });
+
+  it('stores the code and never the label — CLDR renames the labels', async () => {
+    const { svc } = makeService();
+    await svc.save(svc.validate({ ...complete, country: 'TR' }, E), '2026-08-01');
+    const data = applicationCreate.mock.calls[0]?.[0]?.data as Record<string, unknown>;
+    expect(data.country).toBe('TR');
+  });
+});
+
+describe('dialablePhone', () => {
+  it('turns the chosen country into its digits and puts them in front', () => {
+    expect(dialablePhone({ phoneDialCode: 'GR', phone: '2410000000' })).toBe('+30 2410000000');
+    // Two different answers that dial the same code — the whole reason the
+    // select carries countries rather than digits.
+    expect(dialablePhone({ phoneDialCode: 'CA', phone: '4165550000' })).toBe('+1 4165550000');
+    expect(dialablePhone({ phoneDialCode: 'US', phone: '4165550000' })).toBe('+1 4165550000');
+  });
+
+  it('leaves the national part alone, punctuation and all', () => {
+    // Tidying it would turn an extension into four more digits of phone number,
+    // and dropping a leading trunk zero is right for the UK and wrong for
+    // Italy. Neither is ours to decide about someone else's number.
+    expect(dialablePhone({ phoneDialCode: 'GR', phone: '2410 000 000 (εσωτ. 12)' })).toBe(
+      '+30 2410 000 000 (εσωτ. 12)',
+    );
+    expect(dialablePhone({ phoneDialCode: 'IT', phone: '06 1234567' })).toBe('+39 06 1234567');
+  });
+
+  it('does not prefix a number the applicant already wrote in full', () => {
+    // The hint asks for the code in the select, and people type it anyway.
+    // '+30 +357 99123456' is not a number anyone can ring — and typing the
+    // code is also the only way to give a number whose country is not the one
+    // the select happens to be showing.
+    expect(dialablePhone({ phoneDialCode: 'GR', phone: '+357 99123456' })).toBe('+357 99123456');
+    expect(dialablePhone({ phoneDialCode: 'GR', phone: '+30 2410000000' })).toBe('+30 2410000000');
+    // Still trimmed, so a stray leading space does not defeat the check.
+    expect(dialablePhone({ phoneDialCode: 'GR', phone: '  +44 20 7123 4567' })).toBe(
+      '+44 20 7123 4567',
+    );
+  });
+
+  it('is empty when there is no number, so nothing stores a bare "+30"', () => {
+    expect(dialablePhone({ phoneDialCode: 'GR' })).toBe('');
+    expect(dialablePhone({ phoneDialCode: 'GR', phone: '   ' })).toBe('');
+  });
+
+  it('falls back to the bare number when the code is missing or unknown', () => {
+    // Unreachable through `validate`, which refuses both. A number with no
+    // country in front of it still beats no number at all for whoever rings.
+    expect(dialablePhone({ phone: '2410000000' })).toBe('2410000000');
+    expect(dialablePhone({ phoneDialCode: 'XX', phone: '2410000000' })).toBe('2410000000');
   });
 });
 
@@ -355,8 +574,10 @@ describe('ApplicationsService.notify', () => {
       values: {
         libraryName: 'Δημοτική Βιβλιοθήκη Λάρισας',
         city: 'Λάρισα',
+        country: 'GR',
         contactName: 'Μαρία Παπαδοπούλου',
         contactEmail: 'library@example.gr',
+        phoneDialCode: 'GR',
         phone: '2410000000',
       },
       errors: {},
@@ -374,5 +595,26 @@ describe('ApplicationsService.notify', () => {
     expect(line).not.toContain('Μαρία');
     expect(line).not.toContain('library@example.gr');
     expect(line).not.toContain('2410000000');
+  });
+
+  it('gives the operator a country they can read and a number they can dial', async () => {
+    const { svc, email } = makeService();
+    await svc.notify('app-123', {
+      values: {
+        libraryName: 'Δημοτική Βιβλιοθήκη Λάρισας',
+        city: 'Λάρισα',
+        country: 'CY',
+        contactName: 'Μαρία Παπαδοπούλου',
+        contactEmail: 'library@example.gr',
+        phoneDialCode: 'CY',
+        phone: '22000000',
+      },
+      errors: {},
+    });
+    const body = String(email.enqueue.mock.calls[0]?.[0]?.bodyMarkdown);
+    // The message is Greek throughout because the operator is; a bare 'CY' in
+    // the middle of it is a code they would have to go and look up.
+    expect(body).toContain('Κύπρος');
+    expect(body).toContain('+357 22000000');
   });
 });

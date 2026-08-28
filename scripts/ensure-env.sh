@@ -192,6 +192,21 @@ ensure_default PUBLIC_HOST app.libriant.com
 ensure_default SITE_HOST libriant.com
 ensure_default PUBLIC_APEX_DOMAIN libriant.com
 ensure_default ADMIN_HOST admin.libriant.com
+# Hostnames are compared as literal strings in places that cannot lowercase them
+# for us, so lowercase them once, here.
+#
+# The application form's edge gate is `not header Origin https://{$SITE_HOST}` —
+# a byte comparison against a header the browser always sends lowercased. An
+# operator who types SITE_HOST=Libriant.com would 403 every real submission at
+# the edge while the API, which lowercases in its constructor, would have
+# accepted them: the entire launch funnel down, with `pnpm check:caddy` and
+# every other gate still green, and nothing in the logs saying why.
+for _h in PUBLIC_HOST SITE_HOST PUBLIC_APEX_DOMAIN ADMIN_HOST; do
+  _v="$(getv "${_h}")"
+  _l="$(printf '%s' "${_v}" | tr '[:upper:]' '[:lower:]')"
+  [ "${_v}" = "${_l}" ] || { setv "${_h}" "${_l}"; echo "  lowercased ${_h}=${_l}"; }
+done
+unset _h _v _l
 ensure_default ACME_EMAIL ops@libriant.com
 ensure_default IMAGE_TAG latest
 ensure_default COMPOSE_PROJECT_NAME libriant

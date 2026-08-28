@@ -12,6 +12,7 @@ import {
   FormField,
   Input,
 } from '@libriant/ui';
+import { findCountry } from '@libriant/shared/countries';
 import { ApiError, api } from '@/lib/api';
 
 export type ApplicationStatus = 'new' | 'contacted' | 'accepted' | 'rejected';
@@ -22,6 +23,7 @@ export type Application = {
   libraryName: string;
   libraryType: string;
   city: string;
+  country: string | null;
   contactName: string;
   contactEmail: string;
   phone: string | null;
@@ -195,6 +197,21 @@ export function ApplicationsClient({
                     </td>
                   </tr>
                   <tr>
+                    <th scope="row">Where</th>
+                    {/* The applicant is required to name a country, so it is
+                        shown. It was collected and rendered nowhere: the CSV
+                        export had it and this panel — the surface an operator
+                        actually reads before putting a library on a Data
+                        Processing Agreement — did not. Named in Greek, because
+                        that is the language of the panel's readers and of the
+                        libraries applying. Null only for rows stored before
+                        the field existed. */}
+                    <td>
+                      {a.city}
+                      {a.country ? ` · ${findCountry(a.country)?.el ?? a.country}` : ''}
+                    </td>
+                  </tr>
+                  <tr>
                     <th scope="row">Library</th>
                     <td>
                       {a.libraryType}
@@ -262,8 +279,8 @@ export function ApplicationsClient({
   --paid-until=${a.reviewedAt ? twelveMonthsAfter(a.reviewedAt) : '<twelve months out>'}`}
                 </pre>
                 <p style={{ color: muted, fontSize: 'var(--fs-xs)', margin: 0 }}>
-                  Twelve months from the day you gave them the place. See docs/billing-go-live.md
-                  for the library that has already signed itself up.
+                  Twelve months from the day you gave them the place. See docs/RUNBOOK.md §6.6 for
+                  the library that has already signed itself up.
                 </p>
               </div>
             ) : null}

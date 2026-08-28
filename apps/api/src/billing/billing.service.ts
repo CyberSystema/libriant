@@ -1950,7 +1950,7 @@ export class BillingService {
    * success on the seed data it existed to catch.
    *
    * This is the check that can fail. It is read-only, it names every problem in
-   * plain language, and it is what `docs/billing-go-live.md` now points the
+   * plain language, and it is what `docs/RUNBOOK.md` §4.3c points the
    * operator at.
    *
    * Amounts are compared as integers throughout — Stripe reports minor units

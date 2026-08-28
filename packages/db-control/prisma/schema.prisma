@@ -1077,8 +1077,19 @@ model Application {
   libraryName  String
   libraryType  LibraryType
   city         String
+  /// ISO 3166-1 alpha-2 from the canonical list in `@libriant/shared` — the
+  /// code, not the label, because CLDR renames the labels (Turkey → Türkiye)
+  /// and two rows written a year apart would then disagree about one place.
+  /// Nullable and deliberately not backfilled: rows taken before the form asked
+  /// have no country, and 'GR' would be a fact nobody ever told us.
+  country      String?
   contactName  String
   contactEmail String      @db.Citext
+  /// The number as the applicant typed it, behind the dial code they chose:
+  /// `+30 2410000000`. One column and not two — see `dialablePhone` in
+  /// applications.service.ts for who would otherwise have to join them back up.
+  /// Rows taken before the form required one hold a bare national number, or
+  /// nothing; nullable for the same reason `country` is.
   phone        String?
 
   collectionSize String?

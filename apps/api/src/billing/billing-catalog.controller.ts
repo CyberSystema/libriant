@@ -23,7 +23,7 @@ import { BillingService } from './billing.service.js';
  *
  * This is read-only and owner-gated, it costs one Stripe `prices.retrieve` per
  * DISTINCT id in the catalogue (memoised, so a duplicated id is one call), and
- * it is the check `docs/billing-go-live.md` now sends the operator to. It
+ * it is the check `docs/RUNBOOK.md` §4.3c sends the operator to. It
  * reports `ok:false` with a plain-language reason per plan, so it can FAIL —
  * which is the property the old check lacked.
  *

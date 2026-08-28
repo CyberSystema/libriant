@@ -12,5 +12,12 @@
  */
 
 export { renderIndex, type FieldErrors, type FieldValues, type RenderOptions } from './pages.js';
-export { LIBRARY_TYPE_OPTIONS, HOME, FORM, ERRORS, LIBRARY_TYPE_VALUES } from './copy.js';
+export {
+  LIBRARY_TYPE_OPTIONS,
+  HOME,
+  FORM,
+  ERRORS,
+  LIBRARY_TYPE_VALUES,
+  type RequiredField,
+} from './copy.js';
 export { localePath, basePath, type Lang, type SiteConfig } from './shell.js';

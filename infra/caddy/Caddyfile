@@ -93,10 +93,20 @@
 
 (site_headers) {
 	header {
+		# `includeSubDomains` is load-bearing beyond the wildcard it was added
+		# for: the `www.` block at the bottom of this file is two lines of
+		# redirect and emits NO headers of its own, so www.libriant.com has no
+		# HSTS policy except the one it inherits through this token. Dropping it
+		# would take HSTS off that host with nothing failing anywhere —
+		# scripts/check-caddy.mjs asserts it stays.
 		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
+		# Inert on this vhost — nothing here can call getUserMedia or
+		# geolocation because nothing here runs. Kept for the day a page on this
+		# host is served by something other than file_server, and because an
+		# absent Permissions-Policy reads as an oversight rather than a decision.
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 		# The marketing site ships zero JavaScript and fetches nothing from
 		# anywhere, so it can afford a CSP the app cannot. `security_headers`
@@ -104,9 +114,61 @@
 		# than an import of it — reusing that one would silently drop
 		# form-action, frame-ancestors and base-uri on the page that carries the
 		# application form.
-		# 'unsafe-inline' in style-src is required: pages.ts emits two style
-		# attributes. script-src stays 'none'.
+		#
+		# THE THREE THAT CARRY THIS POLICY are base-uri, form-action and
+		# frame-ancestors, because they are the only directives here that do NOT
+		# fall back to default-src: remove any one of them and it is simply gone,
+		# where removing img-src or connect-src just re-inherits 'self'. On the
+		# page that carries the application form they mean, in order: an injected
+		# <base> cannot re-point the form's relative action; the form cannot be
+		# made to POST an applicant's name, email and telephone number to another
+		# origin; and no page anywhere can frame this one to overlay it.
+		#
+		# 'unsafe-inline' in style-src is required: pages.ts emits a small number
+		# of `style="…"` attributes (three today). Splitting it into
+		# `style-src 'self'; style-src-attr 'unsafe-inline'` would be tighter on
+		# paper and was rejected — a browser that predates style-src-attr falls
+		# back to style-src, loses 'unsafe-inline', and drops those attributes,
+		# which is a cosmetic regression on the error page in exchange for
+		# blocking an injected <style> block that could not do anything anyway
+		# (img-src 'self' blocks the external load every CSS exfiltration needs).
+		# script-src stays 'none'.
+		#
+		# CONSIDERED AND NOT ADDED, so the next audit does not re-open them:
+		#   object-src 'none' — default-src leaves it at 'self'. Everything it
+		#     would block is already inert: there are no plugins in a 2026
+		#     browser, an <object data="/…" type="text/html"> loads a same-origin
+		#     document that gets THIS policy (script-src 'none') from its own
+		#     response, and the nested browsing context it opens is refused by
+		#     frame-ancestors 'none'.
+		#   frame-src 'none' — default-src leaves it at 'self', and a 'self'
+		#     frame is then refused by the framed response's own
+		#     frame-ancestors 'none'. Strictly redundant.
+		#   worker-src 'self' — worth spelling out because it looks like a bug.
+		#     /sw.js is a REAL service worker (it exists to evict the app-era
+		#     worker that still controls navigations on this origin), and
+		#     worker-src falls back through child-src to script-src 'none', so
+		#     this policy nominally forbids the one script the origin must run.
+		#     It is still right: nothing here can call register(), so the only
+		#     way that worker installs is the browser's soft update of the
+		#     EXISTING registration, and that job carries no client — there is no
+		#     document policy for it to be checked against. Read off the spec,
+		#     not off a running browser, because there is neither Docker nor a
+		#     browser on the machine this was written on; if a stale app-era
+		#     worker is ever observed surviving on this origin, this line is the
+		#     first thing to re-test.
 		Content-Security-Policy "default-src 'self'; script-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+		# NO Cross-Origin-Opener-Policy, Cross-Origin-Resource-Policy or
+		# Access-Control-Allow-Origin here, and each absence is a decision.
+		# COOP severs an opener's handle on our window — this page has no script
+		# and no per-visitor state for that handle to reach, and frame-ancestors
+		# already covers the framing half. CORP stops other origins loading our
+		# responses as subresources; every byte on this vhost is public marketing
+		# copy, so that is a hotlinking control, not a security one. CORS is the
+		# one that would actively hurt: POST /apply is the only unauthenticated
+		# write in the control plane, and an Access-Control-Allow-Origin is
+		# precisely what would let another origin's JavaScript drive it and read
+		# the answer. check-caddy.mjs fails if one appears.
 		-Server
 	}
 }
@@ -487,6 +549,56 @@ http:// {
 			# they key nothing on the client and they are the pages that must stay
 			# readable when everything else is down. Anything reaching api:3001 is.
 			import origin_guard apply
+
+			# A POST here must carry this site's own Origin.
+			#
+			# form-action 'self' above constrains where OUR page may post; it says
+			# nothing about where a post may come FROM, and this endpoint is the
+			# only unauthenticated write in the control plane. Every browser has
+			# sent `Origin` on a form-navigation POST since the three engines
+			# aligned on the Fetch Standard, which appends it to any request whose
+			# method is not GET or HEAD — so the real form is unaffected, a form on
+			# evil.example arrives as `Origin: https://evil.example` and is
+			# refused, and a page that suppresses the referrer
+			# (`referrerpolicy="no-referrer"`, a `data:` frame) arrives as the
+			# literal `Origin: null` and is refused the same way. There is no
+			# browser path that submits here with no Origin at all.
+			#
+			# What is left is the scripted POST — curl, requests, a form-spam
+			# crawler — which sends none and is now refused at the edge. Be honest
+			# about the size of that: anyone who reads this 403 once adds
+			# `-H 'Origin: …'` and is through in a minute. It is worth doing anyway
+			# because of WHERE it sits. The API's per-IP throttle deliberately runs
+			# AFTER validation ("an honest typo should not burn someone's hourly
+			# budget", applications.controller.ts), so a deliberately-INVALID
+			# submission is counted by nothing at all — and each one still costs a
+			# control-plane query for the offer state plus a full server-side
+			# render of the home page. Stock Caddy has no rate-limit module
+			# (infra/caddy/Dockerfile builds from caddy:2-alpine, unmodified), so a
+			# string comparison on one header is the whole budget available here,
+			# and it takes that unmetered work away from every bot that cannot be
+			# bothered.
+			#
+			# The API applies the same rule on its own account — see
+			# BROWSER_ONLY_PATHS in apps/api/src/platform/origin-check.middleware.ts
+			# — because this vhost is not the only way to reach the handler:
+			# app.libriant.com/lbr-api/apply proxies to it too, and a rule enforced
+			# in one of two places is the /webhooks/* shape again.
+			# scripts/check-caddy.mjs asserts the two path lists stay identical.
+			@apply_forged_origin {
+				method POST
+				not header Origin https://{$SITE_HOST:libriant.com}
+			}
+			# The body names no host on purpose. `{$SITE_HOST}` substitutes
+			# reliably in the bare matcher token above; whether Caddy expands it
+			# INSIDE a quoted string is a version-dependent detail this
+			# workstation cannot test (no caddy binary, no Docker), and the
+			# failure mode would be a public 403 reading the placeholder back at
+			# the reader. Greek first, then English, because both halves of this
+			# site are first-class and whoever reads this had a reason to be here.
+			header @apply_forged_origin Content-Type "text/plain; charset=utf-8"
+			respond @apply_forged_origin "Οι αιτήσεις γίνονται δεκτές μόνο μέσα από τη φόρμα στον ιστότοπο του Libriant. — Applications are accepted only through the form on the Libriant website." 403
+
 			reverse_proxy api:3001 {
 				# reliability-21, see the app host. This one is a form POST: a
 				# library filling in the application form during a deploy got a 502
@@ -496,6 +608,19 @@ http:// {
 				lb_try_interval 250ms
 				fail_duration 2s
 				max_fails 3
+				# The static handlers below carry max-age=300 and the catch-all
+				# carries must-revalidate; the redirects have no body to cache.
+				# That left this as the only route on the vhost returning a PAGE
+				# with no cache directive at all — and it is the page that carries
+				# a named librarian's email address and telephone number back to
+				# them: a failed submission comes back as the real page
+				# with the visitor's answers still in it, and a library's browser
+				# or its institution's proxy is the last place that should keep a
+				# copy. `header_down` rather than a plain `header` because
+				# reverse_proxy copies upstream response headers with Add, so a
+				# site-level `header` would APPEND to the no-store the offer-closed
+				# notice already sets rather than replace it.
+				header_down Cache-Control "no-store"
 			}
 		}
 	}

@@ -236,16 +236,30 @@ export const HOME: Record<Lang, HomeCopy> = {
 
 type FormCopy = {
   errorTitle: string;
+  /**
+   * What the `*` means. The marker is `aria-hidden` (the `required` attribute
+   * already tells assistive tech), so this sentence is for the sighted visitor
+   * who does not know the convention — WCAG 3.3.2, and there are seven starred
+   * fields now.
+   */
+  requiredNote: string;
   libraryName: string;
   libraryType: string;
   choose: string;
   city: string;
+  country: string;
   collectionSize: string;
   collectionSizeHint: string;
   contactName: string;
   contactEmail: string;
   phone: string;
-  optional: string;
+  phoneHint: string;
+  /**
+   * Names the dial-code `<select>` for a screen reader. It has no visible label
+   * of its own — the pair is labelled once, by the phone field's label — so
+   * without this the control announces as an unnamed list of 243 options.
+   */
+  phoneDialCode: string;
   currentSystem: string;
   currentSystemHint: string;
   message: string;
@@ -264,16 +278,19 @@ type FormCopy = {
 export const FORM: Record<Lang, FormCopy> = {
   el: {
     errorTitle: 'Η αίτηση δεν στάλθηκε.',
+    requiredNote: 'Τα πεδία με * είναι υποχρεωτικά.',
     libraryName: 'Όνομα βιβλιοθήκης',
     libraryType: 'Τύπος βιβλιοθήκης',
     choose: 'Επιλέξτε…',
     city: 'Πόλη / δήμος',
+    country: 'Χώρα',
     collectionSize: 'Περίπου πόσοι τίτλοι;',
     collectionSizeHint: 'Μια χονδρική εκτίμηση αρκεί.',
     contactName: 'Το όνομά σας',
     contactEmail: 'Email επικοινωνίας',
     phone: 'Τηλέφωνο',
-    optional: 'Προαιρετικό.',
+    phoneHint: 'Σταθερό ή κινητό. Ο κωδικός χώρας επιλέγεται χωριστά, στο πεδίο πριν τον αριθμό.',
+    phoneDialCode: 'Κωδικός κλήσης χώρας',
     currentSystem: 'Τι χρησιμοποιείτε σήμερα;',
     currentSystemHint: 'π.χ. ΑΒΕΚΤ, Koha, φύλλο Excel, χειρόγραφο αρχείο — ή τίποτα ακόμη.',
     message: 'Θέλετε να μας πείτε κάτι άλλο;',
@@ -293,16 +310,20 @@ export const FORM: Record<Lang, FormCopy> = {
   },
   en: {
     errorTitle: 'The application was not sent.',
+    requiredNote: 'Fields marked * are required.',
     libraryName: 'Library name',
     libraryType: 'Type of library',
     choose: 'Choose…',
     city: 'Town or municipality',
+    country: 'Country',
     collectionSize: 'Roughly how many titles?',
     collectionSizeHint: 'A rough estimate is enough.',
     contactName: 'Your name',
     contactEmail: 'Contact email',
     phone: 'Phone',
-    optional: 'Optional.',
+    phoneHint:
+      'Landline or mobile. The country code is chosen separately, in the field before the number.',
+    phoneDialCode: 'Country dialling code',
     currentSystem: 'What do you use today?',
     currentSystemHint: 'e.g. ABEKT, Koha, an Excel sheet, a paper register — or nothing yet.',
     message: 'Anything else you would like to tell us?',
@@ -402,11 +423,49 @@ export const LIBRARY_TYPE_VALUES: ReadonlySet<string> = new Set(
   LIBRARY_TYPE_OPTIONS.el.map((o) => o.value),
 );
 
+/**
+ * The fields a submission must carry — the list, in one place, in one language.
+ *
+ * `ErrorCopy.required` is what the API actually walks to decide what is
+ * required, and it used to be a `Record<string, string>` written out once per
+ * language. That made requiredness a per-locale decision that nothing checked:
+ * `Record<string, string>` cannot notice a key missing from one side,
+ * `pnpm check:translations` only reads `locales/*` and never this file, and no
+ * test asserted the two agreed. Dropping `phone` from the English map alone
+ * would have left `POST /en/apply` quietly accepting applications with no phone
+ * number — the whole point of the field — with every gate still green, and a
+ * hostile submitter simply picks the weaker locale. Mistyping a key was worse:
+ * `contry` is never populated, so its error is always set and renders against
+ * no control, and the only unauthenticated write in the product becomes
+ * permanently unsubmittable.
+ *
+ * As a union it is language-independent by construction, and a missing
+ * translation is a typecheck failure. `phoneDialCode` is deliberately not here:
+ * its `<select>` opens on a country and a native select cannot be cleared, so
+ * an empty one is a malformed submission rather than an answer a visitor can
+ * get wrong — the API answers it with `badDialCode` instead.
+ *
+ * Adding a name here is half the change; the API must also collect the field
+ * (`MAX_LEN` in applications.service.ts). applications.service.spec.ts asserts
+ * that other half, which a type cannot reach across the package boundary.
+ */
+export type RequiredField =
+  'libraryName' | 'libraryType' | 'city' | 'country' | 'contactName' | 'contactEmail' | 'phone';
+
 type ErrorCopy = {
-  required: Record<string, string>;
+  /** See {@link RequiredField}: a field is required exactly when it is in this map. */
+  required: Record<RequiredField, string>;
   tooLong: (max: number) => string;
   badEmail: string;
   badType: string;
+  /**
+   * The two country `<select>`s carry an ISO code, and a select guarantees the
+   * server nothing — anyone can post whatever they like to `/apply`. Rendered
+   * by the API when a submitted code is not one the list offers, exactly as
+   * {@link ErrorCopy.badType} is for `libraryType`.
+   */
+  badCountry: string;
+  badDialCode: string;
   consent: string;
   invalidSubmission: string;
   checkFields: string;
@@ -421,12 +480,16 @@ export const ERRORS: Record<Lang, ErrorCopy> = {
       libraryName: 'Συμπληρώστε το όνομα της βιβλιοθήκης.',
       libraryType: 'Επιλέξτε τύπο βιβλιοθήκης.',
       city: 'Συμπληρώστε την πόλη ή τον δήμο.',
+      country: 'Επιλέξτε τη χώρα της βιβλιοθήκης.',
       contactName: 'Συμπληρώστε το όνομά σας.',
       contactEmail: 'Συμπληρώστε ένα email επικοινωνίας.',
+      phone: 'Συμπληρώστε ένα τηλέφωνο επικοινωνίας.',
     },
     tooLong: (max) => `Το πεδίο είναι πολύ μεγάλο (έως ${max} χαρακτήρες).`,
     badEmail: 'Το email δεν φαίνεται σωστό. Ελέγξτε το και δοκιμάστε ξανά.',
     badType: 'Επιλέξτε έναν από τους διαθέσιμους τύπους.',
+    badCountry: 'Επιλέξτε μία από τις διαθέσιμες χώρες.',
+    badDialCode: 'Επιλέξτε έναν από τους διαθέσιμους κωδικούς κλήσης.',
     consent: 'Επιβεβαιώστε ότι διαβάσατε την Πολιτική Απορρήτου.',
     invalidSubmission: 'Μη έγκυρη υποβολή.',
     checkFields: 'Ελέγξτε τα πεδία που σημειώνονται παρακάτω και δοκιμάστε ξανά.',
@@ -440,12 +503,16 @@ export const ERRORS: Record<Lang, ErrorCopy> = {
       libraryName: 'Enter the name of your library.',
       libraryType: 'Choose a type of library.',
       city: 'Enter your town or municipality.',
+      country: 'Choose the country your library is in.',
       contactName: 'Enter your name.',
       contactEmail: 'Enter a contact email address.',
+      phone: 'Enter a contact phone number.',
     },
     tooLong: (max) => `This field is too long (up to ${max} characters).`,
     badEmail: 'That email address does not look right. Check it and try again.',
     badType: 'Choose one of the available types.',
+    badCountry: 'Choose one of the available countries.',
+    badDialCode: 'Choose one of the available dialling codes.',
     consent: 'Please confirm that you have read the Privacy Policy.',
     invalidSubmission: 'That submission was not valid.',
     checkFields: 'Check the fields marked below and try again.',

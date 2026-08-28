@@ -487,13 +487,23 @@ describe('privacy-legal-05 — retention sweep', () => {
     const res = await request(app.getHttpServer())
       .post('/apply')
       .set('X-Real-IP', `203.0.113.${Math.floor(Math.random() * 200) + 1}`)
+      // A librarian's browser sends this, and OriginCheckMiddleware now requires
+      // it on /apply: the form has no non-browser caller, so a missing Origin
+      // there is a script rather than a visitor. Without it this reads 403 and
+      // the spec proves nothing about the sweep.
+      .set('Origin', `https://${process.env.SITE_HOST}`)
       .type('form')
       .send({
         libraryName: `Notify ${tag}`,
         libraryType: 'school',
         city: 'Καρδίτσα',
+        // Both are required now, and `phoneDialCode` carries the ISO country
+        // code rather than the digits — the API composes '+30 2441000000' from
+        // it. A submission missing either is a 400, not a stored row.
+        country: 'GR',
         contactName: 'Ελένη Παππά',
         contactEmail: email,
+        phoneDialCode: 'GR',
         phone: '2441000000',
         message: 'Ενδιαφερόμαστε για τη σχολική μας βιβλιοθήκη.',
         consent: 'yes',
