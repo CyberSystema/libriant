@@ -236,6 +236,23 @@ Description=Libriant origin lockdown (Cloudflare-only 80/443, v4 + v6)
 # built it, so this must run after Docker - not just after the network.
 After=docker.service
 Requires=docker.service
+# PartOf is what makes this survive a DOCKER RESTART, not just a reboot.
+#
+# dockerd FLUSHES and rebuilds DOCKER-USER every time it starts, which takes the
+# LIBRIANT-ORIGIN jump with it. This unit is Type=oneshot + RemainAfterExit=yes,
+# so systemd already considers it "active" and, without PartOf, has no reason to
+# run it again - the rules are gone and the unit still reports active. The origin
+# then accepts traffic from anywhere on 80/443 while `systemctl status` says the
+# lockdown is on, which is the worst shape a security control can take.
+#
+# It is not a rare event: `apt-get upgrade` of docker-ce restarts the daemon, and
+# unattended-upgrades can do it at 06:00 without anyone present.
+#
+# PartOf propagates STOP and RESTART from docker.service (never start - that is
+# what WantedBy above is for), and After= keeps the ordering inside the same
+# transaction, so on `systemctl restart docker` this re-runs once dockerd is back
+# and has rebuilt its own chains.
+PartOf=docker.service
 
 [Service]
 Type=oneshot

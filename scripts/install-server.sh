@@ -4739,9 +4739,11 @@ docker_daemon_json_restart_warning() {
   warn "$1"
   printf '         systemctl restart docker\n'
   printf '         %s --only firewall\n' "$SELF"
-  warn "the second line is not optional: dockerd rebuilds DOCKER-USER on start, and"
-  warn "libriant-origin-firewall.service is Type=oneshot RemainAfterExit=yes with no"
-  warn "PartOf=docker.service, so systemd will NOT re-apply the lockdown by itself."
+  warn "dockerd rebuilds DOCKER-USER on start, taking the LIBRIANT-ORIGIN jump with it."
+  warn "The unit carries PartOf=docker.service and re-applies itself — but only if it was"
+  warn "INSTALLED with that line; it is written into the unit file, not read from this repo."
+  warn "Check:  systemctl show libriant-origin-firewall -p PartOf"
+  warn "An empty answer means re-run --firewall-install-unit before you restart docker."
   warn "Restarting docker stops every container on this box — do it deliberately."
 }
 

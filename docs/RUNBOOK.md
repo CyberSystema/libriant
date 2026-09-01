@@ -1402,10 +1402,20 @@ sudo systemctl restart docker
 sudo bash install-server.sh --only firewall   # NOT optional — see below
 ```
 
-The second line is not optional: dockerd rebuilds `DOCKER-USER` on start, and
-`libriant-origin-firewall.service` is `Type=oneshot` / `RemainAfterExit=yes` with
-no `PartOf=docker.service`, so systemd will **not** re-apply the lockdown after a
-manual `docker` restart and the DNAT path sits unfiltered until you do.
+The second line is belt and braces rather than the load-bearing step it used to
+be. dockerd rebuilds `DOCKER-USER` on start, taking the `LIBRIANT-ORIGIN` jump
+with it, and `libriant-origin-firewall.service` is `Type=oneshot` /
+`RemainAfterExit=yes` — so systemd considered it already active and had no
+reason to run it again. The unit now carries `PartOf=docker.service`, which
+propagates docker's restart to it, so the lockdown re-applies by itself once
+dockerd is back and has rebuilt its chains.
+
+> A unit installed before 2026-09-02 does **not** have that line: `PartOf` is
+> written into the unit file at install time, so an existing box keeps the old
+> one until you re-run `--firewall-install-unit`. Check with
+> `systemctl show libriant-origin-firewall -p PartOf`; an empty answer means run
+> `sudo bash scripts/prod-bootstrap.sh --firewall-install-unit` once, then
+> verify externally per §5.7 — from a machine with working IPv6.
 
 ```bash
 sudo install -m 0755 -d /etc/apt/keyrings
