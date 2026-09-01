@@ -335,9 +335,11 @@ deploy_monitoring() {
   #   1. no [PLACEHOLDER] left in the CONFIG. Comments stripped before the grep:
   #      the file's own header explains what a [PLACEHOLDER: …] is, and matching
   #      that sentence kept the profile off even with the receivers filled in.
-  #      That still matters — the `watchdog` receiver is deliberately left open
-  #      and its explanation carries the marker — and it is why the marker now
-  #      lives in a comment there rather than inside a URL.
+  #      That still matters — alertmanager.yml's header explains what a
+  #      [PLACEHOLDER: …] is, in prose — and it is why the marker lives in a
+  #      comment there rather than inside a URL. The `watchdog` receiver is no
+  #      longer one of them: it reads `url_file` like `default`, and its URL is
+  #      materialised below from WATCHDOG_PING_URL.
   #
   #   2. an ntfy topic to post to. `default` reads its URL from a file in the
   #      alertmanager_data volume (see alertmanager.yml), and this script is what
@@ -490,15 +492,6 @@ deploy_monitoring() {
     printf '  Fix that and re-run this script.\033[0m\n\n'
   fi
 
-  # SAID ON EVERY DEPLOY, in both states, because it is true in both. The
-  # Watchdog fires once a minute for ever and its receiver drops it: ntfy is
-  # push-only and cannot serve a switch whose entire signal is SILENCE. Until an
-  # external dead-man service holds it, a broken alerting pipeline still looks
-  # exactly like a quiet night — which is the one failure alerting cannot report
-  # about itself.
-  printf '\033[33m  ! the Watchdog (dead man'"'"'s switch) still reaches nobody. It needs an\n'
-  printf '    external service that alerts on SILENCE — healthchecks.io or similar.\n'
-  printf '    infra/monitoring/alertmanager.yml, receiver `watchdog`, says how.\033[0m\n'
 }
 
 echo "  commit    $(git rev-parse --short=12 HEAD)  $(git log -1 --format=%s | cut -c1-60)"
