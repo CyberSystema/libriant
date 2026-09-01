@@ -152,15 +152,26 @@ receivers:
   # the same place as real alerts makes a broken pipeline look like a quiet
   # night. `pnpm check:alerts` asserts that they differ.
   #
-  # To close it, once the external check exists, mirror `default`:
-  #     webhook_configs:
-  #       - url_file: /alertmanager/watchdog-url
-  #         send_resolved: false
-  # then teach deploy_monitoring() in scripts/deploy-on-host.sh — the same block
-  # that writes /alertmanager/ntfy-url — to materialise a second file from a
-  # WATCHDOG_PING_URL key in .env.prod. Do not paste the URL here: like the ntfy
-  # topic, a healthchecks.io ping URL is a bearer credential.
+  # CLOSED, the same way `default` is. The URL is NOT here: a healthchecks.io
+  # ping URL is a bearer credential — anyone holding it can ping the check and
+  # keep it GREEN, which silences the exact alarm this receiver exists to raise.
+  # It is materialised into the alertmanager_data volume on every deploy from
+  # WATCHDOG_PING_URL in /srv/libriant/.env.prod, the same posture as the ntfy
+  # topic above.
+  #
+  # `send_resolved: false` on purpose. The Watchdog never resolves — its expr is
+  # `vector(1)`, permanently true — so a resolved notification is a message that
+  # can never legitimately be sent, and this channel must express trouble by
+  # SILENCE rather than by a message.
+  #
+  # If WATCHDOG_PING_URL is unset the deploy writes no file, Alertmanager cannot
+  # open `url_file`, and each heartbeat fails into its own container log — the
+  # same honest failure as an unset ntfy topic, and the deploy's closing banner
+  # says so rather than implying the switch is armed.
   - name: watchdog
+    webhook_configs:
+      - url_file: /alertmanager/watchdog-url
+        send_resolved: false
 
 inhibit_rules:
   # If the whole API is down, do not also page about its connection pool, its

@@ -410,6 +410,29 @@ deploy_monitoring() {
     unset alert_url
   fi
 
+  # The watchdog's destination, by the same route and for the same reason. A
+  # healthchecks.io ping URL is a BEARER credential: anyone holding it can ping
+  # the check and keep it green, which silences the one alarm that fires when
+  # everything else has already stopped talking. So it lives in .env.prod, not
+  # in the git-tracked alertmanager.yml, and is materialised here.
+  #
+  # Unset is a supported state, not an error. Without it Alertmanager cannot
+  # open `url_file` and each heartbeat fails into its own container log — which
+  # is honest, and is named in the closing banner rather than left to be
+  # discovered. It does NOT gate the `alerting` profile: `default` carries the
+  # real alerts and must not be held hostage to the dead man's switch being
+  # configured.
+  WATCHDOG_OFF_BECAUSE=""
+  if [ -n "${WATCHDOG_PING_URL:-}" ]; then
+    if ! printf '%s' "$WATCHDOG_PING_URL" \
+      | mon run --rm --no-deps -T --entrypoint sh alertmanager \
+          -c 'umask 077; cat > /alertmanager/watchdog-url' >/dev/null 2>&1; then
+      WATCHDOG_OFF_BECAUSE="the ping URL could not be written into the alertmanager_data volume"
+    fi
+  else
+    WATCHDOG_OFF_BECAUSE="WATCHDOG_PING_URL is unset in ${ENV_FILE}"
+  fi
+
   mon up -d || die "the monitoring stack failed to start."
 
   # No healthchecks on these images — nothing in this repo can verify what a
@@ -442,6 +465,17 @@ deploy_monitoring() {
     say "Alerting is live: Prometheus is evaluating alerts.yml and Alertmanager is delivering it"
     printf '  Alerts go to the ntfy topic in %s, as raw Alertmanager JSON with a\n' "$ENV_FILE"
     printf '  title — a doorbell, not a letter. Read the alert itself at /alerts.\n'
+    # Stated either way. "Alerting is live" is about `default`; the dead man's
+    # switch is a separate promise, and the one whose absence is invisible by
+    # construction — nothing fires when it is missing, which is exactly what a
+    # working one looks like from here.
+    if [ -z "${WATCHDOG_OFF_BECAUSE:-}" ]; then
+      printf '  Dead man'"'"'s switch: the Watchdog heartbeat is being delivered.\n'
+    else
+      printf '\033[33m  Dead man'"'"'s switch NOT armed: %s.\n' "$WATCHDOG_OFF_BECAUSE"
+      printf '  Every other alert here needs this stack alive to send it, and\n'
+      printf '  nothing tells you when it stops. See docs/RUNBOOK.md 7.3.\033[0m\n'
+    fi
   else
     printf '\n\033[31m'
     printf '  ══════════════════════════════════════════════════════════════════\n'
