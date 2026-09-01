@@ -125,22 +125,176 @@ try {
   console.error(`✗ ${ROUTES} is missing — Prometheus has nowhere to deliver a firing rule.`);
   bad++;
 }
-if (routesSrc && !/alertname\s*=\s*Watchdog/.test(routesSrc)) {
+/**
+ * The routing file with every comment removed.
+ *
+ * Everything below asks "what will Alertmanager DO", and Alertmanager does not
+ * read comments. The same trap caught scripts/deploy-on-host.sh once already:
+ * its placeholder grep matched the header sentence EXPLAINING what a
+ * [PLACEHOLDER] is, so a fully configured file still read as unconfigured. The
+ * inverse is worse and is what this guards — a `# receiver: watchdog` in prose
+ * satisfying a check about the real route.
+ *
+ * Naive, deliberately: `#` inside a quoted YAML scalar would be stripped too.
+ * No value in this file contains one, and the destinations that could (a URL
+ * with a fragment) live outside it in `url_file` on purpose.
+ */
+const routesCode = routesSrc.replace(/#.*$/gm, '');
+
+if (routesSrc && !/alertname\s*=\s*Watchdog/.test(routesCode)) {
   console.error(`✗ ${ROUTES}: the Watchdog alert has no route of its own. It must go to a`);
   console.error('  receiver that alerts on SILENCE, not to the same place as real alerts —');
   console.error('  otherwise a dead pipeline looks exactly like a healthy one.');
   bad++;
 }
 
+/**
+ * Every `receivers:` entry, and whether it can actually deliver anything.
+ *
+ * WHY THIS REPLACED A `[PLACEHOLDER]` COUNT. The old version counted the string
+ * anywhere in the file and printed "NOT DELIVERING YET — 3 [PLACEHOLDER]
+ * receiver(s)" for a file with two receivers: the third match was the header
+ * comment explaining the convention. It could not have said anything else,
+ * because a count of a marker is not a statement about delivery — and the state
+ * this file is now in is one receiver DELIVERING and one deliberately OPEN,
+ * which a single number cannot express and which matters enormously. `default`
+ * reaching a phone while the dead man's switch reaches nobody is a real posture
+ * with a real hole in it; "2 placeholders" and "0 placeholders" both describe it
+ * wrongly.
+ *
+ * Text-based like the rest of this file — `amtool check-config` is the syntax
+ * authority and runs in both deploy paths.
+ */
+function parseReceivers(src) {
+  const out = [];
+  const lines = src.split('\n');
+  let inSection = false;
+  let current = null;
+  // A run of comment/blank lines belongs to whatever comes NEXT, not to what
+  // came before. The `watchdog` receiver is the case that matters: the whole
+  // explanation of why it is deliberately open — and the [PLACEHOLDER] that
+  // says so — is written above its `- name:` line, which is where a reader
+  // will look for it. Attributed backwards, it credited `default` with the
+  // marker and reported `watchdog` as an unexplained silence.
+  let pending = '';
+  const flush = () => {
+    if (current) {
+      current.prose += pending;
+      pending = '';
+    } else {
+      pending = '';
+    }
+  };
+  for (const raw of lines) {
+    // A new top-level key ends the section. `receivers:` itself is one.
+    if (/^[A-Za-z_]/.test(raw)) {
+      flush();
+      if (current) out.push(current);
+      current = null;
+      inSection = /^receivers:/.test(raw);
+      continue;
+    }
+    if (!inSection) continue;
+    const name = /^\s*-\s*name:\s*'?"?([^'"\s]+)'?"?/.exec(raw);
+    if (name) {
+      if (current) out.push(current);
+      current = { name: name[1], code: '', prose: pending };
+      pending = '';
+      continue;
+    }
+    if (/^\s*(#|$)/.test(raw)) {
+      pending += raw + '\n';
+      continue;
+    }
+    flush();
+    if (!current) continue;
+    current.code += raw.replace(/#.*$/, '') + '\n';
+    current.prose += raw + '\n';
+  }
+  flush();
+  if (current) out.push(current);
+  return out;
+}
+
+const receivers = parseReceivers(routesSrc);
+const receiverByName = new Map(receivers.map((r) => [r.name, r]));
+
+// Which receiver each route names. The top-level `receiver:` is the default;
+// `routes:` entries override it for what they match.
+const routed = new Set();
+let defaultReceiver = '';
+let watchdogReceiver = '';
+{
+  const lines = routesCode.split('\n');
+  let sawWatchdogMatcher = false;
+  for (const raw of lines) {
+    const rec = /^\s*receiver:\s*'?"?([^'"\s]+)'?"?/.exec(raw);
+    if (/alertname\s*=\s*Watchdog/.test(raw)) sawWatchdogMatcher = true;
+    if (!rec) continue;
+    routed.add(rec[1]);
+    if (!defaultReceiver) defaultReceiver = rec[1];
+    if (sawWatchdogMatcher && !watchdogReceiver) watchdogReceiver = rec[1];
+  }
+}
+
+for (const name of routed) {
+  if (receiverByName.has(name)) continue;
+  console.error(`✗ ${ROUTES}: a route sends alerts to receiver '${name}', which is not defined.`);
+  console.error('  Alertmanager refuses to start on that, so nothing would be delivered at all.');
+  bad++;
+}
+
+// The dead man's switch must not share the destination of the alerts it exists
+// to prove are still flowing. Asserted rather than commented, because the
+// tempting shortcut — pointing `watchdog` at the receiver that already works —
+// is exactly the change that makes a dead pipeline look like a quiet night, and
+// would push once a minute until the phone muted the channel.
+if (watchdogReceiver && defaultReceiver && watchdogReceiver === defaultReceiver) {
+  console.error(`✗ ${ROUTES}: the Watchdog route and the default route share receiver`);
+  console.error(`  '${watchdogReceiver}'. The heartbeat must go somewhere that complains when it`);
+  console.error('  STOPS arriving; delivered alongside real alerts it proves nothing.');
+  bad++;
+}
+
 if (bad) process.exit(1);
 
-const placeholders = (routesSrc.match(/\[PLACEHOLDER[^\]]*\]/g) ?? []).length;
 console.log(
   `alert check passed: ${rules.length} rules, every libriant_* metric is emitted, Watchdog present and routed.`,
 );
-if (placeholders) {
+
+// A receiver delivers if it declares at least one notifier config whose
+// destination is not still a placeholder. `url_file` counts: the file is
+// written on the host by scripts/deploy-on-host.sh, and the deploy refuses to
+// start Alertmanager when it could not write it.
+const DELIVERY_KEY = /^\s*[a-z_]+_configs:/m;
+const PLACEHOLDER = /\[PLACEHOLDER[^\]]*\]/;
+
+const report = receivers.map((r) => {
+  const hasConfig = DELIVERY_KEY.test(r.code);
+  const brokenUrl = PLACEHOLDER.test(r.code);
+  const pendingNote = PLACEHOLDER.test(r.prose);
+  if (brokenUrl) return { ...r, state: 'broken' };
+  if (hasConfig) return { ...r, state: 'delivering' };
+  return { ...r, state: pendingNote ? 'pending' : 'silent' };
+});
+
+console.log(`\nreceivers in ${ROUTES}:`);
+for (const r of report) {
+  const how = {
+    delivering: 'delivers  — has a destination',
+    pending: 'NO DELIVERY — deliberately open, marked [PLACEHOLDER] in the file',
+    silent: 'NO DELIVERY — no config, and nothing says that is intentional',
+    broken: 'BROKEN    — a [PLACEHOLDER] inside a real URL; Alertmanager will not start',
+  }[r.state];
+  console.log(`  ${r.name.padEnd(12)} ${how}`);
+}
+
+const open = report.filter((r) => r.state !== 'delivering');
+if (open.length) {
   console.log(
-    `\nNOT DELIVERING YET — ${placeholders} [PLACEHOLDER] receiver(s) in ${ROUTES}.\n` +
-      'Alerts will fire and reach nobody until an owner fills in a real destination.',
+    `\nPARTIALLY DELIVERING — ${open.length} of ${report.length} receiver(s) reach nobody.\n` +
+      'Every alert routed to them fires and is dropped. The Watchdog is the one that\n' +
+      'cannot be closed with a push channel: it must alert on SILENCE, so it needs an\n' +
+      'external dead-man service (healthchecks.io or similar), never ntfy.',
   );
 }

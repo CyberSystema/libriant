@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { renderScheduledJobMetrics, toScheduledJobResult } from './scheduled-jobs.runner.js';
+import {
+  announceJobFailure,
+  renderScheduledJobMetrics,
+  shouldAnnounceJobFailure,
+  toScheduledJobResult,
+} from './scheduled-jobs.runner.js';
 
 /**
  * SCHEDULED-TENANTSFAILED-DISCARDED (reliability-07): the runner stored
@@ -138,5 +143,158 @@ describe('renderScheduledJobMetrics', () => {
 
     expect(text).not.toContain('libriant_worker_job_last_ok{');
     expect(text).toContain('# TYPE libriant_worker_job_last_ok gauge');
+  });
+});
+
+/**
+ * launch-readiness-06: nothing in this system has ever told a person that a
+ * scheduled sweep stopped working — the failure line goes to stderr in a
+ * rolling container log, and `libriant_worker_job_last_ok` has no rule in
+ * infra/monitoring/alerts.yml pointed at it. The push added to
+ * `worker.on('failed')` is that missing channel, and this is the gate in front
+ * of it. Everything asserted here is a volume decision: the phone is one tap
+ * from being muted, and a muted channel loses the real alerts too.
+ */
+describe('shouldAnnounceJobFailure', () => {
+  const JOB = 'member-notifications';
+
+  it('says nothing while BullMQ still has retries left', () => {
+    // reliability-20 bought three attempts per tick precisely so a two-second
+    // Postgres blip costs ~30 s instead of an hour. Announcing attempt 1 would
+    // push for every blip those retries exist to absorb.
+    const seen = new Map<string, number>();
+
+    expect(shouldAnnounceJobFailure({ name: JOB, attemptsMade: 1, attempts: 3 }, seen)).toBe(false);
+    expect(shouldAnnounceJobFailure({ name: JOB, attemptsMade: 2, attempts: 3 }, seen)).toBe(false);
+    expect(seen.size).toBe(0);
+  });
+
+  it('announces the tick that spends the last attempt', () => {
+    const seen = new Map<string, number>();
+
+    expect(shouldAnnounceJobFailure({ name: JOB, attemptsMade: 3, attempts: 3 }, seen)).toBe(true);
+  });
+
+  it('reads an absent retry budget as one attempt, not as zero', () => {
+    // BullMQ stores "no attempts option" as `attempts: 0`. With `??` instead of
+    // `|| 1` the comparison would be `1 < 0` — false — and EVERY first failure
+    // of a job registered without a budget would read as an exhausted one.
+    const seen = new Map<string, number>();
+
+    expect(shouldAnnounceJobFailure({ name: JOB, attemptsMade: 0, attempts: 0 }, seen)).toBe(true);
+  });
+
+  it('stays quiet for six hours about a job it has already announced', () => {
+    // A broken sweep is broken for hours; the second and hundredth exhaustion
+    // inside a working day are the same fact told again.
+    const seen = new Map<string, number>();
+    const t0 = Date.parse('2026-08-28T09:00:00Z');
+    const exhausted = { name: JOB, attemptsMade: 3, attempts: 3 };
+
+    expect(shouldAnnounceJobFailure(exhausted, seen, t0)).toBe(true);
+    expect(shouldAnnounceJobFailure(exhausted, seen, t0 + 60_000)).toBe(false);
+    expect(shouldAnnounceJobFailure(exhausted, seen, t0 + 5 * 3_600_000)).toBe(false);
+    expect(shouldAnnounceJobFailure(exhausted, seen, t0 + 6 * 3_600_000)).toBe(true);
+  });
+
+  it('does not let a job that recovers and re-breaks reopen the window', () => {
+    // The obvious refinement — clear the cooldown on success — is the wrong
+    // one: support-session-expiry ticks every 60 s, so a sweep flapping between
+    // success and failure would announce itself every other tick, 720 times a
+    // day. Nothing here observes success, and that is the point.
+    const seen = new Map<string, number>();
+    const t0 = Date.parse('2026-08-28T09:00:00Z');
+    const exhausted = { name: 'support-session-expiry', attemptsMade: 3, attempts: 3 };
+
+    expect(shouldAnnounceJobFailure(exhausted, seen, t0)).toBe(true);
+    for (let tick = 1; tick <= 60; tick++) {
+      expect(shouldAnnounceJobFailure(exhausted, seen, t0 + tick * 120_000)).toBe(false);
+    }
+  });
+
+  it('budgets each job separately, so an outage that breaks everything says so', () => {
+    // Eleven notifications in the first minutes read as "nothing is working",
+    // which is true. It is the REPEAT that gets a channel muted, not the burst.
+    const seen = new Map<string, number>();
+    const t0 = Date.parse('2026-08-28T09:00:00Z');
+
+    for (const name of ['fine-accrual', 'retention-sweep', 'export-file-cleanup']) {
+      expect(shouldAnnounceJobFailure({ name, attemptsMade: 3, attempts: 3 }, seen, t0)).toBe(true);
+    }
+    expect(seen.size).toBe(3);
+  });
+
+  it('ignores a failure event with no job attached to it', () => {
+    // BullMQ's `failed` event can arrive with `job` undefined (a job that
+    // vanished from Redis mid-flight). There is nothing to name and nothing to
+    // rate-limit on, so nothing is sent.
+    const seen = new Map<string, number>();
+
+    expect(shouldAnnounceJobFailure({ attemptsMade: 3, attempts: 3 }, seen)).toBe(false);
+  });
+});
+
+/**
+ * What a broken sweep actually puts on the phone. The gate above decides
+ * WHETHER; this decides WHAT, and the interesting assertions are the absences.
+ */
+describe('announceJobFailure', () => {
+  function fakeNotifier() {
+    const sent: Array<Record<string, unknown>> = [];
+    return { sent, sendDetached: (input: Record<string, unknown>) => void sent.push(input) };
+  }
+
+  it('names the job, the budget it spent and where the error actually is', () => {
+    const notifier = fakeNotifier();
+
+    announceJobFailure(notifier, { name: 'fine-accrual', attemptsMade: 3, attempts: 3 }, new Map());
+
+    expect(notifier.sent).toHaveLength(1);
+    expect(notifier.sent[0]).toMatchObject({
+      level: 'warn',
+      title: 'Scheduled job failing: fine-accrual',
+    });
+    const body = String(notifier.sent[0]?.body);
+    expect(body).toContain('all 3 attempts');
+    expect(body).toContain('/healthz');
+    expect(body).toContain('6 hours');
+  });
+
+  it('carries no part of the error, because errors quote connection strings', () => {
+    // A Prisma connect failure quotes DATABASE_URL and an ioredis one quotes
+    // REDIS_URL; both carry a password. This message leaves the country, is
+    // retained by ntfy.sh, and on a public topic is world-readable.
+    const notifier = fakeNotifier();
+
+    announceJobFailure(
+      notifier,
+      { name: 'member-notifications', attemptsMade: 3, attempts: 3 },
+      new Map(),
+    );
+
+    const wire = JSON.stringify(notifier.sent[0]);
+    expect(wire).not.toMatch(/postgres|redis:\/\/|password|Error:/i);
+  });
+
+  it('is silent for a failure the retries are still working on', () => {
+    const notifier = fakeNotifier();
+
+    announceJobFailure(
+      notifier,
+      { name: 'retention-sweep', attemptsMade: 1, attempts: 3 },
+      new Map(),
+    );
+
+    expect(notifier.sent).toHaveLength(0);
+  });
+
+  it('never uses the one level that overrides do-not-disturb', () => {
+    // `error` is ntfy 5, the only level a handset can be told to let through
+    // DND. A sweep that re-runs on its own interval is worth today, not 03:00.
+    const notifier = fakeNotifier();
+
+    announceJobFailure(notifier, { name: 'export-file-cleanup', attemptsMade: 9 }, new Map());
+
+    expect(notifier.sent[0]?.level).toBe('warn');
   });
 });

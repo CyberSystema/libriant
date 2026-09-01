@@ -146,7 +146,147 @@ export type AppEnv = {
   /** Optional GitHub token for reading releases + assets — required only if that
    *  repo is PRIVATE; also lifts the unauthenticated GitHub API rate limit. */
   desktopReleaseToken: string | null;
+  /**
+   * Base URL of the ntfy server push notifications are published to. Defaults
+   * to the hosted https://ntfy.sh ON PURPOSE — see the long note in
+   * scripts/_lib/notify.sh. An alerting service that runs in our own compose
+   * file dies with the box it is alerting about.
+   */
+  ntfyServer: string;
+  /**
+   * The ntfy topic, or `null` for "notifications are off".
+   *
+   * NULL COVERS BOTH "unset" AND "unusable", and neither one fails boot —
+   * which is a deliberate exception to this file's own "present + valid or
+   * boot fails loudly" contract, argued in {@link resolveNtfy}.
+   */
+  ntfyTopic: string | null;
+  /** Optional ntfy access token for a protected topic. */
+  ntfyToken: string | null;
+  /** Lowest level that is actually published. One of NOTIFY_LEVEL_NAMES. */
+  ntfyMinLevel: string;
+  /**
+   * Why notifications are off / degraded, phrased WITHOUT the offending value,
+   * or `null` when there is nothing to say. NotifyService logs it once at
+   * construction; env.ts has no logger and must not acquire one.
+   *
+   * `null` is also what a host that never configured ntfy gets, so the
+   * shipped-by-default configuration produces no log line at all.
+   */
+  ntfyConfigProblem: string | null;
 };
+
+/**
+ * Shortest topic this platform will publish to.
+ *
+ * On ntfy.sh a topic is not a channel, it is a password that looks like one:
+ * anyone who knows or guesses the string reads every message on it and can
+ * publish to it. Reserving a topic is a paid feature, so on the tier this
+ * project uses, the length of the string IS the access control — a token does
+ * not lift this floor. `libriant` and `libriant-prod` are the first two guesses
+ * anybody would make, so a short topic is refused rather than used.
+ *
+ * Kept identical to `_NOTIFY_TOPIC_MIN_LEN` in scripts/_lib/notify.sh; the
+ * unit spec reads that file and fails if the two drift.
+ */
+export const NTFY_TOPIC_MIN_LEN = 24;
+
+/** ntfy's own topic character class. */
+const NTFY_TOPIC_RE = /^[A-Za-z0-9_-]+$/;
+
+/** Mirrors `_NTFY_LEVELS` in scripts/_lib/notify.sh; asserted by the spec. */
+const NTFY_LEVEL_NAMES = ['debug', 'info', 'warn', 'error'] as const;
+
+type NtfyConfig = Pick<
+  AppEnv,
+  'ntfyServer' | 'ntfyTopic' | 'ntfyToken' | 'ntfyMinLevel' | 'ntfyConfigProblem'
+>;
+
+/**
+ * Resolve the ntfy block — the one place in this file that reports a bad value
+ * by DISABLING A FEATURE instead of by refusing to boot.
+ *
+ * Everything else here follows "present + valid, or boot fails loudly", and
+ * that rule is right for a session secret: a server running without one is
+ * worse than a server that will not start. It is exactly backwards for this
+ * one. The notifier's entire purpose is to tell the operator when something is
+ * wrong, and a notifier that can take the API down when ITS OWN configuration
+ * is wrong has become the outage it was installed to report. A typo in
+ * NTFY_TOPIC would stop every container on the box, during a launch campaign,
+ * over the alert channel.
+ *
+ * So a malformed topic means "no notifications", the reason is carried out on
+ * `ntfyConfigProblem` for NotifyService to log once, and the API serves.
+ *
+ * Silence is the failure mode we accept here, and it is only acceptable
+ * because it is checkable: `bash scripts/_lib/notify.sh --test` sends a real
+ * notification and exits non-zero if it was not accepted, and `--status` says
+ * whether anything is configured at all without printing a value. That is how
+ * an operator turns this silence into a fact before relying on the channel.
+ */
+function resolveNtfy(): NtfyConfig {
+  const server = optional('NTFY_SERVER', 'https://ntfy.sh').replace(/\/+$/, '');
+  const topic = (process.env.NTFY_TOPIC ?? '').trim();
+  const token = (process.env.NTFY_TOKEN ?? '').trim();
+  const rawLevel = (process.env.NTFY_MIN_LEVEL ?? '').trim().toLowerCase();
+
+  const problems: string[] = [];
+  let minLevel = 'info';
+  if (rawLevel.length > 0) {
+    if ((NTFY_LEVEL_NAMES as readonly string[]).includes(rawLevel)) minLevel = rawLevel;
+    else problems.push(`NTFY_MIN_LEVEL must be one of ${NTFY_LEVEL_NAMES.join('|')}; using info`);
+  }
+
+  const off = (extra?: string): NtfyConfig => ({
+    ntfyServer: server,
+    ntfyTopic: null,
+    ntfyToken: null,
+    ntfyMinLevel: minLevel,
+    ntfyConfigProblem: [...problems, ...(extra ? [extra] : [])].join('; ') || null,
+  });
+
+  if (topic.length === 0) {
+    // Off by default and SILENT: a host that never configured this is not a
+    // host that got it wrong. A token with no topic is different — that is an
+    // operator who tried, and who would otherwise wait forever for a
+    // notification nothing can send.
+    return off(token.length > 0 ? 'NTFY_TOKEN is set but NTFY_TOPIC is empty' : undefined);
+  }
+  if (!NTFY_TOPIC_RE.test(topic)) {
+    return off('NTFY_TOPIC contains characters ntfy does not accept (allowed: A-Z a-z 0-9 _ -)');
+  }
+  if (topic.length < NTFY_TOPIC_MIN_LEN) {
+    return off(
+      `NTFY_TOPIC is shorter than ${NTFY_TOPIC_MIN_LEN} characters. On ntfy.sh anyone who ` +
+        'guesses the topic reads every message on it, so a short one is a public feed. ' +
+        'Generate a real one with: openssl rand -hex 16',
+    );
+  }
+  // The token rides in an Authorization header. A newline or a control
+  // character in it is header injection into every outgoing request, and
+  // Node's fetch would throw on it rather than send — so it is refused here,
+  // where the refusal can be explained, instead of at the first send.
+  if (token.length > 0 && !NTFY_TOPIC_RE.test(token)) {
+    problems.push(
+      'NTFY_TOKEN contains characters an ntfy access token cannot contain; ignoring it',
+    );
+    return {
+      ntfyServer: server,
+      ntfyTopic: topic,
+      ntfyToken: null,
+      ntfyMinLevel: minLevel,
+      ntfyConfigProblem: problems.join('; ') || null,
+    };
+  }
+
+  return {
+    ntfyServer: server,
+    ntfyTopic: topic,
+    ntfyToken: token.length > 0 ? token : null,
+    ntfyMinLevel: minLevel,
+    ntfyConfigProblem: problems.join('; ') || null,
+  };
+}
 
 function required(key: string): string {
   const v = process.env[key];
@@ -496,5 +636,6 @@ export function loadEnv(): AppEnv {
     desktopReleaseToken: process.env.DESKTOP_RELEASE_TOKEN?.length
       ? process.env.DESKTOP_RELEASE_TOKEN
       : null,
+    ...resolveNtfy(),
   };
 }

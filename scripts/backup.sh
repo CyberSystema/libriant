@@ -47,9 +47,15 @@
 # and check a deployed host with:
 #   scripts/backup.sh --check-cron          # exit 1 when the cron is missing
 #   scripts/backup.sh --preflight           # config only; touches no data
+#   scripts/backup.sh --notify-test         # prove the phone channel; sends one
 #
 # Retention: $BACKUP_KEEP_DAYS days (default 14), applied to the local dailies
 # AND to the off-site copy.
+#
+# A THIRD notification channel was added below (ntfy, hosted) and it changes
+# nothing about the two that were already required. It is almost silent by
+# design — see the block above ntfy_transition — and it is NOT a dead man's
+# switch, because a script that never runs cannot push.
 
 set -euo pipefail
 
@@ -80,6 +86,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_lib/backup-offsite.sh"
 # shellcheck source=_lib/backup-observability.sh
 . "$HERE/_lib/backup-observability.sh"
+# shellcheck source=_lib/notify.sh
+. "$HERE/_lib/notify.sh"
 
 # The run log doubles as the body of the /fail heartbeat, so whoever is woken up
 # learns WHY without opening an SSH session.
@@ -89,6 +97,70 @@ log() {
   line="$(printf '[%s] %s' "$(date +'%Y-%m-%d %H:%M:%S')" "$*")"
   printf '%s\n' "$line"
   printf '%s\n' "$line" >> "$RUNLOG" 2>/dev/null || true
+}
+
+# ---------- ntfy: the third channel, and deliberately the quietest ----------
+#
+# The publisher, the levels and the redaction pass are in _lib/notify.sh, which
+# is sourced above with the other libraries. Everything here is POLICY: when a
+# backup is worth waking somebody for, and what it is allowed to say.
+#
+# The other two channels answer "did it run": the heartbeat is the only one that
+# survives losing this host, the textfile metric is the only one that works with
+# no egress. This one answers "do I have to do something tonight", on a phone.
+#
+# IT IS NOT A DEAD MAN'S SWITCH, and the gate below is unchanged because of it.
+# ntfy is push-only: a script that never runs cannot push, so nothing here can
+# report a backup that did not happen. That is precisely why at least one of the
+# heartbeat and the textfile metric is still REQUIRED.
+#
+# WHAT IT DOES NOT SEND, so that it is still worth reading in a year:
+#
+#   * a nightly "backup ok". 365 identical pushes a year is how a channel
+#     becomes something you swipe away, and the night you swipe away the one
+#     that mattered is the night it stopped being a channel at all.
+#   * a DEGRADED run that still wrote a full set of artefacts. alerts.yml
+#     already carries BackupDegraded, BackupNotEncrypted and
+#     BackupOffsiteNotConfigured on the textfile metrics, and those reach the
+#     same phone through Alertmanager. The same fact arriving twice from two
+#     systems teaches an operator to ignore both.
+#   * the same failure twice. State lives in $NTFY_STATE_FILE and only a CHANGE
+#     is pushed: it broke, it broke differently, it recovered. A backup that has
+#     been failing all week is BackupStale's job (36h) and the heartbeat's.
+#
+# What is left is exactly the gap nothing else covers in time: tonight's run
+# aborted, and BackupStale will not fire about it for another day and a half.
+#
+# NOTHING FROM $RUNLOG GOES INTO A MESSAGE. Feeding it the tail of the log is
+# what the /fail heartbeat is for; the log names storage paths, the rclone
+# remote, and — on the off-host guard — the hostnames of other database servers.
+# A push leaves the country, is retained by a third party and is readable by
+# anyone who guesses the topic, so it gets a STAGE LABEL and a path to read on
+# the box. notify_redact() would catch most of it; not relying on that is the
+# point.
+NTFY_STATE_FILE="${BACKUP_NTFY_STATE_FILE:-${BACKUP_ROOT}/.ntfy-state}"
+stage="startup"
+completed=0
+
+# ntfy_transition NEWSTATE LEVEL TITLE BODY [tags] — push only on a change.
+#
+# The state file holds one short opaque token — a stage name, never a message.
+# It lives beside the backups rather than in the textfile directory because a
+# host may legitimately have no textfile collector and this must still not
+# repeat itself there. If it cannot be written, the push happens anyway: noisy
+# is the only direction this is allowed to fail in.
+ntfy_transition() {
+  local new="$1" prev=""
+  notify_enabled || return 0
+  prev="$(cat "$NTFY_STATE_FILE" 2>/dev/null || true)"
+  mkdir -p "$(dirname "$NTFY_STATE_FILE")" 2>/dev/null || true
+  printf '%s' "$new" > "$NTFY_STATE_FILE" 2>/dev/null || true
+  # Same state as last night is not news. A first-ever run that WORKED is not
+  # news either — there is nothing to recover from.
+  [ "$new" = "$prev" ] && return 0
+  [ -z "$prev" ] && [ "$new" = "ok" ] && return 0
+  shift
+  notify_send "$@"
 }
 
 # ---------- cron: shipped as code, not as a snippet to retype ---------------
@@ -135,13 +207,56 @@ case "${1:-}" in
     echo "backup cron OK ($CRON_FILE); newest backup: $newest"
     exit 0
     ;;
+  --notify-test)
+    # The channel proved from the environment that will actually use it, and
+    # said out loud that it is not a dead man's switch. `notify.sh --test` is the
+    # canonical prover; running it through THIS entry point is what makes the
+    # answer trustworthy, because the 02:15 cron is
+    #   sudo -u deploy bash -lc 'set -a; . /srv/libriant/.env.prod; set +a; … backup.sh'
+    # and a topic readable by root is not the question.
+    if ! notify_test; then
+      echo >&2
+      echo "backup: the notification channel is NOT working. That is not fatal — the" >&2
+      echo "        required channels are BACKUP_HEARTBEAT_URL and the textfile metric," >&2
+      echo "        and both are unaffected — but nothing will reach a phone." >&2
+      exit 1
+    fi
+    echo
+    echo "backup: this channel is deliberately almost silent. It sends ONLY when a run"
+    echo "        ABORTS without writing a backup, and once more when one succeeds again."
+    echo "        A nightly 'backup ok' is how a phone channel gets muted, and a DEGRADED"
+    echo "        run is already carried by BackupDegraded in alerts.yml."
+    echo "        It cannot report a backup that never ran: ntfy is push-only. That is"
+    echo "        the heartbeat's job, and this script still refuses to run without one."
+    exit 0
+    ;;
   --preflight) PREFLIGHT=1 ;;
   '') PREFLIGHT=0 ;;
   *) echo "backup: unknown flag: $1" >&2; exit 2 ;;
 esac
 
 # ---------- observability, wired before anything can fail -------------------
-obs_init "$BACKUP_TEXTFILE_DIR" "${BACKUP_HEARTBEAT_URL:-}"
+# `|| true` IS LOAD BEARING, AND IT FIXES A SILENT FIRST-RUN FAILURE.
+#
+# obs_init's last statement is `[ -f "$_OBS_TEXTFILE" ] && _OBS_PREV="$(cat …)"`
+# — carrying the previous run's values forward. On a host where the textfile
+# directory is writable but libriant_backup.prom does NOT yet exist, that test
+# is false, the && list is the function's last command, and obs_init returns 1.
+# Called as a simple command under `set -e`, that killed this script on the spot:
+# exit 1, no output, no metric written, no heartbeat, no backup — BEFORE the
+# encryption self-test, before the dead man's switch report, and before
+# `trap finish EXIT` exists to notice.
+#
+# That is precisely the FIRST run on a fresh box, which is the run
+# scripts/install-server.sh performs at §8.2 while the operator watches. The
+# installer then dies naming six possible hard aborts, none of which is the
+# cause, with nothing above it to read. Found by driving this script on a host
+# with an empty textfile directory.
+#
+# obs_init has no failure the caller acts on — the two questions that matter are
+# asked immediately below, of the machine — so its exit status is noise, and the
+# only correct thing to do with it is to discard it.
+obs_init "$BACKUP_TEXTFILE_DIR" "${BACKUP_HEARTBEAT_URL:-}" || true
 
 # A host where a stopped backup cannot be noticed is not a host this product may
 # run on. One of the two channels is enough; neither is not.
@@ -152,6 +267,13 @@ if ! obs_textfile_enabled && ! obs_heartbeat_enabled; then
   echo "        would be discovered only when a restore is needed. Set one:" >&2
   echo "          BACKUP_HEARTBEAT_URL=https://hc-ping.com/<uuid>   (external, survives host loss)" >&2
   echo "          sudo install -d -o ${BACKUP_CRON_USER:-deploy} -g ${BACKUP_CRON_USER:-deploy} $BACKUP_TEXTFILE_DIR" >&2
+  # The one exit that happens BEFORE `trap finish EXIT` is installed, so it gets
+  # its own push. It is also the one state ntfy is uniquely able to report: with
+  # no textfile metric there is nothing for absent() to fire on, and with no
+  # heartbeat URL there is nothing to stop pinging. A push is all that is left.
+  ntfy_transition "noswitch" error "Libriant backup REFUSED to run" \
+    "No dead man's switch on this host: neither BACKUP_HEARTBEAT_URL nor a writable textfile directory. Nothing ran, and this is the ONLY channel that can say so — with no textfile metric there is nothing for absent() to fire on, and with no heartbeat there is nothing to stop pinging." \
+    "floppy_disk"
   exit 1
 fi
 
@@ -210,6 +332,28 @@ finish() {
   else
     obs_heartbeat fail "$RUNLOG" || log "WARN: /fail heartbeat ping failed"
   fi
+
+  # ── The push, last, and only for the state nothing else reports in time.
+  #
+  # `completed` is what separates the two ways this script exits non-zero: a run
+  # that wrote a full set of artefacts and then failed a PROMISE (no off-site
+  # copy, plaintext) is degraded — steady state, already carried by
+  # BackupDegraded in alerts.yml — while a run that aborted produced nothing,
+  # and BackupStale does not notice for 36 hours. Only the second is an event.
+  #
+  # --preflight is exempt: it touches no data, it is run by a human who is
+  # watching the terminal, and a config check is not a backup.
+  if [ "${PREFLIGHT:-0}" != "1" ]; then
+    if [ "$rc" != "0" ] && [ "$completed" = "0" ]; then
+      ntfy_transition "fail:${stage}" error "Libriant backup FAILED" \
+        "Aborted in stage '${stage}' (exit ${rc}). No usable backup was written tonight. Read /var/log/libriant/backup.log on the server." \
+        "floppy_disk"
+    else
+      ntfy_transition "ok" info "Libriant backup recovered" \
+        "A backup completed again after a failure. Nothing further is needed." \
+        "floppy_disk"
+    fi
+  fi
   rm -f "$RUNLOG"
 }
 trap finish EXIT
@@ -221,6 +365,7 @@ obs_heartbeat start || log "WARN: /start heartbeat ping failed"
 # that is a bare root, an unresolvable storage directory: each of these used to
 # be discovered an hour in, or worse, not at all.
 
+stage="config"
 if ! crypt_mode="$(backup_crypt_mode)"; then
   log "ABORT: backup encryption is not configured (see the message above)."
   exit 1
@@ -297,6 +442,7 @@ find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime "+$BACKUP_KEEP_DAYS" 
 # is NOT in this dump — a silent, total data-loss exposure for that tenant.
 # Local hosts are `postgres` (the in-container hostname baked into
 # PG_SUPERUSER_URL), `pgbouncer`, `localhost`, `127.0.0.1`.
+stage="tenant-host-check"
 log "checking all tenant databases live on this host"
 # NB: the column is Prisma camelCase `"dbUrl"` (created quoted) — unquoted
 # `db_url` would fold to lowercase, error "column does not exist", and abort
@@ -326,6 +472,7 @@ if [ -n "$offhost" ]; then
 fi
 
 # ---------- 1. Postgres ----------------------------------------------------
+stage="postgres-dump"
 pg_artefact="$dest/postgres.sql.gz$crypt_ext"
 log "dumping postgres (all databases) → $(basename "$pg_artefact")"
 # `pg_dumpall` writes a single self-contained script — restoring is `psql -f`.
@@ -361,6 +508,7 @@ else
 fi
 log "  postgres artefact $((dump_bytes / 1024)) KiB"
 
+stage="uploads"
 # ---------- 2. Storage (tenant uploads) ------------------------------------
 # A missing uploads tree means every cover, logo and export is absent from this
 # backup. That must NOT pass silently (DR-002).
@@ -398,6 +546,7 @@ fi
 # log records full request URIs, and password-reset and email-verification links
 # carry their raw token in the query string. A plaintext copy of this file is a
 # stack of live account-takeover tokens.
+stage="caddy-log"
 if [ -d "$CADDY_LOG_DIR" ]; then
   log "snapshotting caddy access log"
   tar -C "$CADDY_LOG_DIR" -czf - . 2>/dev/null \
@@ -410,6 +559,7 @@ fi
 # you need to know which key opens the archives BEFORE you have the key.
 # sha256 per artefact so the off-site copy can be verified independently of
 # rclone, and so a silently-corrupted transfer is provable after the fact.
+stage="manifest"
 log "writing manifest"
 {
   echo "host=$(hostname)"
@@ -433,6 +583,7 @@ log "writing manifest"
 # ---------- 5. Off-site copy ------------------------------------------------
 # Push → VERIFY → prune, in that order and never any other. Pruning before
 # verifying is how one bad night plus one good prune becomes no backup at all.
+stage="offsite"
 if [ -n "$RCLONE_REMOTE" ]; then
   log "rclone copy → $RCLONE_REMOTE/$day"
   if ! offsite_push "$dest" "$RCLONE_REMOTE" "$day"; then
@@ -481,6 +632,12 @@ else
 fi
 
 # ---------- 6. Result -------------------------------------------------------
+# Everything that writes an artefact is behind us: whatever the verdict below,
+# this run produced a backup. The exit trap reads this to tell "aborted, there
+# is nothing" from "finished, and a promise is unmet" — two states that share an
+# exit code and deserve very different treatment on a phone.
+completed=1
+
 if [ "$degraded" != "0" ]; then
   log "DEGRADED: the artefacts in $dest are complete and usable, but see the FAIL/WARN above."
   exit 1

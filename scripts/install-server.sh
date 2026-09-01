@@ -1046,6 +1046,56 @@ is_https_url() {
   return 0
 }
 
+# ── ntfy. The topic name is the whole password. ─────────────────────────────
+#
+# On ntfy.sh a topic is READABLE AND WRITABLE by anyone who knows the string.
+# There is no account in that path, no second factor, and no way to learn
+# afterwards who read it. So these two validators are not about ntfy's parser —
+# they are about the two ways an operator gives the feed away without meaning
+# to: a name short enough to guess ("libriant", the town, the library), and a
+# name containing a character that turns the URL into a different one.
+#
+# THEY MUST AGREE WITH scripts/_lib/notify.sh, which is the library that
+# actually sends and which REFUSES a topic outside these rules — silently, by
+# design, because a channel that quietly stops is better than one that publishes
+# to a guessable feed. The installer's job is to make that refusal impossible to
+# walk into: reject it here, at the prompt, while a human is present. The gate
+# that makes this more than a copied constant is in configure_ntfy_env, which
+# runs `notify.sh --status` afterwards and believes the library, not this file.
+NTFY_TOPIC_MIN_LEN=24
+
+# ntfy's own character class is [A-Za-z0-9_-]{1,64}. Outside it a topic either
+# 404s or — with a `/` in it — silently publishes to a DIFFERENT topic from the
+# one the phone subscribed to: a channel that reports success and reaches nobody.
+ntfy_topic_ok() {
+  local s="${1:-}"
+  [ -n "$s" ] || return 1
+  [ "${#s}" -le 64 ] || return 1
+  case "$s" in *[!A-Za-z0-9_-]*) return 1 ;; esac
+  return 0
+}
+
+# ntfy_topic_strong — long enough that guessing is not a strategy, and the exact
+# floor _lib/notify.sh enforces. Separate from the validator because the two
+# failures deserve different words: one is a malformed topic, the other is a
+# public feed.
+ntfy_topic_strong() {
+  ntfy_topic_ok "${1:-}" || return 1
+  [ "${#1}" -ge "$NTFY_TOPIC_MIN_LEN" ] || return 1
+  return 0
+}
+
+# ntfy_subscribe_url SERVER TOPIC — what the operator opens on the phone.
+# `https://ntfy.sh/` and `https://ntfy.sh` must not produce two different URLs:
+# the doubled slash is a 404 that reads exactly like a wrong topic.
+ntfy_subscribe_url() {
+  local server="${1:-https://ntfy.sh}" topic="${2:-}"
+  while [ -n "$server" ]; do
+    case "$server" in */) server="${server%/}" ;; *) break ;; esac
+  done
+  printf '%s/%s\n' "${server:-https://ntfy.sh}" "$topic"
+}
+
 # password_ok — §3.4 asks for a strong sudo password for `deploy`. 12 is the
 # same floor bootstrap-admin.ts enforces on the admin password; reuse it rather
 # than invent a second rule. The single-quote refusal is not cosmetic: values
@@ -2620,6 +2670,49 @@ SwapFree:        8388604 kB'
   t_false "…nor a key in an empty file"     eval "json_names_key ip6tables < /dev/null"
   t_true  "…and tolerates a space before the colon" \
     eval "printf '{ \"ip6tables\" : true }\n' | json_names_key ip6tables"
+
+  printf '\n== ntfy topic — the string IS the password ==\n'
+  # The shape rules. A topic outside ntfy's character class does not fail
+  # loudly: with a '/' in it the publish succeeds against a DIFFERENT topic
+  # from the one the phone subscribed to, so the install looks fine and the
+  # server is mute for ever.
+  t_true  "a generated 32-hex topic"        ntfy_topic_ok "$(printf 'a%.0s' $(seq 1 32))"
+  t_false "empty"                           ntfy_topic_ok ''
+  t_false "a slash — publishes elsewhere"   ntfy_topic_ok 'libriant/alerts'
+  t_false "a space"                         ntfy_topic_ok 'libriant alerts'
+  t_false "a query string"                  ntfy_topic_ok 'topic?priority=5'
+  t_false "over 64 characters"              ntfy_topic_ok "$(printf 'a%.0s' $(seq 1 65))"
+  t_true  "…and 64 exactly"                 ntfy_topic_ok "$(printf 'a%.0s' $(seq 1 64))"
+  t_true  "underscore and hyphen"           ntfy_topic_ok 'a_very-long_topic-name_1234567890'
+  # The strength rule, which is the one that matters. It must agree with
+  # _NOTIFY_TOPIC_MIN_LEN in _lib/notify.sh: a topic this file accepts and that
+  # library rejects is a server that silently never speaks, and the operator
+  # would have no way to tell that from "nothing has happened yet".
+  t_false "'libriant' — the first string anybody tries" ntfy_topic_strong 'libriant'
+  t_false "'libriant-prod' — the second"                ntfy_topic_strong 'libriant-prod'
+  t_false "23 characters, one short of the floor"       ntfy_topic_strong "$(printf 'a%.0s' $(seq 1 23))"
+  t_true  "24 characters, the floor itself"             ntfy_topic_strong "$(printf 'a%.0s' $(seq 1 24))"
+  # A COUNTING PATTERN, not a topic. A plausible-looking random string in a
+  # git-tracked file is a thing somebody eventually pastes into .env.prod.
+  t_true  "what \`openssl rand -hex 16\` produces"        ntfy_topic_strong '00112233445566778899aabbccddeeff'
+  # Read the floor out of the library rather than trusting the constant above.
+  # Two copies of a number in two files is exactly how one of them ends up
+  # wrong, and this is the pair whose disagreement is invisible at runtime.
+  local libmin=""
+  libmin="$(sed -n 's/^_NOTIFY_TOPIC_MIN_LEN=\([0-9]*\).*/\1/p' \
+    "$(dirname "$SELF")/_lib/notify.sh" 2>/dev/null | head -n1)"
+  if [ -n "$libmin" ]; then
+    t_eq "the floor here matches _lib/notify.sh" "$libmin" "$NTFY_TOPIC_MIN_LEN"
+  else
+    printf '  ·    _lib/notify.sh not readable from here; floor agreement unchecked\n'
+  fi
+  # The subscribe URL the operator types into the phone. A doubled slash is a
+  # 404 that reads exactly like a wrong topic.
+  t_eq "no trailing slash"   'https://ntfy.sh/abc' "$(ntfy_subscribe_url 'https://ntfy.sh' abc)"
+  t_eq "one trailing slash"  'https://ntfy.sh/abc' "$(ntfy_subscribe_url 'https://ntfy.sh/' abc)"
+  t_eq "several"             'https://ntfy.sh/abc' "$(ntfy_subscribe_url 'https://ntfy.sh///' abc)"
+  t_eq "a self-hosted one"   'https://n.example.org/abc' "$(ntfy_subscribe_url 'https://n.example.org' abc)"
+  t_eq "no server given"     'https://ntfy.sh/abc' "$(ntfy_subscribe_url '' abc)"
 
   printf '\n== step-name validation ==\n'
   t_true  "'deploy' is a step"      valid_step deploy
@@ -5334,6 +5427,15 @@ step_env() {
     printf '  it — names, dates of birth, addresses, and the loan history of named children.\n'
     printf '  These are the last questions before the build; the backup itself runs after it.\n\n'
     configure_backup_env
+
+    # ── The phone, asked here for the same two reasons configure_backup_env is:
+    # it writes an .env.prod key, and the only other place to put it is after a
+    # cold build the operator has been told to walk away from. It goes AFTER the
+    # backup questions and BEFORE the copy-to-password-manager pause below, so
+    # the file the operator copies is the finished one.
+    printf '\n'
+    say "§7.3 The server's voice — a phone notification channel (ntfy)"
+    configure_ntfy_env
   fi
 
   banner "COPY ${ENV_FILE} INTO THE PASSWORD MANAGER NOW"
@@ -6052,6 +6154,191 @@ configure_backup_env() {
   return 0
 }
 
+# ── configure_ntfy_env — the phone. Asked with the other .env.prod keys. ────
+#
+# WHY HERE AND NOT AT A STEP OF ITS OWN. NTFY_TOPIC is an .env.prod key, this is
+# the .env.prod step, and configure_backup_env is here for exactly the same
+# reason: the alternative is asking after the 10-20 minute cold build that the
+# briefing itself tells the operator to walk away from. It also has to be
+# BEFORE the "copy .env.prod into the password manager" pause, or the copy the
+# operator takes is stale the moment this writes a key into the file.
+#
+# WHAT THIS CLOSES (launch-readiness-03). The campaign points 277 Greek library
+# mailboxes at the public application form, the site promises an answer within
+# two working days, and when one arrives NOBODY IS TOLD: the notification e-mail
+# is composed and — with EMAIL_DRIVER=console — delivered to nobody. The admin
+# panel shows it to whoever remembers to open the admin panel. This is the
+# channel that works today, with no mail provider.
+#
+# The test send is not optional garnish. A notification channel nobody has
+# watched arrive is not a channel, and the moment to find that out is while the
+# operator is sitting in front of the box with their phone in their hand — not
+# on the night of the first failed backup.
+configure_ntfy_env() {
+  [ -f "$ENV_FILE" ] || { warn "$ENV_FILE does not exist yet — ntfy configuration deferred"; return 0; }
+
+  local server topic
+  server="$(env_get "$ENV_FILE" NTFY_SERVER 2>/dev/null || true)"
+  [ -n "$server" ] || server="https://ntfy.sh"
+  topic="$(env_get "$ENV_FILE" NTFY_TOPIC 2>/dev/null || true)"
+
+  if [ -n "$topic" ]; then
+    # Never `ok "NTFY_TOPIC is <value>"`: every ok/note/warn line is appended to
+    # $INSTALL_LOG, and the topic is a credential.
+    ok "NTFY_TOPIC is already set in $ENV_FILE (${#topic} characters, not printed)"
+    if ! ntfy_topic_strong "$topic"; then
+      warn "…but it is shorter than $NTFY_TOPIC_MIN_LEN characters or contains a character ntfy"
+      warn "does not accept, so scripts/_lib/notify.sh will REFUSE to use it and this"
+      warn "server will stay silent. Replace it in $ENV_FILE with the output of:"
+      warn "  openssl rand -hex 16"
+    fi
+  elif [ "$DRY" = 1 ]; then
+    note "would explain the topic-is-a-credential problem, offer to generate a topic,"
+    note "write NTFY_TOPIC to $ENV_FILE and send a test notification to the phone"
+    return 0
+  else
+    banner "THE TOPIC NAME IS THE WHOLE PASSWORD"
+    printf '  This is how the server talks to your phone: a new application on the\n'
+    printf '  public form, a deploy finishing or failing, a nightly backup aborting, and\n'
+    printf '  every Prometheus alert (disk, memory, API errors, backup age).\n\n'
+    printf '  It matters most for applications. EMAIL_DRIVER is console, so the "new\n'
+    printf '  application" e-mail is composed and delivered to NOBODY, while the site\n'
+    printf '  promises an answer within two working days. Today this is the only thing\n'
+    printf '  that tells you one arrived without you going and looking.\n\n'
+    printf '  %sOn ntfy.sh a topic is not an account. It is a string, and anyone who knows\n' "$C_Y"
+    printf '  or guesses it reads every notification this server ever sends — and can\n'
+    printf '  publish fake ones to your phone. Reserving a name is a paid feature, so on\n'
+    printf '  the free tier the length of this string is the only protection there is.%s\n\n' "$C_0"
+    printf '  So it is generated, never invented. "libriant", "libriant-prod" and your\n'
+    printf '  domain name are the first three strings anybody would try.\n\n'
+    printf '  It is written to %s (mode 600) and to nothing else: not to the\n' "$ENV_FILE"
+    printf '  install transcript, not to any file in git, not to a log line. The messages\n'
+    printf '  themselves never carry a name, an e-mail address, a phone number or a\n'
+    printf '  secret — they say WHAT happened and WHERE to look.\n\n'
+    printf '  Leave it blank to skip: nothing else changes, and nothing breaks. The\n'
+    printf '  server simply goes on saying nothing.\n\n'
+
+    local answer=""
+    ask answer "Press Enter to GENERATE a topic, paste one you already use, or type 'skip'"
+    case "$answer" in
+      skip | SKIP)
+        warn "no ntfy topic: applications, deploys, backups and alerts all reach nobody"
+        warn "until you set NTFY_TOPIC in $ENV_FILE. It is in the closing summary."
+        return 0
+        ;;
+      '')
+        # The recipe .env.prod.example documents, so the file and the installer
+        # cannot drift: 32 hex characters, comfortably past the library's floor.
+        if command -v openssl >/dev/null 2>&1; then
+          topic="$(openssl rand -hex 16)"
+        else
+          # openssl is in BASE_PACKAGES and the packages step runs long before
+          # this one, so this is a fallback for a box someone has taken it off.
+          topic="$(LC_ALL=C od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n')"
+        fi
+        ntfy_topic_strong "$topic" || die "could not generate a random topic (openssl and /dev/urandom both
+     produced nothing usable). Generate one yourself with \`openssl rand -hex 16\`,
+     put it in $ENV_FILE as NTFY_TOPIC, and re-run: $SELF --only env"
+        ;;
+      *) topic="$answer" ;;
+    esac
+
+    if ! ntfy_topic_ok "$topic"; then
+      warn "that is not a valid ntfy topic (allowed: A-Z a-z 0-9 _ - and at most 64"
+      warn "characters). NOTHING WAS WRITTEN — a topic with a '/' in it publishes to a"
+      warn "different topic than the phone subscribed to, which looks like it works."
+      warn "Re-run this step when you have one: $SELF --only env"
+      return 0
+    fi
+    if ! ntfy_topic_strong "$topic"; then
+      warn "that topic is only ${#topic} characters. scripts/_lib/notify.sh refuses anything"
+      warn "under $NTFY_TOPIC_MIN_LEN and would stay silent for ever, so NOTHING WAS WRITTEN. On ntfy.sh"
+      warn "a short topic is a public feed with a guessable name. Use: openssl rand -hex 16"
+      warn "Then re-run: $SELF --only env"
+      return 0
+    fi
+
+    # Written BEFORE the phone ceremony below, deliberately: a Ctrl-C between
+    # generating a topic and writing it down is how an operator ends up with a
+    # subscription on their phone to a topic nothing publishes to.
+    env_set_if_absent NTFY_TOPIC "$topic"
+    env_set_if_absent NTFY_SERVER "$server"
+  fi
+
+  # --dry-run stops here, and this guard is not decoration. The branch above
+  # returns early only when NOTHING is configured yet; on a re-run of a box that
+  # already has a topic, control reaches this point, and `notify.sh --test`
+  # SENDS A REAL NOTIFICATION. A dry run that buzzes the owner's phone is a dry
+  # run nobody trusts again. Found by re-reading this function as `--dry-run
+  # --only env` on an already-configured host.
+  if [ "$DRY" = 1 ]; then
+    note "would verify the channel and send a test notification to the phone"
+    return 0
+  fi
+
+  # ── The library's own verdict, not ours. ──────────────────────────────────
+  #
+  # `notify.sh --status` prints no value and exits non-zero when it would not
+  # send. Asking it is what makes the length rule above one rule rather than two
+  # that can drift: whatever this installer believes, the thing that will
+  # actually publish at 02:15 has just said whether it can.
+  local notify_sh="${APP_DIR}/scripts/_lib/notify.sh"
+  if [ ! -f "$notify_sh" ]; then
+    warn "$notify_sh is missing — cannot verify the channel from here."
+    return 0
+  fi
+  if ! LIBRIANT_ENV_FILE="$ENV_FILE" bash "$notify_sh" --status; then
+    warn "the notification library will NOT send with this configuration (its reason is"
+    warn "on the line above). Fix $ENV_FILE and re-run: $SELF --only env"
+    return 0
+  fi
+
+  # ── Now the phone. This is the only place the topic is printed. ───────────
+  topic="$(env_get "$ENV_FILE" NTFY_TOPIC 2>/dev/null || true)"
+  [ -n "$topic" ] || return 0
+  printf '\n  Subscribe on the phone now, before this goes any further.\n'
+  printf '    ntfy app → + → Subscribe to topic → type exactly:\n\n'
+  printf '      %s%s%s\n\n' "$C_B" "$topic" "$C_0"
+  printf '    or open this on the phone and tap Subscribe:\n'
+  printf '      %s\n\n' "$(ntfy_subscribe_url "$server" "$topic")"
+  printf '  %sThis is the ONLY place it is printed. It is not in %s.%s\n' \
+    "$C_Y" "$INSTALL_LOG" "$C_0"
+  printf '  %sYour terminal scrollback now holds it — treat that like a password.%s\n' \
+    "$C_Y" "$C_0"
+
+  local tries=0
+  while :; do
+    pause_for "Subscribe on the phone, then press Enter to send a test notification."
+    if LIBRIANT_ENV_FILE="$ENV_FILE" bash "$notify_sh" --test; then
+      # The server accepting a publish and a handset showing it are different
+      # facts, and only the operator can report the second one. This is the
+      # question the whole step exists to ask.
+      if confirm "Did it arrive on the phone?"; then
+        ok "the notification channel is proven end to end"
+        break
+      fi
+      warn "accepted by ntfy but not seen on the phone. That is a subscription, a muted"
+      warn "topic, a revoked notification permission, or a typo in the topic on the phone."
+    else
+      warn "the publish itself failed — see the line above. Egress to ntfy.sh (443/tcp"
+      warn "outbound) and the topic in $ENV_FILE are the two things to check."
+    fi
+    tries=$((tries + 1))
+    if [ "$tries" -ge 3 ]; then
+      warn "giving up after $tries attempts. The install continues — nothing depends on"
+      warn "this — but the server currently has no voice. Retry any time with:"
+      warn "  sudo -u $DEPLOY_USER LIBRIANT_ENV_FILE=$ENV_FILE bash $notify_sh --test"
+      break
+    fi
+    confirm "Try again?" || {
+      warn "unverified. The server has no voice until this works. Retry with:"
+      warn "  sudo -u $DEPLOY_USER LIBRIANT_ENV_FILE=$ENV_FILE bash $notify_sh --test"
+      break
+    }
+  done
+  return 0
+}
+
 # ── §8.2 The nightly backup — a green deploy has none ───────────────────────
 #
 # The cron file alone is not the whole job: backup.sh has moved on from §8.2 and
@@ -6699,17 +6986,41 @@ EOF
 EOF
   fi
 
+  # THE SERVER HAS NO VOICE — only when that is actually true. Printed here
+  # rather than as a standing paragraph because an unconditional warning about
+  # something already configured is the kind of line an operator learns to skip,
+  # and this list is long enough already.
+  if [ -z "$(env_get "$ENV_FILE" NTFY_TOPIC 2>/dev/null || true)" ]; then
+    cat <<EOF
+  NOTHING ON THIS SERVER CAN REACH YOU.
+    NTFY_TOPIC is not set in ${ENV_FILE}, so every channel that would have
+    used it is silent: a library applying through the public form, a failed
+    deploy, an aborted nightly backup, and every Prometheus alert. The
+    application case is the expensive one — EMAIL_DRIVER is console, that
+    notification e-mail is delivered to nobody, and the site promises an answer
+    within two working days.
+      openssl rand -hex 16          # the topic. It is a password: generate it.
+      # put it in ${ENV_FILE} as NTFY_TOPIC, then prove it:
+      bash ${APP_DIR}/scripts/_lib/notify.sh --test
+    or re-run this step, which asks and tests for you:  $SELF --only env
+
+EOF
+  fi
+
   cat <<EOF
   COPY ${ENV_FILE} AND THE ORIGIN PAIR INTO THE PASSWORD MANAGER.
     They are in no backup. MFA_MASTER_KEY, POSTGRES_PASSWORD and the origin
     certificate pair are irrecoverable if lost.
 
-  ALERTING IS PROBABLY NOT DELIVERING.
-    The deploy starts Prometheus and evaluates every rule, but Alertmanager
-    sits behind a profile that only switches on once
-    infra/monitoring/alertmanager.yml has real receivers instead of
-    [PLACEHOLDER]s. Until then nothing wakes anybody up — including the backup
-    dead-man switch and the disk-full alerts. §7.3.
+  THE DEAD MAN'S SWITCH STILL REACHES NOBODY, AND ntfy CANNOT TAKE IT.
+    infra/monitoring/alertmanager.yml now delivers its `default` receiver to
+    your ntfy topic — every rule in alerts.yml, on the phone, as Alertmanager's
+    own raw JSON with a title on it. The `watchdog` receiver is deliberately
+    still empty. That alert fires once a MINUTE for ever and its whole signal
+    is its SILENCE, which a push service cannot report: nothing that only sends
+    can tell you it has stopped sending. Until an external dead-man service
+    holds it (healthchecks.io, the same kind of URL as BACKUP_HEARTBEAT_URL), a
+    broken alerting pipeline still looks exactly like a quiet night. §7.3.
 
   PUT THE ORIGIN CERTIFICATE EXPIRY IN YOUR CALENDAR.
     Nothing monitors it. An expired origin certificate is a fully green deploy

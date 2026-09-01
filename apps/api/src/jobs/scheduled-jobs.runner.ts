@@ -1,6 +1,7 @@
 import { Queue, Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { loadEnv } from '../config/env.js';
+import { NotifyService } from '../platform/notify.service.js';
 import { RedisService } from '../platform/redis.service.js';
 import { describeError } from './job-error.js';
 import type { JobContext, JobResult, JobRunnerContext, ScheduledJob } from './jobs.types.js';
@@ -96,6 +97,112 @@ function isRunFailureKey(key: string): boolean {
  * does that with an age-based give-up budget.
  */
 const BACKLOG_KEYS = new Set(['abandoned', 'backlog', 'stuck']);
+
+/**
+ * How long this process stays quiet about a job it has already announced on
+ * the operator's phone.
+ *
+ * The push wired into `worker.on('failed')` below is the first thing in this
+ * repository that reaches a person without them going and looking —
+ * launch-readiness-06 measured the detection time for anything breaking here
+ * as "until the sole operator next looks", which the handbook sets at weekly.
+ * That makes the VOLUME question the whole design, and the answer is already
+ * written in the comment on {@link BACKLOG_KEYS} just above: an alert that is
+ * always firing gets silenced, and a silenced channel carries exactly as much
+ * information as no channel. On a phone the silencing is one tap, and nothing
+ * in this file can detect that it happened.
+ *
+ * So the cooldown is per job NAME and it is long. Every job in the registry is
+ * an idempotent sweep on its own interval, so a broken one is broken for
+ * hours: the second, third and hundredth exhaustion inside a working day are
+ * the same fact told again. Six hours bounds the worst case — every one of the
+ * eleven registered jobs failing continuously for a day — at 11 × 4 = 44
+ * pushes. At one hour it would be 264.
+ *
+ * The eleven-at-once case (Postgres gone) stays loud on purpose: eleven
+ * notifications in the first minutes say "nothing is working", which is true,
+ * and then it goes quiet instead of repeating itself all day.
+ *
+ * DELIBERATELY NOT reset when the job next succeeds, which is the obvious
+ * refinement and the wrong one. `support-session-expiry` ticks every 60 s, so
+ * a sweep flapping between success and failure would announce itself every
+ * other tick — 720 times a day, which is precisely the muting this constant
+ * exists to prevent. A flapper is announced once and then read on /healthz
+ * like every other ongoing condition.
+ */
+const JOB_ANNOUNCE_COOLDOWN_MS = 6 * 60 * 60_000;
+
+/**
+ * Does this failure earn a push, and record that it got one.
+ *
+ * Two gates, and the first is the one that matters: a job is announced only
+ * once BullMQ has spent the WHOLE retry budget on the tick. reliability-20
+ * gave every tick three attempts backing off by intervalMs/6 exactly because a
+ * two-second Postgres blip at the top of the hour is not an incident —
+ * announcing the first attempt would push for every blip the retries exist to
+ * absorb, and would make the phone busiest during the outages it rides out.
+ *
+ * `|| 1` on both fields rather than `??`, for the same reason the log line
+ * below carries the same comment: BullMQ stores an absent retry budget as
+ * `attempts: 0`, so `??` would compare against zero and make every FIRST
+ * failure look like an exhausted one.
+ *
+ * Exported, and taking its clock and its map as arguments, so the decision can
+ * be driven without a Redis — which is the only kind of test this file's suite
+ * can run.
+ */
+export function shouldAnnounceJobFailure(
+  job: { name?: string; attemptsMade?: number; attempts?: number },
+  announcedAt: Map<string, number>,
+  now: number = Date.now(),
+): boolean {
+  const name = job.name;
+  if (!name) return false;
+  if ((job.attemptsMade || 1) < (job.attempts || 1)) return false;
+  const last = announcedAt.get(name);
+  if (last !== undefined && now - last < JOB_ANNOUNCE_COOLDOWN_MS) return false;
+  announcedAt.set(name, now);
+  return true;
+}
+
+/**
+ * Gate, compose and send — the whole of what a broken sweep puts on a phone.
+ *
+ * THE ERROR TEXT IS NOT IN THE MESSAGE, and its absence is the design. A Prisma
+ * connect failure quotes the DATABASE_URL and an ioredis one quotes the Redis
+ * URL; both carry a password, into a message that leaves the country, is
+ * retained by ntfy.sh and — on a public topic — is readable by anyone who
+ * guesses the string. The job NAME is a static identifier out of registry.ts
+ * and names no tenant and no person; that, plus where to look, is the whole
+ * doorbell. NotifyService redacts as a backstop, but a call site that leans on
+ * the backstop is a call site that will eventually outsmart it.
+ *
+ * `warn`, not `error`: `error` is the only level a handset can be told to let
+ * through do-not-disturb, and a sweep that will re-run on its own interval is
+ * not worth 03:00. It is worth today.
+ *
+ * Exported so the gate, the wording and the send can be driven together
+ * without a Redis — `startScheduledJobs` needs one and this decision does not.
+ */
+export function announceJobFailure(
+  notifier: Pick<NotifyService, 'sendDetached'>,
+  job: { name?: string; attemptsMade?: number; attempts?: number },
+  announcedAt: Map<string, number>,
+  now: number = Date.now(),
+): void {
+  if (!shouldAnnounceJobFailure(job, announcedAt, now)) return;
+  const hours = JOB_ANNOUNCE_COOLDOWN_MS / 3_600_000;
+  notifier.sendDetached({
+    level: 'warn',
+    title: `Scheduled job failing: ${job.name}`,
+    body:
+      `${job.name} used all ${job.attempts || 1} attempts of one tick and gave up. ` +
+      'Fines, holds, member notices, retention and cleanup all run on these sweeps. ' +
+      "The worker's /healthz has the last result for every job and its container log has " +
+      `the error — deliberately not repeated here. Nothing more about this job for ${hours} hours.`,
+    tags: ['gear'],
+  });
+}
 
 /** One job's last run outcome, surfaced via /healthz. `ok: false` rows let
  *  ops see ongoing failures without scraping stderr (SCHEDULED-LASTRESULT). */
@@ -273,6 +380,23 @@ export async function startScheduledJobs(
 
   const lastResults: Record<string, ScheduledJobResult> = {};
   let inFlight = 0;
+  /**
+   * Job name → when this process last put that job on the operator's phone.
+   *
+   * Per runner rather than per module so two runners in one process (only the
+   * tests do that) cannot silence each other, and so the state dies with the
+   * handle. It is in-memory on purpose: a restart re-arms the announcement,
+   * which is the right direction — a worker that has just crashed and come
+   * back is a worker whose next failure is worth hearing about again.
+   */
+  const announcedAt = new Map<string, number>();
+  /**
+   * Constructed here, not injected: this file is started from worker.ts with a
+   * hand-built context and there is no Nest container in that process at all.
+   * NotifyService needs no collaborators, is off unless NTFY_TOPIC is set, and
+   * never throws.
+   */
+  const notifier = new NotifyService();
 
   const worker = new Worker(
     QUEUE_NAME,
@@ -328,6 +452,26 @@ export async function startScheduledJobs(
     // failure before reliability-20.
     const attempt = `${job?.attemptsMade || 1}/${job?.opts.attempts || 1}`;
     console.error(`[scheduled] ${job?.name} failed (attempt ${attempt}): ${err.message}`);
+
+    // …and, once the retries are spent, tell a person. The line above goes to
+    // stderr in a rolling container log which, per launch-readiness-06, nobody
+    // reads until the weekly sweep; `libriant_worker_job_last_ok` is exported
+    // but infra/monitoring/alerts.yml has no rule pointed at it, so today a
+    // sweep can stop working and stay stopped with nobody told.
+    //
+    // Wrapped, because "a notification must never break the thing it reports
+    // on" has to hold here whatever NotifyService does: an exception escaping a
+    // BullMQ event listener is an unhandled rejection in the worker process,
+    // which is a notifier that kills the jobs it was installed to watch.
+    try {
+      announceJobFailure(
+        notifier,
+        { name: job?.name, attemptsMade: job?.attemptsMade, attempts: job?.opts.attempts },
+        announcedAt,
+      );
+    } catch (notifyErr) {
+      console.error(`[scheduled] job-failure notification dropped: ${describeError(notifyErr)}`);
+    }
   });
 
   // eslint-disable-next-line no-console

@@ -14,6 +14,14 @@
 #   --no-fetch        deploy the working tree as-is, skip git fetch/reset
 #   --skip-build      reuse the images already on the box
 #   --dry-run         print what would happen and stop
+#   --notify-test     send one test push to the configured ntfy topic and stop
+#
+# THIS SCRIPT PUSHES ITS RESULT TO A PHONE, if NTFY_TOPIC is set in .env.prod.
+# It runs for 10-20 minutes and the runbook tells the operator to start it under
+# tmux and walk away, so "it finished, and how it finished" is exactly the thing
+# they cannot get any other way. It also cannot become noise: a deploy is a
+# deliberate act, so the ceiling on this channel is the number of times a human
+# typed the command. Unset topic = no push and no error; see notify() below.
 #
 # Prerequisites, all created by the first-run bootstrap (see
 # docs/RUNBOOK.md): docker, /srv/libriant/app (this checkout),
@@ -27,6 +35,7 @@ REF="origin/main"
 FETCH=1
 BUILD=1
 DRY=0
+NOTIFY_TEST=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -34,13 +43,136 @@ while [ $# -gt 0 ]; do
     --no-fetch) FETCH=0; shift ;;
     --skip-build) BUILD=0; shift ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    --notify-test) NOTIFY_TEST=1; shift ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
 say() { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
 die() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+# ════════════════════════════════════════════════════════════════════════════
+# ntfy — the owner's phone.
+#
+# The publisher, the priority table, the redaction pass and the config block all
+# live in scripts/_lib/notify.sh, which is also what the API container mirrors.
+# One implementation, so a rule tightened in one place cannot stay loose in the
+# other. Everything this script adds is policy: WHEN a deploy is worth a push
+# and WHAT it is allowed to say.
+#
+# WHY A DEPLOY PUSHES AT ALL, and why it cannot become noise: this runs for
+# 10-20 minutes and the runbook tells the operator to start it under tmux and
+# walk away. The ceiling on this channel is therefore the number of times a
+# human typed the command.
+#
+# LIBRIANT_ENV_FILE is exported first because notify.sh falls back to reading
+# the NTFY_* keys straight out of the env file when the caller has not sourced
+# it — and this script does not source it until a hundred lines below, AFTER the
+# preflight checks (a missing origin certificate, an unmounted data root) that
+# are the likeliest way it dies. Without this, exactly the failures worth being
+# told about would be the ones that never reached the phone.
+export LIBRIANT_ENV_FILE="$ENV_FILE"
+# shellcheck source=_lib/notify.sh
+. "$(dirname "$0")/_lib/notify.sh"
+
+# notify LEVEL TITLE BODY [tags] — a thin wrapper for one reason only: --dry-run
+# must print what it would send instead of sending it. notify_send itself always
+# returns 0 and swallows every failure, which is the contract that keeps a push
+# from ever failing a deploy.
+notify() {
+  if [ "$DRY" = 1 ]; then printf '  would push [%s]: %s — %s\n' "$1" "$2" "$3"; return 0; fi
+  notify_send "$@"
+}
+
+# The URL Alertmanager posts to. Built here rather than in notify.sh because
+# Alertmanager is not our client and cannot use our shape.
+#
+# THE DIVERGENCE, STATED. notify.sh deliberately puts the topic in the JSON BODY
+# so it never reaches `ps`, a proxy log or a curl error. Alertmanager POSTs its
+# OWN envelope and has no body template, so the topic has to go back into the
+# URL path — which is why this string is written to a mode-600 file inside a
+# Docker volume, piped on stdin, and never passed as an argument to anything.
+#
+# WHAT ARRIVES, HONESTLY. ntfy takes the request body verbatim as the message
+# text, and Alertmanager's body is `{"receiver":…,"status":…,"alerts":[…]}`. So
+# the phone shows raw JSON with the alert name about ninety bytes in — past the
+# one-line preview, inside the expanded notification. Making it readable needs a
+# reshaping proxy between the two: one more service, on the same box, inside the
+# alerting path, able to fail on its own. Not worth it for a doorbell.
+#
+# The query string is the cheap half: `title`, `priority` and `tags` are ntfy's
+# documented query aliases for the X-Title / X-Priority / X-Tags headers, so the
+# notification gets a readable heading even though its body is JSON. Nothing
+# depends on them — a server that ignores them still delivers the message,
+# untitled. `%%20` and not `+`, because only one of the two is unambiguous in a
+# path-adjacent query string.
+ntfy_alert_url() {
+  local server="${NTFY_SERVER:-https://ntfy.sh}"
+  notify_enabled || return 1
+  [ -n "${NTFY_TOPIC:-}" ] || return 1
+  while :; do
+    case "$server" in */) server="${server%/}" ;; *) break ;; esac
+  done
+  printf '%s/%s?title=Libriant%%20alert&priority=high&tags=rotating_light' "$server" "$NTFY_TOPIC"
+}
+
+if [ "$NOTIFY_TEST" = 1 ]; then
+  # notify.sh --test is the canonical prover and reports through its exit
+  # status. This flag exists on top of it because it runs from THIS script's
+  # environment and on this box's checkout, which is what actually deploys, and
+  # because the two things below are true only here.
+  say "Proving the notification channel"
+  notify_test || die "the test notification was not accepted — see the line above.
+     The deploy is unaffected by this either way: every push is best-effort."
+  echo
+  echo "  A real deploy sends exactly one of these, at the end:"
+  echo "    info   <tag> deployed and healthy in NmNs"
+  echo "    error  stopped in stage '<stage>' — nothing rolled back"
+  echo
+  echo "  Alertmanager posts to the same topic, but as its own raw JSON envelope"
+  echo "  with a query string for the title, because it has no body template:"
+  echo "      <server>/<topic>?title=Libriant%20alert&priority=high&tags=rotating_light"
+  echo "  That URL is written into the alertmanager_data volume by this script, never"
+  echo "  into git and never into a log line — the topic is a credential."
+  exit 0
+fi
+
+# ── The result push, from an EXIT trap. ─────────────────────────────────────
+#
+# A trap rather than two calls at the end, because most of the ways this script
+# stops are `die` — a missing origin certificate, an invalid Caddyfile, a stack
+# that never became healthy — and every one of those exits directly. Wiring the
+# failure push to the exit status is the only shape that covers all of them,
+# including the `set -e` deaths nobody predicted.
+#
+# STAGE is a fixed label, never a command's output: it is the difference between
+# "where to look" and "here is a paragraph of your container logs, sent to a
+# third party". The trap sets no exit status of its own.
+STAGE="preflight"
+DEPLOY_STARTED_AT="$(date +%s)"
+on_exit() {
+  local rc=$? elapsed
+  set +e
+  elapsed=$(( $(date +%s) - DEPLOY_STARTED_AT ))
+  if [ "$rc" = 0 ] && [ "$STAGE" = "done" ]; then
+    # `info`, not `warn`: this is the "you can stop watching" message and it is
+    # the only routine push this script makes. An operator who is woken by a
+    # SUCCESSFUL deploy mutes the topic, and a muted topic loses the failures.
+    notify info "Libriant deploy ok" \
+      "${IMAGE_TAG:-unknown} deployed and healthy in $((elapsed / 60))m $((elapsed % 60))s." \
+      "rocket"
+  elif [ "$rc" != 0 ]; then
+    # `error` is the only level that can get through do-not-disturb, and a
+    # half-finished deploy earns it: whatever was serving before is still
+    # serving, nothing was rolled back, and nobody knows it yet.
+    notify error "Libriant deploy FAILED" \
+      "Stopped in stage '$STAGE' (exit $rc) after $((elapsed / 60))m $((elapsed % 60))s${IMAGE_TAG:+, tag $IMAGE_TAG}. Nothing was rolled back. The reason is in the terminal this was started from." \
+      "ship"
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
 
 [ -d "$APP_DIR/.git" ] || die "$APP_DIR is not a git checkout. Run the first-run bootstrap first."
 cd "$APP_DIR"
@@ -114,6 +246,7 @@ if ! grep -qE '^ADMIN_BOOTSTRAP_EMAIL=.+' "$ENV_FILE" 2>/dev/null; then
 fi
 
 if [ "$FETCH" = "1" ]; then
+  STAGE="git-sync"
   say "Syncing to $REF"
   git fetch --quiet origin
   # Host-local edits to TRACKED files are discarded, exactly as CI does it.
@@ -130,6 +263,7 @@ git diff --quiet || DIRTY="-dirty"
 # out, so never roll back "to" one.
 TAG="${GIT_SHA}${DIRTY}"
 
+STAGE="env"
 say "Loading $ENV_FILE"
 # Generate any MISSING secrets; never overwrites existing values.
 bash scripts/ensure-env.sh --auto "$ENV_FILE"
@@ -174,6 +308,7 @@ MON_FILES="-f infra/monitoring/docker-compose.monitoring.yml"
 mon() { docker compose -p libriant-monitoring $MON_FILES "$@"; }
 
 deploy_monitoring() {
+  STAGE="monitoring"
   say "Starting the monitoring stack"
 
   # Same shape as the Caddyfile gate above, and for the same reason: a rule file
@@ -191,19 +326,43 @@ deploy_monitoring() {
   [ -f infra/monitoring/alertmanager.yml ] \
     || die "infra/monitoring/alertmanager.yml is missing — Prometheus has nowhere to deliver to."
 
-  # Alertmanager refuses to start on a receiver URL it cannot parse, and
-  # alertmanager.yml still ships `[PLACEHOLDER: …]` for both of its receivers,
-  # because who gets woken up is an owner's decision. Rather than crash-loop it
-  # on every deploy, that service sits behind the `alerting` profile and this
-  # turns the profile on by itself the moment the file is real.
+  # Alertmanager refuses to start on a receiver URL it cannot parse, so the
+  # service sits behind the `alerting` profile and this turns the profile on by
+  # itself once the file is real AND there is somewhere for it to post.
   #
-  # Comments stripped before the grep: the file's own header explains what a
-  # [PLACEHOLDER: …] is, and matching that sentence kept the profile off even
-  # with both receivers filled in. Also found by running this.
+  # TWO conditions now, not one:
+  #
+  #   1. no [PLACEHOLDER] left in the CONFIG. Comments stripped before the grep:
+  #      the file's own header explains what a [PLACEHOLDER: …] is, and matching
+  #      that sentence kept the profile off even with the receivers filled in.
+  #      That still matters — the `watchdog` receiver is deliberately left open
+  #      and its explanation carries the marker — and it is why the marker now
+  #      lives in a comment there rather than inside a URL.
+  #
+  #   2. an ntfy topic to post to. `default` reads its URL from a file in the
+  #      alertmanager_data volume (see alertmanager.yml), and this script is what
+  #      writes it. Starting Alertmanager without that file gives an alerting
+  #      stack that looks healthy in `docker compose ps` and fails every single
+  #      notification into its own container log — silent non-delivery wearing a
+  #      green badge, which is worse than the honest red banner below.
+  COMPOSE_PROFILES=""
   if sed 's/#.*//' infra/monitoring/alertmanager.yml | grep -q '\[PLACEHOLDER'; then
-    COMPOSE_PROFILES=""
+    ALERTING_OFF_BECAUSE="alertmanager.yml still has a [PLACEHOLDER] in a receiver"
+  elif ! notify_enabled; then
+    # notify_enabled is the library's own verdict, not a `-n` test: it also
+    # rejects a topic short enough to guess and one with characters ntfy will
+    # not accept. Either way the receiver would have no destination it can use,
+    # and `notify_status` below prints the reason without printing the value.
+    #
+    # `|| true` inside the substitution is load-bearing: notify_status exits 1
+    # when notifications are off, this script runs under `set -euo pipefail`,
+    # and the exit status of `VAR=$(pipeline)` is the pipeline's — so without it
+    # the deploy would die at the exact moment it was trying to explain why
+    # alerting is not on.
+    ALERTING_OFF_BECAUSE="ntfy is not usable — $({ notify_status 2>&1 || true; } | head -n1)"
   else
     COMPOSE_PROFILES="alerting"
+    ALERTING_OFF_BECAUSE=""
   fi
   # Exported BEFORE the amtool run, not after: `alertmanager` only exists as a
   # service while its profile is active, so the validation below cannot select
@@ -213,6 +372,42 @@ deploy_monitoring() {
     mon run --rm --no-deps --entrypoint amtool alertmanager \
       check-config /etc/alertmanager/alertmanager.yml \
       || die "infra/monitoring/alertmanager.yml is invalid — monitoring was not touched."
+
+    # ── The topic URL, into the volume, on every deploy. ────────────────────
+    #
+    # WHY IT IS NOT IN alertmanager.yml: that file is in git, and on ntfy.sh the
+    # topic name is the whole credential — anyone holding the string can read
+    # every alert and publish forged ones. So Alertmanager reads `url_file`, and
+    # the only writable path that container has is its own data volume.
+    #
+    # Written through the container rather than into /var/lib/docker/volumes/…
+    # directly: this script runs as `deploy`, which cannot read that tree, and
+    # pre-creating the volume from the host would make Compose refuse it as a
+    # volume it did not create. It reaches the container on STDIN, and the only
+    # thing that ever holds it here is `printf`, which is a bash builtin and
+    # forks no process — so the topic never becomes a process argument and never
+    # appears in this box's `ps`. No trailing newline: Alertmanager trims the
+    # file, but a URL with a stray byte on the end is not a thing to be relaxed
+    # about.
+    #
+    # A failure here turns alerting OFF rather than failing the deploy — the
+    # notification channel must never be the thing that breaks the deploy — and
+    # the banner below then says so in full. The empty-string guard is the same
+    # rule: writing an empty file would leave Alertmanager posting to nowhere
+    # while every dashboard says it is up.
+    alert_url="$(ntfy_alert_url || true)"
+    if [ -z "$alert_url" ]; then
+      COMPOSE_PROFILES=""
+      export COMPOSE_PROFILES
+      ALERTING_OFF_BECAUSE="the receiver URL came out empty, so there is nothing to post to"
+    elif ! printf '%s' "$alert_url" \
+      | mon run --rm --no-deps -T --entrypoint sh alertmanager \
+          -c 'umask 077; cat > /alertmanager/ntfy-url' >/dev/null 2>&1; then
+      COMPOSE_PROFILES=""
+      export COMPOSE_PROFILES
+      ALERTING_OFF_BECAUSE="the receiver URL could not be written into the alertmanager_data volume"
+    fi
+    unset alert_url
   fi
 
   mon up -d || die "the monitoring stack failed to start."
@@ -225,7 +420,14 @@ deploy_monitoring() {
   # prove delivery — that is what the banner below is for.
   sleep 10
   local svc id state
-  for svc in prometheus node-exporter; do
+  # alertmanager joins the list the moment it is supposed to be running. Without
+  # it, the one component whose failure is invisible by definition was the one
+  # component nothing checked: a crash-looping Alertmanager leaves Prometheus
+  # green, every rule evaluating, and every alert going nowhere.
+  local mon_services="prometheus node-exporter"
+  [ -n "$COMPOSE_PROFILES" ] && mon_services="$mon_services alertmanager"
+  # shellcheck disable=SC2086
+  for svc in $mon_services; do
     id="$(docker ps -aq --filter "label=com.docker.compose.project=libriant-monitoring" \
                         --filter "label=com.docker.compose.service=$svc" | head -n1)"
     state="$(docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null || echo missing)"
@@ -238,20 +440,31 @@ deploy_monitoring() {
 
   if [ -n "$COMPOSE_PROFILES" ]; then
     say "Alerting is live: Prometheus is evaluating alerts.yml and Alertmanager is delivering it"
+    printf '  Alerts go to the ntfy topic in %s, as raw Alertmanager JSON with a\n' "$ENV_FILE"
+    printf '  title — a doorbell, not a letter. Read the alert itself at /alerts.\n'
   else
     printf '\n\033[31m'
     printf '  ══════════════════════════════════════════════════════════════════\n'
     printf '  ALERTS ARE NOT BEING DELIVERED.\n'
     printf '  ══════════════════════════════════════════════════════════════════\033[0m\n'
     printf '\033[33m'
-    printf '  infra/monitoring/alertmanager.yml still has [PLACEHOLDER] receivers,\n'
-    printf '  so Alertmanager is NOT running. Prometheus IS evaluating all the\n'
-    printf '  rules and you can read them at /alerts over an SSH tunnel — but\n'
-    printf '  nothing will wake anyone up. That includes BackupNeverRan, the\n'
-    printf '  disk-full alerts, and the Watchdog that is supposed to tell you\n'
-    printf '  alerting itself has broken.\n'
-    printf '  Put a real destination in that file and re-run this script.\033[0m\n\n'
+    printf '  Alertmanager is NOT running: %s.\n' "$ALERTING_OFF_BECAUSE"
+    printf '  Prometheus IS evaluating all the rules and you can read them at\n'
+    printf '  /alerts over an SSH tunnel — but nothing will wake anyone up. That\n'
+    printf '  includes BackupNeverRan, the disk-full alerts, and the Watchdog\n'
+    printf '  that is supposed to tell you alerting itself has broken.\n'
+    printf '  Fix that and re-run this script.\033[0m\n\n'
   fi
+
+  # SAID ON EVERY DEPLOY, in both states, because it is true in both. The
+  # Watchdog fires once a minute for ever and its receiver drops it: ntfy is
+  # push-only and cannot serve a switch whose entire signal is SILENCE. Until an
+  # external dead-man service holds it, a broken alerting pipeline still looks
+  # exactly like a quiet night — which is the one failure alerting cannot report
+  # about itself.
+  printf '\033[33m  ! the Watchdog (dead man'"'"'s switch) still reaches nobody. It needs an\n'
+  printf '    external service that alerts on SILENCE — healthchecks.io or similar.\n'
+  printf '    infra/monitoring/alertmanager.yml, receiver `watchdog`, says how.\033[0m\n'
 }
 
 echo "  commit    $(git rev-parse --short=12 HEAD)  $(git log -1 --format=%s | cut -c1-60)"
@@ -259,8 +472,9 @@ echo "  IMAGE_TAG $IMAGE_TAG"
 echo "  data root $DATA_ROOT"
 [ -n "$DIRTY" ] && printf '\033[33m  working tree is DIRTY — this image matches no commit\033[0m\n'
 
-if [ "$DRY" = "1" ]; then say "--dry-run: stopping here"; exit 0; fi
+if [ "$DRY" = "1" ]; then STAGE="dry-run"; say "--dry-run: stopping here"; exit 0; fi
 
+STAGE="prune"
 say "Reclaiming disk before the build"
 # Every deploy makes new SHA-tagged images; unpruned they fill the disk, which
 # has previously broken a deploy at the seed step with ENOSPC. In-use images are
@@ -269,6 +483,7 @@ docker image prune -af --filter 'until=72h' || true
 docker builder prune -f --filter 'until=72h' || true
 
 if [ "$BUILD" = "1" ]; then
+  STAGE="build"
   say "Building images on this box"
   # Building Next.js here is the memory-hungry step. If it is OOM-killed
   # (exit 137), give the box swap or build one service at a time:
@@ -276,6 +491,7 @@ if [ "$BUILD" = "1" ]; then
   dc build
 fi
 
+STAGE="caddy-validate"
 say "Validating the Caddyfile before anything is recreated"
 # Two vhosts claiming one hostname is an adapter error. Without this check the
 # sequence is: up -d succeeds, caddy reload fails, the fallback recreate
@@ -285,6 +501,7 @@ dc run --rm --no-deps --entrypoint caddy caddy \
   validate --config /etc/caddy/Caddyfile --adapter caddyfile \
   || die "Caddyfile is invalid — nothing was changed."
 
+STAGE="compose-up"
 say "Starting the stack"
 # --force-recreate for the same reason CI uses it: `up -d` alone may decide
 # nothing changed for a re-used tag and leave OLD code running.
@@ -296,12 +513,14 @@ if ! dc up -d --remove-orphans --force-recreate; then
   die "compose up failed."
 fi
 
+STAGE="caddy-reload"
 say "Reloading Caddy"
 # Its config is a bind-mount, so `up -d` won't restart it for a Caddyfile-only
 # change. Graceful reload, with a recreate as the fallback.
 dc exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile \
   || dc up -d --force-recreate caddy
 
+STAGE="health"
 say "Waiting for health"
 # Local checks only. The CI gate gets to assume public DNS and a Cloudflare
 # origin cert; a box that is not yet in DNS has neither, so asking for those
@@ -351,6 +570,12 @@ say "Healthy: origin + marketing site + api + web + worker + pooler path"
 dc ps
 
 deploy_monitoring
+
+# The last thing before the summary. `done` is what the EXIT trap reads to tell
+# a finished deploy from one that stopped somewhere in the middle, and the push
+# it sends is the whole point of the tmux-and-walk-away instruction in the
+# runbook.
+STAGE="done"
 
 echo
 echo "Deployed $IMAGE_TAG. This box is not in DNS yet, so nothing is public."

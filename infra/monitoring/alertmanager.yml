@@ -7,20 +7,55 @@
 # nobody at 3am.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# OWNER ACTION REQUIRED BEFORE THIS DOES ANYTHING.
+# `default` NOW DELIVERS, TO ntfy. `watchdog` STILL DOES NOT, AND CANNOT.
 #
-# Replace [PLACEHOLDER: …] below with a real destination. No engineer can invent
-# it: it is a decision about who gets woken up, and by what. Until it is filled
-# in, `libriant-monitoring` refuses to start rather than pretending to alert —
-# Alertmanager rejects a webhook receiver with an unparseable URL at boot, which
-# is deliberate. A monitoring stack that starts cleanly while routing nowhere is
-# the exact failure this file exists to end.
+# Both receivers used to read `[PLACEHOLDER: …]`, which Alertmanager cannot
+# parse, so the service refused to boot and both deploy scripts kept it behind
+# the `alerting` profile. Every rule in alerts.yml was evaluated and delivered
+# nowhere. That is now half fixed, and the two halves are very different:
 #
-# Reasonable choices, cheapest first:
-#   • an email receiver via the same provider that sends transactional mail
-#     (nothing is configured yet — EMAIL_DRIVER is 'console' and there is no
-#     API key, so this is not available today);
-#   • a webhook into whatever you already read on your phone;
+#   default   → ntfy (hosted, ntfy.sh). The URL is NOT in this file; see
+#               `url_file` below. Filled in.
+#   watchdog  → nothing. ntfy is push-only and this receiver's whole job is to
+#               notice SILENCE. Deliberately still open — see its own note.
+#
+# ── WHY THE URL IS NOT IN THIS FILE ─────────────────────────────────────────
+#
+# On ntfy.sh a topic is readable AND writable by anyone who knows the string.
+# There is no second factor: the topic name IS the credential. This file is in
+# git, so the topic can never be written here — a `git log -p` of a repo that
+# later goes public, or a laptop backup, hands a stranger both the alert feed
+# and the ability to forge alerts into it.
+#
+# So the receiver reads `url_file`, and the file lives in the alertmanager_data
+# volume, written on EVERY deploy by scripts/deploy-on-host.sh from NTFY_TOPIC
+# in /srv/libriant/.env.prod (which is 600, untracked, and in no backup). It is
+# the same posture as every other secret on this box.
+#
+# ── WHAT ACTUALLY ARRIVES ON THE PHONE, HONESTLY ────────────────────────────
+#
+# Alertmanager's webhook receiver POSTs ITS OWN JSON envelope
+# ({"receiver":…,"status":…,"alerts":[…]}) and has NO body template — `url`,
+# `url_file`, `max_alerts`, `send_resolved` and `http_config` are the whole
+# surface. ntfy uses the request body verbatim as the message text. So the
+# notification body is raw JSON. Measured, not assumed: in a representative
+# firing envelope the alert NAME starts 92 bytes in, which is past the one-line
+# preview and inside the expanded notification.
+#
+# That is accepted rather than fixed, and the tradeoff is stated out loud:
+#   • fixing it needs a reshaping proxy between Alertmanager and ntfy.sh — one
+#     more service on the same box, in the alerting path, that can itself fail;
+#   • `max_alerts: 1` below keeps the envelope small enough to stay well inside
+#     ntfy's message ceiling and puts the one alert that matters first;
+#   • deploy-on-host.sh appends ntfy's documented `?title=`/`?priority=`/
+#     `?tags=` query aliases to the URL, so the notification has a readable
+#     TITLE even though its body is JSON. If a server ignores those aliases the
+#     message is still delivered, just untitled — nothing depends on them.
+# It is a doorbell, not a letter: it says something fired and where to look.
+#
+# ── WHAT ELSE COULD GO HERE ─────────────────────────────────────────────────
+#   • an email receiver via the transactional mail provider (nothing is
+#     configured — EMAIL_DRIVER is 'console' and there is no API key);
 #   • a paid on-call service if this ever carries more than the pilot.
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -70,16 +105,62 @@ route:
 receivers:
   - name: default
     webhook_configs:
-      - url: '[PLACEHOLDER: alert webhook URL — see the note at the top of this file]'
+      # /alertmanager is the alertmanager_data volume — the only writable path
+      # this container has, since alertmanager.yml itself is a read-only bind
+      # mount of this git-tracked file. scripts/deploy-on-host.sh writes the
+      # topic URL there on every deploy, from NTFY_TOPIC in .env.prod, and
+      # REFUSES to switch the `alerting` profile on when it cannot: an
+      # Alertmanager that is up and posting to a file that is not there fails
+      # every notification into its own container log, which is the silent
+      # non-delivery this whole file exists to end.
+      #
+      # `url_file` is Alertmanager's own field (it is mutually exclusive with
+      # `url`). If an older Alertmanager ever ships here without it, the
+      # `amtool check-config` both deploy paths run first fails loudly and the
+      # stack is not touched — it cannot degrade into delivering nowhere.
+      - url_file: /alertmanager/ntfy-url
         send_resolved: true
+        # One alert per push, and this is a size limit rather than a taste one.
+        # Measured on a real HostDiskCritical envelope: 1 alert is 1108 bytes,
+        # 5 are 3088, and 10 are 5563 — past ntfy.sh's documented 4096-byte
+        # message limit, at which point the notification is not truncated, it is
+        # REFUSED. The group key is alertname+instance so a group is nearly
+        # always one alert anyway; this is what stops the worst night — the one
+        # where everything trips at once — from being the night nothing arrives.
+        # `truncatedAlerts` in the envelope says when something was held back.
+        max_alerts: 1
 
+  # ── STILL OPEN, ON PURPOSE. DO NOT POINT THIS AT ntfy. ─────────────────────
+  #
+  # [PLACEHOLDER: dead-man's-switch ping URL — e.g. the healthchecks.io check
+  # the owner is setting up. It must ALERT ON SILENCE, not on receipt.]
+  #
+  # This receiver has no delivery config at all, which is valid Alertmanager
+  # (the classic "null" receiver) and lets the service boot so that `default`
+  # above can do its job. The Watchdog alert therefore fires every minute and
+  # is dropped. That is a KNOWN, NAMED hole, not a fixed one, and both deploy
+  # scripts and `pnpm check:alerts` say so on every run.
+  #
+  # ntfy cannot serve this receiver, and the reason is structural rather than a
+  # missing feature: ntfy is push-only. A dead man's switch is the assertion
+  # "somebody complains when a message STOPS arriving", and nothing that only
+  # receives pushes can make it. Wiring the Watchdog here would also push once a
+  # minute (see its route's repeat_interval), which is precisely how a phone
+  # channel gets muted — and a muted channel loses every real alert too.
+  #
+  # It must not share `default`'s destination either: a heartbeat delivered to
+  # the same place as real alerts makes a broken pipeline look like a quiet
+  # night. `pnpm check:alerts` asserts that they differ.
+  #
+  # To close it, once the external check exists, mirror `default`:
+  #     webhook_configs:
+  #       - url_file: /alertmanager/watchdog-url
+  #         send_resolved: false
+  # then teach deploy_monitoring() in scripts/deploy-on-host.sh — the same block
+  # that writes /alertmanager/ntfy-url — to materialise a second file from a
+  # WATCHDOG_PING_URL key in .env.prod. Do not paste the URL here: like the ntfy
+  # topic, a healthchecks.io ping URL is a bearer credential.
   - name: watchdog
-    webhook_configs:
-      # A heartbeat endpoint that alerts when it STOPS being called. Not the
-      # same destination as `default`: sending the heartbeat to the same place
-      # as real alerts means a broken pipeline looks like a quiet night.
-      - url: '[PLACEHOLDER: heartbeat/dead-man URL — must alert on SILENCE, not on receipt]'
-        send_resolved: false
 
 inhibit_rules:
   # If the whole API is down, do not also page about its connection pool, its

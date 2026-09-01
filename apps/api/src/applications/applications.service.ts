@@ -4,6 +4,7 @@ import { controlDb } from '@libriant/db-control';
 import type { LibraryType } from '@libriant/db-control';
 import { findCountry, isCountryCode } from '@libriant/shared';
 import { EmailService } from '../email/email.service.js';
+import { NotifyService } from '../platform/notify.service.js';
 import { RateLimitService } from '../platform/rate-limit.service.js';
 import { RedisService } from '../platform/redis.service.js';
 import { loadEnv } from '../config/env.js';
@@ -156,6 +157,108 @@ class ProcessWideCeiling {
 const NOTIFY_TIMEOUT_MS = 3_000;
 
 /**
+ * How many application pushes this process sends in one hour before it starts
+ * saying "there are more" instead of saying them one at a time.
+ *
+ * The push has to survive the day somebody points a script at the form, and
+ * the ceilings on THIS path say exactly how bad that day can get: 5 accepted
+ * submissions per visitor per hour, 60 platform-wide (input-and-files-10, and
+ * {@link ProcessWideCeiling} when Redis cannot count). Sixty phone
+ * notifications an hour is a muted topic — and a muted topic is the same
+ * blindness as no topic, arrived at by the operator's own hand, where nothing
+ * in this file can detect it (scheduled-jobs.runner.ts makes the same argument
+ * about a permanently-red alert).
+ *
+ * Six is far above any honest hour. The campaign points 277 Greek libraries at
+ * a form with FIVE places on it, so an hour containing six real applications
+ * is already the best hour this product will ever have; the seventh is a
+ * burst, and a burst is one fact ("go and look"), not six more buzzes.
+ *
+ * The burst line gets its own budget of one, on the SAME window length, so
+ * "one burst notice per hour of being over budget" falls out without a second
+ * clock: that window starts when the budget first runs dry.
+ */
+const PUSH_BUDGET_PER_HOUR = 6;
+const PUSH_WINDOW_MS = 60 * 60_000;
+
+/**
+ * The id the controller passes when the commit point itself threw, so there is
+ * no row to point anybody at (see the `catch` around `save` in
+ * applications.controller.ts). No uuid can take this shape, so reading it as a
+ * sentinel here cannot collide with a real application.
+ */
+const UNSAVED_ID = 'unsaved';
+
+/** Where the operator answers an application, or an honest phrase when the
+ *  admin host is not configured. Shared so the two messages cannot drift. */
+function panelUrl(adminHost: string): string {
+  return adminHost ? `https://${adminHost}/en/admin/applications` : 'the admin panel';
+}
+
+/**
+ * The whole of what a new application puts on the operator's phone.
+ *
+ * READ THE COMMENT ON {@link ApplicationsService.notify} BEFORE CHANGING A
+ * WORD OF THIS. The rule there is "the library and the town, never the
+ * person", written for a container log — and this message is worse than a
+ * container log in every dimension the rule was reasoning about: it leaves the
+ * country to a server we do not run, it is retained there, it is cached on a
+ * handset, and on a public ntfy topic anybody who guesses the string reads it.
+ * So it carries the institution, its town and its country, and nothing else:
+ * no contact name, no e-mail address, no phone number, no message body, no
+ * collection size, no current system. A library's name is an institution's
+ * name; everything else on that form belongs to a person.
+ *
+ * The application id is deliberately absent too, though it is not personal
+ * data and it IS in the log line: it is 36 characters of UUID on a lock
+ * screen, and it answers "which row?" — a question the admin panel, sorted
+ * newest first, answers better than a phone does.
+ *
+ * English, matching every other operator-facing surface in this repository
+ * (the log line above, alerts.yml's annotations, scripts/_lib/notify.sh's own
+ * test message) and therefore matching the rest of the traffic on this topic:
+ * the backup, the deploy and Alertmanager all publish English to it, and one
+ * channel that changes language per sender is harder to read than either
+ * language alone. The library's own name stays in whatever alphabet it was
+ * submitted in — the JSON publish shape exists so Greek survives the wire.
+ *
+ * The admin host is the one piece of our infrastructure named here. It is
+ * already public: it resolves in DNS and every certificate issued for it is in
+ * the Certificate Transparency logs. It buys the operator a tap instead of a
+ * typed URL, which is the difference between a doorbell and a chore.
+ *
+ * Exported for the spec, because "what exactly reaches the phone" is the one
+ * thing about this feature that must never be inferred from a mock.
+ */
+export function applicationAnnouncement(
+  v: FieldValues,
+  saved: boolean,
+  adminHost: string,
+): { title: string; body: string } {
+  const country = v.country ? (findCountry(v.country)?.en ?? v.country) : '';
+  const where = [v.city || '—', country].filter(Boolean).join(', ');
+  const who = `${v.libraryName || '—'} — ${where}`;
+
+  if (saved) {
+    return {
+      title: 'New library application',
+      body: `${who}\nOpen ${panelUrl(adminHost)} to read and answer it.`,
+    };
+  }
+  // The commit point threw, so there is no row and no panel entry to open —
+  // naming one would send the operator somewhere the lead is not. What exists
+  // is the API container log and an outbox row that EMAIL_DRIVER=console will
+  // never deliver, so those are what the message names.
+  return {
+    title: 'Application NOT saved — the public form is failing',
+    body:
+      `${who}\nThe control database refused the row. This lead is only in the API ` +
+      `container log and, undelivered, in the outbox at /admin/emails. Real libraries ` +
+      `are being answered with a 500 right now.`,
+  };
+}
+
+/**
  * How many of the launch-offer places have been given away, and therefore
  * whether the public form is still open.
  *
@@ -213,11 +316,28 @@ export class ApplicationsService {
     GLOBAL_RATE_LIMIT,
     GLOBAL_RATE_WINDOW_SEC * 1000,
   );
+  /**
+   * The hourly push budget and the one burst line that replaces it. Both are
+   * {@link ProcessWideCeiling}, the same counter the platform-wide submission
+   * ceiling already uses — the shape ("claim a slot from a rolling window, or
+   * do not") is identical and a second implementation of it would only be a
+   * second thing to get wrong.
+   */
+  private readonly pushBudget = new ProcessWideCeiling(PUSH_BUDGET_PER_HOUR, PUSH_WINDOW_MS);
+  private readonly pushBurst = new ProcessWideCeiling(1, PUSH_WINDOW_MS);
 
   constructor(
     @Inject(EmailService) private readonly email: EmailService,
     @Inject(RateLimitService) private readonly rateLimit: RateLimitService,
     @Inject(RedisService) private readonly redis: RedisService,
+    /**
+     * Injected rather than constructed, so this process has exactly ONE
+     * notifier: its 20-per-5-minutes ceiling is the last defence against a
+     * notification loop anywhere in the API, and a private instance here would
+     * quietly hold a budget of its own. It needs no import in
+     * applications.module.ts — PlatformModule is `@Global` for this provider.
+     */
+    @Inject(NotifyService) private readonly pushes: NotifyService,
   ) {
     const env = loadEnv();
     this.pepper = env.applyHashPepper;
@@ -451,6 +571,14 @@ export class ApplicationsService {
    * the log line is a second channel that works with the mail driver we
    * actually run, and the admin panel's Applications page (with the unread
    * count in the sidebar) is the one an operator will actually see.
+   *
+   * BOTH OF THOSE STILL REQUIRE SOMEBODY TO GO AND LOOK, which is the half of
+   * launch-readiness-03 an admin screen cannot close: the campaign drives 277
+   * mailboxes at this form and the site promises an answer within two working
+   * days, so "it is readable when you next open the panel" is not the same
+   * commitment. {@link announce} is the push that closes it — the only channel
+   * here that arrives without being asked for, and the only one that needs no
+   * mail provider.
    */
   async notify(id: string, parsed: Parsed): Promise<void> {
     const v = parsed.values;
@@ -468,6 +596,7 @@ export class ApplicationsService {
             'so this line and the admin panel are the whole notification.'
           : ''),
     );
+    this.announce(id !== UNSAVED_ID, v);
     const typeLabel =
       LIBRARY_TYPE_OPTIONS.el.find((o) => o.value === v.libraryType)?.label ?? v.libraryType ?? '—';
     // The body is Greek throughout (the operator reads it), so the country is
@@ -512,6 +641,77 @@ export class ApplicationsService {
       await controlDb.application
         .update({ where: { id }, data: { notifyError: reason.slice(0, 500) } })
         .catch(() => undefined);
+    }
+  }
+
+  /**
+   * Ring the doorbell — launch-readiness-03's missing half.
+   *
+   * `sendDetached`, not `send`. This runs on the visitor's request, in front of
+   * a 303 to the thank-you page, and NOTIFY_TIMEOUT_MS above already documents
+   * what the alternative costs: a librarian watching a spinner for a form whose
+   * row is already safely committed. NotifyService promises never to reject, so
+   * dropping the promise is safe; it swallows and logs its own failures, which
+   * is the "a notification must never break the thing it reports on" rule
+   * pushed down into the one place that can enforce it.
+   *
+   * WHY THIS SITS BEHIND A BUDGET AT ALL, when a real hour holds one or two
+   * applications: because the worst hour is not a real hour. Sixty submissions
+   * can be accepted platform-wide (input-and-files-10) and every one of them
+   * would otherwise buzz. The seventh in an hour therefore becomes ONE line
+   * that says there are more — which is also the most useful thing the channel
+   * can say at that moment, because six real applications in an hour and a
+   * script working the form look identical from here, and both mean "open the
+   * panel".
+   *
+   * NOT SAVED IS THE LOUDER OF THE TWO. `warn` for an application that landed:
+   * the site promises an answer within two working days, not two minutes, and
+   * an operator woken at 03:00 by a form submission mutes the topic — which
+   * turns off the backup and deploy alerts riding on it, in the one way no code
+   * here can detect. `error` when the row did not commit, because that is the
+   * single unauthenticated write in the control plane refusing real libraries
+   * during the campaign, and it is the one state on this path where being woken
+   * beats not being woken.
+   */
+  private announce(saved: boolean, v: FieldValues): void {
+    // NotifyService documents that `send` never rejects, and `sendDetached`
+    // depends on that. This does not: "a notification must never break the
+    // thing it reports on" is a promise the FUNNEL has to keep whatever the
+    // notifier does, and everything after this call — the outbox enqueue and
+    // the `notifyError` column — is what a throw from here would skip.
+    try {
+      this.push(saved, v);
+    } catch (err) {
+      this.logger.error(
+        `application push failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** The decision and the message. Wrapped by {@link announce}. */
+  private push(saved: boolean, v: FieldValues): void {
+    if (this.pushBudget.claim()) {
+      const { title, body } = applicationAnnouncement(v, saved, this.adminHost);
+      this.pushes.sendDetached({
+        level: saved ? 'warn' : 'error',
+        title,
+        body,
+        tags: ['inbox_tray'],
+      });
+      return;
+    }
+    // One line per hour of being over budget, and then silence. The window on
+    // this second counter starts the moment the first one runs dry.
+    if (this.pushBurst.claim()) {
+      this.pushes.sendDetached({
+        level: 'warn',
+        title: 'More applications than this channel will announce',
+        body:
+          `More than ${PUSH_BUDGET_PER_HOUR} applications were accepted in the last hour, so ` +
+          `the rest are not being announced one at a time. Open ${panelUrl(this.adminHost)}. ` +
+          'If this is not a real rush, the public form is being scripted.',
+        tags: ['inbox_tray'],
+      });
     }
   }
 }

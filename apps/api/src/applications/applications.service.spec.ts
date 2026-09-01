@@ -9,6 +9,15 @@ vi.mock('../config/env.js', () => ({
     // notification channel is made of; see the `notify` block at the bottom.
     adminHost: 'admin.example.test',
     emailDriver: 'console',
+    // The service owns a NotifyService, which reads these in ITS constructor.
+    // `ntfyTopic: null` is the shipped default — off — so no unit test can
+    // open a socket to a third party by accident; the tests that care about
+    // the push assert on a spy over `sendDetached`, not on the wire.
+    ntfyServer: 'https://ntfy.invalid',
+    ntfyTopic: null,
+    ntfyToken: null,
+    ntfyMinLevel: 'info',
+    ntfyConfigProblem: null,
   }),
 }));
 
@@ -28,7 +37,13 @@ vi.mock('@libriant/db-control', () => ({
 }));
 
 import { ERRORS } from '@libriant/site';
-import { ApplicationsService, OFFER_TOTAL, dialablePhone } from './applications.service.js';
+import { NotifyService } from '../platform/notify.service.js';
+import {
+  ApplicationsService,
+  OFFER_TOTAL,
+  applicationAnnouncement,
+  dialablePhone,
+} from './applications.service.js';
 
 /**
  * Validation is ported verbatim from the Cloudflare Worker this replaces, and
@@ -51,12 +66,19 @@ function makeService(
   // The constructor reads env; the loadEnv mock above supplies the pepper.
   // Nothing sets HASH_PEPPER in the unit environment — the integration suite
   // has to set it itself, in test/integration/setup.ts.
-  const svc = new ApplicationsService(email as never, rateLimit as never, redis as never);
+  // The real NotifyService, with the env mock's `ntfyTopic: null` — so it is
+  // OFF, exactly as a host that has not configured ntfy has it, and no unit
+  // test can open a socket to a third party by accident.
+  const notifier = new NotifyService();
+  const svc = new ApplicationsService(email as never, rateLimit as never, redis as never, notifier);
   // The degraded-ceiling path logs one warn per accepted submission; captured
   // rather than printed so a 60-submission test does not bury the run, and so
   // the tests below can assert the operator actually gets that signal.
   const warn = vi.spyOn(svc['logger'], 'warn').mockImplementation(() => undefined);
-  return { svc, email, rateLimit, redis, warn };
+  // The push. Spied rather than stubbed out wholesale, so what the tests assert
+  // on is the exact NotifyInput the production call site builds.
+  const push = vi.spyOn(svc['pushes'], 'sendDetached').mockImplementation(() => undefined);
+  return { svc, email, rateLimit, redis, warn, push };
 }
 
 const complete = {
@@ -616,5 +638,199 @@ describe('ApplicationsService.notify', () => {
     // the middle of it is a code they would have to go and look up.
     expect(body).toContain('Κύπρος');
     expect(body).toContain('+357 22000000');
+  });
+});
+
+/**
+ * launch-readiness-03, the half the admin panel cannot fix: somebody still has
+ * to remember to open it. This is what arrives on the operator's phone
+ * instead, and the only thing worth asserting about it is what it does NOT
+ * carry — the message leaves the country to a server we do not run, is
+ * retained there, is cached on a handset, and on a public ntfy topic is read
+ * by anyone who guesses the string.
+ */
+describe('applicationAnnouncement', () => {
+  const APPLICANT = {
+    libraryName: 'Δημοτική Βιβλιοθήκη Λάρισας',
+    city: 'Λάρισα',
+    country: 'GR',
+    contactName: 'Μαρία Παπαδοπούλου',
+    contactEmail: 'library@example.gr',
+    phoneDialCode: 'GR',
+    phone: '2410000000',
+    collectionSize: '12000',
+    currentSystem: 'Koha',
+    message: 'Θα θέλαμε να μάθουμε περισσότερα.',
+  };
+
+  it('names the institution, its town and where to answer it', () => {
+    const { title, body } = applicationAnnouncement(APPLICANT, true, 'admin.example.test');
+
+    expect(title).toBe('New library application');
+    expect(body).toContain('Δημοτική Βιβλιοθήκη Λάρισας');
+    expect(body).toContain('Λάρισα');
+    expect(body).toContain('Greece');
+    expect(body).toContain('https://admin.example.test/en/admin/applications');
+  });
+
+  it('carries no part of the person who filled the form in', () => {
+    // The rule `notify()` already applies to a container log, applied to a
+    // channel that is worse than a container log in every dimension.
+    const { title, body } = applicationAnnouncement(APPLICANT, true, 'admin.example.test');
+    const wire = `${title}\n${body}`;
+
+    for (const secret of [
+      'Μαρία',
+      'Παπαδοπούλου',
+      'library@example.gr',
+      '2410000000',
+      '+30',
+      '12000',
+      'Koha',
+      'Θα θέλαμε',
+    ]) {
+      expect(wire).not.toContain(secret);
+    }
+  });
+
+  it('leaves the application id off the lock screen', () => {
+    // Not personal data, and it stays in the log line — but it is 36
+    // characters of UUID answering "which row?", which the admin panel sorted
+    // newest-first answers better than a phone does.
+    const { body } = applicationAnnouncement(APPLICANT, true, 'admin.example.test');
+
+    expect(body).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}/i);
+  });
+
+  it('sends the operator to the log and the outbox when the row never committed', () => {
+    // There is no panel entry to open, so naming one would send them where the
+    // lead is not.
+    const { title, body } = applicationAnnouncement(APPLICANT, false, 'admin.example.test');
+
+    expect(title).toContain('NOT saved');
+    expect(body).toContain('Δημοτική Βιβλιοθήκη Λάρισας');
+    expect(body).toContain('/admin/emails');
+    expect(body).not.toContain('/en/admin/applications');
+  });
+
+  it('still says something useful when the form came in half-empty', () => {
+    const { body } = applicationAnnouncement({ libraryName: '', city: '' }, true, '');
+
+    expect(body).toContain('—');
+    expect(body).toContain('the admin panel');
+  });
+
+  it('names the country in the same language as the rest of the message', () => {
+    // A bare 'CY' on a phone is a code the reader has to go and look up.
+    const { body } = applicationAnnouncement(
+      { libraryName: 'Δημοτική Βιβλιοθήκη Λεμεσού', city: 'Λεμεσός', country: 'CY' },
+      true,
+      'admin.example.test',
+    );
+
+    expect(body).toContain('Cyprus');
+  });
+});
+
+/**
+ * The push itself: what leaves, when it is suppressed, and what happens to the
+ * application when the third party misbehaves.
+ */
+describe('ApplicationsService.notify — the push', () => {
+  const APPLICANT = {
+    values: {
+      libraryName: 'Δημοτική Βιβλιοθήκη Λάρισας',
+      city: 'Λάρισα',
+      country: 'GR',
+      contactName: 'Μαρία Παπαδοπούλου',
+      contactEmail: 'library@example.gr',
+      phoneDialCode: 'GR',
+      phone: '2410000000',
+    },
+    errors: {},
+  };
+
+  it('rings once for an application that landed, at warn', async () => {
+    // warn, not error: the site promises two working days, not two minutes, and
+    // level 5 is the only one that can wake somebody at 03:00. An operator woken
+    // by a form submission mutes the topic — and the backup and deploy alerts
+    // ride on the same topic.
+    const { svc, push } = makeService();
+
+    await svc.notify('app-123', APPLICANT);
+
+    expect(push).toHaveBeenCalledOnce();
+    expect(push.mock.calls[0]?.[0]).toMatchObject({
+      level: 'warn',
+      title: 'New library application',
+    });
+  });
+
+  it('shouts at error when the row never committed', async () => {
+    // The controller passes the literal 'unsaved' when `save` threw. That is
+    // the single unauthenticated write in the control plane refusing a real
+    // library during the campaign — the one state on this path where being
+    // woken beats not being woken.
+    const { svc, push } = makeService();
+
+    await svc.notify('unsaved', APPLICANT);
+
+    expect(push.mock.calls[0]?.[0]).toMatchObject({ level: 'error' });
+    expect(String(push.mock.calls[0]?.[0]?.title)).toContain('NOT saved');
+  });
+
+  it('puts no part of the applicant on the phone', async () => {
+    const { svc, push } = makeService();
+
+    await svc.notify('app-123', APPLICANT);
+
+    const sent = push.mock.calls[0]?.[0];
+    const wire = `${sent?.title}\n${sent?.body}`;
+    expect(wire).toContain('Δημοτική Βιβλιοθήκη Λάρισας');
+    expect(wire).toContain('Λάρισα');
+    for (const person of ['Μαρία', 'library@example.gr', '2410000000', '+30']) {
+      expect(wire).not.toContain(person);
+    }
+  });
+
+  it('stops announcing one at a time once the hourly budget is spent', async () => {
+    // Sixty submissions an hour can be ACCEPTED (input-and-files-10). Sixty
+    // buzzes is a muted topic, and a muted topic loses the backup alerts too.
+    const { svc, push } = makeService();
+
+    for (let i = 0; i < 20; i++) await svc.notify(`app-${i}`, APPLICANT);
+
+    // Six real announcements, then exactly one line saying there are more.
+    expect(push).toHaveBeenCalledTimes(7);
+    const last = push.mock.calls[6]?.[0];
+    expect(String(last?.title)).toContain('More applications');
+    expect(String(last?.body)).toContain('being scripted');
+  });
+
+  it('says "there are more" once per hour, not once per application', async () => {
+    const { svc, push } = makeService();
+
+    for (let i = 0; i < 200; i++) await svc.notify(`app-${i}`, APPLICANT);
+
+    expect(push).toHaveBeenCalledTimes(7);
+  });
+
+  it('still commits, still logs and still queues when the push throws', async () => {
+    // NotifyService promises never to reject and swallows its own failures —
+    // but the call site must not depend on that promise being kept. A notifier
+    // that can break the thing it reports on is worse than no notifier.
+    const { svc, email, warn, push } = makeService();
+    push.mockImplementation(() => {
+      throw new Error('ntfy.sh unreachable');
+    });
+
+    const error = vi.spyOn(svc['logger'], 'error').mockImplementation(() => undefined);
+
+    await expect(svc.notify('app-123', APPLICANT)).resolves.toBeUndefined();
+    // The application is still announced in the log, and still queued for the
+    // outbox — the two things a throw from the notifier would have skipped.
+    expect(warn).toHaveBeenCalledOnce();
+    expect(email.enqueue).toHaveBeenCalledOnce();
+    expect(String(error.mock.calls[0]?.[0])).toContain('ntfy.sh unreachable');
   });
 });
