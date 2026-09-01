@@ -451,9 +451,9 @@
     "infra/monitoring/docker-compose.monitoring.yml",
     "infra/monitoring/prometheus.yml"
    ],
-   "status": "blocked-on-owner",
+   "status": "verified",
    "wave": 5,
-   "note": "Alertmanager wired and gated by check:alerts; DELIVERY needs an owner-supplied receiver (who gets woken, and how). check:alerts prints NOT DELIVERING YET until then.",
+   "note": "Delivery closed and verified by execution 2026-09-02. Both Alertmanager receivers now resolve: `default` -> hosted ntfy.sh, `watchdog` -> an external dead-man service, each reading url_file from the alertmanager_data volume so neither credential enters git. The owner ran the real test — Alertmanager stopped, the heartbeat stopped, the external check went down and the notification arrived on the phone, then recovered on restart. check:alerts reports both receivers as delivering rather than counting placeholders.",
    "commit": "4c8da49"
   },
   {
@@ -609,9 +609,9 @@
     "infra/monitoring/alerts.yml",
     "infra/monitoring/prometheus.yml"
    ],
-   "status": "blocked-on-owner",
+   "status": "verified",
    "wave": 5,
-   "note": "Alertmanager wired and gated by check:alerts; DELIVERY needs an owner-supplied receiver (who gets woken, and how). check:alerts prints NOT DELIVERING YET until then.",
+   "note": "Same closure as launch-readiness-06, verified by execution 2026-09-02. The monitoring stack is in both deploy paths, Alertmanager runs behind the `alerting` profile which the deploy enables only when it has a receiver to post to, and the Watchdog dead-man switch was driven end to end: silence produced a notification. This finding was about alerts reaching nobody; they now reach a phone, and that has been seen.",
    "commit": "4c8da49"
   },
   {
@@ -1195,9 +1195,9 @@
     "docs/cutover-three-hosts.md",
     "docs/deploy-from-the-server.md"
    ],
-   "status": "pending",
+   "status": "verified",
    "wave": null,
-   "note": null,
+   "note": "DNS corrected by the owner and verified by execution 2026-09-02. admin.libriant.com no longer proxies to the released 178.104.32.176: it resolves through Cloudflare and returns 200 via /admin/login, as do the apex (200) and app.libriant.com (200 via /el); www 301s to the apex. app and www were NXDOMAIN at audit time and now exist. No host returns 522, so the origin is reachable and the subdomain-takeover exposure is gone. Confirmed alongside it: the origin lockdown holds from off the box on BOTH families (22 open as the control, 80/443/5432/6379 filtered over v4 and v6), and it survives a docker restart now that the unit carries PartOf=docker.service.",
    "commit": null
   },
   {
