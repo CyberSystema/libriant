@@ -365,6 +365,15 @@ the real cause.
 "cleaning out" `/data` or `/mnt/libriant/caddy` deletes the certificate, and
 every subsequent deploy hard-fails. It is in **no backup**.
 
+**Who owns them, and why it is a group.** `caddy` runs as **uid 1000, gid 0**
+with no capabilities (supply-chain-07), so it can only reach a file as that
+file's owner or through group 0. All three of its writable volumes are therefore
+`0:0` and group-writable — `/mnt/libriant/caddy` at `775`, and the two boot-disk
+volumes `g+rwX` — while the origin pair inside stays `0:0 640`, group-**readable**
+only. That the container is not the owner of the private key it reads is the
+point of the arrangement, and the group is 0 rather than 1000 because gid 1000 is
+a human login. Converting a box that predates this: §3.7c.
+
 Bind mounts, complete: caddy gets the Caddyfile, `maintenance.html`, `<repo>/assets`
 and the origin dir; api / web / worker get `<repo>/assets` and `<repo>/locales`;
 `migrate` gets `<repo>/scripts` → `/app/scripts` and `<repo>/locales` → `/app/locales`
@@ -845,10 +854,10 @@ whose egress blocks udp/123 and whose clock was set by hand and is correct.
 | `packages` | §3.2d          | Installs `ca-certificates curl git openssl fail2ban unattended-upgrades ufw cron iproute2 iptables` (`BASE_PACKAGES` in `install-server.sh`) — the same ten §3.2d lists, four of which that section used to omit. `iptables` because `prod-bootstrap.sh` exits **FATAL** without `ip6tables`; `iproute2` because `--firewall-status` needs `ss` to prove there is no `[::]` listener; `cron` because `/etc/cron.d/libriant-backup` is an inert text file without a cron daemon. Writes `/etc/apt/apt.conf.d/20auto-upgrades` (`is-active` can be green while nothing is scheduled), and adds a `fail2ban` `ignoreip` for the address **this session came from**, so a long provisioning session cannot ban you.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `docker`   | §3.3           | Probes `https://download.docker.com/linux/ubuntu/dists/$VERSION_CODENAME/Release` and, on a 404, **asks which codename to pin to** rather than silently falling back — then re-probes that answer and records the decision in the transcript. Re-asserts `chmod a+r` on the keyring outside the already-present branch, because apt verifies as `_apt` and a 600 keyring fails the next update with an error naming the _repository_. Dies unless `docker compose` reports major version ≥ 2. Writes `/etc/docker/daemon.json` **before** installing `docker-ce`, so the daemon reads it on its first start and no restart is ever needed on a first install: `ip6tables: true` plus a `log-opts` default of `50m × 5`. The `ip6tables` line is the point — `firewall` dies on _"ip6tables has no jump from DOCKER-USER"_ and its own message punts you to _"a docker daemon.json question"_, a file this installer never used to write. Docker Engine has defaulted it to true since v28, so on a current `docker-ce` the honest answer to _what breaks without it_ is **probably nothing**; what it buys is determinism and the removal of a documented failure branch. The `log-opts` line is **not** about log rotation on this stack — `docker-compose.prod.yml:140`'s `*logging` anchor already caps all nine services at `50m × 5` and the monitoring overlay caps its five at `20m × 5`, a ~2.65 GB ceiling against an 80 GiB root; it bounds a service added later without the anchor, and any ad-hoc `docker run` left detached. It **never sets `ipv6`** — a different setting, and one of four changes that must be made together (`docker-compose.prod.yml:817`). If the file already exists it is **reported, never edited**: there is no `jq` in `BASE_PACKAGES` and a half-merged `daemon.json` stops dockerd from starting at all. You get a per-key report and the exact JSON to merge, plus — if dockerd is already running — `systemctl restart docker` **followed by** `install-server.sh --only firewall`, which is not optional: dockerd rebuilds `DOCKER-USER` on start and `libriant-origin-firewall.service` is `Type=oneshot RemainAfterExit=yes` with no `PartOf=docker.service`. An already-working Docker skips the apt work entirely, so a re-run cannot stop to ask which codename to pin on a box that already has Docker. |
 | `user`     | §3.4           | Creates `deploy`, adds it to `docker` **and** `sudo`, copies in `authorized_keys` only when `deploy` has none of its own. **Asks:** a password, twice, at least 12 characters and no single quote — then proves it with `sudo -v` **as `deploy`, through a pipe**, which is the one check §3.4's two proxies do not perform. A failed `sudo -v` is a warning, not a die: everything the installer runs is root, so it does not block the install — it blocks a third of this runbook, later. Proves `docker ps` works as `deploy` through the same fresh-process path every later step uses.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `dirs`     | §3.5           | Creates `/srv/libriant`, `/var/log/libriant`, and the six directories the deploy and the backup need — `postgres`, `redis`, `storage`, `caddy` (as `caddy/origin`, so the parent exists either way), `backups`, and `env` at mode 700 owned by `deploy`. Its closing assertion checks the six parents, `postgres redis storage caddy backups env` (the closing loop of `step_dirs()`), and prints `all six data directories exist; storage is uid 1000; env is 700 deploy`. `chown -R 1000:1000` on `storage`, and only when the ownership is actually wrong, because a recursive chown over a populated uploads tree is minutes of pointless IO. Also creates **`/var/lib/node_exporter/textfile`**, which §3.5 does not list: it must exist and be owned by `deploy` _before_ the deploy, or the monitoring compose file's bind mount makes Docker create it as root and the nightly backup then cannot write its metric.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `dirs`     | §3.5           | Creates `/srv/libriant`, `/var/log/libriant`, and the six directories the deploy and the backup need — `postgres`, `redis`, `storage`, `caddy` (as `caddy/origin`, so the parent exists either way), `backups`, and `env` at mode 700 owned by `deploy`. Its closing assertion checks the six parents, `postgres redis storage caddy backups env` (the closing loop of `step_dirs()`), and prints `all six data directories exist; storage is uid 1000; env is 700 deploy`. `chown -R 1000:1000` on `storage`, and only when the ownership is actually wrong, because a recursive chown over a populated uploads tree is minutes of pointless IO. Also `chown -R 0:0` + `775` on `caddy`, `755` on `caddy/origin` (the recursive chown reaches it, the group-writable `chmod` deliberately does not — and without the `755` neither the container nor `deploy`'s own preflight `stat` could traverse it), and `g+rwX` on the `caddy_config` / `caddy_logs` volumes if they already exist — the edge runs as uid 1000 in group 0 and writes all three (§3.7c). Also creates **`/var/lib/node_exporter/textfile`**, which §3.5 does not list: it must exist and be owned by `deploy` _before_ the deploy, or the monitoring compose file's bind mount makes Docker create it as root and the nightly backup then cannot write its metric.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `checkout` | §3.6           | Generates an ed25519 deploy key (never regenerating an existing one), upserts a marked `github.com` block in `~/.ssh/config`, and seeds `known_hosts` by showing you the fingerprints it just fetched and asking whether they match GitHub's published list — a mismatch stops the run. **Asks:** it prints the public key and **pauses** while you add it to GitHub as read-only. It proves access with `git ls-remote --exit-code`, never with `ssh -T`, and retries up to five times.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `env`      | §3.7a          | Re-asserts the data-root check, then runs `ensure-env.sh` **interactively, never `--auto`**, from the real terminal. Afterwards it asserts `600 deploy:deploy`, that the on-volume copy at `/mnt/libriant/env/.env.prod` exists, that `MFA_MASTER_KEY` is exactly 64 hex characters, that `STORAGE_SIGNING_SECRET` differs from `SESSION_SECRET`, and warns on duplicate keys. Makes you acknowledge it if `ADMIN_BOOTSTRAP_*` came out empty, then **pauses** so you copy the file into the password manager.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `cert`     | §3.7b          | Reads `SITE_HOST` and `PUBLIC_APEX_DOMAIN` out of `.env.prod` so it knows which names the certificate must cover. Collects the two PEM blocks from the terminal (discarding anything before `-----BEGIN`, stripping CR from a Windows paste) or from `--origin-crt`/`--origin-key`. Validates **before** installing: both PEMs balanced, both parse, and the certificate and key are a **matching pair**. Installs 640/600 `root:root`, re-checks the pair on the _installed_ files, then verifies issuer, SANs and expiry — dying on an already-expired certificate and warning at under 30 days.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `cert`     | §3.7b          | Reads `SITE_HOST` and `PUBLIC_APEX_DOMAIN` out of `.env.prod` so it knows which names the certificate must cover. Collects the two PEM blocks from the terminal (discarding anything before `-----BEGIN`, stripping CR from a Windows paste) or from `--origin-crt`/`--origin-key`. Validates **before** installing: both PEMs balanced, both parse, and the certificate and key are a **matching pair**. Installs both `640 root:root`, re-checks the pair on the _installed_ files, then verifies issuer, SANs and expiry — dying on an already-expired certificate and warning at under 30 days. On a re-run over an existing pair it does not replace it, but it does **converge the ownership** (`0:0`, mode 640) — which is how a box installed before supply-chain-07 is prepared for the non-root edge (§3.7c).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `dchelper` | §6.1           | Upserts §6.1's block into `deploy`'s `.bashrc` as a marked region, with two additions: if `git` cannot answer, it reads `IMAGE_TAG` off the running `libriant-api-1` container, and if both sources come up empty it warns at login instead of exporting an empty tag.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `deploy`   | §3.8           | Announces what `git reset --hard` would destroy, offers `--no-fetch` instead, runs `deploy-on-host.sh --dry-run`, then — after a confirmation — the real deploy. **Never `--skip-build`.** **Re-asserts the disk headroom check** rather than trusting the one `stock` printed fifteen steps ago — everything since has eaten into it, and `--only deploy` / `--from deploy`, which is the resume you take after a build that failed, skipped it entirely. Brackets the build with `df` and records the **cold build's actual footprint** in the transcript, with `docker system df` beside it. That closes a registered unknown: §3.8's ~15–20 GiB was measured on the dead box. The delta can legitimately be **negative** — `deploy-on-host.sh` prunes before it builds. The 25 GiB threshold is deliberately **not** changed on the strength of one measurement.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `backup`   | §8.2           | **Asks nothing you have not already been asked** — the encryption decision (age recipient / gpg passphrase file / typed `PLAINTEXT`), a `BACKUP_HEARTBEAT_URL`, and whether an absent off-site copy is a deliberate `BACKUP_ALLOW_LOCAL_ONLY=1` are all asked at the **`env`** step, because they are `.env.prod` keys and because this step runs _after_ the 10–20 minute build that the briefing tells you to walk away from. They are re-offered here (`--only backup` is a supported entry point) and every already-answered one prints a single `ok` line. Asking them here also meant the copy of `.env.prod` you took at the `env` step's password-manager pause was **stale**, because this step then appended `BACKUP_AGE_RECIPIENT` to it. The one prompt that remains after the build is _"run the backup once now"_, which needs the stack up. **Asks:** Writes `/etc/cron.d/libriant-backup`, runs `backup.sh --preflight`, then the real backup, then `--check-cron`. Refuses an `age` **identity** pasted where the **recipient** belongs. Then **multiplies retention out** instead of quoting it: `du` on the day it just wrote × `BACKUP_KEEP_DAYS + 1` (the prune runs at the _start_ of a run, so the day being written coexists with the retained ones) against `df` on `$DATA_ROOT` — the same filesystem as the live cluster, the live uploads and Redis. It warns at **70 %**, not 100 %, because both of those grow underneath it. Day one always says _fits_, which is correct and worth having in the transcript as the baseline. It is a warning, never a gate, and it never edits `BACKUP_KEEP_DAYS`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -1497,6 +1506,16 @@ sudo chown deploy:deploy /var/log/libriant
 sudo mkdir -p /mnt/libriant/{postgres,redis,storage,caddy/origin,backups}
 sudo chown -R 1000:1000 /mnt/libriant/storage       # ← required, enforced by nothing
 sudo chown deploy:deploy /mnt/libriant/backups
+# The same trap, for the edge, and with a different answer. /mnt/libriant/caddy
+# IS caddy_data — Caddy's /data, which it writes at startup — and since
+# supply-chain-07 the edge runs as uid 1000 in GROUP 0. Group, not owner,
+# because the Cloudflare origin private key lives in this same tree (origin/)
+# and group 0 is the one group no human login on this box belongs to. 775 and
+# not 770: deploy-on-host.sh stats that key as `deploy` and has to traverse
+# here; at 770 the stat fails and every deploy dies saying the cert is missing.
+sudo chown -R 0:0 /mnt/libriant/caddy
+sudo chmod 775 /mnt/libriant/caddy
+sudo chmod 755 /mnt/libriant/caddy/origin    # ← so `deploy` can stat the key
 # `env` holds the on-volume copy of .env.prod that ensure-env.sh writes, and it
 # is the FIRST recovery source that script names when POSTGRES_PASSWORD is lost
 # but the cluster survives — the boot-disk-rebuild case. It was missing from
@@ -1528,6 +1547,13 @@ ls -la /mnt/libriant
 >
 > `deploy-on-host.sh` enforces `postgres`, `redis`, `storage`, `caddy`. It does
 > **not** check `backups`. Nothing in the deploy path touches backups at all.
+>
+> **`chmod 775 /mnt/libriant/caddy` is the same trap wearing a different hat.**
+> `storage` needs a uid because api and worker run as `USER node` = 1000 and own
+> what they write. The edge needs a **group**, because the same directory tree
+> also holds the origin private key and the container must not be its owner. On
+> a box that already has data in `/data`, this is not enough on its own — see
+> §3.7c.
 
 ### 3.6 The checkout
 
@@ -1640,7 +1666,7 @@ sudo tee /mnt/libriant/caddy/origin/origin.key >/dev/null <<'PEM'
 -----END PRIVATE KEY-----
 PEM
 sudo chmod 640 /mnt/libriant/caddy/origin/origin.crt
-sudo chmod 600 /mnt/libriant/caddy/origin/origin.key
+sudo chmod 640 /mnt/libriant/caddy/origin/origin.key
 sudo chown root:root /mnt/libriant/caddy/origin/origin.*
 sudo openssl x509 -in /mnt/libriant/caddy/origin/origin.crt -noout -subject -issuer -dates -ext subjectAltName
 ```
@@ -1655,14 +1681,36 @@ other places in this document. The three lines above it make the cert
 which reads like a corrupt certificate and is not. Every documented `openssl
 x509 -in` against this path now carries `sudo`; keep it when you copy one.
 
-**`root:root` is load-bearing, not tidiness.** Caddy runs as uid 0 inside its
-container and, since supply-chain-07, holds no capabilities except
-NET_BIND_SERVICE. Reading a file whose permission bits deny you is exactly what
-CAP_DAC_OVERRIDE is for, and it is gone — so a key owned by `deploy` at mode 600
-would be unreadable, every HTTPS vhost would fail to load its certificate, and
-the edge would be down. Owned by root at 600 it is readable as the OWNER, no
-capability involved. `scripts/deploy-on-host.sh` refuses to deploy if the key is
-anything other than uid 0 and mode 600 or 400.
+**`0:0` at mode `640` is load-bearing, not tidiness — and the `640` on the key
+is the half that looks like a mistake.** Caddy runs as **uid 1000 in group 0**
+inside its container and, since supply-chain-07, holds **no capabilities at
+all**. Reading a file whose permission bits deny you is exactly what
+CAP_DAC_OVERRIDE is for, and it is gone — so the key has to be reachable as the
+file's owner or as its group, and 1000 is not the owner. It reads it **as a
+member of group 0**. A key at `600`, or one owned by `deploy`, means every HTTPS
+vhost fails to load its certificate and the edge is down.
+
+**Group 0 and not group 1000**, which would have been the obvious pairing for a
+uid-1000 process: this is the Cloudflare Full-strict private key, and gid 1000 is
+a human login on most images — `deploy` here. The only member of group 0 is
+`root`, which could read the file already, so widening 600 → 640 gives away
+nothing. (Root on this box is not a meaningful boundary anyway: `deploy` is in
+the `docker` group.)
+
+`scripts/deploy-on-host.sh` refuses to deploy if the key is anything other than
+uid 0, gid 0 and mode 640 or 440, and its message names the fix. It checks the
+certificate the same way.
+
+> **A box installed before this change has the key at `600` and will not
+> deploy.** That is deliberate — a `600` key produces a green build and a dark
+> edge. The conversion is §3.7c below, and it is safe to run while the current
+> edge is serving.
+>
+> **Both** deploy paths refuse it: `scripts/deploy-on-host.sh` and the `deploy`
+> GitHub workflow. The workflow's copy of this gate accepted `0:600` until this
+> change, which was the dangerous way round — on an unconverted box it would have
+> **passed** and then recreated the stack with a key the new edge cannot open. It
+> moved in the same commit. If you ever edit one arm, edit both.
 
 Good looks like: issuer `CloudFlare Origin SSL Certificate Authority`, SANs
 `DNS:libriant.com, DNS:*.libriant.com`, `notAfter` roughly 15 years out.
@@ -1671,6 +1719,324 @@ Good looks like: issuer `CloudFlare Origin SSL Certificate Authority`, SANs
 > one whose SANs omit `*.libriant.com`, produces a fully green deploy and then a
 > Cloudflare **526** on every host. Nothing monitors this. Put the expiry in your
 > calendar now, and add the check to your monthly rhythm (§6.7).
+
+**3.7c Converting a box installed before the edge went non-root.**
+
+**Skip this on a fresh install** — §3.5 and §3.7b already produce the right
+ownership. This is for a box that is **serving right now** with `caddy` running
+as uid 0, which is every box installed before supply-chain-07 finished.
+
+What changes, and what each thing breaks if it is missed:
+
+| Thing                                     | Was          | Becomes         | If you skip it                                                       |
+| ----------------------------------------- | ------------ | --------------- | -------------------------------------------------------------------- |
+| `origin.key`                              | `0:0 600`    | `0:0 640`       | every HTTPS vhost fails to load its certificate — the edge is dark   |
+| `/mnt/libriant/caddy` (= Caddy's `/data`) | `0:0 755`    | `0:0 775` + g+w | Caddy cannot write its own storage                                   |
+| `libriant_caddy_config`, `_caddy_logs`    | `0:0 755`    | g+rwX           | Caddy cannot open `/var/log/caddy/access.log` and **exits at start** |
+| the container                             | uid 0, 1 cap | uid 1000, gid 0 | —                                                                    |
+
+**Every step below is safe to stop after.** The permission changes keep `root`'s
+own access, so the uid-0 edge that is serving now keeps working through all of
+them; nothing is recreated until step 6.
+
+**Prove that after every step.** This is the whole safety argument, so do not
+take it on faith — it is three seconds:
+
+```bash
+for h in libriant.com app.libriant.com admin.libriant.com; do
+  printf '%-20s %s\n' "$h" \
+    "$(curl -sk --resolve "$h:443:127.0.0.1" -o /dev/null -w '%{http_code}' --max-time 5 "https://$h/")"
+done
+curl -si http://localhost/healthz | head -1
+```
+
+Any of `200` / `301` / `302` is serving (the admin host redirects `/` to
+`/admin/login`). **`000` is a TLS failure** — the handshake never completed —
+and on this change that means the certificate or the key. Stop and read the
+container log: `dc logs --tail 50 caddy`.
+
+**1. Sync the checkout (as `deploy`). Nothing running is touched.**
+
+```bash
+cd /srv/libriant/app
+git status --short          # host-local edits to tracked files are about to go
+git fetch origin && git reset --hard origin/main
+```
+
+Then start a **fresh login shell** — `dc` computes `IMAGE_TAG` from the checkout
+at login, and the commit just moved (§6.1). Type this on its own, not as part of
+a pasted block:
+
+```bash
+exec bash -l
+```
+
+```bash
+cd /srv/libriant/app
+git rev-parse --short=12 HEAD && echo "$IMAGE_TAG"   # these two must match
+```
+
+Sync **before** touching permissions, not after. `deploy-on-host.sh` reads the
+key's mode in its preflight, and the copy of that gate on disk right now still
+demands `600` — a box with the new permissions and the old script refuses to
+deploy. Fail-closed, but pointless.
+
+**2. Build the new edge image (as `deploy`). Still nothing recreated.**
+
+```bash
+dc build caddy
+```
+
+**3. Fix the origin key (as `root`). The running edge keeps reading it.**
+
+```bash
+sudo chmod 640 /mnt/libriant/caddy/origin/origin.key
+sudo chown 0:0 /mnt/libriant/caddy/origin/origin.*
+sudo stat -c '%u:%g %a %n' /mnt/libriant/caddy/origin/origin.*   # 0:0 640 both
+```
+
+`640` and not `600` is the whole trick: `root` still reads it as the owner, so
+the uid-0 container serving right now is unaffected, and uid 1000 reads it as a
+member of group 0. There is no moment when only one of the two can.
+
+**4. Fix the three writable volumes (as `root`).**
+
+```bash
+# caddy_data — the bind under the volume overlay. `origin` is pruned so the
+# private key never becomes group-writable.
+sudo chown -R 0:0 /mnt/libriant/caddy
+sudo find /mnt/libriant/caddy -path /mnt/libriant/caddy/origin -prune -o -exec chmod g+rwX {} +
+sudo chmod 775 /mnt/libriant/caddy
+# origin/ is pruned from the chmod but NOT from the chown above. If it arrived
+# owned by `deploy` at 700 it is now 0:0 700 and nothing can traverse it — not
+# the container, and not the preflight `stat` that runs as `deploy`, which would
+# then report the certificate as MISSING. 755 gives nothing away: the two files
+# inside are 640.
+sudo chmod 755 /mnt/libriant/caddy/origin
+
+# caddy_config and caddy_logs — Docker-managed, on the boot disk. Ask the daemon
+# where they are; never assemble /var/lib/docker/volumes/<name>/_data by hand.
+for v in libriant_caddy_config libriant_caddy_logs; do
+  mp="$(sudo docker volume inspect -f '{{ .Mountpoint }}' "$v")"
+  sudo chown -R 0:0 "$mp" && sudo chmod -R g+rwX "$mp"
+  echo "$v -> $mp"
+done
+```
+
+`775` and not `770`: `deploy-on-host.sh` runs as `deploy` and `stat`s the origin
+key in its preflight, which has to traverse `/mnt/libriant/caddy`. At `770` that
+`stat` fails, the gate reads the failure as a **missing certificate**, and every
+deploy dies claiming the cert is gone.
+
+> Steps 3 and 4 together are what `sudo bash scripts/install-server.sh --only dirs`
+> and `--only cert` do, and those are converging — running them on an already
+> converted box changes nothing. Use whichever you prefer; do not use both halves
+> from different sources.
+
+**5. Rehearse the bind, before anything is recreated (as `deploy`).**
+
+This is the step that answers the only question this change could not settle
+off-box: whether `net.ipv4.ip_unprivileged_port_start=0` lets a non-root process
+bind 80 and 443 **on this kernel**, including the IPv6 dual-stack socket Go
+actually opens. It runs the new image with the new service definition and **no
+published ports**, so it cannot collide with the edge that is serving.
+
+```bash
+cd /srv/libriant/app && timeout 15 docker compose \
+  -f infra/compose/docker-compose.prod.yml \
+  -f infra/compose/docker-compose.volume.yml \
+  run --rm --no-deps -T caddy; echo "exit=$?"
+```
+
+That is `dc` written out: `timeout` cannot run a shell function, and `dc` is one
+(§6.1). Run it from the login shell of step 1 — it is what exported `IMAGE_TAG`
+and the `.env.prod` values this needs.
+
+- **Good:** `exit=124` (the timeout killed a healthy process) and the log says
+  `serving initial configuration`.
+- **Stop here:** `bind: permission denied` — the sysctl is not doing what this
+  change assumes on this kernel. Nothing has been recreated; the box is still
+  serving. There **is** a fallback, below; do not continue past this step without
+  it.
+- **Stop here:** `open /etc/caddy/origin/origin.key: permission denied` — step 3
+  did not take.
+- **Stop here:** `open /var/log/caddy/access.log: permission denied` — step 4 did
+  not take, or it missed the log volume.
+- **Stop here:** an error from the daemon about the sysctl at container create —
+  this Docker cannot set it per-container. Nothing has been recreated.
+
+**Then, whatever it printed, put the ownership back.** The rehearsal shares
+`caddy_data` and `caddy_logs` with the container that is serving right now and it
+ran as uid 1000, so anything it _created_ is `1000:0` at mode `600` — and the
+uid-0 Caddy that is still running has `cap_drop: [ALL]`, no `CAP_DAC_OVERRIDE`,
+and cannot read those back on its next restart. The window is small (the existing
+files were made group-writable in step 4; only a fresh file, such as a log roll,
+lands 1000-owned) and this is idempotent, so run it on success too:
+
+```bash
+sudo chown -R 0:0 /mnt/libriant/caddy
+for v in libriant_caddy_config libriant_caddy_logs; do
+  sudo chown -R 0:0 "$(sudo docker volume inspect -f '{{ .Mountpoint }}' "$v")"
+done
+docker ps -a --filter name=caddy-run --format '{{.Names}} {{.Status}}'   # expect nothing
+```
+
+That last line is because `timeout` signals the Compose CLI, not the container:
+`--rm` normally still cleans up, but a stray `…-caddy-run-…` holding the log
+volume is worth ten seconds to rule out. `docker rm -f <name>` if one is there.
+
+> **If it said `bind: permission denied`, do not give up on the change yet —
+> there is a second mechanism, and this step is free to repeat.** Docker's
+> `cap_add` cannot reach a non-root process on its own, but a **file** capability
+> on the binary can, and `no-new-privileges` does not stop it here: commoncap
+> only takes a capability away when the exec _gains_ one, and with `cap_add` the
+> caller already holds `NET_BIND_SERVICE` in its permitted set, so nothing is
+> gained. **UNVERIFIED** — that is kernel-source reasoning, and whether
+> `/usr/bin/caddy` carries the file capability at all was never checked; there is
+> no Docker on the machine this was written on.
+>
+> Test it the same way you tested the first mechanism. In
+> `infra/compose/docker-compose.prod.yml`, on the `caddy` service, add
+> `cap_add: [NET_BIND_SERVICE]` back beside `cap_drop: [ALL]`, leave `user:` and
+> `sysctls:` alone, `dc build caddy`, and **re-run this step**. Nothing is
+> recreated by a rehearsal, so a second failure costs nothing either.
+>
+> - It binds → keep that line, and note in the commit that the bind is carried by
+>   a file capability rather than the sysctl. The end state is one capability
+>   instead of none: worse than the shipped design, far better than uid 0.
+>   `dc exec caddy grep Cap /proc/1/status` will show `CapEff` non-zero, which is
+>   how you tell the two apart later.
+> - It still does not bind → this change cannot be completed on this box.
+>   `git reset --hard <the-commit-before>`, leave the edge on uid 0, and say so.
+>   Nothing has been recreated at any point.
+>
+> If you want the reason rather than the result:
+> `docker run --rm --entrypoint sh ghcr.io/libriant/libriant-caddy:"$IMAGE_TAG" -c 'getcap /usr/bin/caddy'`
+> — but `getcap` may not be in the image, and an empty answer there proves
+> nothing. The rehearsal is the real test.
+
+**6. Deploy (as `deploy`).**
+
+**Look first at what else is about to ship.** Step 1 moved the checkout to
+`origin/main`, and this is a full deploy: every service is rebuilt and
+`--force-recreate`d, not just the edge. If the box was several commits behind,
+those commits go out too, in the same window, and the build is 10–20 minutes.
+
+```bash
+cd /srv/libriant/app
+# Every image is tagged with the 12-char short SHA of the commit it was built
+# from, so the running tag IS the commit the box is on.
+docker ps --filter label=com.docker.compose.project=libriant \
+          --filter label=com.docker.compose.service=api --format '{{.Image}}'
+git log --oneline <that-sha>..HEAD
+```
+
+If that is only the edge commit, take the normal path:
+
+```bash
+bash scripts/deploy-on-host.sh --no-fetch
+```
+
+`--no-fetch` because step 1 already synced, and because it keeps the script from
+rewriting itself underneath a running bash. The `caddy-validate` stage is a real
+container from the real service definition, so it reads the origin key **and
+opens the access log** as uid 1000 (`caddy validate` provisions the logging app,
+which creates the file) — a missed step 3 or step 4 stops the deploy **before**
+anything is recreated. UNVERIFIED: that last claim about the log is read from
+Caddy's source, not run.
+
+> **If it is more than the edge commit and you do not want the rest tonight,**
+> convert only the edge instead — this change touches one service:
+>
+> ```bash
+> dc up -d --force-recreate --no-deps caddy      # step 2 already built it
+> ```
+>
+> Two seconds, no prune, no full-stack restart, and the images the rollback
+> depends on stay on disk. The cost is a **mixed** box: the checkout is now ahead
+> of the running `api` / `web` / `worker` images, so the next `dc up -d` that
+> touches them will look for images that do not exist yet and try to pull from
+> GHCR, which publishes nothing. Follow it with a full
+> `bash scripts/deploy-on-host.sh --no-fetch` in daylight, and go to step 7
+> either way.
+
+**7. Verify.**
+
+```bash
+dc exec caddy id                       # uid=1000 gid=0(root)
+dc exec caddy grep Cap /proc/1/status  # CapPrm/CapEff must be 0000000000000000
+curl -si http://localhost/healthz | head -1
+curl -sk --resolve libriant.com:443:127.0.0.1 -o /dev/null -w '%{http_code}\n' https://libriant.com/
+curl -sk --resolve app.libriant.com:443:127.0.0.1 -o /dev/null -w '%{http_code}\n' https://app.libriant.com/
+curl -sk --resolve admin.libriant.com:443:127.0.0.1 -o /dev/null -w '%{http_code}\n' https://admin.libriant.com/
+```
+
+All three HTTPS hosts must answer. A `000` is a TLS failure, which on this change
+means the key: check step 3 again.
+
+**If it does not come up.**
+
+**Do not roll back through `deploy-on-host.sh`.** That is the instinct and it is
+wrong here — and note that the copy of the script you would be running is the
+**old** one, restored by the `git reset`, not the one in this commit. Two
+independent reasons, both of which bite while the site is dark:
+
+- Its preflight is the old gate — `0:600 | 0:400` — and the key is now `640`. It
+  dies before it does anything.
+- Its `prune` stage runs **before** the `--skip-build` guard:
+  `docker image prune -af --filter 'until=72h'` removes _tagged_ images that no
+  container is using. After the failed forward deploy's `--force-recreate` the
+  previous containers are gone, so if the previous deploy was more than three
+  days ago **the prune deletes the very images you are rolling back to** — and
+  `--skip-build` then falls through to pulling from GHCR, where nothing has ever
+  been published. You would be down for a 10–20 minute rebuild. (The version of
+  the script in _this_ commit skips the prune entirely under `--skip-build`, for
+  exactly this reason. That does not help you: the rollback checkout brings the
+  old one back.)
+
+This change touches exactly one service, so roll back exactly one service.
+
+**First**, because it has to happen before a uid-0 Caddy starts again: anything
+the uid-1000 Caddy created under `/data` or in the log volume is owned by `1000`
+at mode `600`, and a uid-0 Caddy has `cap_drop: [ALL]` — no `CAP_DAC_OVERRIDE`
+to read it back.
+
+```bash
+sudo chown -R 0:0 /mnt/libriant/caddy
+for v in libriant_caddy_config libriant_caddy_logs; do
+  sudo chown -R 0:0 "$(sudo docker volume inspect -f '{{ .Mountpoint }}' "$v")"
+done
+```
+
+**Then** put the previous edge back. Check the image is actually there before you
+rely on it:
+
+```bash
+docker images --format '{{.Repository}}:{{.Tag}}' | grep libriant-caddy   # pick the previous sha
+cd /srv/libriant/app && git reset --hard <previous-sha>
+```
+
+```bash
+exec bash -l          # again: IMAGE_TAG follows the checkout
+```
+
+```bash
+dc up -d --force-recreate --no-deps caddy
+curl -si http://localhost/healthz | head -1
+curl -sk --resolve libriant.com:443:127.0.0.1 -o /dev/null -w '%{http_code}\n' https://libriant.com/
+```
+
+No prune, no build, no validate, no 180-second health gate, and nothing but the
+edge is recreated: a two-second blip instead of a full-stack restart. The old
+compose file came back with the checkout, so that container is uid 0 with
+`cap_add: [NET_BIND_SERVICE]` again.
+
+The permissions from steps 3 and 4 do **not** need reverting for Caddy itself —
+`640` and `775` keep root's own read and write, which is all the uid-0 edge ever
+used. They **do** stop the old `deploy-on-host.sh` from running: if you are
+staying on the old commit and want a normal deploy again, `sudo chmod 600
+/mnt/libriant/caddy/origin/origin.key` clears its gate. That is a refused deploy,
+not an outage — do it in daylight, not now.
 
 ### 3.8 Deploy
 
@@ -1700,6 +2066,20 @@ bash scripts/deploy-on-host.sh
 >
 > **Do not use `dc pull`.** Same reason. Every old document that says `dc pull`
 > then `dc up -d` is wrong.
+>
+> **If `caddy` exits at start with `permission denied` on
+> `/var/log/caddy/access.log` or `/data`,** its two boot-disk volumes were
+> created root-owned instead of inheriting the image's group-writable
+> directories, and the edge runs as uid 1000 in group 0. Nothing else is wrong;
+> fix the volumes and bring it back:
+>
+> ```bash
+> for v in libriant_caddy_config libriant_caddy_logs; do
+>   mp="$(sudo docker volume inspect -f '{{ .Mountpoint }}' "$v")"
+>   sudo chown -R 0:0 "$mp" && sudo chmod -R g+rwX "$mp"
+> done
+> dc up -d --force-recreate caddy
+> ```
 
 What the script does, in order:
 
@@ -1712,7 +2092,11 @@ What the script does, in order:
    cannot clobber it.
 4. `ensure-env.sh --auto`, then `set -a; . /srv/libriant/.env.prod; set +a`.
 5. `docker image prune -af --filter 'until=72h'` and
-   `docker builder prune -f --filter 'until=72h'`, both `|| true`.
+   `docker builder prune -f --filter 'until=72h'`, both `|| true` — **only when a
+   build is going to happen**. Under `--skip-build` the prune is skipped: `-a`
+   removes tagged images no container is using, which on a rollback is the
+   previous release's images, and there is nothing to reclaim ahead of a build
+   that is not running.
 6. `dc build` — 10–20 min cold. Budget ~15–20 GB in `/var/lib/docker`
    (**UNVERIFIED on this box**; measured on the dead machine).
 7. `caddy validate` in a throwaway container, **before** anything is recreated.
@@ -3274,10 +3658,14 @@ step.
    `*.libriant.com`. Store both PEMs in the password manager — nothing backs
    them up.
 2. **Place them on the box** at `/mnt/libriant/caddy/origin/`, then
-   `sudo chown root:root` both and `chmod 600` the key / `640` the cert. The
-   ownership matters as much as the mode — see §3 — because Caddy reads the key
-   as the file's owner rather than by capability. The deploy refuses to run
-   without the files, and refuses again if the key is not root-owned 600 or 400.
+   `sudo chown root:root` both and `chmod 640` **both** — the key as well as the
+   cert. The ownership matters as much as the mode (see §3.7b): Caddy runs as
+   uid 1000 in group 0 with no capabilities, so it reads the key **as a member of
+   group 0**, and `600` makes every HTTPS vhost fail to load its certificate. The
+   deploy refuses to run without the files, and refuses again if the key is not
+   `0:0` at 640 or 440. **Do not "tidy" the key back to `600`** — an older copy of
+   this instruction said to, and on a converted box that is a delayed outage: it
+   breaks nothing until the next reload, recreate or reboot.
 3. **Set the zone SSL/TLS mode to Full (strict)** and confirm Always Use HTTPS —
    _before_ any record moves. **UNVERIFIED**: the current mode.
 4. **Deploy and prove health locally**, still with zero DNS changes:

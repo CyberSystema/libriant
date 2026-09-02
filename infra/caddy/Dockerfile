@@ -79,17 +79,61 @@ RUN pnpm --filter @libriant/site build
 # least acceptable place for a floating reference.
 FROM caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
 
-# supply-chain-07: THERE IS NO `USER` HERE AND THAT IS ON PURPOSE — this image
-# runs as uid 0, inheriting the upstream default. The audit found the absence
-# with `grep -n USER infra/caddy/Dockerfile` returning nothing and read it as an
-# oversight, which is fair: an unexplained absence is indistinguishable from one.
+# supply-chain-07: THIS IMAGE RUNS AS uid 1000, gid 0. It ran as uid 0 until
+# now, inheriting the upstream default, under a comment that explained why the
+# `USER` line could not be added — that reasoning was wrong about the mechanism
+# and is replaced below and, in full, on the `caddy` service in
+# infra/compose/docker-compose.prod.yml. Read that one before touching either:
+# it records how this process reaches ports 80 and 443 with NO capability at
+# all, and why the group is 0 rather than 1000.
 #
-# The containment lives in infra/compose/docker-compose.prod.yml, on the `caddy`
-# service: `cap_drop: [ALL]` + `cap_add: [NET_BIND_SERVICE]` +
-# `no-new-privileges`, which leaves this uid 0 with exactly one capability. The
-# long note there records why the uid itself was not changed — briefly, adding
-# `USER` needs CAP_NET_BIND_SERVICE to survive the setuid, which depends on
-# whether the upstream image runs `setcap` on /usr/bin/caddy, and Docker is not
-# installed on the machine this was written on, so the image could not be pulled
-# and checked. `getcap /usr/bin/caddy` on the real image answers it.
+# The compose service sets `user: '1000:0'` as well, and that is the one that
+# governs in production. This line is not redundant with it. The deploy
+# validates the Caddyfile in a throwaway container built from this image
+# (scripts/deploy-on-host.sh, stage `caddy-validate`), docs/RUNBOOK.md runs
+# `caddy adapt` the same way, and neither should be the place where the edge
+# image is quietly root again. The two must agree; changing one alone is a bug,
+# not a simplification.
+#
+# THE THREE DIRECTORIES ARE THE OTHER HALF OF THE UID CHANGE, and skipping them
+# is a start-up crash rather than a warning. Caddy writes all three: /data is
+# its storage and it creates /data/caddy on startup, /config is XDG_CONFIG_HOME,
+# and /var/log/caddy holds the access log the Caddyfile configures — a log it
+# cannot open is a Caddy that exits. Docker populates a FRESH named volume by
+# copying the image path's contents AND its ownership, so leaving these
+# root-owned 0755 would hand uid 1000 an unwritable caddy_config and caddy_logs
+# on a clean install. `chgrp 0` + `g+rwX` makes that first boot work with
+# nobody chowning anything.
+#
+# It fixes NOTHING on a box that already has those volumes — Docker copies into
+# an empty volume only, and caddy_data is a bind to the host under the volume
+# overlay. Converting an existing box is an operator procedure with an order
+# that matters: docs/RUNBOOK.md §3.7c.
+#
+# UNVERIFIED, and cheap to settle if a fresh install ever comes up unwritable:
+# if the BASE image declared `VOLUME /data /config`, Docker would discard this
+# RUN layer's changes to those two paths at build time and they would reach a new
+# volume root-owned after all. /var/log/caddy — the one whose failure is fatal —
+# is created here, so it cannot be a base VOLUME either way. One command answers
+# it, and there is no Docker on the machine this was written on:
+#   docker image inspect --format '{{json .Config.Volumes}}' caddy:2-alpine
+# The recovery if it does bite is one `chown` per volume: docs/RUNBOOK.md §3.8.
+#
+# XDG_* are set here rather than inherited from the base image. The upstream
+# image sets them to exactly these two values, so this changes nothing today —
+# it removes a dependency. uid 1000 has no /etc/passwd entry and therefore no
+# HOME, and if a future base image dropped those variables Caddy would fall
+# through to os.UserHomeDir() and put its storage somewhere no volume is
+# mounted, which loses state silently instead of failing.
+ENV XDG_CONFIG_HOME=/config \
+    XDG_DATA_HOME=/data
+RUN mkdir -p /data/caddy /config/caddy /var/log/caddy \
+ && chgrp -R 0 /data /config /var/log/caddy \
+ && chmod -R g+rwX /data /config /var/log/caddy
+
+# Left root-owned and world-readable (COPY's default), which is what a uid-1000
+# process needs to serve it: read-only content, owned by a uid the container
+# cannot become.
 COPY --from=site /app/apps/site/dist /srv/libriant/site
+
+USER 1000:0

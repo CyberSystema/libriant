@@ -174,51 +174,103 @@ services:
     mem_limit: ${CADDY_MEM_LIMIT:-256m}
     cpus: ${CADDY_CPUS:-1}
     pids_limit: 256
-    # supply-chain-07. THIS CONTAINER RUNS AS uid 0 — the upstream caddy image
-    # sets no USER and infra/caddy/Dockerfile does not add one. Saying so out
-    # loud matters because the comment on `migrate` below used to claim the
-    # opposite about the whole stack, which is the kind of sentence that ends a
-    # security review early.
+    # supply-chain-07, and this is its second half. THIS CONTAINER RUNS AS
+    # uid 1000, gid 0, with NO capabilities at all.
     #
-    # What uid 0 buys an attacker here is now almost nothing, because the
-    # capability set is empty except for the one capability the process cannot
-    # work without. NET_BIND_SERVICE is what lets it listen on 80/443; dropping
-    # ALL takes away CAP_DAC_OVERRIDE, CAP_SETUID/SETGID/SETPCAP/SETFCAP,
-    # CAP_CHOWN, CAP_FOWNER, CAP_SYS_CHROOT, CAP_MKNOD, CAP_NET_RAW and the rest
-    # of the default set — every one of the post-RCE escalation and
-    # container-escape primitives that made "root" the word worth worrying
-    # about. Paired with no-new-privileges above, a compromised Caddy is a
-    # process that can read the files it already reads and open two ports.
+    # It ran as uid 0 until now — the upstream caddy image sets no USER — behind
+    # `cap_drop: [ALL]` plus the one capability it could not work without. Three
+    # things below record why the uid moved, why that capability is DELETED
+    # rather than carried across, and why the group is 0 and not 1000.
     #
-    # WHY NOT uid 1000, WHICH IS THE OBVIOUS NEXT STEP. Two routes, both
-    # rejected here, and the reasons are specific so nobody repeats the dead end:
+    # 1. THE BIND, WHICH IS WHERE THE OBVIOUS VERSION OF THIS CHANGE DIES —
+    #    OR MERELY BECOMES A GAMBLE ON THE BASE IMAGE.
+    #    `user: '1000:1000'` + `cap_add: [NET_BIND_SERVICE]` is the pairing every
+    #    reviewer reaches for, and the note this replaces recommended it as the
+    #    way to finish the job. Docker puts an added capability in the container's
+    #    BOUNDING, PERMITTED and EFFECTIVE sets and never in the AMBIENT set
+    #    (since 20.10 it does not set INHERITABLE either); runc holds PERMITTED
+    #    across the setuid with PR_SET_KEEPCAPS, so `runc init` really does still
+    #    hold NET_BIND_SERVICE as uid 1000. It then execve()s caddy, and execve
+    #    recomputes the permitted set from the FILE, not from the caller:
+    #        P'(permitted) = (P(inheritable) & F(inheritable))
+    #                      | (F(permitted) & P(bounding))
+    #                      | P'(ambient)
+    #    For uid 0 the kernel short-circuits that (commoncap gives a real- or
+    #    effective-root exec pP' = bounding | inheritable), which is exactly why
+    #    it works today. For a NON-ROOT uid every term is empty UNLESS
+    #    /usr/bin/caddy carries file capabilities.
+    #    AND THE FILE-CAPABILITY ESCAPE IS NOT CLOSED BY `no-new-privileges`,
+    #    which an earlier draft of this comment claimed. commoncap only downgrades
+    #    pP' back to the caller's when the exec GAINED something
+    #    (`is_setid || __cap_gained(permitted, new, old)`); with `cap_add` the
+    #    caller ALREADY holds NET_BIND_SERVICE in permitted, so nothing is gained,
+    #    the downgrade branch is never entered, and a `setcap
+    #    cap_net_bind_service=+ep` binary would keep it as uid 1000. The upstream
+    #    caddy image installs `libcap` for apparently no other purpose than that
+    #    setcap. So the pairing PROBABLY WORKS — and that is the problem with it:
+    #    "probably", resting on `getcap /usr/bin/caddy` in a base image nobody
+    #    controls, decided at the first start on a live edge, where being wrong is
+    #    `listen tcp :443: bind: permission denied` on every vhost at once.
+    #    UNVERIFIED, and deliberately so: Docker is not installed on the machine
+    #    this was written on, so getcap was never run and neither reading of
+    #    commoncap was executed. It is kept here because it is the FALLBACK if the
+    #    mechanism in (2) turns out not to hold on a given kernel — see
+    #    docs/RUNBOOK.md §3.7c, step 5.
     #
-    #  1. Non-root on 80/443 needs CAP_NET_BIND_SERVICE to reach a NON-ROOT
-    #     process, which Docker's `cap_add` alone does not do — the daemon does
-    #     not set the AMBIENT set, and the capability is dropped across the
-    #     setuid into the container user unless the caddy binary carries a file
-    #     capability. Whether the upstream alpine image runs `setcap` on
-    #     /usr/bin/caddy decides it, and that cannot be checked from here:
-    #     Docker is not installed on the machine this was written on, so the
-    #     image could not be pulled or inspected. Shipping it unverified risks
-    #     an edge that cannot bind — the whole product dark — to close a
-    #     hardening gap the audit itself downgraded to low.
-    #  2. Listening on 8080/8443 instead and publishing 80→8080 removes the
-    #     capability question entirely, and it is what the audit suggested. It
-    #     also silently disarms the origin lockdown: scripts/prod-bootstrap.sh
-    #     matches `--dports 80,443` in DOCKER-USER, and DOCKER-USER sees the
-    #     packet AFTER DNAT, so the rule would stop matching the container port
-    #     and every IPv4 source on the internet would reach this edge again.
-    #     Two files that must change together, one of them a firewall — a worse
-    #     trade than uid 0 behind an empty capability set.
+    # 2. WHAT IS SHIPPED INSTEAD is `net.ipv4.ip_unprivileged_port_start`, which
+    #    Docker sets per-container INSIDE this container's own network namespace.
+    #    It lowers the privileged-port floor for everything in that namespace,
+    #    which here is one process; it is namespaced, so the host and every other
+    #    container are untouched. No capability is involved at all, and it depends
+    #    on nothing the base image does.
+    #    THE `ipv4` IN THE NAME IS A MISNOMER AND THAT MATTERS HERE MORE THAN IT
+    #    LOOKS. The field lives in struct netns_ipv4, but the kernel consults it
+    #    from the v6 bind path too (inet_port_requires_bind_service(), called by
+    #    both __inet_bind() and __inet6_bind()) — and Go's net.Listen(":443")
+    #    opens an AF_INET6 dual-stack socket, so EVERY listener Caddy creates in
+    #    here takes the v6 path. If the v6 path did not honour this knob, nothing
+    #    in this container would bind. That claim is kernel-source reasoning, not
+    #    something that was executed on this box: docs/RUNBOOK.md §3.7c rehearses
+    #    it in a throwaway container, with no published ports, before any real
+    #    deploy — do that once on a new kernel rather than trusting this comment.
+    #    `cap_add` IS DELETED RATHER THAN KEPT BESIDE IT, on purpose. Keeping both
+    #    would be a belt and braces that costs the thing this change is for: the
+    #    end state would be one capability instead of none, and — worse — if the
+    #    sysctl silently did nothing on some kernel, the file capability would
+    #    carry the bind and nobody would ever find out. One mechanism, and
+    #    `grep Cap /proc/1/status` reading all zeros is the proof it is the one.
     #
-    # To finish it: confirm `getcap /usr/bin/caddy` on the real image, then add
-    # `user: '1000:1000'` here, keep the two capability lines exactly as they
-    # are, and chown $LIBRIANT_DATA_ROOT/caddy (the /data bind AND the origin
-    # key) to that uid — the deploy scripts' origin-key gate already asserts
-    # that ownership, so it is the one line that would have to change with it.
+    # 3. GROUP 0, NOT 1000, AND IT IS THE ORIGIN PRIVATE KEY THAT DECIDES IT.
+    #    Caddy has to read $LIBRIANT_DATA_ROOT/caddy/origin/origin.key at
+    #    whatever uid it runs as, and with `cap_drop: [ALL]` there is no
+    #    CAP_DAC_OVERRIDE to read around the permission bits — that is exactly
+    #    why the key is root-owned today and why it is readable as its OWNER. A
+    #    non-root Caddy has to reach it as owner or as group instead. Owning it
+    #    1000:1000, or grouping it to gid 1000, hands the Cloudflare Full-strict
+    #    private key to whichever HOST login holds uid/gid 1000 — `deploy` on
+    #    this box, or `ubuntu` on an image that already used 1000. Group 0 is the
+    #    only group on the host that gains nothing: root could read that file
+    #    already. So the key stays 0:0 and goes 600 → 640, and this process reads
+    #    it as a member of group 0.
+    #    gid 0 IS NOT ROOT. It carries no capability, no_new_privs is set, the
+    #    uid is 1000, and every path in this image is root-owned 644/755 — group
+    #    0 sees precisely what `other` already sees.
+    #
+    # THREE THINGS ON THE HOST MUST MATCH THIS, and a box installed before this
+    # change has none of them. The ordered, outage-free conversion is
+    # docs/RUNBOOK.md §3.7c; scripts/deploy-on-host.sh gates the first one.
+    #   origin.key                 0:0 640     (was 600 — 600 is now an outage)
+    #   $LIBRIANT_DATA_ROOT/caddy  0:0 775     (this is /data; Caddy writes it)
+    #   caddy_config, caddy_logs   0:0 g+rwX   (root-owned 755 when Docker made
+    #                                          them; the image ships them g+rwX
+    #                                          so a FRESH volume inherits it)
+    user: '1000:0'
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
+    sysctls:
+      # Quoted because the daemon takes sysctl values as strings; an unquoted 0
+      # is a YAML integer and only works if the schema coerces it. Cheap
+      # certainty on the one line the edge's ability to listen depends on.
+      net.ipv4.ip_unprivileged_port_start: '0'
     depends_on:
       # Loosened from service_healthy deliberately: now that the marketing site
       # lives inside Caddy, an app outage must not take the marketing site down
@@ -320,10 +372,22 @@ services:
     # and no reason for this one-shot to be root.
     #
     # supply-chain-07: this used to end "…which eliminates the only root
-    # container in the prod stack", and that was false the day it was written.
-    # `caddy` runs as uid 0 — see the long note on that service, which now says
-    # so in the first line. A sentence like that one is worse than silence: a
-    # reviewer greps for `user:`, finds nothing, reads this, and stops looking.
+    # container in the prod stack", and that was false the day it was written —
+    # `caddy` ran as uid 0. `caddy` now carries `user: '1000:0'`, so the app tier
+    # (api, web, worker, migrate, caddy) starts non-root end to end.
+    #
+    # THE STACK AS A WHOLE STILL HAS uid-0 STARTS, and naming them is the point
+    # of keeping this paragraph. `postgres` and `redis` start as root and their
+    # entrypoints setuid downwards on their own. `pgbouncer` (edoburu, the one
+    # community image in this file) sets no `user:` here and its own USER was
+    # NOT verified — Docker is not installed on the machine this was written on,
+    # so `docker image inspect` was never run against it. Treat it as UNVERIFIED
+    # rather than as a fourth non-root service.
+    #
+    # Kept as a correction rather than deleted, because the original sentence is
+    # the kind that is worse than silence: a reviewer greps for `user:`, finds
+    # nothing, reads a claim like it, and stops looking. Do not replace it with a
+    # tidier claim that has not been run.
     command: ['sh', '/app/scripts/prod-bootstrap.sh']
     environment:
       <<: *app-env

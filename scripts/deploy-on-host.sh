@@ -194,25 +194,50 @@ done
 # fails the validation step and reports "Caddyfile is invalid" when the
 # Caddyfile is fine. Name the real cause up front.
 if [ ! -f "$DATA_ROOT/caddy/origin/origin.crt" ] || [ ! -f "$DATA_ROOT/caddy/origin/origin.key" ]; then
+  # "Missing" here can also mean "present but not traversable". This runs as
+  # $USER, not root, so a $DATA_ROOT/caddy or .../origin without the `other`
+  # execute bit makes `[ -f ]` false on a file that is sitting right there —
+  # and the operator then goes looking for a certificate that was never lost.
+  # Say both, and name the modes the rest of this file assumes.
   die "Cloudflare origin cert missing at $DATA_ROOT/caddy/origin/{origin.crt,origin.key}.
      It is in the password manager — no backup contains it.
-     See docs/RUNBOOK.md."
+     If you know they ARE there, this is a traversal problem, not a missing file:
+       sudo stat -c '%u:%g %a %n' $DATA_ROOT/caddy $DATA_ROOT/caddy/origin $DATA_ROOT/caddy/origin/origin.*
+     Expect 0:0 775 on caddy, 0:0 755 on origin, 0:0 640 on the two files.
+     See docs/RUNBOOK.md §3.7b and §3.7c."
 fi
 
-# supply-chain-07. The origin PRIVATE KEY must be owned by root and readable by
-# nobody else, and this is the one thing that has to be true for the caddy
-# service's `cap_drop: [ALL]` to be safe.
+# supply-chain-07. The origin pair must be owned by root, grouped to root, and
+# GROUP-READABLE, and this is the one thing that has to be true for the caddy
+# service's `user: '1000:0'` + `cap_drop: [ALL]` to serve TLS at all.
 #
-# Caddy runs as uid 0 inside that container and now holds no capabilities but
-# NET_BIND_SERVICE. Reading a file whose permission bits deny it is what
-# CAP_DAC_OVERRIDE is for, and that is gone — so a key owned by `deploy` at
-# mode 600 would be unreadable, every HTTPS vhost would fail to load its
-# certificate, and the whole edge would be down. Owned by root at 600 it is
-# readable as the OWNER, no capability involved.
+# Caddy runs as uid 1000 in group 0 and holds no capabilities whatsoever.
+# Reading a file whose permission bits deny you is what CAP_DAC_OVERRIDE is for,
+# and it is gone — so the key has to be reachable as the file's OWNER or as its
+# GROUP, and 1000 is not the owner. `0:0` at mode 640 is the answer: the file
+# stays root-owned, and the only member of group 0 on this host is root, so no
+# human login gains a byte of the Cloudflare Full-strict private key by it.
 #
-# The same check is also worth having on its own terms: a world-readable origin
-# key on a box several people can log into is the Cloudflare Full-strict trust
-# relationship handed to any of them, and nothing looked at it before.
+# 600 WAS CORRECT AND IS NOW AN OUTAGE — that is the whole reason this gate
+# changed shape. It is what every box installed before this change is sitting
+# on, it is invisible until the new image starts, and then every HTTPS vhost
+# fails to load its certificate at once. The `caddy-validate` stage further down
+# would also catch it (it is a real container from the real service, and
+# provisioning the config opens the certificate), but the message here names the
+# cause and the fix instead of handing over Caddy's.
+#
+# The check is also worth having on its own terms, which is why the `other` bits
+# are still refused: a world-readable origin key on a box several people can log
+# into is that trust relationship handed to all of them.
+#
+# THERE IS A SECOND COPY OF THIS GATE and it moved in the same commit:
+# .github/workflows/deploy.yml, step "Pre-flight — the origin private key is
+# root-owned". It had to move together with this one, and the reason is the
+# opposite of the obvious one. The old CI arm accepted `0:600`, which is the
+# state of an UNCONVERTED box — so on the only box that matters it would have
+# PASSED and then recreated the stack with the non-root caddy against a key uid
+# 1000 cannot open. It failed OPEN in the dangerous direction and closed in the
+# harmless one. Anything that edits the arm here edits it there too.
 #
 # Two `stat` dialects because there are two: GNU on the Ubuntu host this
 # deploys, BSD on the machine the gate was written and exercised on. Docker is
@@ -220,22 +245,53 @@ fi
 # be driven at all before it ran for real. `-L` on both because they disagree by
 # default — GNU follows a symlink, BSD reports the link itself — and what
 # matters is the file Caddy will actually open.
-key_owner_mode() { stat -L -c '%u %a' "$1" 2>/dev/null || stat -L -f '%u %Lp' "$1"; }
+path_owner_mode() { stat -L -c '%u %g %a' "$1" 2>/dev/null || stat -L -f '%u %g %Lp' "$1"; }
 KEY="$DATA_ROOT/caddy/origin/origin.key"
-read -r KEY_UID KEY_MODE <<EOF
-$(key_owner_mode "$KEY")
+CRT="$DATA_ROOT/caddy/origin/origin.crt"
+read -r KEY_UID KEY_GID KEY_MODE <<EOF
+$(path_owner_mode "$KEY")
 EOF
-case "${KEY_UID}:${KEY_MODE}" in
-  0:600 | 0:400) KEY_OK=1 ;;
+case "${KEY_UID}:${KEY_GID}:${KEY_MODE}" in
+  0:0:640 | 0:0:440) KEY_OK=1 ;;
   *) KEY_OK=0 ;;
 esac
 if [ "$KEY_OK" != "1" ]; then
-  die "$KEY is uid=$KEY_UID mode=$KEY_MODE; it must be root-owned and 600 (or 400).
-     Caddy runs with cap_drop: [ALL] and cannot use CAP_DAC_OVERRIDE to read
-     around the permission bits, so anything else fails TLS on every vhost.
-     Fix it, then re-run:
-       sudo chown 0:0 $KEY && sudo chmod 600 $KEY"
+  case "${KEY_UID}:${KEY_GID}:${KEY_MODE}" in
+    0:0:600 | 0:0:400)
+      # The exact state of every box installed before this change, so it gets
+      # the exact command rather than a rule to interpret. Safe to run while the
+      # old uid-0 edge is still serving: 640 does not take away root's own read.
+      KEY_FIX="This is the pre-supply-chain-07 layout — correct while Caddy was uid 0,
+     unreadable now that it is uid 1000. One command, safe to run while the
+     current edge is still serving:
+       sudo chmod 640 $KEY
+     The two writable volumes need converting in the same pass, and the order
+     matters. Do not deploy until you have followed docs/RUNBOOK.md §3.7c." ;;
+    *)
+      KEY_FIX="It must be owned by root, grouped to root, and mode 640 (or 440):
+       sudo chown 0:0 $KEY && sudo chmod 640 $KEY" ;;
+  esac
+  die "$KEY is uid=$KEY_UID gid=$KEY_GID mode=$KEY_MODE.
+     Caddy runs as uid 1000 in group 0 with cap_drop: [ALL], so it cannot use
+     CAP_DAC_OVERRIDE to read around the permission bits and anything else here
+     fails TLS on every vhost.
+     $KEY_FIX"
 fi
+
+# The certificate, by the same rule and for the same failure. It is already
+# 640 root:root everywhere this repo installs it, so this asserts the state
+# rather than asking for a change — but a crt narrowed to 600 by hand takes the
+# edge down exactly as the key does, and nothing looked at it before.
+read -r CRT_UID CRT_GID CRT_MODE <<EOF
+$(path_owner_mode "$CRT")
+EOF
+case "${CRT_UID}:${CRT_GID}:${CRT_MODE}" in
+  0:0:640 | 0:0:644 | 0:0:440 | 0:0:444) : ;;
+  *) die "$CRT is uid=$CRT_UID gid=$CRT_GID mode=$CRT_MODE; Caddy reads it as a
+     member of group 0, so it must be root-owned, grouped to root and
+     group-readable:
+       sudo chown 0:0 $CRT && sudo chmod 640 $CRT" ;;
+esac
 
 # `ensure-env.sh --auto` below fills in generated secrets but never prompts, so
 # these two operator-supplied values stay empty and nothing complains: you get a
@@ -253,6 +309,66 @@ if [ "$FETCH" = "1" ]; then
   # Anything you need to persist belongs in .env.prod, which is untracked.
   git reset --hard "$REF"
 fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AFTER the sync, and that placement is the point: on a fetching deploy the
+# tree these checks judge is the one `git reset --hard` just wrote, which is the
+# tree that gets bind-mounted. Run before the sync they would grade the previous
+# commit's file modes. Nothing has been built or recreated yet either way.
+# supply-chain-07, the half of the uid change that is not about the key: every
+# path bind-mounted read-only into the caddy container is owned by `deploy` on
+# the host, and the container is uid 1000 in group 0. A checkout made under a
+# tightened umask (027 gives 0640, 077 gives 0600) therefore produces an edge
+# that cannot open its own configuration and exits at start — with the images
+# built and the old container already gone.
+#
+# MODELLED EXACTLY RATHER THAN APPROXIMATED BY THE `other` BIT, because the
+# approximation has a false positive that would refuse an emergency deploy on a
+# box that is perfectly fine: if `deploy` happens to BE uid 1000 — which it is on
+# any image where it was the first ordinary user — the container matches the
+# OWNER and reads a 0600 file happily. Getting this wrong in the safe direction
+# costs a warning; getting it wrong in the other direction costs a deploy at 3am.
+CADDY_UID=1000
+CADDY_GID=0
+# readable_by_edge PATH — true when uid 1000 / gid 0 can read PATH through
+# whichever of owner / group / other actually applies to it.
+readable_by_edge() {
+  local u g m
+  read -r u g m <<EOF2
+$(path_owner_mode "$1" 2>/dev/null)
+EOF2
+  [ -n "$m" ] || return 1
+  # Normalise to exactly three digits: BSD `%Lp` drops leading zeroes (`0`, `40`)
+  # and both dialects prepend a fourth for setuid/setgid/sticky (`4755`).
+  while [ "${#m}" -lt 3 ]; do m="0${m}"; done
+  while [ "${#m}" -gt 3 ]; do m="${m#?}"; done
+  local owner="${m%??}" group="${m#?}"; group="${group%?}"; local other="${m#??}"
+  # `if`, not `[ … ] && case …`: this file runs under `set -e`, and an && list
+  # whose left side is false returns non-zero. Harmless while every caller is a
+  # `||` (which suspends -e through the whole body), a silent exit the first time
+  # someone calls it bare.
+  if [ "$u" = "$CADDY_UID" ]; then case "$owner" in *[4567]) return 0 ;; esac; fi
+  if [ "$g" = "$CADDY_GID" ]; then case "$group" in *[4567]) return 0 ;; esac; fi
+  case "$other" in *[4567]) return 0 ;; esac
+  return 1
+}
+CADDYFILE="$APP_DIR/infra/caddy/Caddyfile"
+[ -f "$CADDYFILE" ] || die "$CADDYFILE is missing from the checkout. The caddy container bind-mounts
+     it as its only configuration and would exit at start."
+readable_by_edge "$CADDYFILE" || die "$CADDYFILE cannot be read by the caddy container, which runs as uid
+     ${CADDY_UID} in group ${CADDY_GID} — neither this file's owner nor its group. Caddy would
+     exit at start with 'permission denied' on its own config.
+       chmod o+r $CADDYFILE
+     If the whole checkout looks like this, the umask that made it is the cause:
+       find $APP_DIR/infra $APP_DIR/assets ! -perm -o+r"
+# Not fatal, so not a `die`: a maintenance page or an icon that 404s is a
+# blemish, not an outage. Named anyway, because the cause is the same one and it
+# would otherwise be found during a takeover, which is the worst possible moment.
+for ro_path in "$APP_DIR/infra/caddy/maintenance.html" "$APP_DIR/assets"; do
+  [ -e "$ro_path" ] || continue
+  readable_by_edge "$ro_path" \
+    || printf '\033[33m⚠ %s is not readable by the caddy container (uid %s, gid %s).\033[0m\n' "$ro_path" "$CADDY_UID" "$CADDY_GID"
+done
 
 GIT_SHA="$(git rev-parse --short=12 HEAD)"
 DIRTY=""
@@ -501,13 +617,27 @@ echo "  data root $DATA_ROOT"
 
 if [ "$DRY" = "1" ]; then STAGE="dry-run"; say "--dry-run: stopping here"; exit 0; fi
 
-STAGE="prune"
-say "Reclaiming disk before the build"
-# Every deploy makes new SHA-tagged images; unpruned they fill the disk, which
-# has previously broken a deploy at the seed step with ENOSPC. In-use images are
-# protected regardless of age. Best-effort: cleanup never fails a deploy.
-docker image prune -af --filter 'until=72h' || true
-docker builder prune -f --filter 'until=72h' || true
+if [ "$BUILD" = "1" ]; then
+  STAGE="prune"
+  say "Reclaiming disk before the build"
+  # Every deploy makes new SHA-tagged images; unpruned they fill the disk, which
+  # has previously broken a deploy at the seed step with ENOSPC. In-use images
+  # are protected regardless of age. Best-effort: cleanup never fails a deploy.
+  #
+  # GUARDED BY --skip-build SINCE supply-chain-07, and the reason is a rollback
+  # that ate its own parachute. This ran unconditionally, ABOVE the build guard,
+  # so `--skip-build` — the flag whose entire purpose is "use the images already
+  # on this box" — pruned first. `-a` removes TAGGED images no container is
+  # using, and after a failed deploy's `up -d --force-recreate` the previous
+  # containers are gone, so the previous release's images are unused; `until=72h`
+  # protects only what was built in the last three days. A rollback to a release
+  # older than that therefore deleted the images it was about to start, and
+  # Compose fell through to pulling from GHCR, which publishes nothing while
+  # deploys are manual. There is nothing to reclaim ahead of a build that is not
+  # happening, so the guard costs nothing and removes that entirely.
+  docker image prune -af --filter 'until=72h' || true
+  docker builder prune -f --filter 'until=72h' || true
+fi
 
 if [ "$BUILD" = "1" ]; then
   STAGE="build"

@@ -244,33 +244,49 @@ jobs:
             echo "No valid rollback target for ${{ matrix.host.name }} (got '$PREV_TAG') — auto-rollback disabled this run."
           fi
 
-      # supply-chain-07. The Cloudflare origin PRIVATE KEY must be root-owned and
-      # unreadable by anyone else, and this has to hold BEFORE the stack is
-      # recreated. `caddy` now runs with `cap_drop: [ALL]` — it keeps only
-      # NET_BIND_SERVICE — so it has no CAP_DAC_OVERRIDE to read around the
-      # permission bits. A key left owned by the deploy user, which is what an
-      # `scp` produces, would make every HTTPS vhost fail to load its
-      # certificate and take the whole edge down. Failing here instead leaves
-      # whatever is currently running untouched.
+      # supply-chain-07. The Cloudflare origin PRIVATE KEY must be `0:0` and
+      # GROUP-readable, and this has to hold BEFORE the stack is recreated.
+      # `caddy` runs as uid 1000 in group 0 under `cap_drop: [ALL]`, so it has no
+      # CAP_DAC_OVERRIDE to read around the permission bits and it is not the
+      # file's owner — it reads the key as a member of group 0. A key at 600, or
+      # one owned by the deploy user (which is what an `scp` produces), makes
+      # every HTTPS vhost fail to load its certificate and takes the whole edge
+      # down. Failing here instead leaves whatever is running untouched.
+      #
+      # THIS ARM MOVED FROM `0:600` IN THE SAME COMMIT THAT MOVED THE UID, and it
+      # had to. The old arm did not fail closed on the case that matters: a box
+      # that has NOT been converted still has a 600 key, the old gate PASSED it,
+      # and the job would then have recreated the stack with the non-root caddy
+      # against a key that uid 1000 cannot open — a full TLS outage shipped by the
+      # one step whose job is to prevent it. Now an unconverted box is refused
+      # here, before anything is touched, and the fix it prints is §3.7c.
       #
       # The gate is worth having on its own terms too: a world-readable origin
       # key on a box with more than one login is the Cloudflare Full-strict
-      # trust relationship handed to all of them, and nothing looked at it
-      # before. Same check, same message, as scripts/deploy-on-host.sh — the two
-      # deploy paths must not diverge.
+      # trust relationship handed to all of them. Same check, same message, as
+      # scripts/deploy-on-host.sh — the two deploy paths must not diverge, and
+      # this file is the copy that is easy to forget because it is not run from
+      # the box.
       - name: Pre-flight — the origin private key is root-owned
         run: |
           ssh -o StrictHostKeyChecking=yes "${{ matrix.host.user }}@${{ matrix.host.ssh }}" bash -se <<'REMOTE'
             set -euo pipefail
             KEY=/mnt/libriant/caddy/origin/origin.key
             [ -f "$KEY" ] || { echo "$KEY is missing — it is in the password manager, no backup has it." >&2; exit 1; }
-            read -r KEY_UID KEY_MODE <<<"$(stat -L -c '%u %a' "$KEY")"
-            case "${KEY_UID}:${KEY_MODE}" in
-              0:600|0:400) echo "origin key ok (uid=$KEY_UID mode=$KEY_MODE)" ;;
+            read -r KEY_UID KEY_GID KEY_MODE <<<"$(stat -L -c '%u %g %a' "$KEY")"
+            case "${KEY_UID}:${KEY_GID}:${KEY_MODE}" in
+              0:0:640|0:0:440) echo "origin key ok (uid=$KEY_UID gid=$KEY_GID mode=$KEY_MODE)" ;;
+              0:0:600|0:0:400)
+                echo "$KEY is $KEY_MODE — the pre-supply-chain-07 layout." >&2
+                echo "Caddy now runs as uid 1000 in group 0 and cannot open it. This box has" >&2
+                echo "NOT been converted; deploying would take every HTTPS vhost down." >&2
+                echo "Convert it first: docs/RUNBOOK.md 3.7c (it is safe while the edge serves)." >&2
+                exit 1
+                ;;
               *)
-                echo "$KEY is uid=$KEY_UID mode=$KEY_MODE; it must be root-owned and 600 (or 400)." >&2
+                echo "$KEY is uid=$KEY_UID gid=$KEY_GID mode=$KEY_MODE; it must be 0:0 and 640 (or 440)." >&2
                 echo "Caddy runs with cap_drop: [ALL] and cannot read around the permission bits." >&2
-                echo "Fix on the host:  sudo chown 0:0 $KEY && sudo chmod 600 $KEY" >&2
+                echo "Fix on the host:  sudo chown 0:0 $KEY && sudo chmod 640 $KEY" >&2
                 exit 1
                 ;;
             esac

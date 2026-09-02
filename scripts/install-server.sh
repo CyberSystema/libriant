@@ -502,6 +502,7 @@ mode_unsafe() {
 # the Ubuntu host this installs, BSD on the machine the helpers were driven on.
 stat_mode() { stat -L -c '%a' "$1" 2>/dev/null || stat -L -f '%Lp' "$1" 2>/dev/null; }
 stat_uid()  { stat -L -c '%u' "$1" 2>/dev/null || stat -L -f '%u'  "$1" 2>/dev/null; }
+stat_gid()  { stat -L -c '%g' "$1" 2>/dev/null || stat -L -f '%g'  "$1" 2>/dev/null; }
 stat_owner(){ stat -L -c '%U:%G' "$1" 2>/dev/null || stat -L -f '%Su:%Sg' "$1" 2>/dev/null; }
 
 # sshd_values NAME — every value `sshd -T` reports for a keyword, one per line.
@@ -5088,6 +5089,13 @@ satisfied_dirs() {
   done
   [ "$(stat_uid "$DATA_ROOT/storage")" = "$CONTAINER_UID" ] || return 1
   [ "$(stat_mode "$DATA_ROOT/env")" = "700" ] || return 1
+  # supply-chain-07: the caddy_data directory has to be writable by the edge's
+  # group before this step can call itself done. A box installed before that
+  # change has it 0:0 755, which is the state this predicate exists to catch —
+  # without it, `--from dirs` on such a box would skip straight past the one
+  # thing it needs.
+  [ "$(stat_uid "$DATA_ROOT/caddy")" = "0" ] || return 1
+  [ "$(stat_mode "$DATA_ROOT/caddy")" = "775" ] || return 1
   return 0
 }
 
@@ -5138,6 +5146,75 @@ step_dirs() {
      EACCES against a stack that reports itself perfectly healthy."
   fi
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # THE SAME STEP, FOR THE EDGE. Newer, and forgotten differently.
+  #
+  # supply-chain-07: caddy runs as uid 1000 in GROUP 0 with no capabilities.
+  # ${DATA_ROOT}/caddy IS the caddy_data volume — Caddy's /data, which it writes
+  # at startup — and Docker does not chown a bind mount any more than it does
+  # for storage above. Left root-owned 0755, the new edge starts and cannot
+  # write its own storage.
+  #
+  # GROUP 0, not uid 1000 like storage: the Cloudflare origin private key lives
+  # at ${DATA_ROOT}/caddy/origin inside this same tree, and group 0 is the one
+  # group no human login on this box belongs to. See step_cert.
+  #
+  # 775 AND NOT 770, and the `other` execute bit is the load-bearing part:
+  # deploy-on-host.sh runs as ${DEPLOY_USER} and stats
+  # ${DATA_ROOT}/caddy/origin/origin.key in its preflight, which has to traverse
+  # this directory. At 770 that stat fails, the gate reads the failure as a
+  # missing certificate, and EVERY deploy dies saying the cert is gone. `other`
+  # gains nothing it does not already have — this directory is 755 today.
+  #
+  # origin/ is pruned out of the recursive chmod: the private key must not
+  # become group-writable, and step_cert owns those two files' modes.
+  if [ "$DRY" = 1 ]; then
+    printf '  would chown -R 0:0 %s/caddy, make it group-writable, set it 775, and set %s/caddy/origin 755\n' "$DATA_ROOT" "$DATA_ROOT"
+  else
+    # `run`, not bare commands: errexit is off inside a step (see run()), and a
+    # chown that silently failed here is an edge that cannot write its storage.
+    run chown -R 0:0 "${DATA_ROOT}/caddy"
+    run find "${DATA_ROOT}/caddy" -path "${DATA_ROOT}/caddy/origin" -prune -o -exec chmod g+rwX {} +
+    run chmod 775 "${DATA_ROOT}/caddy"
+    # origin/ is pruned out of the chmod above but NOT out of the chown, so a
+    # directory that arrived owned by ${DEPLOY_USER} at 700 comes out of this
+    # step as 0:0 700 — and then nothing can traverse it: not the container
+    # (uid 1000, and 700 gives group and other nothing), and not
+    # deploy-on-host.sh's preflight `stat` of the key, which runs as
+    # ${DEPLOY_USER} and would report the certificate as MISSING. 755 on the
+    # directory gives away nothing: the two files inside are 640.
+    [ -d "${DATA_ROOT}/caddy/origin" ] && run chmod 755 "${DATA_ROOT}/caddy/origin"
+    ok "${DATA_ROOT}/caddy is 0:0 775, group-writable below (the edge runs as 1000:0)"
+  fi
+
+  # caddy_config and caddy_logs are NOT on the data volume — the overlay rebinds
+  # four names and these two are not among them, so they stay Docker-managed on
+  # the boot disk. On a FRESH box they never need touching: infra/caddy/Dockerfile
+  # ships /config and /var/log/caddy group-writable and Docker copies the image
+  # path's ownership into an empty named volume. On a box that ALREADY has them
+  # Docker copies nothing, they are root-owned 0755, and Caddy exits at start
+  # because it cannot open /var/log/caddy/access.log. So converge them if they
+  # are there, and say so plainly if they are not.
+  #
+  # Reached through `docker volume inspect`, never by assembling
+  # /var/lib/docker/volumes/<name>/_data by hand: where a volume lives is the
+  # daemon's to decide, not this script's to predict.
+  local vol mp
+  if [ "$DRY" = 1 ]; then
+    printf '  would make the %s_caddy_config / _caddy_logs volumes writable by gid 0, if they exist\n' "$COMPOSE_PROJECT"
+  elif command -v docker >/dev/null 2>&1; then
+    for vol in "${COMPOSE_PROJECT}_caddy_config" "${COMPOSE_PROJECT}_caddy_logs"; do
+      mp="$(docker volume inspect -f '{{ .Mountpoint }}' "$vol" 2>/dev/null || true)"
+      if [ -n "$mp" ] && [ -d "$mp" ]; then
+        run chown -R 0:0 "$mp"
+        run chmod -R g+rwX "$mp"
+        ok "$vol is writable by gid 0 ($mp)"
+      else
+        note "$vol does not exist yet — the first deploy creates it from the image, already group-writable."
+      fi
+    done
+  fi
+
   # $DATA_ROOT/env holds the on-volume copy of .env.prod that ensure-env.sh
   # writes, and it is the FIRST recovery source that script names when
   # POSTGRES_PASSWORD is lost but the cluster survives — the boot-disk-rebuild
@@ -5163,7 +5240,10 @@ step_dirs() {
     for d in postgres redis storage caddy backups env; do
       [ -d "${DATA_ROOT}/${d}" ] || die "${DATA_ROOT}/${d} is missing after this step."
     done
-    ok "all six data directories exist; storage is uid ${CONTAINER_UID}; env is 700 ${DEPLOY_USER}"
+    [ "$(stat_mode "${DATA_ROOT}/caddy")" = "775" ] \
+      || die "${DATA_ROOT}/caddy is mode $(stat_mode "${DATA_ROOT}/caddy"), not 775. The edge runs as
+     uid 1000 in group 0 and would not be able to write its own /data."
+    ok "all six data directories exist; storage is uid ${CONTAINER_UID}; caddy is 0:0 775; env is 700 ${DEPLOY_USER}"
     if [ "$(id -u "$DEPLOY_USER")" != "$CONTAINER_UID" ]; then
       note "$DEPLOY_USER is uid $(id -u "$DEPLOY_USER"), the containers run as ${CONTAINER_UID}."
       note "That is fine — the storage chown is deliberately numeric."
@@ -5527,6 +5607,42 @@ verify_cert() {
   note "now, and add the check to the monthly rhythm (§6.7)."
 }
 
+# origin_perms_fix FILE… — converge the origin pair onto `0:0` at mode 640.
+#
+# CONVERGES rather than asserts, and it is the only thing in this step that
+# touches a certificate already in place. supply-chain-07 moved Caddy off uid 0:
+# it now runs as uid 1000 in group 0 with no capabilities, so it reads the key as
+# a member of GROUP 0 rather than as its owner. A box installed before that
+# change has the key at 600 root:root — correct then, an outage on every HTTPS
+# vhost now — so `--only cert` on such a box is the supported way to prepare it.
+#
+# SAFE TO RUN WHILE THE OLD EDGE IS STILL SERVING, and that is the whole point:
+# 640 does not take root's own read away, so the running uid-0 container and the
+# uid-1000 container that replaces it can both read the key at every moment in
+# between. That is what makes the conversion in docs/RUNBOOK.md §3.7c free of an
+# outage window, and it is why nothing here may "tidy" the mode back to 600.
+origin_perms_fix() {
+  local f uid gid mode
+  if [ "$DRY" = 1 ]; then
+    printf '  would ensure the origin pair is owned 0:0 at mode 640\n'
+    return 0
+  fi
+  for f in "$@"; do
+    [ -f "$f" ] || die "$f disappeared between being installed and being secured."
+    uid="$(stat_uid "$f")"; gid="$(stat_gid "$f")"; mode="$(stat_mode "$f")"
+    if [ "$uid" != "0" ] || [ "$gid" != "0" ]; then
+      run chown 0:0 "$f"
+      ok "chown 0:0 $f (was ${uid}:${gid} — Caddy is not the owner and has no CAP_DAC_OVERRIDE)"
+    fi
+    case "$mode" in
+      640 | 440) ok "$f is ${mode} root:root" ;;
+      *)
+        run chmod 640 "$f"
+        ok "chmod 640 $f (was $mode; the caddy container reads it as a member of group 0)" ;;
+    esac
+  done
+}
+
 step_cert() {
   say "§3.7b The Cloudflare origin certificate"
 
@@ -5547,12 +5663,15 @@ step_cert() {
     note "pass --replace-origin-cert if you really mean to (the old pair is backed up first)."
     note "Note that ${DATA_ROOT}/caddy is also caddy_data: 'cleaning it out' deletes a"
     note "certificate that exists in no backup."
+    # The one mutation on this branch, and the reason a box installed before
+    # supply-chain-07 can be converged with `--only cert` instead of by hand.
+    origin_perms_fix "$crt" "$key"
     [ "$DRY" = 0 ] && verify_cert "$crt" "$key" "$site" "$apex"
     return 0
   fi
 
   if [ "$DRY" = 1 ]; then
-    printf '  would install an origin certificate into %s (640/600 root:root)\n' "$dir"
+    printf '  would install an origin certificate into %s (both 640 root:root)\n' "$dir"
     return 0
   fi
 
@@ -5596,9 +5715,10 @@ step_cert() {
   # SANs, and the box is left with a cert and a key that are not a pair. Caddy
   # then fails to load a certificate on every HTTPS vhost and the edge is down.
   install -o root -g root -m 640 "$tcrt" "$crt" || die "could not install $crt. The previous pair (if any) is untouched."
-  install -o root -g root -m 600 "$tkey" "$key" || die "could not install $key. $crt HAS been replaced — restore it from
+  # 640, not 600, and the group is what makes it work — see origin_perms_fix().
+  install -o root -g root -m 640 "$tkey" "$key" || die "could not install $key. $crt HAS been replaced — restore it from
      ${crt}.bak-* before deploying, or the pair will not match."
-  ok "installed $crt (640 root:root) and $key (600 root:root)"
+  ok "installed $crt (640 root:root) and $key (640 root:root)"
 
   # Re-check the pair on the INSTALLED files, not only on the temp ones. A
   # half-applied replacement is exactly the state that passes its own
@@ -5609,18 +5729,19 @@ step_cert() {
      the .bak-* copies beside them and do NOT deploy."
   ok "the installed certificate and key are still a matching pair"
 
-  # root:root is LOAD-BEARING, not tidiness. Caddy runs as uid 0 inside its
-  # container and, since supply-chain-07, holds no capability but
-  # NET_BIND_SERVICE — CAP_DAC_OVERRIDE is gone, so a key owned by `deploy` at
-  # 600 would be unreadable, every HTTPS vhost would fail to load its
-  # certificate and the edge would be down. deploy-on-host.sh refuses to deploy
-  # unless the key is uid 0 and mode 600 or 400.
-  [ "$(stat_uid "$key")" = "0" ] || die "$key is not owned by uid 0; deploy-on-host.sh will refuse to deploy."
-  [ "$(stat_uid "$crt")" = "0" ] || die "$crt is not owned by uid 0; Caddy holds no CAP_DAC_OVERRIDE and could not read it."
-  case "$(stat_mode "$key")" in
-    600|400) : ;;
-    *) die "$key is mode $(stat_mode "$key"); deploy-on-host.sh requires 600 or 400." ;;
-  esac
+  # `0:0 640` is LOAD-BEARING, not tidiness, and the GROUP half is the part that
+  # is easy to lose. Since supply-chain-07 Caddy runs as uid 1000 in group 0
+  # holding no capability at all — CAP_DAC_OVERRIDE is gone, so it cannot read
+  # around permission bits and it is not the owner of this file. It reads the key
+  # as a member of group 0. A key at 600, or one grouped to `deploy`, means every
+  # HTTPS vhost fails to load its certificate and the edge is down.
+  #
+  # Group 0 and not group 1000 because this is the Cloudflare Full-strict private
+  # key: the only member of group 0 on this host is root, which could read the
+  # file already, whereas gid 1000 is a human login on most images.
+  #
+  # deploy-on-host.sh refuses to deploy unless the key is 0:0 and mode 640 or 440.
+  origin_perms_fix "$crt" "$key"
   verify_cert "$crt" "$key" "$site" "$apex"
 }
 
