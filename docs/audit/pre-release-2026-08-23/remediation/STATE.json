@@ -2396,7 +2396,7 @@
    ],
    "status": "pending",
    "wave": null,
-   "note": "PARTIAL — no-new-privileges on all 9 services, cap_drop ALL + NET_BIND_SERVICE on caddy, origin-key pre-flight in both deploy paths. Caddy is still uid 0; finishing needs `getcap /usr/bin/caddy` on the real image.",
+   "note": "OPEN. Containment landed and holds: no-new-privileges on all nine services, cap_drop [ALL] on caddy with cap_add REMOVED entirely (the edge now runs with an empty capability set and binds via net.ipv4.ip_unprivileged_port_start), an origin-key pre-flight in both deploy paths, and the false \"eliminates the only root container\" comment deleted. The uid itself is NOT closed: user 1000:0 produced `exec /usr/bin/caddy: operation not permitted` and crash-looped the LIVE edge on 2026-09-02. Three diagnoses were wrong; the last was disproved on the box — getcap empty, binary 0755 root-owned, still refusing to exec as uid 1000. Cause unknown. Reverted to uid 0; docs/RUNBOOK.md 3.7c records the attempt and the one throwaway-container command that would settle it without touching the edge.",
    "commit": null
   },
   {

@@ -264,7 +264,25 @@ services:
     #   caddy_config, caddy_logs   0:0 g+rwX   (root-owned 755 when Docker made
     #                                          them; the image ships them g+rwX
     #                                          so a FRESH volume inherits it)
-    user: '1000:0'
+    # uid 0. supply-chain-07 is NOT closed, and the attempt is recorded in
+    # docs/RUNBOOK.md 3.7c so the next person does not repeat it.
+    #
+    # `user: '1000:0'` produced `exec /usr/bin/caddy: operation not permitted` —
+    # a crash loop that took the live edge down. Three separate diagnoses were
+    # wrong, all reached by reading rather than running: that no_new_privs
+    # suppresses file capabilities (it does not), that the commoncap downgrade
+    # path explained it (it does not fire here), and that the image's file
+    # capability was to blame. That last one was settled on the box:
+    #   getcap /usr/bin/caddy  -> (nothing)
+    #   ls -ln /usr/bin/caddy  -> -rwxr-xr-x 1 0 0
+    # No capability, world-executable, and it STILL refused to exec as uid 1000.
+    # The cause is not known. Anyone picking this up starts from that fact and
+    # from a throwaway container, not from this comment.
+    #
+    # EXPLICIT, not omitted: infra/caddy/Dockerfile no longer carries a USER line
+    # either, but naming it here means a future USER in the image cannot silently
+    # make the edge non-root again through a path nothing tests.
+    user: '0:0'
     cap_drop: [ALL]
     sysctls:
       # Quoted because the daemon takes sysctl values as strings; an unquoted 0

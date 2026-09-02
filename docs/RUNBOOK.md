@@ -2038,6 +2038,66 @@ staying on the old commit and want a normal deploy again, `sudo chmod 600
 /mnt/libriant/caddy/origin/origin.key` clears its gate. That is a refused deploy,
 not an outage — do it in daylight, not now.
 
+### 3.7c The non-root edge — attempted, reverted, and why
+
+**Caddy runs as uid 0. `supply-chain-07` is open.** Six places in this document
+used to send you here for a conversion procedure. There is no procedure, because
+the conversion does not work and nobody established why.
+
+**What was tried.** `user: '1000:0'` on the caddy service, with
+`net.ipv4.ip_unprivileged_port_start=0` supplying the bind instead of a
+capability. It produced, on every container built from that image:
+
+```
+exec /usr/bin/caddy: operation not permitted
+```
+
+The container reaches `Created` and dies. The deploy's `caddy validate` stage hit
+it first and reported **"Caddyfile is invalid"** about a file that was fine — the
+throwaway container never read it. On the deploy that got past validation, the
+edge crash-looped and **the site went down**.
+
+**Three diagnoses, all wrong, all reached by reading rather than running:**
+
+1. That `no_new_privs` blanket-suppresses file capabilities. It does not.
+2. That commoncap's downgrade path (`is_setid || __cap_gained`) explained it. It
+   does not fire here — with `cap_add` the capability is already in permitted, so
+   nothing is gained.
+3. That the image's file capability on `/usr/bin/caddy` was the cause. Settled on
+   the box, against the image the deploy actually built:
+
+```
+$ docker run --rm --user 0:0 --entrypoint sh <the built caddy image> \
+    -c 'getcap /usr/bin/caddy; ls -ln /usr/bin/caddy'
+-rwxr-xr-x    1 0        0         48521378 /usr/bin/caddy
+```
+
+No capability. World-executable. Root-owned. And it still refused to exec as uid 1000. **Whatever the cause is, it is none of the above.**
+
+**What was kept.** `cap_add: [NET_BIND_SERVICE]` is gone and has not come back:
+the edge now runs as root with an **empty capability set**, binding 80/443
+through the unprivileged-port sysctl. That is strictly better than the one
+capability it used to hold, and it is proven — it is what is serving.
+
+**If you pick this up.** Start from a throwaway container and the fact above, not
+from a theory:
+
+```bash
+docker run --rm --user 1000:0 --security-opt no-new-privileges:true \
+  --entrypoint sh <the built caddy image> -c 'id; /usr/bin/caddy version'
+```
+
+No published ports, nothing recreated, and it answers in a second what two
+evenings of reasoning did not. If `sh` itself execs but `caddy` does not, the
+difference is in the binary or its path; if neither execs, it is the runtime.
+
+**Is it worth it?** Caddy must read the origin private key at any uid, so an RCE
+in Caddy yields the Cloudflare Full-strict key either way. The process is already
+`cap_drop: [ALL]` and `no-new-privileges`. What remains is post-RCE escalation
+and container-escape surface — real defence in depth, no CVE forcing it. It has
+cost one outage. Do not attempt it on a live edge again without settling the
+exec failure in a throwaway container first.
+
 ### 3.8 Deploy
 
 **Installer steps:** `dchelper`, then `deploy`.

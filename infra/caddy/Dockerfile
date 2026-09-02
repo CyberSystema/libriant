@@ -163,4 +163,7 @@ RUN cp /usr/bin/caddy /usr/bin/caddy.nocap \
  && mv -f /usr/bin/caddy.nocap /usr/bin/caddy \
  && chmod 0755 /usr/bin/caddy
 
-USER 1000:0
+# NO USER LINE. The image runs as the upstream default (root) and the compose
+# service pins `user: '0:0'` explicitly. A `USER 1000:0` here crash-looped the
+# live edge with `exec: operation not permitted` for a reason nobody established
+# — see the caddy service in infra/compose/docker-compose.prod.yml.
