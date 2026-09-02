@@ -136,4 +136,31 @@ RUN mkdir -p /data/caddy /config/caddy /var/log/caddy \
 # cannot become.
 COPY --from=site /app/apps/site/dist /srv/libriant/site
 
+# STRIP THE FILE CAPABILITY, or this image cannot exec at all.
+#
+# Upstream runs `setcap cap_net_bind_service=+ep /usr/bin/caddy` so the binary
+# can bind 80/443. That is exactly what breaks us: with `no_new_privs` set (the
+# compose service's security_opt) and a NON-ROOT uid, execve of a binary carrying
+# file capabilities with the EFFECTIVE bit does not silently drop them — it fails
+#
+#     exec /usr/bin/caddy: operation not permitted
+#
+# before the process starts, so the container reports "Created" and then dies.
+# The deploy's `caddy validate` stage hit this first and, because the throwaway
+# container never got as far as reading the config, reported "Caddyfile is
+# invalid" about a Caddyfile that was fine.
+#
+# We do not need the capability: the port comes from
+# net.ipv4.ip_unprivileged_port_start=0 on the service, which is why cap_add was
+# deleted rather than kept. Removing the xattr makes the binary an ordinary
+# executable and there is nothing left to gain at execve.
+#
+# `cp` and not `setcap -r`: file capabilities live in the security.capability
+# xattr, plain cp does not copy xattrs, and libcap is not guaranteed to be in
+# this image at runtime. The copy is a couple of tens of MB in one layer and
+# needs no package.
+RUN cp /usr/bin/caddy /usr/bin/caddy.nocap \
+ && mv -f /usr/bin/caddy.nocap /usr/bin/caddy \
+ && chmod 0755 /usr/bin/caddy
+
 USER 1000:0

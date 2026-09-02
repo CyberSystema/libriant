@@ -654,9 +654,36 @@ say "Validating the Caddyfile before anything is recreated"
 # sequence is: up -d succeeds, caddy reload fails, the fallback recreate
 # crash-loops, and every host goes dark. With it, the deploy aborts and whatever
 # is currently running keeps serving.
-dc run --rm --no-deps --entrypoint caddy caddy \
-  validate --config /etc/caddy/Caddyfile --adapter caddyfile \
-  || die "Caddyfile is invalid — nothing was changed."
+# Output captured as well as shown, because "the validate command failed" and
+# "the Caddyfile is invalid" are NOT the same thing and conflating them sends the
+# operator to the wrong file. Seen for real: with `user: 1000:0` and a binary
+# still carrying file capabilities, the container reported Created and then
+#     exec /usr/bin/caddy: operation not permitted
+# — execve refused before anything read the config — and this line announced
+# "Caddyfile is invalid" about a file that was perfectly correct.
+CADDY_VALIDATE_LOG="$(mktemp)"
+if dc run --rm --no-deps --entrypoint caddy caddy \
+     validate --config /etc/caddy/Caddyfile --adapter caddyfile \
+     >"$CADDY_VALIDATE_LOG" 2>&1; then
+  cat "$CADDY_VALIDATE_LOG"
+  rm -f "$CADDY_VALIDATE_LOG"
+else
+  cat "$CADDY_VALIDATE_LOG"
+  if grep -qiE 'exec .*(operation not permitted|permission denied|no such file)' \
+       "$CADDY_VALIDATE_LOG"; then
+    rm -f "$CADDY_VALIDATE_LOG"
+    die "the caddy container could not EXEC its own binary — this is not a Caddyfile problem.
+     Nothing was changed and whatever is running is still serving.
+     The usual cause is the uid change (supply-chain-07): \`no_new_privs\` plus a
+     non-root uid plus a binary that still carries file capabilities makes execve
+     fail outright. Confirm with:
+       docker run --rm --entrypoint sh caddy:2-alpine -c 'getcap /usr/bin/caddy'
+     A non-empty answer means the image layer that strips it did not build. See
+     infra/caddy/Dockerfile and docs/RUNBOOK.md 3.7c."
+  fi
+  rm -f "$CADDY_VALIDATE_LOG"
+  die "Caddyfile is invalid — nothing was changed."
+fi
 
 STAGE="compose-up"
 say "Starting the stack"
