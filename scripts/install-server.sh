@@ -5957,7 +5957,7 @@ step_deploy() {
   fi
 
   note "The run has only succeeded when you have seen the script's own '▸ Healthy: …'"
-  note "line and its 'Deployed <tag>. This box is not in DNS yet' line. A"
+  note "line and its 'Deployed <tag>.' line. A"
   note "'waiting… edge=200 site=000 …' line is the PENDING form, not the success form."
   note "Do NOT over-read web=healthy: that healthcheck is a constant, and it passes"
   note "green with a wrong API_INTERNAL_URL while every page renders an error."
