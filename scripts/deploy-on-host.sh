@@ -762,5 +762,40 @@ deploy_monitoring
 STAGE="done"
 
 echo
-echo "Deployed $IMAGE_TAG. This box is not in DNS yet, so nothing is public."
-echo "Point DNS at it only when you want it live — docs/RUNBOOK.md."
+echo "Deployed $IMAGE_TAG."
+# "This box is not in DNS yet, so nothing is public" was printed unconditionally.
+# It was true on the day it was written and false from the moment the operator
+# pointed DNS at the box — which is the moment the sentence matters most, because
+# it is telling them a live edge is private. Same defect class as the watchdog
+# banner: a message asserting a state it never measured.
+#
+# A fallback chain rather than one command. `getent` is glibc's NSS and is the
+# right answer on the Ubuntu host this deploys to — but it resolves nothing but
+# /etc/hosts on the macOS this was written on, which made the check untestable
+# and, on first run here, silently wrong in the "not public" direction. bind-utils
+# is not in BASE_PACKAGES either, so `host` and `dig` cannot be assumed. Try all
+# three and treat "no resolver at all" as its own answer instead of as NXDOMAIN.
+#
+# It answers exactly one question — does this name resolve from this box — and
+# the wording claims no more. A name that resolves could still point elsewhere;
+# only the external check settles that, which is why the live branch names it.
+host_resolves() {
+  [ -n "${1:-}" ] || return 2
+  if command -v getent >/dev/null 2>&1 && getent hosts "$1" 2>/dev/null | grep -q .; then return 0; fi
+  if command -v host   >/dev/null 2>&1; then host -W 3 "$1" >/dev/null 2>&1 && return 0 || return 1; fi
+  if command -v dig    >/dev/null 2>&1; then [ -n "$(dig +short +time=3 "$1" 2>/dev/null)" ] && return 0 || return 1; fi
+  return 2   # nothing here can answer the question
+}
+host_resolves "${SITE_HOST:-}"; SITE_DNS=$?
+if [ -z "${SITE_HOST:-}" ] || [ "$SITE_DNS" = 2 ]; then
+  echo "Cannot tell whether this box is public: ${SITE_HOST:+no resolver available to check $SITE_HOST}${SITE_HOST:-SITE_HOST is unset in $ENV_FILE}."
+elif [ "$SITE_DNS" = 0 ]; then
+  echo "$SITE_HOST resolves, so this box is most likely LIVE. On-box output cannot"
+  echo "prove that: confirm from another machine, over both address families —"
+  echo "  curl -sSI https://$SITE_HOST/ | head -1"
+  echo "  nmap -Pn -p 22,80,443 <origin-v4>   # 22 open, 80/443 filtered"
+  echo "  nmap -6 -Pn -p 22,80,443 <origin-v6>"
+else
+  echo "$SITE_HOST does not resolve from this box, so nothing is public yet."
+  echo "Point DNS at it only when you want it live — docs/RUNBOOK.md 5.4."
+fi
