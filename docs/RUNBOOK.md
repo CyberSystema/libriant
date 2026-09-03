@@ -68,6 +68,7 @@ document is a real heading you can search for.
 | You are adding a library                            | [§6.6](#66-adding-a-tenant)                                                                                                          |
 | Somebody is locked out of the admin panel           | [§4.5](#45-the-admin-password-reset-that-nobody-documented), [§4.5a](#45a-the-lost-authenticator--getting-back-into-the-admin-panel) |
 | You are about to point DNS at this box              | [§5.4](#54-the-cutover-order-and-what-breaks-if-you-deviate) — **read it before, not during**                                        |
+| An e-mail or link on the public site renders wrong  | [§5.4a](#54a-cloudflare-dashboard-settings-that-must-stay-off) — the edge rewrites HTML the origin never sent                        |
 | You need to tell the libraries something            | [§9.11](#911-telling-the-libraries)                                                                                                  |
 | Personal data may have leaked                       | [§9.11c](#911c-personal-data-breach--the-one-with-a-clock) — **72-hour clock**                                                       |
 | You just want the command                           | [§11](#11-quick-reference)                                                                                                           |
@@ -3770,6 +3771,37 @@ step.
 | Cert expired or wrong SANs           | Green deploy, then Cloudflare **526** on every host. The deploy only `test -f`s the files.                                                                                                                                                                |
 | Leave `admin` on the dead IP         | A stranger who gets that IP reassigned can answer for `admin.libriant.com`.                                                                                                                                                                               |
 | Add an `AAAA` record for the origin  | Cloudflare tries a v6 origin that has no listener on 80/443 → **522 on the v6 path only**, intermittently, while every v4 check passes. See step 5.                                                                                                       |
+
+### 5.4a Cloudflare dashboard settings that must stay OFF
+
+The site ships **zero JavaScript** and the edge sends
+`Content-Security-Policy: … script-src 'none' …`. That is not a preference: it is
+what makes the stored-XSS class structurally impossible on pages an anonymous
+visitor can reach, it is pinned by `pnpm check:caddy`, and `input-and-files-04`
+is the finding that put it there.
+
+Several Cloudflare features work by **injecting a script into the response after
+it leaves the origin**. Under this CSP the browser blocks them, so the feature
+does not work — and the failure is silent, or worse, misleading.
+
+| Setting                              | Where                | State   | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------ | -------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Email Address Obfuscation**        | Scrape Shield        | **OFF** | Rewrote every `mailto:` into `[email protected]` plus a decoder script. The CSP blocked the decoder, so the address never decoded **for anyone** — and clicking it landed on Cloudflare's page saying _"you must enable JavaScript"_, which is wrong twice: JavaScript was enabled, and the CSP was the blocker. It hid `privacy@libriant.com` in the footer of the legal pages — the data-controller contact GDPR Art. 13 requires to be _provided_. Turned off 2026-09-03. |
+| **Rocket Loader**                    | Speed → Optimization | **OFF** | Same mechanism: it rewrites and defers scripts. There are none to defer, so it can only add.                                                                                                                                                                                                                                                                                                                                                                                 |
+| **Auto Minify / any HTML rewriting** | Speed                | **OFF** | Anything that edits the HTML after the origin can only diverge from what the build emits and what the tests read.                                                                                                                                                                                                                                                                                                                                                            |
+
+**This class of bug is invisible from the repository.** `pnpm --filter @libriant/site build` emits zero `<script>` tags — verified — and every check runs against the origin. The injection happens at the edge, so the only thing that sees it is a request to the live site:
+
+```bash
+curl -sS https://libriant.com/ | grep -c '<script'
+```
+
+**Good looks like: 0 or 1.** One is Cloudflare's challenge-platform beacon
+(`window.__CF$cv$params`), which arrives with Bot Fight Mode and the managed
+challenge detections. It is inert here — the CSP blocks it like the rest — and it
+is not worth disabling bot protection to remove ~450 bytes of dead markup. Any
+_other_ script on that page is a Cloudflare feature somebody switched on, and it
+is not working; find it in the dashboard rather than in this repository.
 
 ### 5.5 CAA
 
