@@ -1,0 +1,36 @@
+// ---------------------------------------------------------------------------
+// Schema customization — Layer 1: custom fields on built-in entities.
+// ---------------------------------------------------------------------------
+
+/// One row per custom field a library has defined for a built-in entity.
+/// The matching value lives inside that entity's `customFields` JSONB. The
+/// application layer validates writes against this row; the DB just stores.
+model FieldDefinition {
+  id             String          @id @default(cuid())
+  /// Which built-in entity this field attaches to.
+  entityKind     FieldEntityKind
+  /// Snake-case key used inside `customFields` JSONB.
+  fieldKey       String
+  /// `{ "en": "Shelf section", "el": "Τομέας ραφιού" }`.
+  labelJson      Json
+  type           FieldType
+  required       Boolean         @default(false)
+  /// `{ "options": [{ "value": "fiction", "label": { "en": "Fiction", "el": "Λογοτεχνία" } }] }`
+  /// for select_one / select_many. NULL otherwise.
+  optionsJson    Json?
+  /// `{ "min": 0, "max": 999, "pattern": "...", "minLength": ..., "maxLength": ... }` etc.
+  validationJson Json?
+  /// Display order within the entity's edit form.
+  sortOrder      Int             @default(0)
+  /// Forward-compat hook: when true, the application MAY promote this field
+  /// to a generated typed column for faster filtering. No-op at MVP.
+  indexed        Boolean         @default(false)
+  /// Hide from new records without losing existing data.
+  archivedAt     DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([entityKind, fieldKey])
+  @@index([entityKind, sortOrder])
+  @@map("field_definitions")
+}

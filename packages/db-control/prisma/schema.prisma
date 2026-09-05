@@ -1366,3 +1366,112 @@ model ImportRowIssue {
   @@index([batchId, severity])
   @@map("import_row_issues")
 }
+
+// ---------------------------------------------------------------------------
+// Migration ledger — what schema each tenant is on, and what a fan-out did.
+//
+// `scripts/tenant-migrate.ts` used to iterate every tenant, shell out to
+// `prisma migrate deploy`, print a summary and exit. Nothing survived the
+// process. Two things follow from that, and both bit:
+//
+//   A partial fan-out is unrecoverable. 40 tenants in, one fails and the run
+//   exits non-zero. The only way to continue is to run the whole thing again
+//   and hope every already-migrated tenant is a no-op — which it is, until a
+//   migration is not idempotent.
+//
+//   Nobody can answer "what schema is this library on?" without connecting to
+//   its database. During an incident that is the first question, and the fleet
+//   report cannot answer it.
+//
+// These three tables make a run a durable object: what was planned, what
+// happened per tenant, and where each tenant ended up.
+// ---------------------------------------------------------------------------
+
+enum MigrationRunStatus {
+  running
+  completed
+  /// Finished with at least one tenant failed.
+  failed
+  /// Interrupted — the process died or was stopped. `--resume` picks these up.
+  aborted
+}
+
+enum MigrationTenantStatus {
+  planned
+  running
+  ok
+  failed
+  /// Deliberately not attempted: filtered out, or already on the target schema.
+  skipped
+  /// Exceeded the per-tenant deadline. The migration may still be running on
+  /// the database; this is why a resume RE-CHECKS rather than assuming.
+  timeout
+}
+
+/// One row per tenant: the schema state its database is actually on.
+///
+/// Written after a successful migrate, read by the fleet report and by
+/// `--resume`. It is a CACHE of what the tenant database says about itself,
+/// never the source of truth — `_prisma_migrations` in the tenant DB is — so a
+/// resume verifies rather than trusts it.
+model TenantSchemaState {
+  tenantId String @id
+  /// Major schema generation. 1 = the pre-2.0 shape; the 2.0 upgrade sets 2.
+  schemaMajor Int @default(1)
+  /// Name of the newest migration directory applied, e.g. `20260827093000_…`.
+  lastMigration String?
+  /// Number of migrations applied at last check.
+  migrationCount Int @default(0)
+  /// An online script that has started and not finished. While this is set, a
+  /// migration marked as a barrier must not be applied to this tenant.
+  onlinePending String?
+  checkedAt DateTime?
+  updatedAt DateTime @updatedAt
+
+  @@index([schemaMajor])
+  @@map("tenant_schema_state")
+}
+
+/// One fan-out of `pnpm tenant:migrate`.
+model MigrationRun {
+  id     String             @id @default(cuid())
+  status MigrationRunStatus @default(running)
+  /// Free-text label from `--note`, so an incident timeline can name the run.
+  note   String?
+  /// The command line as invoked, for reproducing it.
+  invocation String?
+  plannedCount Int @default(0)
+  okCount      Int @default(0)
+  failCount    Int @default(0)
+  skippedCount Int @default(0)
+  /// Set when this run was started with `--resume <id>`.
+  resumedFromId String?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  tenants MigrationRunTenant[]
+
+  @@index([status, startedAt])
+  @@map("migration_runs")
+}
+
+/// One tenant within one run. The unit `--resume` skips or retries.
+model MigrationRunTenant {
+  runId    String
+  tenantId String
+  /// Denormalised so a run stays readable after a tenant is renamed or archived.
+  slug     String
+  status   MigrationTenantStatus @default(planned)
+  appliedCount Int               @default(0)
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  durationMs   Int?
+  error        String?
+
+  run MigrationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@id([runId, tenantId])
+  @@index([runId, status])
+  @@index([tenantId, startedAt])
+  @@map("migration_run_tenants")
+}

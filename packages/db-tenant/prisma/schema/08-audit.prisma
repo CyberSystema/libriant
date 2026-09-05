@@ -1,0 +1,48 @@
+// ---------------------------------------------------------------------------
+// Audit log — tenant-side, library-visible. Records every meaningful change
+// in this library's data.
+//
+// Retention is governed by the tenant's plan (`audit_log_retention_days`) and
+// enforced by the `retention-sweep` job in apps/api/src/jobs/retention.job.ts,
+// which deletes rows older than the plan's window. When subscriptions are OFF
+// — the shipped configuration — that feature resolves to the "unlimited"
+// sentinel and the sweep deliberately deletes NOTHING here: retention is
+// lifted, not zero. (This comment claimed a background job for months while no
+// such job existed anywhere in the tree — privacy-legal-05.)
+//
+// `beforeJson` / `afterJson` on member-targeted rows hold identifiers
+// (memberNumber, fullName, e-mail). MembersService.erase() redacts them in the
+// same transaction that tombstones the member; see privacy-legal-03.
+// ---------------------------------------------------------------------------
+
+model AuditEvent {
+  id               String         @id @default(cuid())
+  /// `user`, `admin`, or `system`. Admin entries are written ONLY during
+  /// an active support session (see `supportSessionId`).
+  actorType        AuditActorType
+  /// CUID from the control plane; resolved on read in the API layer.
+  actorId          String?
+  /// e.g. `book.created`, `loan.checked_out`, `member.archived`,
+  /// `custom_field.created`, `support.action`.
+  action           String
+  targetType       String?
+  targetId         String?
+  beforeJson       Json?
+  afterJson        Json?
+  ip               String?
+  userAgent        String?
+  /// When set, the action happened during a Libriant support impersonation
+  /// session. The id matches a `support_sessions.id` in the control plane.
+  supportSessionId String?
+  occurredAt       DateTime       @default(now())
+
+  // Newest-first, with `id` settling the tie — the exact ORDER BY
+  // `AuditService.list` pages on, and the index the retention sweep reads
+  // backwards to find its oldest rows (performance-03).
+  @@index([occurredAt(sort: Desc), id(sort: Desc)], map: "audit_log_occurredAt_id_idx")
+  @@index([actorType, actorId, occurredAt])
+  @@index([targetType, targetId])
+  @@index([action, occurredAt])
+  @@index([supportSessionId])
+  @@map("audit_log")
+}

@@ -1,0 +1,70 @@
+// ---------------------------------------------------------------------------
+// Schema customization — Layer 2: custom entity types ("collections").
+// A library can define new entities (DVDs, BoardGames, Events) entirely in
+// data. Each collection has its own field schema and records.
+// ---------------------------------------------------------------------------
+
+model Collection {
+  id                String    @id @default(cuid())
+  /// URL-safe identifier ("dvds", "events"). Unique within the library
+  /// among non-archived collections.
+  slug              String
+  /// `{ "en": "DVD", "el": "DVD" }`.
+  singularLabelJson Json
+  /// `{ "en": "DVDs", "el": "DVDs" }`.
+  pluralLabelJson   Json
+  /// Asset slot for the collection's icon (e.g. "icons/book").
+  iconAssetRef      String?
+  sortOrder         Int       @default(0)
+  archivedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  fields  CollectionField[]
+  records CollectionRecord[]
+
+  @@index([slug])
+  @@map("collections")
+}
+
+model CollectionField {
+  id             String    @id @default(cuid())
+  collectionId   String
+  fieldKey       String
+  labelJson      Json
+  type           FieldType
+  required       Boolean   @default(false)
+  optionsJson    Json?
+  validationJson Json?
+  sortOrder      Int       @default(0)
+  indexed        Boolean   @default(false)
+  archivedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, fieldKey])
+  @@index([collectionId, sortOrder])
+  @@map("collection_fields")
+}
+
+model CollectionRecord {
+  id              String    @id @default(cuid())
+  collectionId    String
+  /// All field values for this record, keyed by `field_key`.
+  data            Json      @default("{}")
+  /// Lowercased + accent-folded concat of selected string fields, used for
+  /// fuzzy search. App maintains.
+  searchText      String    @default("")
+  createdByUserId String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  archivedAt      DateTime?
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  @@index([collectionId, createdAt])
+  @@index([collectionId, archivedAt])
+  @@map("collection_records")
+}

@@ -1,0 +1,70 @@
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum BookCopyStatus {
+  available
+  on_loan
+  reserved
+  lost
+  damaged
+  withdrawn
+}
+
+enum MemberStatus {
+  active
+  suspended
+  archived
+}
+
+enum LoanStatus {
+  active
+  returned
+  lost
+}
+
+enum ReservationStatus {
+  queued
+  ready
+  fulfilled
+  expired
+  canceled
+}
+
+enum FineStatus {
+  outstanding
+  paid
+  waived
+}
+
+enum AuditActorType {
+  user
+  admin
+  system
+}
+
+/// What built-in entity a custom field is attached to.
+enum FieldEntityKind {
+  book
+  book_copy
+  member
+  loan
+  reservation
+  fine
+}
+
+/// Plain-language field types exposed in the schema editor. Values are
+/// validated in the application layer against `optionsJson` /
+/// `validationJson`.
+enum FieldType {
+  short_text
+  long_text
+  number
+  boolean
+  date
+  datetime
+  select_one
+  select_many
+  url
+  email
+}

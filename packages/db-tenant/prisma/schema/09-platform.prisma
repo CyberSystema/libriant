@@ -1,0 +1,56 @@
+// ---------------------------------------------------------------------------
+// Schema bookkeeping — what this database is, and what is half-done to it.
+//
+// Prisma's own `_prisma_migrations` records which migration files ran. It
+// cannot record the two things a fleet of databases actually needs:
+//
+//   which SCHEMA GENERATION this database is on, so a tool can tell a 1.0
+//   tenant from a 2.0 one without reading the whole migration list; and
+//
+//   which ONLINE script is part-way through, because those run OUTSIDE a
+//   transaction and therefore have a state Prisma cannot see: half of a
+//   backfill is committed, an index is INVALID, and the next barrier
+//   migration must not be applied until it finishes.
+//
+// Both tables are underscore-prefixed to sit beside `_prisma_migrations` and
+// to stay obviously non-library data.
+// ---------------------------------------------------------------------------
+
+/// Singleton. Enforced by a CHECK constraint (`id = 1`) in the migration, the
+/// same way `tenant_settings` is — Prisma cannot express it.
+model SchemaState {
+  id Int @id @default(1)
+  /// Major schema generation. 1 = the pre-2.0 shape; the 2.0 upgrade sets 2.
+  schemaMajor Int @default(1)
+  /// Name of the online script that has started and not finished, if any.
+  /// While this is set, a migration marked as a barrier must not be applied.
+  onlinePending String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("_libriant_schema_state")
+}
+
+/// The online-track ledger: one row per script in `prisma/online/`.
+///
+/// Deliberately NOT modelled on `_prisma_migrations`. An online script is
+/// resumable, so it needs a cursor and an attempt count, and it can be
+/// legitimately re-entered after a failure — which a checksum-and-fail ledger
+/// makes impossible.
+model OnlineMigration {
+  /// The script's file name, without `.sql`.
+  name String @id
+  startedAt DateTime  @default(now())
+  finishedAt DateTime?
+  /// Bumped on every entry, so a script that keeps dying is visible.
+  attempts Int @default(0)
+  /// Opaque resume position, owned by the script's own step definition —
+  /// usually the last id processed by a batched backfill.
+  cursor String?
+  /// Rows processed so far, across attempts. Progress, not a correctness input.
+  rowsDone BigInt @default(0)
+  lastError String?
+
+  @@index([finishedAt])
+  @@map("_libriant_online_migrations")
+}

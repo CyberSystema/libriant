@@ -107,6 +107,23 @@ jobs:
       - name: Currency table matches ICU
         run: pnpm check:currencies
 
+      # Migration SQL that cannot run, or runs and quietly corrupts. Four rules,
+      # each one a mistake this repo has already made or is one phase from
+      # making: CONCURRENTLY inside the transactional track (which prisma
+      # migrate deploy wraps in a transaction, so it simply fails at apply
+      # time); an unqualified search_path-sensitive call in an index
+      # expression, generated column, CHECK or DEFAULT (see
+      # 20260825200000_qualify_immutable_unaccent); a bare cast to timestamptz,
+      # which reads the existing value in the SESSION's zone and would shift
+      # every stored instant by Europe/Athens' offset during the 2.0 upgrade;
+      # and non-idempotent DDL in the resumable online track.
+      #
+      # Matching is done on SQL with comments and string literals scrubbed —
+      # seven migrations explain in prose why they did NOT use CONCURRENTLY,
+      # and a plain grep fails all seven.
+      - name: Migration SQL is safe to apply
+        run: pnpm check:migration-safety
+
       # amtool is run against a COPY with the receiver placeholders substituted,
       # not against the file as committed.
       #
@@ -580,6 +597,50 @@ jobs:
 
       - name: Run tenant smoke test (catalog → loan → reservation → custom collection)
         run: pnpm tenant:smoke
+        env:
+          TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
+
+      # The Prisma schema and the migrations must still describe the same
+      # database. They drift in one direction almost every time and always
+      # silently: a model or field is added, `prisma generate` emits a client
+      # for it, TypeScript compiles, the code reads a column that exists on no
+      # real database, and nothing fails until deploy.
+      #
+      # This replays every migration into a throwaway database and compares.
+      # Statements that DROP are the expected surplus — GIN trigram indexes, a
+      # text_pattern_ops index, a generated tsvector column — and each is
+      # allowlisted with a reason. A statement that CREATEs or ADDs is the
+      # missing migration, and fails.
+      #
+      # It lives here rather than in `check:all` because it needs a Postgres to
+      # build the shadow database in, and `check:all` must stay runnable on a
+      # laptop with nothing up. It REFUSES to run without one rather than
+      # skipping.
+      # Prisma builds the comparison inside an EXISTING, empty database and
+      # drops what it created afterwards; it will not create the database
+      # itself. Guarded the same way libriant_demo is above, because CREATE
+      # DATABASE cannot run inside a transaction.
+      - name: Create the shadow database for the drift check
+        run: |
+          if ! PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -tAc \
+            "SELECT 1 FROM pg_database WHERE datname = 'libriant_shadow'" | grep -q 1; then
+            PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "CREATE DATABASE libriant_shadow"
+          fi
+
+      - name: Schema and migrations still agree
+        run: pnpm check:schema-drift
+        env:
+          SHADOW_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_shadow
+
+      # The 1.x fixture the phase-19 upgrade will be tested against, seeded
+      # here so it is proven to build on every commit rather than on the day
+      # someone needs it. It deliberately contains the shapes that break a
+      # migration: two books sharing an ISBN (one archived, the only way 1.0
+      # can hold that state), lost loans whose returnedAt is NULL forever,
+      # hold queues that must come across bit-exact, Greek capitals with final
+      # sigma, and an expression index over immutable_unaccent.
+      - name: Seed the 1.x upgrade fixture
+        run: pnpm seed:v1-fixture --reset
         env:
           TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
 

@@ -1,0 +1,42 @@
+// Libriant — Tenant schema.
+//
+// One database per library. Identical schema across all tenants. Holds the
+// library's catalog (books, copies, authors), patrons (members), circulation
+// (loans, reservations, fines), the customization layer (field definitions
+// per entity + custom collections), tenant-side audit log, and per-tenant
+// settings.
+//
+// Design principles enforced here:
+//   - Strict isolation: there are NO foreign keys to the control plane.
+//     Cross-DB references (e.g. who created what) are stored as text cuids
+//     and joined in the application layer when needed.
+//   - Every customizable built-in entity (book / book_copy / member / loan /
+//     reservation / fine) has a `customFields Json` column with a GIN index.
+//     Per-tenant schema metadata lives in `field_definitions`.
+//   - "Custom entity types" (DVDs, BoardGames, Events) are modeled as
+//     `collections` + `collection_records` so a new entity type is data, not
+//     DDL.
+//   - Soft-delete via `archivedAt DateTime?` on everything a user could
+//     legitimately want to restore from a 30-day undo bucket. Hard delete is
+//     reserved for ephemeral data (audit log retention is enforced by a job,
+//     not by the schema).
+//   - Greek-aware search/sort: every searchable entity has a `searchText`
+//     column (lowercased + accent-folded by the app) with a GIN trigram
+//     index. Sort columns are similarly normalized.
+//   - DB-level invariants:
+//       * at most one active loan per copy
+//       * at most one active reservation per (book, member)
+//       * barcodes / member numbers unique among non-archived rows
+//       * all monetary amounts non-negative
+//       * dates respect chronology (due_at > loaned_at, etc.)
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+  output          = "../../node_modules/.prisma/tenant-client"
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [pgcrypto, citext, pg_trgm, unaccent]
+}

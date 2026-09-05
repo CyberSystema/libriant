@@ -1,0 +1,134 @@
+// ---------------------------------------------------------------------------
+// Circulation: loans, reservations, fines
+// ---------------------------------------------------------------------------
+
+model Loan {
+  id                 String     @id @default(cuid())
+  copyId             String
+  memberId           String
+  loanedAt           DateTime   @default(now())
+  /// When the book is due back.
+  dueAt              DateTime
+  /// NULL while the loan is active. When set, the loan is closed.
+  returnedAt         DateTime?
+  /// How many times the loan has been renewed.
+  renewedCount       Int        @default(0)
+  status             LoanStatus @default(active)
+  /// Free-form note (damage on return, lost report, etc.).
+  notes              String?
+  /// The staff user (control-plane User.id) who checked out the loan.
+  checkedOutByUserId String?
+  /// The staff user who processed the return.
+  returnedByUserId   String?
+  customFields       Json       @default("{}")
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  copy   BookCopy @relation(fields: [copyId], references: [id], onDelete: Restrict)
+  member Member   @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  fines  Fine[]
+
+  @@index([memberId, status])
+  @@index([copyId])
+  @@index([dueAt])
+  @@index([returnedAt])
+  // perf-02: the loans list orders by `loanedAt DESC, id DESC` and the tenant
+  // dashboard fires two of them on EVERY render. With no index on `loanedAt`
+  // Postgres read the whole 272 MB heap and top-N sorted it to return 26 rows
+  // — twice the 128 MB shared_buffers of a Postgres shared by every library on
+  // the box, so one big library evicted everyone else's cache on every page
+  // view. Measured on a 2M-row loans table: 34,840 buffers → 5.
+  @@index([loanedAt(sort: Desc), id(sort: Desc)], map: "loans_loanedAt_id_idx")
+  // Same ordering, but for the two filtered dashboard tiles (`status=active`
+  // and the overdue variant). `status` leads so the planner can seek straight
+  // to the active loans and then walk them already in `loanedAt` order.
+  @@index([status, loanedAt(sort: Desc), id(sort: Desc)], map: "loans_status_loanedAt_id_idx")
+  // Every overdue / due-soon reader in the product — the dashboard's overdue
+  // tile, fine accrual, the notice sweeps — asks for `status='active' AND dueAt
+  // <op> <ts>`. This is the index that answers them, and it is deliberately NOT
+  // partial: Prisma emits `status = CAST($1::text AS "LoanStatus")`, and because
+  // `enum_in` is STABLE the planner cannot fold that to a constant, so it can
+  // never prove a `WHERE status = 'active'` index predicate. A leading `status`
+  // key needs no proving. The partial `loans_active_dueAt_idx` that 20260824120000
+  // added for this is dropped in 20260824170000 for exactly that reason.
+  @@index([status, dueAt, id], map: "loans_status_dueAt_id_idx")
+  @@map("loans")
+}
+
+model Reservation {
+  id                String            @id @default(cuid())
+  /// Reservations are placed against a Book (any copy will satisfy them),
+  /// not a specific BookCopy.
+  bookId            String
+  memberId          String
+  placedAt          DateTime          @default(now())
+  /// 1-based position in the queue. NULL once the reservation is no longer
+  /// queued (i.e. ready/fulfilled/expired/canceled).
+  queuePosition     Int?
+  status            ReservationStatus @default(queued)
+  /// When the reservation transitioned to `ready` (notification sent).
+  readyAt           DateTime?
+  /// After which the member loses their slot if they haven't picked up.
+  expiresAt         DateTime?
+  /// When the reservation was satisfied by a checkout.
+  fulfilledAt       DateTime?
+  /// Which physical copy was used to fulfill.
+  fulfilledByCopyId String?
+  canceledAt        DateTime?
+  notes             String?
+  placedByUserId    String?
+  customFields      Json              @default("{}")
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  book            Book      @relation(fields: [bookId], references: [id], onDelete: Restrict)
+  member          Member    @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  fulfilledByCopy BookCopy? @relation("ReservationFulfilledByCopy", fields: [fulfilledByCopyId], references: [id], onDelete: SetNull)
+
+  @@index([bookId, status, queuePosition])
+  @@index([memberId, status])
+  @@index([expiresAt])
+  // perf-10: the holds screen's default list orders by `status, queuePosition
+  // NULLS LAST, placedAt DESC, id` and filters on nothing else, so the only
+  // reservation index that existed (leading `bookId`) could not serve it.
+  // Postgres read the whole table and top-N sorted it to return 26 rows.
+  // Column directions match the ORDER BY exactly — `placedAt DESC`, the rest
+  // ascending, which for a NOT NULL / nullable-with-NULLS-LAST pair is what
+  // Postgres's default ASC already means — so the scan needs no sort node at
+  // all. Measured on 160,000 reservations with 40,000 live holds: `Seq Scan …
+  // Sort Method: top-N heapsort`, 591 buffers, 30.6 ms → `Index Only Scan …
+  // Heap Fetches: 0`, 4 buffers, 0.7 ms.
+  @@index([status, queuePosition, placedAt(sort: Desc), id], map: "reservations_status_queuePosition_placedAt_id_idx")
+  @@map("reservations")
+}
+
+model Fine {
+  id               String     @id @default(cuid())
+  memberId         String
+  /// Loan that generated this fine. NULL for ad-hoc fines (lost-book
+  /// replacement, damage, etc.).
+  loanId           String?
+  /// Amount in subunits of the tenant's currency.
+  amountCents      Int
+  currency         String     @default("EUR")
+  reason           String
+  status           FineStatus @default(outstanding)
+  paidAt           DateTime?
+  /// The staff user who recorded the payment / waiver.
+  resolvedByUserId String?
+  notes            String?
+  customFields     Json       @default("{}")
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+  archivedAt       DateTime?
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  loan   Loan?  @relation(fields: [loanId], references: [id], onDelete: SetNull)
+
+  @@index([memberId, status])
+  @@index([loanId])
+  // Newest-first, with `id` settling the tie — the exact ORDER BY
+  // `FinesService.list` pages on (performance-03).
+  @@index([createdAt(sort: Desc), id(sort: Desc)], map: "fines_createdAt_id_idx")
+  @@map("fines")
+}

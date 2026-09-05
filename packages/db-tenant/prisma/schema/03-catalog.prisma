@@ -1,0 +1,149 @@
+// ---------------------------------------------------------------------------
+// Catalog: authors, books, copies
+// ---------------------------------------------------------------------------
+
+/// An author or other creator (translator, illustrator) referenced by books.
+/// Many books can share one author; one book can have many (book_authors).
+model Author {
+  id             String    @id @default(cuid())
+  /// Display name as it appears on book covers (e.g. "Νίκος Καζαντζάκης").
+  fullName       String
+  /// Sortable, accent-folded, lowercase form (app maintains). This is the
+  /// importer's natural key for find-or-create, so it is UNIQUE among
+  /// non-archived authors — `authors_sortname_unique_active`, a partial unique
+  /// index in migration 20260826090000 (data-integrity-06). Prisma cannot
+  /// express a partial index, so it lives in migration SQL only; writers must
+  /// translate P2002 rather than assume the create always succeeds.
+  sortName       String
+  /// Some authors are known by a single mononym.
+  isOrganization Boolean   @default(false)
+  birthYear      Int?
+  deathYear      Int?
+  /// Free-form note (notes on translations, pen names, etc.).
+  notes          String?
+  customFields   Json      @default("{}")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  archivedAt     DateTime?
+
+  bookLinks BookAuthor[]
+
+  @@index([sortName])
+  @@map("authors")
+}
+
+/// A bibliographic record (one row per work/edition the library catalogs).
+/// Physical copies are tracked in `book_copies`.
+model Book {
+  id                  String    @id @default(cuid())
+  title               String
+  subtitle            String?
+  /// Lowercased + accent-folded title used for sorting.
+  sortTitle           String
+  /// Concatenated title + subtitle + authors + publisher + isbn, lowercased
+  /// and accent-folded, used for fuzzy search (GIN trigram index).
+  searchText          String
+  /// ISBN-13 with hyphens stripped. Stored even when missing for old books.
+  /// The importer treats this as a book's natural key, so it is UNIQUE among
+  /// non-archived records that HAVE one — `books_isbn13_unique_active`, a
+  /// partial unique index in migration 20260826090000 (data-integrity-03).
+  /// NULL is outside the constraint (pre-ISBN and locally-catalogued items are
+  /// the common row in a Greek library export), and archiving a record frees
+  /// its ISBN for re-use. Prisma cannot express a partial index, so it lives in
+  /// migration SQL only; writers must translate P2002.
+  isbn13              String?
+  /// Legacy ISBN-10, also normalized.
+  isbn10              String?
+  publisher           String?
+  publicationYear     Int?
+  /// BCP-47 language tag of the book's content (e.g. "el", "en-US").
+  language            String?
+  edition             String?
+  numPages            Int?
+  description         String?
+  /// Slot name in the asset manifest (e.g. "covers/placeholder-book") OR
+  /// a storage-driver URL ("file://covers/<id>.jpg"). The storage layer
+  /// resolves on read.
+  coverAssetRef       String?
+  /// Free-form classification (Dewey, BISAC, library-specific shelf code).
+  classification      String?
+  customFields        Json      @default("{}")
+  /// When the `book-metadata-refresh` job last attempted to backfill this
+  /// book's metadata from OpenLibrary — set on every attempt (found or not) so
+  /// the sweep walks the whole catalog instead of re-hitting the same rows.
+  /// NULL = never attempted.
+  metadataRefreshedAt DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  archivedAt          DateTime?
+
+  authors      BookAuthor[]
+  copies       BookCopy[]
+  reservations Reservation[]
+
+  /// perf-03: this is the catalogue list's sort key, and the keyset predicate
+  /// in BooksService.list seeks into it with `sortTitle >= <cursor>`. Leave it
+  /// as a plain single-column index — `(sortTitle, id)` was measured and buys
+  /// nothing here: the residual tie-break inside one sortTitle is an
+  /// Incremental Sort over a handful of rows.
+  @@index([sortTitle])
+  @@index([isbn13])
+  @@index([isbn10])
+  @@index([publicationYear])
+  /// perf-09: this one is ASCENDING, which in Postgres means NULLS LAST, and
+  /// the metadata backfill sweep orders NULLS FIRST — so it cannot serve that
+  /// job. `books_metadata_backfill_idx` (migration 20260826210100) is the one
+  /// that does; it is partial and NULLS FIRST, neither of which Prisma can
+  /// express, so it lives in migration SQL only, like
+  /// `authors_sortname_unique_active`.
+  @@index([metadataRefreshedAt])
+  @@map("books")
+}
+
+/// Join table: ordered list of authors for a book (so "Author 1, Author 2"
+/// renders in the right order).
+model BookAuthor {
+  bookId   String
+  authorId String
+  /// Position in the author list (0-based).
+  order    Int     @default(0)
+  /// Optional role override (e.g. "translator", "illustrator"). Left null
+  /// for the primary author(s).
+  role     String?
+
+  book   Book   @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  author Author @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@id([bookId, authorId])
+  @@index([authorId])
+  @@map("book_authors")
+}
+
+/// A physical copy of a book — what librarians actually circulate. Multiple
+/// copies of the same Book are typical.
+model BookCopy {
+  id             String         @id @default(cuid())
+  bookId         String
+  /// Barcode printed on the physical copy. Unique within the library among
+  /// non-archived copies (partial unique index in migration SQL).
+  barcode        String
+  status         BookCopyStatus @default(available)
+  /// Where the copy lives in the library ("Section A, Shelf 3").
+  shelfLocation  String?
+  conditionNotes String?
+  acquiredAt     DateTime?
+  /// Acquisition cost in subunits (e.g. cents). NULL if unknown.
+  priceCents     Int?
+  customFields   Json           @default("{}")
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  archivedAt     DateTime?
+
+  book           Book          @relation(fields: [bookId], references: [id], onDelete: Restrict)
+  loans          Loan[]
+  fulfilledHolds Reservation[] @relation("ReservationFulfilledByCopy")
+
+  @@index([bookId, status])
+  @@index([status])
+  @@map("book_copies")
+}

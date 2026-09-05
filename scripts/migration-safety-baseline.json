@@ -1,0 +1,159 @@
+{
+  "$comment": "Accepted findings in migrations that have already been applied. An applied migration is history: Prisma checksums it and refuses to deploy a changed one, so the fix for a bad migration is a NEW migration, never an edit. Entries match on file + rule + line + exact source text, so editing an applied migration fails this gate as loudly as it fails Prisma. An entry that matches nothing is also a failure. Nothing new belongs here. New migrations are written to the rules.",
+  "accepted": [
+    {
+      "file": "packages/db-tenant/prisma/migrations/20260614000000_fine_one_outstanding_per_loan/migration.sql",
+      "rule": "unqualified-function",
+      "line": 29,
+      "source": "\"updatedAt\" = now()",
+      "why": "Applied 2026-06-14. Writes a bare now() into fines.updatedAt, a timestamp(3) column every reader treats as UTC, so the auto-waive note it stamps carries the session's local wall clock. Cosmetic — updatedAt is not read by any circulation decision — and the 1.0 to 2.0 upgrade rewrites the fees ledger wholesale. Kept as history for the checksum reason above."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260528170621_add_help_articles/migration.sql",
+      "rule": "unqualified-function",
+      "line": 56,
+      "source": "SELECT unaccent('public.unaccent'::regdictionary, $1)",
+      "why": "Applied 2026-05-28. SUPERSEDED, not outstanding: this is the original body of immutable_unaccent(), and 20260825200000_qualify_immutable_unaccent CREATE OR REPLACEs it with the qualified call. The finding is exactly the bug that migration exists to fix, still visible in the history that created it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 104,
+      "source": "VALUES (gen_random_uuid()::text, 'starter', 'Starter', 'Free. Sized for a Greek school library — roughly 2,000-6,000 items — or a very small community collection.', 'stripe', 'price_seed_starter', 0, NULL, NULL, 'EUR', true, true, 10, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 104,
+      "source": "VALUES (gen_random_uuid()::text, 'starter', 'Starter', 'Free. Sized for a Greek school library — roughly 2,000-6,000 items — or a very small community collection.', 'stripe', 'price_seed_starter', 0, NULL, NULL, 'EUR', true, true, 10, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 113,
+      "source": "\"updatedAt\" = now();",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 115,
+      "source": "VALUES (gen_random_uuid()::text, 'community', 'Community', 'A small municipal, community or specialist library. Around 20,000 titles.', 'stripe', 'price_seed_community', 3900, 'price_seed_community_annual', 39000, 'EUR', true, true, 20, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 115,
+      "source": "VALUES (gen_random_uuid()::text, 'community', 'Community', 'A small municipal, community or specialist library. Around 20,000 titles.', 'stripe', 'price_seed_community', 3900, 'price_seed_community_annual', 39000, 'EUR', true, true, 20, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 124,
+      "source": "\"updatedAt\" = now();",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 126,
+      "source": "VALUES (gen_random_uuid()::text, 'municipal', 'Municipal', 'A working municipal library. 60,000 titles covers the median Greek public library.', 'stripe', 'price_seed_municipal', 7900, 'price_seed_municipal_annual', 79000, 'EUR', true, true, 30, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 126,
+      "source": "VALUES (gen_random_uuid()::text, 'municipal', 'Municipal', 'A working municipal library. 60,000 titles covers the median Greek public library.', 'stripe', 'price_seed_municipal', 7900, 'price_seed_municipal_annual', 79000, 'EUR', true, true, 30, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 135,
+      "source": "\"updatedAt\" = now();",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 137,
+      "source": "VALUES (gen_random_uuid()::text, 'central', 'Central', 'A large or central municipal library, or a δημόσια βιβλιοθήκη. Up to 150,000 titles.', 'stripe', 'price_seed_central', 11900, 'price_seed_central_annual', 119000, 'EUR', true, true, 35, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 137,
+      "source": "VALUES (gen_random_uuid()::text, 'central', 'Central', 'A large or central municipal library, or a δημόσια βιβλιοθήκη. Up to 150,000 titles.', 'stripe', 'price_seed_central', 11900, 'price_seed_central_annual', 119000, 'EUR', true, true, 35, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 146,
+      "source": "\"updatedAt\" = now();",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 148,
+      "source": "VALUES (gen_random_uuid()::text, 'institutional', 'Institutional', 'An academic library or a very large public collection. Up to 400,000 titles.', 'stripe', 'price_seed_institutional', 18900, 'price_seed_institutional_annual', 189000, 'EUR', true, true, 40, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 148,
+      "source": "VALUES (gen_random_uuid()::text, 'institutional', 'Institutional', 'An academic library or a very large public collection. Up to 400,000 titles.', 'stripe', 'price_seed_institutional', 18900, 'price_seed_institutional_annual', 189000, 'EUR', true, true, 40, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 157,
+      "source": "\"updatedAt\" = now();",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 104,
+      "source": "VALUES (gen_random_uuid()::text, 'starter', 'Starter', 'Free. Sized for a Greek school library — roughly 2,000-6,000 items — or a very small community collection.', 'stripe', 'price_seed_starter', 0, NULL, NULL, 'EUR', true, true, 10, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 115,
+      "source": "VALUES (gen_random_uuid()::text, 'community', 'Community', 'A small municipal, community or specialist library. Around 20,000 titles.', 'stripe', 'price_seed_community', 3900, 'price_seed_community_annual', 39000, 'EUR', true, true, 20, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 126,
+      "source": "VALUES (gen_random_uuid()::text, 'municipal', 'Municipal', 'A working municipal library. 60,000 titles covers the median Greek public library.', 'stripe', 'price_seed_municipal', 7900, 'price_seed_municipal_annual', 79000, 'EUR', true, true, 30, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 137,
+      "source": "VALUES (gen_random_uuid()::text, 'central', 'Central', 'A large or central municipal library, or a δημόσια βιβλιοθήκη. Up to 150,000 titles.', 'stripe', 'price_seed_central', 11900, 'price_seed_central_annual', 119000, 'EUR', true, true, 35, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    },
+    {
+      "file": "packages/db-control/prisma/migrations/20260822140000_repricing/migration.sql",
+      "rule": "unqualified-function",
+      "line": 148,
+      "source": "VALUES (gen_random_uuid()::text, 'institutional', 'Institutional', 'An academic library or a very large public collection. Up to 400,000 titles.', 'stripe', 'price_seed_institutional', 18900, 'price_seed_institutional_annual', 189000, 'EUR', true, true, 40, now(), now())",
+      "why": "Applied 2026-08-22. A control-plane seed of the five plan rows. Harmless in practice: plans.createdAt/updatedAt are display-only metadata on rows written once by an operator, and gen_random_uuid resolved because pgcrypto is in public on every cluster this has run on. Kept as history because editing an applied migration breaks Prisma's checksum on every database that has run it."
+    }
+  ]
+}
