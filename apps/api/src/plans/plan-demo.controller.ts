@@ -14,13 +14,13 @@ import {
 } from '@nestjs/common';
 import { loadEnv } from '../config/env.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { PlanGuard } from './plan.guard.js';
 import { QuotaInterceptor } from './quota.interceptor.js';
 import { RequiresFeature, RequiresQuota } from './decorators.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * PQF-1: this controller is a developer smoke-test for the plan layer. Its
@@ -69,14 +69,14 @@ export class NonProductionOnlyGuard implements CanActivate {
 // warms a tenant DB pool or PlanGuard touches the plan layer (PQF-1).
 // A2-03: also role-gate (defence-in-depth) so even in dev/test the demo write
 // isn't exposed to a low-privilege role.
-@UseGuards(NonProductionOnlyGuard, TenantGuard, RolesGuard, PlanGuard)
-@Roles('owner', 'admin')
+@UseGuards(NonProductionOnlyGuard, TenantGuard, PermissionGuard, PlanGuard)
 @UseInterceptors(QuotaInterceptor)
 export class PlanDemoController {
   constructor(@Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService) {}
 
   // -------- Demo: feature-flag gate ---------------------------------------
 
+  @RequirePermission('admin.settings.edit')
   @Get('demo/reservations')
   @RequiresFeature('reservations_enabled')
   async listReservations() {
@@ -85,6 +85,7 @@ export class PlanDemoController {
 
   // -------- Demo: integer-quota gate -------------------------------------
 
+  @RequirePermission('admin.settings.edit')
   @Post('demo/books')
   @RequiresQuota('max_books')
   async createBook(@TenantCtx() tenant: TenantContext, @Body() body: unknown) {

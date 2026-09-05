@@ -15,13 +15,15 @@ import { validateDto } from '../auth/validate-dto.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantActor } from '../tenancy/tenant-actor.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles, StaffWrite } from '../tenancy/roles.decorator.js';
 import { IdempotencyInterceptor } from '../platform/idempotency.interceptor.js';
 import { parseLimit } from '../platform/query.js';
 import { FINE_STATUSES, PayFineDto, VoidFineDto, WaiveFineDto } from './fines.dto.js';
 import type { FineStatusValue } from './fines.dto.js';
 import { FinesService } from './fines.service.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
+import { ActorPermissions } from '../authz/permission-context.js';
+import type { EffectivePermissions } from '../authz/permissions.service.js';
 
 /**
  * Fines — the desk's money drawer.
@@ -34,13 +36,16 @@ import { FinesService } from './fines.service.js';
  *
  * ROLES, and why they differ:
  *
- *   • Reads carry no `@Roles`, like every other read on a tenant controller —
+ *   • Reads carry `circ.fee.read`, which every staff role holds —
  *     a volunteer on the desk has to be able to SEE that a member owes €2.40.
- *   • `pay` is `@StaffWrite()` (owner/admin/librarian, never volunteer).
+ *   • `pay` is `circ.fee.pay` (owner/admin/librarian, never volunteer).
  *     Recording a payment is clerical: the money is already in the drawer and
  *     the library is only writing down what happened. Whoever can check a book
  *     out can take the €2.40 that comes back with it.
- *   • `waive` and `void` are `@Roles('owner', 'admin')` — deliberately HIGHER.
+ *   • `waive` and `void` are `circ.fee.waive` / `circ.fee.void` — deliberately
+ *     HIGHER, and the only two keys in the catalog that carry a numeric
+ *     ceiling, so a library can hand fee forgiveness to the desk up to a
+ *     limit instead of all-or-nothing.
  *     They are the only calls in the product that turn money the library is
  *     owed into money it is not owed, they leave nothing behind to inspect
  *     except an audit row, and there is no undo. That is the same reasoning
@@ -59,10 +64,11 @@ import { FinesService } from './fines.service.js';
  * lapsed subscription — refusing it would strand the library's own cash.
  */
 @Controller('t/:slug/fines')
-@UseGuards(TenantGuard, RolesGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class FinesController {
   constructor(@Inject(FinesService) private readonly svc: FinesService) {}
 
+  @RequirePermission('circ.fee.read')
   @Get()
   async list(
     @TenantCtx() tenant: TenantContext,
@@ -90,6 +96,7 @@ export class FinesController {
     });
   }
 
+  @RequirePermission('circ.fee.read')
   @Get(':id')
   async get(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.get(tenant, id);
@@ -99,7 +106,7 @@ export class FinesController {
    * 200, not the POST default of 201: nothing is created. The fine already
    * existed; this closes it.
    */
-  @StaffWrite()
+  @RequirePermission('circ.fee.pay')
   @Post(':id/pay')
   @HttpCode(200)
   @UseInterceptors(IdempotencyInterceptor)
@@ -113,31 +120,33 @@ export class FinesController {
     return this.svc.pay(tenant, id, dto, actor);
   }
 
-  @Roles('owner', 'admin')
+  @RequirePermission('circ.fee.waive')
   @Post(':id/waive')
   @HttpCode(200)
   @UseInterceptors(IdempotencyInterceptor)
   async waive(
     @TenantCtx() tenant: TenantContext,
     @TenantActor() actor: TenantActor,
+    @ActorPermissions() held: EffectivePermissions | undefined,
     @Param('id') id: string,
     @Body() raw: unknown,
   ) {
     const dto = await validateDto(WaiveFineDto, raw);
-    return this.svc.waive(tenant, id, dto, actor);
+    return this.svc.waive(tenant, id, dto, actor, held);
   }
 
-  @Roles('owner', 'admin')
+  @RequirePermission('circ.fee.void')
   @Post(':id/void')
   @HttpCode(200)
   @UseInterceptors(IdempotencyInterceptor)
   async voidFine(
     @TenantCtx() tenant: TenantContext,
     @TenantActor() actor: TenantActor,
+    @ActorPermissions() held: EffectivePermissions | undefined,
     @Param('id') id: string,
     @Body() raw: unknown,
   ) {
     const dto = await validateDto(VoidFineDto, raw);
-    return this.svc.voidFine(tenant, id, dto, actor);
+    return this.svc.voidFine(tenant, id, dto, actor, held);
   }
 }

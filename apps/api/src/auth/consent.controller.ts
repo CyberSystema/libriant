@@ -12,14 +12,14 @@ import {
 import type { Request } from 'express';
 import { IsIn } from 'class-validator';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantActor } from '../tenancy/tenant-actor.js';
 import { clientIp } from '../platform/client-ip.js';
 import { validateDto } from './validate-dto.js';
 import { LEGAL_LOCALES, type LegalLocale } from './consent-locales.js';
 import { ConsentService } from './consent.service.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 export class AcceptLegalDto {
   /**
@@ -65,23 +65,24 @@ export class AcceptLegalDto {
  * admin account would make the warranty meaningless.
  */
 @Controller('t/:slug/legal')
-@UseGuards(TenantGuard, RolesGuard)
-@Roles('owner', 'admin')
+@UseGuards(TenantGuard, PermissionGuard)
 export class ConsentController {
   constructor(@Inject(ConsentService) private readonly consent: ConsentService) {}
 
+  @RequirePermission('admin.legal.read')
   @Get('consent')
   async state(@TenantCtx() tenant: TenantContext) {
     return this.consent.stateFor(tenant.id);
   }
 
+  @RequirePermission('admin.legal.read')
   @Get('consent/evidence')
   async evidence(@TenantCtx() tenant: TenantContext) {
     return this.consent.evidenceFor(tenant.id);
   }
 
+  @RequirePermission('admin.legal.accept')
   @Post('consent/accept')
-  @Roles('owner')
   @HttpCode(200)
   async accept(
     @TenantCtx() tenant: TenantContext,

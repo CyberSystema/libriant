@@ -16,8 +16,8 @@ import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { parseLimit } from '../platform/query.js';
 import { CollectionRecordsService, type ListRecordsOptions } from './collection-records.service.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { StaffWrite } from '../tenancy/roles.decorator.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Generic CRUD for records of a custom collection. Validation is driven
@@ -33,10 +33,11 @@ import { StaffWrite } from '../tenancy/roles.decorator.js';
  *   DELETE /t/:slug/collections/:cslug/records/:id              (archive)
  */
 @Controller('t/:slug/collections/:cslug/records')
-@UseGuards(TenantGuard, RolesGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class CollectionRecordsController {
   constructor(@Inject(CollectionRecordsService) private readonly svc: CollectionRecordsService) {}
 
+  @RequirePermission('data.record.read')
   @Get()
   async list(
     @TenantCtx() tenant: TenantContext,
@@ -55,7 +56,7 @@ export class CollectionRecordsController {
     return this.svc.list(tenant, cslug, opts);
   }
 
-  @StaffWrite()
+  @RequirePermission('data.record.write')
   @Post()
   async create(
     @TenantCtx() tenant: TenantContext,
@@ -66,6 +67,7 @@ export class CollectionRecordsController {
     return this.svc.create(tenant, cslug, raw, session.sub);
   }
 
+  @RequirePermission('data.record.read')
   @Get(':id')
   async get(
     @TenantCtx() tenant: TenantContext,
@@ -75,7 +77,7 @@ export class CollectionRecordsController {
     return this.svc.get(tenant, cslug, id);
   }
 
-  @StaffWrite()
+  @RequirePermission('data.record.write')
   @Patch(':id')
   async update(
     @TenantCtx() tenant: TenantContext,
@@ -86,7 +88,7 @@ export class CollectionRecordsController {
     return this.svc.update(tenant, cslug, id, raw);
   }
 
-  @StaffWrite()
+  @RequirePermission('data.record.delete')
   @Delete(':id')
   async archive(
     @TenantCtx() tenant: TenantContext,

@@ -13,11 +13,11 @@ import {
 import { FieldEntityKind } from '@libriant/db-tenant';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { FieldDefinitionsService, type FieldDefinitionDto } from './field-definitions.service.js';
 import { CreateFieldDefinitionDto, UpdateFieldDefinitionDto } from './field-definitions.dto.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Library-admin endpoints for the data-model editor.
@@ -32,10 +32,11 @@ import { CreateFieldDefinitionDto, UpdateFieldDefinitionDto } from './field-defi
  * polish in a later step; for now any authenticated tenant user can edit.
  */
 @Controller('t/:slug/data-model/fields/:entityKind')
-@UseGuards(TenantGuard, RolesGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class FieldDefinitionsController {
   constructor(@Inject(FieldDefinitionsService) private readonly svc: FieldDefinitionsService) {}
 
+  @RequirePermission('data.field.read')
   @Get()
   async list(
     @TenantCtx() tenant: TenantContext,
@@ -46,8 +47,8 @@ export class FieldDefinitionsController {
     return { entityKind: ek, fields: rows };
   }
 
+  @RequirePermission('data.field.manage')
   @Post()
-  @Roles('owner', 'admin')
   async create(
     @TenantCtx() tenant: TenantContext,
     @Param('entityKind') entityKind: string,
@@ -67,8 +68,8 @@ export class FieldDefinitionsController {
     });
   }
 
+  @RequirePermission('data.field.manage')
   @Patch(':fieldKey')
-  @Roles('owner', 'admin')
   async update(
     @TenantCtx() tenant: TenantContext,
     @Param('entityKind') entityKind: string,
@@ -88,8 +89,8 @@ export class FieldDefinitionsController {
     });
   }
 
+  @RequirePermission('data.field.manage')
   @Delete(':fieldKey')
-  @Roles('owner', 'admin')
   async archive(
     @TenantCtx() tenant: TenantContext,
     @Param('entityKind') entityKind: string,

@@ -16,9 +16,9 @@ import { checkBrandColor } from '@libriant/shared';
 import { loadEnv } from '../config/env.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { StorageService } from '../storage/storage.service.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
@@ -32,11 +32,11 @@ const HEX = /^#[0-9a-fA-F]{6}$/;
  *   DELETE /t/:slug/branding/logo                    — remove logo
  */
 @Controller('t/:slug/branding')
-@UseGuards(TenantGuard, RolesGuard)
-@Roles('owner', 'admin')
+@UseGuards(TenantGuard, PermissionGuard)
 export class BrandingController {
   constructor(@Inject(StorageService) private readonly storage: StorageService) {}
 
+  @RequirePermission('admin.branding.manage')
   @Patch()
   async setColor(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const body = (raw ?? {}) as { brandColor?: unknown };
@@ -79,6 +79,7 @@ export class BrandingController {
     return { brandColor: color, contrast: verdict };
   }
 
+  @RequirePermission('admin.branding.manage')
   @Post('logo')
   @UseInterceptors(
     FileInterceptor('file', { limits: { fileSize: loadEnv().storageMaxUploadBytes } }),
@@ -108,6 +109,7 @@ export class BrandingController {
     return { brandLogoRef: stored.ref };
   }
 
+  @RequirePermission('admin.branding.manage')
   @Delete('logo')
   async removeLogo(@TenantCtx() tenant: TenantContext) {
     const current = await controlDb.tenant.findUnique({

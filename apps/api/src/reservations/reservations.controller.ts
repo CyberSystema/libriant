@@ -29,8 +29,8 @@ import {
   UpdateReservationDto,
 } from './reservations.dto.js';
 import { ReservationsService } from './reservations.service.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { StaffWrite } from '../tenancy/roles.decorator.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Holds queue.
@@ -49,13 +49,14 @@ import { StaffWrite } from '../tenancy/roles.decorator.js';
  * customFields validated against active FieldDefinitions for entity_kind='reservation'.
  */
 @Controller('t/:slug/reservations')
-@UseGuards(TenantGuard, RolesGuard, PlanGuard)
+@UseGuards(TenantGuard, PermissionGuard, PlanGuard)
 export class ReservationsController {
   constructor(
     @Inject(ReservationsService) private readonly svc: ReservationsService,
     @Inject(LoansService) private readonly loans: LoansService,
   ) {}
 
+  @RequirePermission('circ.hold.read')
   @Get()
   async list(
     @TenantCtx() tenant: TenantContext,
@@ -85,7 +86,7 @@ export class ReservationsController {
     });
   }
 
-  @StaffWrite()
+  @RequirePermission('circ.hold.place')
   @Post()
   @RequiresFeature('reservations_enabled')
   async placeHold(
@@ -97,25 +98,26 @@ export class ReservationsController {
     return this.svc.placeHold(tenant, dto, session.sub);
   }
 
+  @RequirePermission('circ.hold.read')
   @Get(':id')
   async get(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.get(tenant, id);
   }
 
-  @StaffWrite()
+  @RequirePermission('circ.hold.edit')
   @Patch(':id')
   async update(@TenantCtx() tenant: TenantContext, @Param('id') id: string, @Body() raw: unknown) {
     const dto = await validateDto(UpdateReservationDto, raw);
     return this.svc.update(tenant, id, dto);
   }
 
-  @StaffWrite()
+  @RequirePermission('circ.hold.cancel')
   @Delete(':id')
   async cancel(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.cancel(tenant, id);
   }
 
-  @StaffWrite()
+  @RequirePermission('circ.hold.expire')
   @Post(':id/expire')
   async expire(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.expire(tenant, id);
@@ -128,7 +130,7 @@ export class ReservationsController {
    * inside its own transaction; this controller is a thin wrapper so the
    * librarian's UI button has a clear name.
    */
-  @StaffWrite()
+  @RequirePermission('circ.hold.fulfill')
   @Post(':id/fulfill')
   @RequiresFeature('reservations_enabled')
   async fulfill(

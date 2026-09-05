@@ -16,8 +16,8 @@ import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { CopiesService } from './copies.service.js';
 import { CreateCopyDto, UpdateCopyDto } from './copies.dto.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { StaffWrite } from '../tenancy/roles.decorator.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /** Bound the barcode query so a hostile caller can't probe with huge strings. */
 const MAX_BARCODE_LEN = 128;
@@ -35,7 +35,7 @@ const MAX_BARCODE_LEN = 128;
  * the `on_loan` ↔ other status transitions (see CopiesService).
  */
 @Controller('t/:slug/catalog')
-@UseGuards(TenantGuard, RolesGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class CopiesController {
   constructor(@Inject(CopiesService) private readonly svc: CopiesService) {}
 
@@ -44,6 +44,7 @@ export class CopiesController {
    * and scan-to-return. Declared before the `copies/:copyId` routes so the
    * literal `lookup` segment isn't swallowed by the param.
    */
+  @RequirePermission('cat.bib.read')
   @Get('copies/lookup')
   async lookupByBarcode(@TenantCtx() tenant: TenantContext, @Query('barcode') barcode?: string) {
     const value = (barcode ?? '').trim();
@@ -54,7 +55,7 @@ export class CopiesController {
     return this.svc.lookupByBarcode(tenant, value);
   }
 
-  @StaffWrite()
+  @RequirePermission('cat.item.write')
   @Post('books/:bookId/copies')
   async create(
     @TenantCtx() tenant: TenantContext,
@@ -65,7 +66,7 @@ export class CopiesController {
     return this.svc.create(tenant, bookId, dto);
   }
 
-  @StaffWrite()
+  @RequirePermission('cat.item.write')
   @Patch('copies/:copyId')
   async update(
     @TenantCtx() tenant: TenantContext,
@@ -76,7 +77,7 @@ export class CopiesController {
     return this.svc.update(tenant, copyId, dto);
   }
 
-  @StaffWrite()
+  @RequirePermission('cat.item.delete')
   @Delete('copies/:copyId')
   async archive(@TenantCtx() tenant: TenantContext, @Param('copyId') copyId: string) {
     return this.svc.archive(tenant, copyId);

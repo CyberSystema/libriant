@@ -13,14 +13,14 @@ import {
 import type { Response } from 'express';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { Sess } from '../auth/session-context.js';
 import type { SessionPayload } from '../auth/jwt-session.service.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { ExportService, publicExportJob } from './export.service.js';
 import { CreateTenantExportDto } from './export.dto.js';
 import { streamExport } from './export-download.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Library-admin export of THEIR library's database (admin-only).
@@ -30,16 +30,17 @@ import { streamExport } from './export-download.js';
  *   GET  /t/:slug/exports/:id/download  — download the produced file
  */
 @Controller('t/:slug/exports')
-@UseGuards(TenantGuard, RolesGuard)
-@Roles('owner', 'admin')
+@UseGuards(TenantGuard, PermissionGuard)
 export class TenantExportController {
   constructor(@Inject(ExportService) private readonly svc: ExportService) {}
 
+  @RequirePermission('admin.export.manage')
   @Get()
   async list(@TenantCtx() tenant: TenantContext) {
     return { exports: (await this.svc.listForTenant(tenant.id)).map(publicExportJob) };
   }
 
+  @RequirePermission('admin.export.manage')
   @Post()
   @HttpCode(202)
   async create(
@@ -52,6 +53,7 @@ export class TenantExportController {
     return { export: publicExportJob(job) };
   }
 
+  @RequirePermission('admin.export.manage')
   @Get(':id/download')
   async download(
     @TenantCtx() tenant: TenantContext,

@@ -1,9 +1,10 @@
 import 'reflect-metadata';
 import { describe, expect, it } from 'vitest';
 import { RequestMethod } from '@nestjs/common';
-import { ROLES_KEY } from '../tenancy/roles.decorator.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
+import { PERMISSION_KEY } from '../authz/permission.decorator.js';
+import { ROLE_TEMPLATES } from '@libriant/shared/permissions';
 import { SubjectAccessController } from './subject-access.controller.js';
 import {
   AGE_OF_MAJORITY_YEARS,
@@ -105,12 +106,19 @@ describe('route wiring (privacy-legal-15)', () => {
     expect(Reflect.getMetadata('method', handler)).toBe(RequestMethod.GET);
   });
 
-  it('is behind the tenant + role guards, and closed to volunteers', () => {
+  it('is behind the tenant + permission guards, and closed to volunteers', () => {
     const guards = Reflect.getMetadata('__guards__', SubjectAccessController) as unknown[];
     expect(guards).toContain(TenantGuard);
-    expect(guards).toContain(RolesGuard);
-    const roles = Reflect.getMetadata(ROLES_KEY, handler) as string[];
-    expect(roles).toEqual(['owner', 'admin', 'librarian']);
-    expect(roles).not.toContain('volunteer');
+    expect(guards).toContain(PermissionGuard);
+
+    // `patron.pii.export` is deliberately its own key rather than `patron.read`.
+    // A subject-access bundle is every loan a person has ever taken; handing it
+    // out is not the same act as looking someone up at the desk, which is why a
+    // volunteer cannot do it and a support session never holds it at all.
+    const requirement = Reflect.getMetadata(PERMISSION_KEY, handler) as { permission: string };
+    expect(requirement.permission).toBe('patron.pii.export');
+    expect(ROLE_TEMPLATES.librarian.permissions).toContain('patron.pii.export');
+    expect(ROLE_TEMPLATES.volunteer.permissions).not.toContain('patron.pii.export');
+    expect(ROLE_TEMPLATES.support.permissions).not.toContain('patron.pii.export');
   });
 });

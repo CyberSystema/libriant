@@ -15,6 +15,7 @@
     "./legal": "./src/legal.ts",
     "./library": "./src/library.ts",
     "./money": "./src/money.ts",
+    "./permissions": "./src/permissions.ts",
     "./search": "./src/search.ts"
   },
   "scripts": {

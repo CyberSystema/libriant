@@ -124,6 +124,17 @@ jobs:
       - name: Migration SQL is safe to apply
         run: pnpm check:migration-safety
 
+      # Every tenant-scoped route says who may call it. A handler with no
+      # authorization decorator is not closed — TenantGuard proves the caller
+      # belongs to the library and stops there, so the route is open to every
+      # signed-in member of it, including a volunteer. authn-authz-06 is that
+      # bug, already shipped once: two controllers carried @UseGuards(TenantGuard)
+      # alone, and a volunteer refused POST /members could upload that member's
+      # photo. So "I forgot" and "everyone may" are different states in the
+      # source: @PublicWithinTenant() says the second one out loud.
+      - name: Every tenant route declares a permission
+        run: pnpm check:permissions
+
       # amtool is run against a COPY with the receiver placeholders substituted,
       # not against the file as committed.
       #

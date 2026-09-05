@@ -45,6 +45,7 @@ import { SupportModule } from './support/support.module.js';
 import { SystemModeMiddleware } from './system-mode/system-mode.middleware.js';
 import { SystemModeModule } from './system-mode/system-mode.module.js';
 import { TenantModule } from './tenancy/tenant.module.js';
+import { AuthzModule } from './authz/authz.module.js';
 import { TenantMiddleware } from './tenancy/tenant.middleware.js';
 import { LibraryModule } from './library/library.module.js';
 import { ApplicationsModule } from './applications/applications.module.js';
@@ -68,6 +69,7 @@ import { ApplicationsModule } from './applications/applications.module.js';
     EmailModule,
     PlatformModule,
     TenantModule,
+    AuthzModule,
     AuthModule,
     ConsentModule,
     PlansModule,

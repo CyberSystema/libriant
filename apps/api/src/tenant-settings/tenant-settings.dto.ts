@@ -16,7 +16,8 @@ export type NotificationTemplate = { subject?: string; body?: string };
 /**
  * Patch for a library's circulation policy + feature switches. Every field is
  * optional — the UI sends only what changed. Mutating this is admin-only
- * (RolesGuard, owner/admin); reading it is open to all staff.
+ * (admin.settings.edit, owner/admin); reading it is admin.settings.read, which
+ * every staff role holds.
  *
  * Money is in currency subunits (cents). Bounds are deliberately generous —
  * just enough to reject nonsense / overflow, not to encode policy.

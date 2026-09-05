@@ -1,10 +1,10 @@
 import { Controller, Get, Inject, Query, UseGuards } from '@nestjs/common';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { parseLimit } from '../platform/query.js';
 import { AuditService } from './audit.service.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Read-only activity log for the library's own data changes (members, loans,
@@ -13,11 +13,11 @@ import { AuditService } from './audit.service.js';
  *   GET /t/:slug/audit?action=&after=&limit=
  */
 @Controller('t/:slug/audit')
-@UseGuards(TenantGuard, RolesGuard)
-@Roles('owner', 'admin')
+@UseGuards(TenantGuard, PermissionGuard)
 export class AuditController {
   constructor(@Inject(AuditService) private readonly svc: AuditService) {}
 
+  @RequirePermission('admin.audit.read')
   @Get()
   async list(
     @TenantCtx() tenant: TenantContext,

@@ -4,11 +4,11 @@ import { Sess } from '../auth/session-context.js';
 import type { SessionPayload } from '../auth/jwt-session.service.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { SupportKeyService } from './support-key.service.js';
 import { SupportNotificationsService } from './support-notifications.service.js';
 import { SupportSessionService } from './support-session.service.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Library-side surface of the support flow. Lives at
@@ -24,8 +24,7 @@ import { SupportSessionService } from './support-session.service.js';
  *   GET    /t/:slug/support/sessions/log        — audit log (most recent first)
  */
 @Controller('t/:slug/support')
-@UseGuards(TenantGuard, RolesGuard)
-@Roles('owner', 'admin')
+@UseGuards(TenantGuard, PermissionGuard)
 export class LibrarySupportController {
   constructor(
     @Inject(SupportKeyService) private readonly keys: SupportKeyService,
@@ -33,6 +32,7 @@ export class LibrarySupportController {
     @Inject(SupportNotificationsService) private readonly notifs: SupportNotificationsService,
   ) {}
 
+  @RequirePermission('support.key.manage')
   @Post('keys')
   @HttpCode(200)
   async generate(@TenantCtx() tenant: TenantContext, @Sess() session: SessionPayload) {
@@ -60,17 +60,20 @@ export class LibrarySupportController {
     };
   }
 
+  @RequirePermission('support.key.manage')
   @Get('keys/pending')
   async pending(@TenantCtx() tenant: TenantContext) {
     return { key: await this.keys.pendingForTenant(tenant.id) };
   }
 
+  @RequirePermission('support.key.manage')
   @Delete('keys/pending')
   @HttpCode(204)
   async revoke(@TenantCtx() tenant: TenantContext) {
     await this.keys.revokePending(tenant.id);
   }
 
+  @RequirePermission('support.session.read')
   @Get('sessions/active')
   async activeSession(@TenantCtx() tenant: TenantContext) {
     const session = await controlDb.supportSession.findFirst({
@@ -105,6 +108,7 @@ export class LibrarySupportController {
     };
   }
 
+  @RequirePermission('support.session.revoke')
   @Delete('sessions/active')
   @HttpCode(204)
   async revokeActive(@TenantCtx() tenant: TenantContext) {
@@ -122,6 +126,7 @@ export class LibrarySupportController {
     }
   }
 
+  @RequirePermission('support.session.read')
   @Get('sessions/log')
   async log(@TenantCtx() tenant: TenantContext, @Query('limit') limitRaw?: string) {
     const limit = Math.max(1, Math.min(200, Number(limitRaw) || 50));

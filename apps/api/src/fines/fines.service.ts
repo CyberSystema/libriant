@@ -12,6 +12,8 @@ import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import { decodeCursor, encodeCursor } from '../platform/query.js';
 import type { FineStatusValue } from './fines.dto.js';
+import { assertWithinLimit } from '../authz/permission-context.js';
+import type { EffectivePermissions } from '../authz/permissions.service.js';
 
 /**
  * The money half of circulation.
@@ -296,6 +298,7 @@ export class FinesService {
     id: string,
     input: { reason: string; notes?: string },
     actor: TenantActor,
+    held?: EffectivePermissions,
   ): Promise<ResolveFineResult> {
     return this.resolve(tenant, id, actor, {
       nextStatus: 'waived',
@@ -304,6 +307,7 @@ export class FinesService {
       notes: input.notes,
       noteLine: `waived: ${input.reason}`,
       markPaid: false,
+      limit: { permission: 'circ.fee.waive', held },
     });
   }
 
@@ -321,6 +325,7 @@ export class FinesService {
     id: string,
     input: { reason: string; notes?: string },
     actor: TenantActor,
+    held?: EffectivePermissions,
   ): Promise<ResolveFineResult> {
     return this.resolve(tenant, id, actor, {
       nextStatus: 'waived',
@@ -329,6 +334,7 @@ export class FinesService {
       notes: input.notes,
       noteLine: `voided (raised in error): ${input.reason}`,
       markPaid: false,
+      limit: { permission: 'circ.fee.void', held },
     });
   }
 
@@ -366,6 +372,12 @@ export class FinesService {
       notes?: string;
       noteLine: string;
       markPaid: boolean;
+      /**
+       * Permission whose numeric ceiling applies to this fine's amount, with
+       * the caller's resolved permissions. Only `waive` and `void` set it —
+       * `pay` takes money in, it does not forgive it.
+       */
+      limit?: { permission: string; held: EffectivePermissions | undefined };
     },
   ): Promise<ResolveFineResult> {
     const client = this.tenantPrisma.getClient(tenant);
@@ -394,6 +406,18 @@ export class FinesService {
         message: this.alreadyResolvedMessage(existing.status, existing.paidAt),
         fineStatus: existing.status,
       });
+    }
+
+    // AFTER the outstanding check, so a fine someone already settled reports
+    // the conflict rather than a limit error — the conflict is the useful
+    // answer, and the limit is not the reason it failed.
+    //
+    // This cannot live in PermissionGuard: waiving sends only the fine's id,
+    // and the amount is on the row. A guard that loaded the fine would do this
+    // read twice on every request and still be reading a value the service
+    // re-reads inside its own transaction.
+    if (op.limit) {
+      assertWithinLimit({ permissions: op.limit.held }, op.limit.permission, existing.amountCents);
     }
 
     if (op.expectedAmountCents !== undefined && op.expectedAmountCents !== existing.amountCents) {

@@ -5,6 +5,8 @@ import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { AnnouncementDeliveryService } from './announcement-delivery.service.js';
 import { controlDb } from '@libriant/db-control';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Library-side announcement surface. Gated by the standard TenantGuard
@@ -21,13 +23,14 @@ import { controlDb } from '@libriant/db-control';
  *     individual user has to acknowledge their own copy.
  */
 @Controller('t/:slug/announcements')
-@UseGuards(TenantGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class TenantAnnouncementsController {
   constructor(
     @Inject(AnnouncementDeliveryService)
     private readonly deliveries: AnnouncementDeliveryService,
   ) {}
 
+  @RequirePermission('admin.announcement.read')
   @Get('active')
   async active(@TenantCtx() tenant: TenantContext, @Sess() session: SessionPayload) {
     // Pull the user's email so the email outbox stub can address it.
@@ -45,6 +48,7 @@ export class TenantAnnouncementsController {
     return { announcements: items };
   }
 
+  @RequirePermission('admin.announcement.read')
   @Post(':id/dismiss')
   @HttpCode(200)
   async dismiss(
@@ -59,6 +63,7 @@ export class TenantAnnouncementsController {
     });
   }
 
+  @RequirePermission('admin.announcement.read')
   @Post(':id/ack')
   @HttpCode(200)
   async ack(

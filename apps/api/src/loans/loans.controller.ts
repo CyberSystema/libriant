@@ -26,8 +26,8 @@ import {
   UpdateLoanDto,
 } from './loans.dto.js';
 import { LOAN_STATUSES, LoansService } from './loans.service.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { StaffWrite } from '../tenancy/roles.decorator.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Circulation — the actual lend/return flow.
@@ -47,10 +47,11 @@ import { StaffWrite } from '../tenancy/roles.decorator.js';
  * customFields validated against active FieldDefinitions for entity_kind='loan'.
  */
 @Controller('t/:slug/loans')
-@UseGuards(TenantGuard, RolesGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class LoansController {
   constructor(@Inject(LoansService) private readonly svc: LoansService) {}
 
+  @RequirePermission('circ.loan.read')
   @Get()
   async list(
     @TenantCtx() tenant: TenantContext,
@@ -80,7 +81,7 @@ export class LoansController {
     });
   }
 
-  @StaffWrite()
+  @RequirePermission('circ.loan.checkout')
   @Post()
   @UseInterceptors(IdempotencyInterceptor)
   async checkout(
@@ -92,19 +93,20 @@ export class LoansController {
     return this.svc.checkout(tenant, dto, actor);
   }
 
+  @RequirePermission('circ.loan.read')
   @Get(':id')
   async get(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.get(tenant, id);
   }
 
-  @StaffWrite()
+  @RequirePermission('circ.loan.edit')
   @Patch(':id')
   async update(@TenantCtx() tenant: TenantContext, @Param('id') id: string, @Body() raw: unknown) {
     const dto = await validateDto(UpdateLoanDto, raw);
     return this.svc.update(tenant, id, dto);
   }
 
-  @StaffWrite()
+  @RequirePermission('circ.loan.return')
   @Post(':id/return')
   @UseInterceptors(IdempotencyInterceptor)
   async returnLoan(
@@ -117,7 +119,7 @@ export class LoansController {
     return this.svc.returnLoan(tenant, id, dto, actor);
   }
 
-  @StaffWrite()
+  @RequirePermission('circ.loan.renew')
   @Post(':id/renew')
   @UseInterceptors(IdempotencyInterceptor)
   async renew(
@@ -130,7 +132,7 @@ export class LoansController {
     return this.svc.renew(tenant, id, dto, actor);
   }
 
-  @StaffWrite()
+  @RequirePermission('circ.loan.mark_lost')
   @Post(':id/mark-lost')
   @UseInterceptors(IdempotencyInterceptor)
   async markLost(

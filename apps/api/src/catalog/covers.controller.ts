@@ -13,11 +13,11 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { StaffWrite } from '../tenancy/roles.decorator.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { loadEnv } from '../config/env.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Book covers are uploaded to the per-tenant storage and the resulting
@@ -30,7 +30,7 @@ import { loadEnv } from '../config/env.js';
  */
 // authn-authz-06: the class carried @UseGuards(TenantGuard) alone, so the
 // read-only `volunteer` role could upload and delete. Proved by execution: a
-// real volunteer account got 403 from POST /t/:slug/members (a @StaffWrite
+// real volunteer account got 403 from POST /t/:slug/members (a patron.write
 // route) and 201 from this one.
 //
 // The guard is at CLASS level deliberately. Every handler here is a write —
@@ -39,14 +39,14 @@ import { loadEnv } from '../config/env.js';
 // three routes came to differ from the rest of the tenant surface in the first
 // place.
 @Controller('t/:slug/catalog/books/:id/cover')
-@UseGuards(TenantGuard, RolesGuard)
-@StaffWrite()
+@UseGuards(TenantGuard, PermissionGuard)
 export class CoversController {
   constructor(
     @Inject(StorageService) private readonly storage: StorageService,
     @Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService,
   ) {}
 
+  @RequirePermission('cat.cover.write')
   @Post()
   @UseInterceptors(
     FileInterceptor('file', { limits: { fileSize: loadEnv().storageMaxUploadBytes } }),
@@ -97,6 +97,7 @@ export class CoversController {
     };
   }
 
+  @RequirePermission('cat.cover.write')
   @Delete()
   async remove(@TenantCtx() tenant: TenantContext, @Param('id') bookId: string) {
     const client = this.tenantPrisma.getClient(tenant);

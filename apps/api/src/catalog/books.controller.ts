@@ -18,8 +18,8 @@ import { validateDto } from '../auth/validate-dto.js';
 import { parseIntParam, parseLimit } from '../platform/query.js';
 import { BooksService } from './books.service.js';
 import { CreateBookDto, UpdateBookDto } from './books.dto.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { StaffWrite } from '../tenancy/roles.decorator.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  *   GET    /t/:slug/catalog/books?q=&authorId=&yearFrom=&yearTo=&after=&limit=
@@ -32,7 +32,7 @@ import { StaffWrite } from '../tenancy/roles.decorator.js';
  * active `FieldDefinition` rows for `entity_kind='book'`.
  */
 @Controller('t/:slug/catalog/books')
-@UseGuards(TenantGuard, RolesGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 // Mounted at class level even though no route here carries `@RequiresQuota`
 // today (see `create` for why `max_books` is enforced in the service instead).
 // With no metadata the interceptor is one reflector lookup and a pass-through;
@@ -42,6 +42,7 @@ import { StaffWrite } from '../tenancy/roles.decorator.js';
 export class BooksController {
   constructor(@Inject(BooksService) private readonly svc: BooksService) {}
 
+  @RequirePermission('cat.bib.read')
   @Get()
   async list(
     @TenantCtx() tenant: TenantContext,
@@ -86,26 +87,27 @@ export class BooksController {
    * `update` (un-archiving consumes a seat) has always been transactional-only
    * for the same reason; this makes create match it.
    */
-  @StaffWrite()
+  @RequirePermission('cat.bib.write')
   @Post()
   async create(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const dto = await validateDto(CreateBookDto, raw);
     return this.svc.create(tenant, dto);
   }
 
+  @RequirePermission('cat.bib.read')
   @Get(':id')
   async get(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.get(tenant, id);
   }
 
-  @StaffWrite()
+  @RequirePermission('cat.bib.write')
   @Patch(':id')
   async update(@TenantCtx() tenant: TenantContext, @Param('id') id: string, @Body() raw: unknown) {
     const dto = await validateDto(UpdateBookDto, raw);
     return this.svc.update(tenant, id, dto);
   }
 
-  @StaffWrite()
+  @RequirePermission('cat.bib.delete')
   @Delete(':id')
   async archive(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.archive(tenant, id);

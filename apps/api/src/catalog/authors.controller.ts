@@ -16,8 +16,8 @@ import { validateDto } from '../auth/validate-dto.js';
 import { parseLimit } from '../platform/query.js';
 import { AuthorsService } from './authors.service.js';
 import { CreateAuthorDto, UpdateAuthorDto } from './authors.dto.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { StaffWrite } from '../tenancy/roles.decorator.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  *   GET    /t/:slug/catalog/authors?q=&after=&limit=&includeArchived=
@@ -27,10 +27,11 @@ import { StaffWrite } from '../tenancy/roles.decorator.js';
  *   DELETE /t/:slug/catalog/authors/:id              (archive)
  */
 @Controller('t/:slug/catalog/authors')
-@UseGuards(TenantGuard, RolesGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class AuthorsController {
   constructor(@Inject(AuthorsService) private readonly svc: AuthorsService) {}
 
+  @RequirePermission('cat.bib.read')
   @Get()
   async list(
     @TenantCtx() tenant: TenantContext,
@@ -47,26 +48,27 @@ export class AuthorsController {
     });
   }
 
-  @StaffWrite()
+  @RequirePermission('cat.bib.write')
   @Post()
   async create(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const dto = await validateDto(CreateAuthorDto, raw);
     return this.svc.create(tenant, dto);
   }
 
+  @RequirePermission('cat.bib.read')
   @Get(':id')
   async get(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.get(tenant, id);
   }
 
-  @StaffWrite()
+  @RequirePermission('cat.bib.write')
   @Patch(':id')
   async update(@TenantCtx() tenant: TenantContext, @Param('id') id: string, @Body() raw: unknown) {
     const dto = await validateDto(UpdateAuthorDto, raw);
     return this.svc.update(tenant, id, dto);
   }
 
-  @StaffWrite()
+  @RequirePermission('cat.bib.delete')
   @Delete(':id')
   async archive(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.archive(tenant, id);

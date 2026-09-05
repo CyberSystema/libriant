@@ -4,6 +4,8 @@ import type { SessionPayload } from '../auth/jwt-session.service.js';
 import { TenantGuard } from './tenant.guard.js';
 import { TenantCtx, type TenantContext } from './tenant-context.js';
 import { TenantPrismaService } from './tenant-prisma.service.js';
+import { PublicWithinTenant } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Demo endpoints used to verify the whole tenancy stack end-to-end.
@@ -18,10 +20,11 @@ import { TenantPrismaService } from './tenant-prisma.service.js';
  * Replaced by feature controllers (catalog, members, …) in later steps.
  */
 @Controller('t/:slug')
-@UseGuards(TenantGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class TenantDemoController {
   constructor(@Inject(TenantPrismaService) private readonly prisma: TenantPrismaService) {}
 
+  @PublicWithinTenant()
   @Get('info')
   info(@TenantCtx() tenant: TenantContext) {
     return {
@@ -37,6 +40,7 @@ export class TenantDemoController {
     };
   }
 
+  @PublicWithinTenant()
   @Get('who-am-i')
   whoAmI(@TenantCtx() tenant: TenantContext, @Sess() session: SessionPayload) {
     return {
@@ -45,6 +49,7 @@ export class TenantDemoController {
     };
   }
 
+  @PublicWithinTenant()
   @Get('db-ping')
   async dbPing(@TenantCtx() tenant: TenantContext) {
     const client = this.prisma.getClient(tenant);

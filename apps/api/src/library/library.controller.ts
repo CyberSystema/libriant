@@ -10,13 +10,13 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantActor } from '../tenancy/tenant-actor.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { LibraryProfileService } from './library-profile.service.js';
 import { ProposeCoreEditDto, UpdateFreeProfileDto } from './library.dto.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Tenant-facing library profile.
@@ -31,27 +31,30 @@ import { ProposeCoreEditDto, UpdateFreeProfileDto } from './library.dto.js';
  * manage the library's official profile.
  */
 @Controller('t/:slug/library')
-@UseGuards(TenantGuard, RolesGuard)
-@Roles('owner', 'admin')
+@UseGuards(TenantGuard, PermissionGuard)
 export class LibraryController {
   constructor(@Inject(LibraryProfileService) private readonly svc: LibraryProfileService) {}
 
+  @RequirePermission('admin.library.read')
   @Get()
   async get(@TenantCtx() tenant: TenantContext) {
     return this.svc.getProfile(tenant.id);
   }
 
+  @RequirePermission('admin.library.edit')
   @Patch()
   async updateFree(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const dto = await validateDto(UpdateFreeProfileDto, raw);
     return this.svc.updateFreeFields(tenant.id, dto);
   }
 
+  @RequirePermission('admin.library.read')
   @Get('requests')
   async listRequests(@TenantCtx() tenant: TenantContext) {
     return { requests: await this.svc.listRequests(tenant.id) };
   }
 
+  @RequirePermission('admin.library.edit')
   @Post('requests')
   @HttpCode(201)
   async submitRequest(
@@ -64,6 +67,7 @@ export class LibraryController {
     return { request };
   }
 
+  @RequirePermission('admin.library.edit')
   @Post('requests/:id/cancel')
   @HttpCode(200)
   async cancel(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {

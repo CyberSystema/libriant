@@ -22,11 +22,11 @@
       "outputs": []
     },
     "@libriant/db-control#prisma:generate": {
-      "inputs": ["prisma/schema.prisma"],
-      "outputs": ["node_modules/.prisma/**"]
+      "inputs": ["prisma/schema.prisma", "prisma.config.ts"],
+      "outputs": []
     },
     "@libriant/db-tenant#prisma:generate": {
-      "inputs": ["prisma/schema.prisma"],
+      "inputs": ["prisma/schema/**", "prisma.config.ts"],
       "outputs": ["node_modules/.prisma/**"]
     },
     "test": {

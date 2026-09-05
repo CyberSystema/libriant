@@ -6,7 +6,7 @@ import { SubjectAccessService } from './subject-access.service.js';
 
 /**
  * Data-subject rights that are not part of the everyday member surface
- * (privacy-legal-15). TenantModule supplies TenantGuard + RolesGuard +
+ * (privacy-legal-15). TenantModule supplies TenantGuard, AuthzModule supplies PermissionGuard, +
  * TenantPrismaService + TenantAuditService; StorageModule supplies the reader
  * for the member's photo.
  */

@@ -13,11 +13,11 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { StaffWrite } from '../tenancy/roles.decorator.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { loadEnv } from '../config/env.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Member photos. Mirror of how book covers work in `covers.controller.ts`:
@@ -39,14 +39,14 @@ import { loadEnv } from '../config/env.js';
 // three routes came to differ from the rest of the tenant surface in the first
 // place.
 @Controller('t/:slug/members/:id/photo')
-@UseGuards(TenantGuard, RolesGuard)
-@StaffWrite()
+@UseGuards(TenantGuard, PermissionGuard)
 export class MemberPhotosController {
   constructor(
     @Inject(StorageService) private readonly storage: StorageService,
     @Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService,
   ) {}
 
+  @RequirePermission('patron.photo.write')
   @Post()
   @UseInterceptors(
     FileInterceptor('file', { limits: { fileSize: loadEnv().storageMaxUploadBytes } }),
@@ -93,6 +93,7 @@ export class MemberPhotosController {
     };
   }
 
+  @RequirePermission('patron.photo.write')
   @Delete()
   async remove(@TenantCtx() tenant: TenantContext, @Param('id') memberId: string) {
     const client = this.tenantPrisma.getClient(tenant);

@@ -3,9 +3,9 @@ import type { Response } from 'express';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantActor } from '../tenancy/tenant-actor.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { SubjectAccessService } from './subject-access.service.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * GET /t/:slug/members/:id/data-export — one member's whole record, as JSON.
@@ -25,12 +25,12 @@ import { SubjectAccessService } from './subject-access.service.js';
  * around for hours. Nothing is persisted here; the bytes go to the browser.
  */
 @Controller('t/:slug/members')
-@UseGuards(TenantGuard, RolesGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class SubjectAccessController {
   constructor(@Inject(SubjectAccessService) private readonly svc: SubjectAccessService) {}
 
   /**
-   * `@Roles('owner', 'admin', 'librarian')` — not open to every role the way
+   * `patron.pii.export` — not open to every role the way
    * `GET /members/:id` is.
    *
    * A `volunteer` may read the member page (that is what staffing a desk
@@ -38,11 +38,11 @@ export class SubjectAccessController {
    * activity log and the member's photo into one portable file is a disclosure
    * decision, and the role exists precisely to keep destructive and
    * irreversible acts away from the person who helps out on Saturdays. Spelled
-   * out rather than reusing `@StaffWrite()`: this is a read, and borrowing a
+   * out rather than reusing `patron.read`: this is a read, and borrowing a
    * decorator whose docblock says "CREATE/EDIT/ARCHIVE" would make the next
    * person widening StaffWrite widen this by accident.
    */
-  @Roles('owner', 'admin', 'librarian')
+  @RequirePermission('patron.pii.export')
   @Get(':id/data-export')
   async dataExport(
     @TenantCtx() tenant: TenantContext,

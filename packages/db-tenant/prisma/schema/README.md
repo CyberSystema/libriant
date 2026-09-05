@@ -55,3 +55,22 @@ raw migration SQL, not here. `pnpm check:schema-drift` replays the migrations
 into a shadow database and compares: statements that **DROP** something are the
 expected surplus and must be allowlisted with a reason; statements that
 **CREATE** or **ADD** mean a migration is missing, and fail.
+
+## turbo must hash this folder, not the file that used to be here
+
+`turbo.json` pins `@libriant/db-tenant#prisma:generate` to
+`inputs: ["prisma/schema/**", "prisma.config.ts"]`.
+
+It said `prisma/schema.prisma` until phase 3 — a path that stopped existing the
+moment this folder was created. Turbo hashed nothing, cache-hit forever, and
+**restored a stale generated client over every fresh one**, because the task
+declares `outputs: ["node_modules/.prisma/**"]`.
+
+That cost nothing while no model changed: the regenerated client was
+byte-identical to the cached one. It surfaced the first time a phase added a
+model — `prisma generate` produced the right client, turbo immediately replaced
+it with the wrong one, and `tsc` reported `Property 'role' does not exist on
+type 'TenantPrismaClient'` on code that was correct.
+
+**If a file is added to this folder that Prisma reads, check the glob still
+covers it.**

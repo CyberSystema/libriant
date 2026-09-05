@@ -3,10 +3,10 @@ import { validateDto } from '../auth/validate-dto.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantActor } from '../tenancy/tenant-actor.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { TenantSettingsService } from './tenant-settings.service.js';
 import { UpdateTenantSettingsDto } from './tenant-settings.dto.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Library policy + feature switches.
@@ -19,17 +19,18 @@ import { UpdateTenantSettingsDto } from './tenant-settings.dto.js';
  * subscription's `reservations_enabled` capability — see the service.
  */
 @Controller('t/:slug/settings')
-@UseGuards(TenantGuard, RolesGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class TenantSettingsController {
   constructor(@Inject(TenantSettingsService) private readonly svc: TenantSettingsService) {}
 
+  @RequirePermission('admin.settings.read')
   @Get()
   async get(@TenantCtx() tenant: TenantContext) {
     return this.svc.get(tenant);
   }
 
+  @RequirePermission('admin.settings.edit')
   @Patch()
-  @Roles('owner', 'admin')
   async update(
     @TenantCtx() tenant: TenantContext,
     @TenantActor() actor: TenantActor,

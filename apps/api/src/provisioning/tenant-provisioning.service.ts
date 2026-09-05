@@ -4,7 +4,11 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Client as PgClient } from 'pg';
-import { makeTenantPrismaClient, disconnectTenantClient } from '@libriant/db-tenant';
+import {
+  makeTenantPrismaClient,
+  disconnectTenantClient,
+  reconcileSystemRoles,
+} from '@libriant/db-tenant';
 import { loadEnv } from '../config/env.js';
 
 const execFileP = promisify(execFile);
@@ -160,6 +164,12 @@ export class TenantProvisioningService {
   private async seedDefaults(targetUrl: string): Promise<void> {
     const client = makeTenantPrismaClient({ databaseUrl: targetUrl });
     try {
+      // Reconcile FIRST and unconditionally. It is the seed that must run on
+      // every provision, including a re-run where tenant_settings already
+      // exists — a tenant provisioned through signup used to get no role
+      // reconciliation at all, while one seeded from the CLI did, and an owner
+      // silently ended up one permission short of their own template.
+      await reconcileSystemRoles(client);
       const existing = await client.tenantSetting.findUnique({ where: { id: 1 } });
       if (existing) return;
       await client.tenantSetting.create({

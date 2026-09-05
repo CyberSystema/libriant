@@ -15,7 +15,7 @@
  *   - €0.10/day fines, capped at €5
  *   - 48-hour hold pickup window
  */
-import { makeTenantPrismaClient, disconnectTenantClient } from '../src';
+import { makeTenantPrismaClient, disconnectTenantClient, reconcileSystemRoles } from '../src';
 
 const DEFAULTS = {
   id: 1,
@@ -40,15 +40,20 @@ async function main() {
     const existing = await client.tenantSetting.findUnique({ where: { id: 1 } });
     if (existing) {
       console.log('tenant_settings row already exists — leaving values as-is');
-      return;
+    } else {
+      await client.tenantSetting.create({ data: DEFAULTS });
+      console.log(
+        `tenant_settings seeded: loanPeriodDays=${DEFAULTS.loanPeriodDays}, ` +
+          `maxRenewals=${DEFAULTS.maxRenewals}, ` +
+          `finePerDayCents=${DEFAULTS.finePerDayCents}, ` +
+          `holdPickupHours=${DEFAULTS.holdPickupHours}, ` +
+          `currency=${DEFAULTS.currency}, defaultLocale=${DEFAULTS.defaultLocale}`,
+      );
     }
-    await client.tenantSetting.create({ data: DEFAULTS });
+    const roles = await reconcileSystemRoles(client);
     console.log(
-      `tenant_settings seeded: loanPeriodDays=${DEFAULTS.loanPeriodDays}, ` +
-        `maxRenewals=${DEFAULTS.maxRenewals}, ` +
-        `finePerDayCents=${DEFAULTS.finePerDayCents}, ` +
-        `holdPickupHours=${DEFAULTS.holdPickupHours}, ` +
-        `currency=${DEFAULTS.currency}, defaultLocale=${DEFAULTS.defaultLocale}`,
+      `system roles reconciled: ${roles.created} created, ${roles.permissionsAdded} ` +
+        `permission(s) added (none removed — a library's own narrowing is kept).`,
     );
   } finally {
     await disconnectTenantClient(client);

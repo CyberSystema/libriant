@@ -1,11 +1,11 @@
 import { Controller, Get, Inject, UseGuards } from '@nestjs/common';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { EffectivePlanService } from './effective-plan.service.js';
 import { collectUsage } from './plan-usage.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * A library's own plan and its own numbers.
@@ -33,19 +33,20 @@ import { collectUsage } from './plan-usage.js';
  * and is why nothing calls this on a hot path.
  */
 @Controller('t/:slug')
-@UseGuards(TenantGuard, RolesGuard)
-@Roles('owner', 'admin')
+@UseGuards(TenantGuard, PermissionGuard)
 export class PlanUsageController {
   constructor(
     @Inject(EffectivePlanService) private readonly effective: EffectivePlanService,
     @Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService,
   ) {}
 
+  @RequirePermission('admin.plan.read')
   @Get('plan')
   async plan(@TenantCtx() tenant: TenantContext) {
     return this.effective.getEffectivePlan(tenant.id);
   }
 
+  @RequirePermission('admin.plan.read')
   @Get('plan/usage')
   async usage(@TenantCtx() tenant: TenantContext) {
     // The EFFECTIVE plan, not the contracted one: this screen must show the

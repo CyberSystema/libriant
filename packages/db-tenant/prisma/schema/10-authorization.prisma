@@ -1,0 +1,130 @@
+// ---------------------------------------------------------------------------
+// Authorization — roles a library defines, and what its staff hold.
+//
+// Staff USERS live in the control plane (`users`, with a `role` enum). Their
+// PERMISSIONS live here, in the library's own database, because they are the
+// library's to decide: a role called "Cataloguer who may not touch
+// circulation" is a thing one library wants and another has never heard of,
+// and an enum compiled into the platform cannot hold it.
+//
+// The link across that boundary is a bare `userId` cuid with NO foreign key —
+// the house rule for every cross-plane reference in this schema.
+//
+// NOTHING IS IMPLIED. A key that is not granted is denied, and PermissionGuard
+// fails closed. The four shipped roles are seeded as `isSystem` rows whose
+// permission sets reproduce the old role check exactly; that equivalence is
+// asserted route by route in authorization-matrix.spec.ts.
+//
+// BRANCH SCOPING IS NOT HERE YET. The model wants "Kostas runs the Kifisia
+// branch", and the column for it belongs on `staff_role_grants` — but branches
+// arrive in phase 9, and a nullable text column pointing at a table that does
+// not exist is a guess this schema does not need to make today. It lands with
+// its foreign key, in the same migration as the table it references.
+// ---------------------------------------------------------------------------
+
+/// Whether an override adds a permission or takes one away.
+enum PermissionEffect {
+  grant
+  deny
+}
+
+/// A named set of permissions. The four `isSystem` rows are seeded at
+/// provisioning; a library may add its own.
+model Role {
+  id String @id @default(cuid())
+  /// Stable identifier. The four system roles use `owner`, `admin`,
+  /// `librarian`, `volunteer` so a control-plane `users.role` maps straight on.
+  key String
+  name String
+  description String?
+  /// System roles are seeded and kept in step with the shipped templates.
+  /// A library may not delete one, because a staff account may still map onto it.
+  isSystem Boolean @default(false)
+  sortOrder Int @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  archivedAt DateTime?
+
+  permissions RolePermission[]
+  grants      StaffRoleGrant[]
+
+  @@index([isSystem])
+  @@map("roles")
+}
+
+/// One permission held by one role, with its ceiling if it takes one.
+model RolePermission {
+  roleId String
+  /// A key from `@libriant/shared/permissions`. Deliberately a plain string:
+  /// the catalog is code, and a database enum would need a migration every
+  /// time a module adds a verb.
+  permissionKey String
+  /// For `kind: 'limit'` keys only — the most this role may act on, in the
+  /// unit the key documents (minor currency units for the fee keys). NULL on a
+  /// limit key means unlimited; the key being absent means denied.
+  limitNum BigInt?
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionKey])
+  @@index([permissionKey])
+  @@map("role_permissions")
+}
+
+/// The tenant-side record of a control-plane staff user.
+///
+/// Exists so a library can hold its own notes about a person, and so a grant
+/// has something to hang off. A user with no profile row is still a user: the
+/// resolver falls back to the system role matching their control-plane role,
+/// which is why this table can be empty on every existing tenant and nothing
+/// changes.
+model StaffProfile {
+  /// Control-plane `users.id`. No FK — cross-plane reference.
+  userId String @id
+  displayName String?
+  notes String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  archivedAt DateTime?
+
+  @@map("staff_profiles")
+}
+
+/// An ADDITIONAL role held by a staff user, on top of the one their
+/// control-plane `users.role` maps to. Permissions are the union.
+model StaffRoleGrant {
+  /// Control-plane `users.id`. No FK — cross-plane reference.
+  userId String
+  roleId String
+  grantedByUserId String?
+  createdAt DateTime @default(now())
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("staff_role_grants")
+}
+
+/// A per-person exception to whatever their roles say.
+///
+/// `deny` beats every grant, always. That asymmetry is the point: taking one
+/// permission away from one person must not require inventing a whole role,
+/// and an exception that could be overridden by adding a role would not be one.
+model StaffPermissionOverride {
+  /// Control-plane `users.id`. No FK — cross-plane reference.
+  userId String
+  permissionKey String
+  effect PermissionEffect
+  /// Only meaningful with `effect = grant` on a limit key. Replaces the
+  /// role-derived ceiling rather than adding to it.
+  limitNum BigInt?
+  reason String?
+  grantedByUserId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@id([userId, permissionKey])
+  @@index([permissionKey])
+  @@map("staff_permission_overrides")
+}

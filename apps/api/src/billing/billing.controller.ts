@@ -2,10 +2,10 @@ import { Body, Controller, Get, Inject, Post, UseGuards } from '@nestjs/common';
 import { validateDto } from '../auth/validate-dto.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { BillingService } from './billing.service.js';
 import { OpenPortalDto, SelectPlanDto, StartCheckoutDto } from './billing.dto.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Library-facing billing endpoints.
@@ -23,54 +23,57 @@ import { OpenPortalDto, SelectPlanDto, StartCheckoutDto } from './billing.dto.js
  * them); the state-changing actions require a library admin (owner/admin).
  */
 @Controller('t/:slug/billing')
-@UseGuards(TenantGuard, RolesGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class BillingController {
   constructor(@Inject(BillingService) private readonly svc: BillingService) {}
 
+  @RequirePermission('billing.read')
   @Get()
   async current(@TenantCtx() tenant: TenantContext) {
     return this.svc.getSnapshot(tenant.id);
   }
 
+  @RequirePermission('billing.read')
   @Get('gate')
   async gate(@TenantCtx() tenant: TenantContext) {
     return this.svc.getGate(tenant.id);
   }
 
+  @RequirePermission('billing.read')
   @Get('plans')
   async availablePlans(@TenantCtx() tenant: TenantContext) {
     return { plans: await this.svc.listAvailablePlans(tenant.id) };
   }
 
+  @RequirePermission('billing.manage')
   @Post('checkout')
-  @Roles('owner', 'admin')
   async checkout(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const dto = await validateDto(StartCheckoutDto, raw);
     return this.svc.startCheckout(tenant.id, dto);
   }
 
+  @RequirePermission('billing.manage')
   @Post('select')
-  @Roles('owner', 'admin')
   async select(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const dto = await validateDto(SelectPlanDto, raw);
     return this.svc.selectPlan(tenant.id, dto);
   }
 
+  @RequirePermission('billing.manage')
   @Post('portal')
-  @Roles('owner', 'admin')
   async portal(@TenantCtx() tenant: TenantContext, @Body() raw: unknown) {
     const dto = await validateDto(OpenPortalDto, raw ?? {});
     return this.svc.openCustomerPortal(tenant.id, dto);
   }
 
+  @RequirePermission('billing.manage')
   @Post('cancel')
-  @Roles('owner', 'admin')
   async cancel(@TenantCtx() tenant: TenantContext) {
     return this.svc.cancelAtPeriodEnd(tenant.id);
   }
 
+  @RequirePermission('billing.manage')
   @Post('resume')
-  @Roles('owner', 'admin')
   async resume(@TenantCtx() tenant: TenantContext) {
     return this.svc.resumeSubscription(tenant.id);
   }

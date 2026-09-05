@@ -1,8 +1,9 @@
 import { Controller, Get, Inject, UseGuards } from '@nestjs/common';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
 import { DashboardService, type TenantSummary } from './dashboard.service.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  *   GET /t/:slug/summary
@@ -13,10 +14,11 @@ import { DashboardService, type TenantSummary } from './dashboard.service.js';
  * would show.
  */
 @Controller('t/:slug/summary')
-@UseGuards(TenantGuard, RolesGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class DashboardController {
   constructor(@Inject(DashboardService) private readonly svc: DashboardService) {}
 
+  @RequirePermission('report.dashboard.read')
   @Get()
   async summary(@TenantCtx() tenant: TenantContext): Promise<TenantSummary> {
     return this.svc.summary(tenant);

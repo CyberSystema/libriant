@@ -33,3 +33,4 @@ export type {
   CollectionRecord,
   AuditEvent,
 } from '../node_modules/.prisma/tenant-client/index.js';
+export { reconcileSystemRoles, type ReconcileResult } from './system-roles.js';

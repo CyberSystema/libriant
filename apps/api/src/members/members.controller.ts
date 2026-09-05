@@ -22,8 +22,8 @@ import { QuotaInterceptor } from '../plans/quota.interceptor.js';
 import { validateDto } from '../auth/validate-dto.js';
 import { parseLimit } from '../platform/query.js';
 import { MembersService } from './members.service.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles, StaffWrite } from '../tenancy/roles.decorator.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 import {
   CreateMemberDto,
   MEMBER_STATUSES,
@@ -48,11 +48,12 @@ import {
  * customFields validated against active FieldDefinitions for entity_kind='member'.
  */
 @Controller('t/:slug/members')
-@UseGuards(TenantGuard, RolesGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 @UseInterceptors(QuotaInterceptor)
 export class MembersController {
   constructor(@Inject(MembersService) private readonly svc: MembersService) {}
 
+  @RequirePermission('patron.read')
   @Get()
   async list(
     @TenantCtx() tenant: TenantContext,
@@ -85,6 +86,7 @@ export class MembersController {
    * scan-to-checkout. Declared before `:id` so the literal `lookup` segment
    * isn't captured as a member id.
    */
+  @RequirePermission('patron.read')
   @Get('lookup')
   async lookup(@TenantCtx() tenant: TenantContext, @Query('memberNumber') memberNumber?: string) {
     const value = (memberNumber ?? '').trim();
@@ -95,7 +97,7 @@ export class MembersController {
     return this.svc.getByMemberNumber(tenant, value);
   }
 
-  @StaffWrite()
+  @RequirePermission('patron.write')
   @Post()
   @RequiresQuota('max_members')
   async create(
@@ -107,12 +109,13 @@ export class MembersController {
     return this.svc.create(tenant, dto, actor);
   }
 
+  @RequirePermission('patron.read')
   @Get(':id')
   async get(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.get(tenant, id);
   }
 
-  @StaffWrite()
+  @RequirePermission('patron.write')
   @Patch(':id')
   async update(
     @TenantCtx() tenant: TenantContext,
@@ -124,7 +127,7 @@ export class MembersController {
     return this.svc.update(tenant, id, dto, actor);
   }
 
-  @StaffWrite()
+  @RequirePermission('patron.status')
   @Put(':id/status')
   async setStatus(
     @TenantCtx() tenant: TenantContext,
@@ -140,7 +143,7 @@ export class MembersController {
    * Archive — reversible, keeps every field. See the erase route below for the
    * Art. 17 one; the two are deliberately different endpoints.
    */
-  @StaffWrite()
+  @RequirePermission('patron.archive')
   @Delete(':id')
   async archive(
     @TenantCtx() tenant: TenantContext,
@@ -154,13 +157,13 @@ export class MembersController {
    * GDPR Art. 17 erasure. **Irreversible** — see `MembersService.erase()` for
    * exactly what is destroyed and what deliberately survives.
    *
-   * `@Roles('owner', 'admin')`, NOT `@StaffWrite()`: every other mutation on
+   * `patron.erase`, NOT `patron.write`: every other mutation on
    * this controller can be undone by editing the record back, this one cannot,
    * so it is not a volunteer-or-librarian action. Takes no body — a free-text
    * "reason" would be one more place to write "request from Maria
    * Papadopoulou", inside the very audit trail this call is redacting.
    */
-  @Roles('owner', 'admin')
+  @RequirePermission('patron.erase')
   @Post(':id/erase')
   async erase(
     @TenantCtx() tenant: TenantContext,

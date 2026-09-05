@@ -21,12 +21,12 @@ import { RequiresFeature } from '../plans/decorators.js';
 import { PlanGuard } from '../plans/plan.guard.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
-import { RolesGuard } from '../tenancy/roles.guard.js';
-import { Roles } from '../tenancy/roles.decorator.js';
 import { assertBytesMatchContentType } from '../storage/content-sniff.js';
 import { IMPORT_ENTITY_KINDS, mappableFields } from './mapping/entity-fields.js';
 import { IMPORT_MAX_UPLOAD_BYTES } from './import.constants.js';
 import { ImportService } from './import.service.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Bulk import / migration API. Gated by `bulk_import_enabled`; impersonating
@@ -45,13 +45,13 @@ import { ImportService } from './import.service.js';
  *   DELETE /t/:slug/imports/:id                  — delete a finished/failed batch
  */
 @Controller('t/:slug/imports')
-@UseGuards(TenantGuard, RolesGuard, PlanGuard)
-@Roles('owner', 'admin')
+@UseGuards(TenantGuard, PermissionGuard, PlanGuard)
 @RequiresFeature('bulk_import_enabled')
 export class ImportController {
   constructor(@Inject(ImportService) private readonly svc: ImportService) {}
 
   /** Static catalogue so the wizard can render entity choices + target fields. */
+  @RequirePermission('admin.import.manage')
   @Get('entities')
   entities() {
     return {
@@ -62,11 +62,13 @@ export class ImportController {
     };
   }
 
+  @RequirePermission('admin.import.manage')
   @Get()
   list(@TenantCtx() tenant: TenantContext) {
     return this.svc.list(tenant);
   }
 
+  @RequirePermission('admin.import.manage')
   @Post()
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: IMPORT_MAX_UPLOAD_BYTES } }))
   async upload(
@@ -100,11 +102,13 @@ export class ImportController {
     });
   }
 
+  @RequirePermission('admin.import.manage')
   @Get(':id')
   get(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.get(tenant, id);
   }
 
+  @RequirePermission('admin.import.manage')
   @Patch(':id/mapping')
   setMapping(
     @TenantCtx() tenant: TenantContext,
@@ -114,16 +118,19 @@ export class ImportController {
     return this.svc.setMapping(tenant, id, body);
   }
 
+  @RequirePermission('admin.import.manage')
   @Post(':id/validate')
   validate(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.startValidate(tenant, id);
   }
 
+  @RequirePermission('admin.import.manage')
   @Post(':id/commit')
   commit(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.startCommit(tenant, id);
   }
 
+  @RequirePermission('admin.import.manage')
   @Get(':id/issues')
   issues(
     @TenantCtx() tenant: TenantContext,
@@ -139,6 +146,7 @@ export class ImportController {
     });
   }
 
+  @RequirePermission('admin.import.manage')
   @Get(':id/errors.csv')
   @Header('Content-Type', 'text/csv; charset=utf-8')
   @Header('Content-Disposition', 'attachment; filename="import-errors.csv"')
@@ -146,11 +154,13 @@ export class ImportController {
     return this.svc.errorsCsv(tenant, id);
   }
 
+  @RequirePermission('admin.import.manage')
   @Post(':id/cancel')
   cancel(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.cancel(tenant, id);
   }
 
+  @RequirePermission('admin.import.manage')
   @Delete(':id')
   remove(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.svc.remove(tenant, id);

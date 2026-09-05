@@ -13,6 +13,8 @@ import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { BillingService } from '../billing/billing.service.js';
 import { DesktopReleaseService, type DesktopPlatform } from './desktop-release.service.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
 
 /**
  * Library-facing desktop-app endpoints.
@@ -26,18 +28,20 @@ import { DesktopReleaseService, type DesktopPlatform } from './desktop-release.s
  * so a non-paid tenant can't fetch the installer even with the direct URL.
  */
 @Controller('t/:slug/desktop')
-@UseGuards(TenantGuard)
+@UseGuards(TenantGuard, PermissionGuard)
 export class DesktopController {
   constructor(
     @Inject(BillingService) private readonly billing: BillingService,
     @Inject(DesktopReleaseService) private readonly releases: DesktopReleaseService,
   ) {}
 
+  @RequirePermission('admin.desktop.download')
   @Get('access')
   async access(@TenantCtx() tenant: TenantContext) {
     return this.billing.getDesktopAccess(tenant.id);
   }
 
+  @RequirePermission('admin.desktop.download')
   @Get('release')
   async release(@TenantCtx() tenant: TenantContext) {
     const [access, latest] = await Promise.all([
@@ -58,6 +62,7 @@ export class DesktopController {
     };
   }
 
+  @RequirePermission('admin.desktop.download')
   @Get('download')
   async download(
     @TenantCtx() tenant: TenantContext,
