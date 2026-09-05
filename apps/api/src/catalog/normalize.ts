@@ -1,22 +1,39 @@
 import { SEARCH_MIN_CHARS } from '@libriant/shared';
+import { foldGreek } from '@libriant/shared/greek';
 
 /**
  * Lowercase + accent-fold helper used to compute `sortTitle` / `searchText`
  * across catalog entities (and replicated in `collection-records.service.ts`).
  *
- * Greek and Latin both share the property that diacritics (tonos, acute,
- * grave, ...) are decoded as combining code points in NFD. Stripping them
- * with a regex over the `̀-ͯ` block leaves the base letter.
+ * THE IMPLEMENTATION MOVED TO `@libriant/shared/greek`. It used to be
+ * `toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'')` right here, which is
+ * correct for accents and wrong for sigma:
  *
- * Why JS-side and not Postgres? Postgres has `unaccent`, but it's not
- * `IMMUTABLE` by default, which means it can't be used in a generated
- * column or index expression without wrapping. Doing the fold in the
- * application keeps the schema simple and matches what the trigram GIN
- * index expects.
+ *     normalizeText('ΠΟΛΙΣ')  ->  π ο λ ι U+03C2     (Unicode's Final_Sigma rule)
+ *     normalizeText('πολισ')  ->  π ο λ ι U+03C3     (what a person types)
+ *
+ * so `Η ΠΟΛΙΣ ΕΑΛΩ`, catalogued in capitals as Greek library exports usually
+ * are, could not be found by searching `πολισ`. `foldGreek` collapses the two
+ * sigmas and every other Greek letter with more than one written form, and the
+ * same fold now exists in Postgres (`greek/greek-fold.sql`) with
+ * `pnpm check:greek-folding` holding the two together.
+ *
+ * WHAT THIS MEANS RIGHT NOW, STATED PLAINLY. The function's OUTPUT CHANGED, and
+ * no stored data has been rewritten. Until the projection rebuild, rows written
+ * before this change still carry the old fold, so during that window:
+ *
+ *   - a record written from now on is findable by an ordinary query, which it
+ *     was not before — the fix, and the common case;
+ *   - a record written BEFORE, whose search_text ends in U+03C2, stops matching
+ *     a query that used to reach it by also ending in U+03C2. It was already
+ *     unreachable from the query people actually type.
+ *
+ * That window is deliberate and bounded: the 1.0 -> 2.0 upgrade recomputes
+ * every `searchText`, `sortName` and `sortTitle` in the same transaction, and
+ * it is the only pass over that data anyone should pay for. There are no
+ * libraries in production, so the window costs nothing real.
  */
-export function normalizeText(input: string): string {
-  return input.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
-}
+export const normalizeText = foldGreek;
 
 /**
  * Build a `searchText` blob for an entity — concatenated, normalized,

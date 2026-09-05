@@ -1,0 +1,83 @@
+{
+  "$comment": "Hand-verified orderings. Each asserts one fact about how call numbers file.",
+  "orderings": [
+    {
+      "scheme": "ddc",
+      "a": "005.133",
+      "b": "005.2",
+      "why": "decimal fraction: .133 files before .2"
+    },
+    {
+      "scheme": "ddc",
+      "a": "004",
+      "b": "005.133",
+      "why": "whole class number"
+    },
+    {
+      "scheme": "ddc",
+      "a": "005.133 KE",
+      "b": "005.133 KER",
+      "why": "shorter author mark files first"
+    },
+    {
+      "scheme": "lcc",
+      "a": "PA37 .B1",
+      "b": "PA4037 .A2",
+      "why": "class number is an integer, not a string"
+    },
+    {
+      "scheme": "lcc",
+      "a": "PA4037 .A2",
+      "b": "PA4037 .A21",
+      "why": "cutter is a decimal fraction: .A2 is 0.2, .A21 is 0.21"
+    },
+    {
+      "scheme": "lcc",
+      "a": "PA4037 .A2 1975",
+      "b": "PA4037 .A2 1998",
+      "why": "year files last"
+    },
+    {
+      "scheme": "lcc",
+      "a": "PA4037",
+      "b": "PB1",
+      "why": "class letters before class number"
+    },
+    {
+      "scheme": "lcc",
+      "a": "QA76.73",
+      "b": "QA76.9",
+      "why": "decimal in the class number"
+    },
+    {
+      "scheme": "alphanum",
+      "a": "A9",
+      "b": "A10",
+      "why": "digit runs compare numerically"
+    },
+    {
+      "scheme": "alphanum",
+      "a": "ΠΑΙΔ 2",
+      "b": "ΠΑΙΔ 10",
+      "why": "and they still do after a Greek prefix"
+    },
+    {
+      "scheme": "ddc",
+      "a": "005.1 KER v.3",
+      "b": "005.1 KER v.10",
+      "why": "volume 3 shelves before volume 10"
+    },
+    {
+      "scheme": "ddc",
+      "a": "005.1 KER τ.3",
+      "b": "005.1 KER τ.10",
+      "why": "and so does the Greek volume designation"
+    },
+    {
+      "scheme": "ddc",
+      "a": "005.1 KER c.1",
+      "b": "005.1 KER c.2",
+      "why": "copies file in order"
+    }
+  ]
+}

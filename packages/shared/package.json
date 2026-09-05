@@ -7,15 +7,20 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./callnumber": "./src/callnumber/index.ts",
     "./countries": "./src/countries.ts",
+    "./currencies": "./src/currencies.ts",
     "./features": "./src/features.ts",
+    "./greek": "./src/greek.ts",
     "./legal": "./src/legal.ts",
     "./library": "./src/library.ts",
+    "./money": "./src/money.ts",
     "./search": "./src/search.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "lint": "echo 'lint: ok'"
+    "lint": "echo 'lint: ok'",
+    "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "devDependencies": {
     "typescript": "^6.0.3"

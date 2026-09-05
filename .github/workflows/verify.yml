@@ -84,6 +84,29 @@ jobs:
       - name: Country list matches ICU and libphonenumber
         run: pnpm check:countries
 
+      # One Greek fold, four runtimes. `foldGreek` decides what a Greek query
+      # and a Greek record have in common, and it has to run identically in
+      # TypeScript, in Postgres (index expressions and generated columns),
+      # later in the OpenSearch analysis chain and later still in the desktop
+      # client's Rust core. A one-code-point disagreement indexes a record
+      # under a key the query never produces: no error, no log line, just a
+      # book on the shelf the catalogue denies having.
+      #
+      # This half is hermetic — 854 vectors through TypeScript, plus the SQL
+      # file's variant table, combining range and pinned collation compared
+      # against the exported constants. The EXECUTABLE half needs a database
+      # and runs in integration-tests as greek-folding-parity.spec.ts.
+      - name: Greek folding agrees across runtimes
+        run: pnpm check:greek-folding
+
+      # The currency table decides what a stored `bigint` means. A wrong
+      # minor-unit exponent is a fee or an invoice line wrong by a power of
+      # ten, reconciled against nothing that could notice. Checked against ICU,
+      # including the 16 currencies where ISO 4217 and ICU legitimately
+      # disagree and must keep disagreeing exactly as recorded.
+      - name: Currency table matches ICU
+        run: pnpm check:currencies
+
       # amtool is run against a COPY with the receiver placeholders substituted,
       # not against the file as committed.
       #
@@ -203,7 +226,7 @@ jobs:
       # `pnpm test`, because @libriant/api's `test` script also runs the
       # integration project, which needs a database this job does not have.
       - name: Web and design-system tests
-        run: pnpm --filter @libriant/web --filter @libriant/ui test
+        run: pnpm --filter @libriant/web --filter @libriant/ui --filter @libriant/shared test
 
   # The verify gate ran typecheck, lint, prettier, translations, assets, unit,
   # integration, migrations and the DR drill — and zero supply-chain checks.
