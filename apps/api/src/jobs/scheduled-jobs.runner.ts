@@ -3,10 +3,18 @@ import { Redis } from 'ioredis';
 import { loadEnv } from '../config/env.js';
 import { NotifyService } from '../platform/notify.service.js';
 import { RedisService } from '../platform/redis.service.js';
+import { metricHeader, metricLine } from '../observability/metrics.registry.js';
 import { describeError } from './job-error.js';
 import type { JobContext, JobResult, JobRunnerContext, ScheduledJob } from './jobs.types.js';
 
-const QUEUE_NAME = 'scheduled';
+/**
+ * The BullMQ queue name. Exported because `queues/consumers.ts` registers this
+ * runner alongside the other four consumers and uses the SAME string for the
+ * /healthz key and the `queue=` metric label — three things that used to be
+ * three separate literals that happened to agree.
+ */
+export const SCHEDULED_QUEUE_NAME = 'scheduled';
+const QUEUE_NAME = SCHEDULED_QUEUE_NAME;
 const QUEUE_PREFIX = 'lbr-bull';
 
 /**
@@ -243,61 +251,69 @@ export function toScheduledJobResult(result: JobResult): ScheduledJobResult {
 /**
  * Render `lastResults()` as Prometheus exposition text.
  *
- * reliability-07's other half: the runner now knows whether each run worked,
- * but nothing exported it, so the only place that truth existed was the
- * worker's /healthz JSON — which no alert rule can read (infra/monitoring/
- * alerts.yml has no rule that could reference a job). `libriant_worker_job_*`
- * is the surface an alert can finally sit on.
+ * reliability-07's other half: the runner knows whether each run worked, and
+ * for a long time the only place that truth existed was the worker's /healthz
+ * JSON — which no alert rule can read. `libriant_worker_job_*` is the surface
+ * an alert can sit on, and since 2.0 phase 5 two of them do:
+ * LibriantScheduledJobFailing and LibriantScheduledJobNotRunning.
  *
  * Lives here rather than in worker.ts so the ok/counts contract and its
- * exposition stay in one file; worker.ts just concatenates the string.
+ * exposition stay in one file.
  *
  * A job that has never run in this process emits nothing at all rather than a
  * fabricated 1 or 0 — "no series" is honest about a worker that just booted,
  * where `last_ok 1` would be a lie and `last_ok 0` a false alarm. Pair the
  * gauge with `libriant_worker_job_last_run_timestamp_seconds` in the alert so
  * "stopped running entirely" is detectable too.
+ *
+ * The label is `sweep`, not `job`: `job` is Prometheus's own target label, and
+ * a scrape with the default `honor_labels: false` renames a colliding exposed
+ * one to `exported_job`. Every alert templating {{ $labels.job }} would have
+ * said "libriant-worker".
+ *
+ * Called by `queues/worker-surface.ts#renderWorkerMetrics`, which the worker's
+ * /metrics branch delegates to. It was NOT called by anything for the first
+ * three months of its life — exported, unit-tested, and documented here as
+ * being concatenated by worker.ts, which never imported it. That is why
+ * `worker-surface.spec.ts` asserts every metric the registry declares for this
+ * process actually appears in the rendered exposition.
  */
 export function renderScheduledJobMetrics(results: Record<string, ScheduledJobResult>): string {
-  const lines: string[] = [
-    '# HELP libriant_worker_job_last_ok Whether the last run of this scheduled job completed without failed units of work.',
-    '# TYPE libriant_worker_job_last_ok gauge',
-  ];
-  for (const [job, row] of Object.entries(results)) {
-    lines.push(`libriant_worker_job_last_ok{job="${escapeLabel(job)}"} ${row.ok ? 1 : 0}`);
+  const lines: string[] = [...metricHeader('libriant_worker_job_last_ok')];
+  for (const [sweep, row] of Object.entries(results)) {
+    lines.push(metricLine('libriant_worker_job_last_ok', row.ok ? 1 : 0, { sweep }));
   }
-  lines.push(
-    "# HELP libriant_worker_job_last_run_timestamp_seconds Unix time of this job's last completed run.",
-    '# TYPE libriant_worker_job_last_run_timestamp_seconds gauge',
-  );
-  for (const [job, row] of Object.entries(results)) {
+  lines.push(...metricHeader('libriant_worker_job_last_run_timestamp_seconds'));
+  for (const [sweep, row] of Object.entries(results)) {
     const at = Date.parse(row.at);
     if (Number.isNaN(at)) continue;
     lines.push(
-      `libriant_worker_job_last_run_timestamp_seconds{job="${escapeLabel(job)}"} ${Math.round(at / 1000)}`,
+      metricLine('libriant_worker_job_last_run_timestamp_seconds', Math.round(at / 1000), {
+        sweep,
+      }),
     );
   }
-  lines.push(
-    "# HELP libriant_worker_job_count The handler's own counters from its last run (tenantsFailed, rowsFailed, abandoned, …).",
-    '# TYPE libriant_worker_job_count gauge',
-  );
-  for (const [job, row] of Object.entries(results)) {
+  lines.push(...metricHeader('libriant_worker_job_count'));
+  for (const [sweep, row] of Object.entries(results)) {
     for (const [count, value] of Object.entries(row.counts ?? {})) {
-      lines.push(
-        `libriant_worker_job_count{job="${escapeLabel(job)}",count="${escapeLabel(count)}"} ${value}`,
-      );
+      lines.push(metricLine('libriant_worker_job_count', value, { sweep, count }));
     }
   }
   lines.push('');
   return lines.join('\n');
 }
 
-/** Prometheus label values escape backslash, double quote and newline. */
-function escapeLabel(v: string): string {
-  return v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-}
-
 export type ScheduledJobsHandle = {
+  /**
+   * The BullMQ worker.
+   *
+   * REL-04's remaining half. `worker.ts` decided readiness with
+   * `handle.worker ? handle.worker.isRunning() : true` — and this handle was
+   * the one that had no `worker`, so the scheduled-jobs consumer was the single
+   * consumer exempted from the liveness check, by omission. Every consumer
+   * exposes it now, and `queues/consumers.ts` requires it in the type.
+   */
+  worker: Worker;
   /** Counter the worker exposes via /metrics. */
   inFlight(): number;
   /** Job name → last result snapshot, for /healthz introspection. */
@@ -482,6 +498,7 @@ export async function startScheduledJobs(
   );
 
   return {
+    worker,
     inFlight: () => inFlight,
     lastResults: () => ({ ...lastResults }),
     async stop() {

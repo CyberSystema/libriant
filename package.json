@@ -19,7 +19,7 @@
     "check:supply-chain": "node scripts/check-supply-chain.mjs",
     "check:legal": "node scripts/check-legal-docs.mjs",
     "check:caddy": "node scripts/check-caddy.mjs",
-    "check:alerts": "node scripts/check-alerts.mjs",
+    "check:alerts": "tsx scripts/check-alerts.ts",
     "check:shared-imports": "node scripts/check-shared-imports.mjs",
     "check:countries": "node scripts/check-countries.mjs",
     "check:greek-folding": "tsx scripts/check-greek-folding.ts",

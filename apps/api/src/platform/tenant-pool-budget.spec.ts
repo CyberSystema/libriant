@@ -2,7 +2,13 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { planTenantPool, describeTenantPoolPlan } from './tenant-pool-budget.js';
+import {
+  planTenantPool,
+  planFleetConnections,
+  describeTenantPoolPlan,
+  describeFleetConnectionPlan,
+} from './tenant-pool-budget.js';
+import { DEFAULT_ROLE_LIMITS } from '@libriant/db-control';
 
 /**
  * performance-06. Two things are worth guarding here, and they are different
@@ -155,6 +161,23 @@ describe('worker wiring (the half that was missing last time)', () => {
     expect(offenders).toEqual([]);
   });
 
+  it("the sweep-overlap divisor equals the scheduled worker's BullMQ concurrency", () => {
+    // WORKER_CONCURRENT_SWEEPS is 4 because `concurrency: 4` bounds how many
+    // sweeps can hold a TenantPrismaService at once — not because there happen
+    // to be four sweeps. Raising the concurrency to chase a backlog would
+    // silently double the worker's real connection peak, and nothing else in
+    // the repository connects the two numbers.
+    const runner = readFileSync(path.join(jobsDir, 'scheduled-jobs.runner.ts'), 'utf8');
+    const m = /concurrency:\s*(\d+)/.exec(runner);
+    expect(m, 'scheduled-jobs.runner.ts no longer sets a BullMQ concurrency').toBeTruthy();
+    const plan = planTenantPool({ role: 'worker', requestedCacheSize: 8, requestedPoolMax: 1 });
+    expect(
+      plan.concurrentInstances,
+      `WORKER_CONCURRENT_SWEEPS (${plan.concurrentInstances}) must match the runner's ` +
+        `concurrency (${m![1]})`,
+    ).toBe(Number(m![1]));
+  });
+
   it('no job still appends the connection_limit URL parameter Prisma 7 ignores', () => {
     // Comments are allowed to name it — they explain why it is gone. Only CODE
     // must be free of it, so strip comments before looking.
@@ -167,5 +190,114 @@ describe('worker wiring (the half that was missing last time)', () => {
         /connection_limit=/,
       );
     }
+  });
+});
+
+/**
+ * The AGGREGATE, which nothing added up before 2.0 phase 5.
+ *
+ * `planTenantPool` answers "how much may THIS process spend" and answers it
+ * correctly, but the API's share and the worker's share are computed by two
+ * independent calls that never meet. A bigger LRU, a fifth concurrent sweep or
+ * a second API replica could push the total past `max_connections` with every
+ * individual plan still reporting itself within budget — the same shape as
+ * performance-06 itself.
+ *
+ * Phase 4 added a second ceiling on top: every tenant database has its own
+ * login role with a `CONNECTION LIMIT`, so one busy library can be refused
+ * connections while the server as a whole is nowhere near full. That failure
+ * looks nothing like exhaustion and would be diagnosed as one.
+ */
+describe('planFleetConnections (the aggregate budget)', () => {
+  const shipped = () =>
+    planFleetConnections({
+      requestedCacheSize: SHIPPED_CACHE_SIZE,
+      requestedPoolMax: SHIPPED_POOL_MAX,
+      serverMaxConnections: SHIPPED_MAX_CONNECTIONS,
+      perTenantConnectionLimit: DEFAULT_ROLE_LIMITS.connectionLimit,
+    });
+
+  it('the shipped configuration fits, with the reserve intact', () => {
+    const plan = shipped();
+    expect(plan.problems, describeFleetConnectionPlan(plan)).toEqual([]);
+    expect(plan.headroom).toBeGreaterThanOrEqual(0);
+    expect(plan.totalPeak).toBeLessThanOrEqual(SHIPPED_MAX_CONNECTIONS);
+  });
+
+  it('models ONE api instance, because Compose recreate is stop-then-start', () => {
+    // Not an optimistic default: `dc up -d --force-recreate` takes the old
+    // container down before the new one comes up, so two full API pools never
+    // coexist. The reserve covers the overlap while the old backends close.
+    const plan = shipped();
+    expect(plan.apiInstances).toBe(1);
+    // The three standalone tenant clients (import, maintenance, export) are in
+    // the total too — they are outside the sweeps' shared LRU and the per-role
+    // planner cannot see them.
+    expect(plan.tenantPeak).toBe(
+      plan.api.peakConnections * plan.apiInstances + plan.worker.peakConnections + 3,
+    );
+  });
+
+  it('says out loud that scaling to two API containers does NOT fit today', () => {
+    // Written down rather than discovered from `FATAL: sorry, too many clients
+    // already` on the day someone scales out. At the shipped numbers a second
+    // instance costs another 100 connections against a 200-connection server
+    // that is already holding 132 — ROLE_SHARE would have to drop to about 0.35
+    // per role, or max_connections rise, first.
+    const two = planFleetConnections({
+      requestedCacheSize: SHIPPED_CACHE_SIZE,
+      requestedPoolMax: SHIPPED_POOL_MAX,
+      serverMaxConnections: SHIPPED_MAX_CONNECTIONS,
+      apiInstances: 2,
+      perTenantConnectionLimit: DEFAULT_ROLE_LIMITS.connectionLimit,
+    });
+    expect(two.problems.join(' ')).toContain('over-committed');
+    expect(two.headroom).toBeLessThan(0);
+  });
+
+  it("one library's worst case stays under the CONNECTION LIMIT its role carries", () => {
+    // The phase-4 ceiling. `perTenantPeak` is what a single hot tenant can
+    // attract across every process at once; exceeding the role's limit refuses
+    // that library while the cluster is fine.
+    const plan = shipped();
+    expect(plan.perTenantPeak).toBeLessThanOrEqual(plan.perTenantLimit);
+    expect(plan.perTenantLimit).toBe(DEFAULT_ROLE_LIMITS.connectionLimit);
+  });
+
+  it('REPORTS an over-committed server rather than clamping it into silence', () => {
+    // A tiny server with a large reserve: the per-role planner still returns a
+    // plan (it never throws — that would turn a capacity problem into an
+    // outage), so the only way anyone learns is this list.
+    const plan = planFleetConnections({
+      requestedCacheSize: 200,
+      requestedPoolMax: 20,
+      serverMaxConnections: 40,
+      reservedConnections: 35,
+      apiInstances: 4,
+      perTenantConnectionLimit: DEFAULT_ROLE_LIMITS.connectionLimit,
+    });
+    expect(plan.problems.length).toBeGreaterThan(0);
+    expect(describeFleetConnectionPlan(plan)).toContain('OVER BUDGET');
+  });
+
+  it('names the per-tenant ceiling separately from the server one', () => {
+    // A limit of 2 cannot cover even one API instance's pool, and the message
+    // has to say so — "connection refused for this library" and "the server is
+    // full" are different incidents with different fixes.
+    const plan = planFleetConnections({
+      requestedCacheSize: SHIPPED_CACHE_SIZE,
+      requestedPoolMax: SHIPPED_POOL_MAX,
+      serverMaxConnections: SHIPPED_MAX_CONNECTIONS,
+      perTenantConnectionLimit: 2,
+    });
+    expect(plan.problems.join(' ')).toContain('CONNECTION LIMIT');
+    expect(plan.problems.join(' ')).toContain('refused while the server has room');
+  });
+
+  it('describes itself with every number an operator would otherwise compute', () => {
+    const text = describeFleetConnectionPlan(shipped());
+    expect(text).toContain('fleet connections:');
+    expect(text).toContain(`of ${SHIPPED_MAX_CONNECTIONS}`);
+    expect(text).toContain('per tenant');
   });
 });

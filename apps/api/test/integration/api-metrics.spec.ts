@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { AppModule } from '../../src/app.module.js';
+import { allMetrics } from '../../src/observability/metrics.registry.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { listenOnce } from './listen-once.js';
 import { declareBillingPosture } from './billing-posture.js';
@@ -83,6 +84,48 @@ async function scrape(): Promise<string> {
   const res = await request(app.getHttpServer()).get('/metrics').expect(200);
   return res.text;
 }
+
+describe('GET /metrics — every metric the registry declares for this process', () => {
+  it('renders all of them, with the declared HELP and TYPE', async () => {
+    // The symmetric half of queues/worker-surface.spec.ts, and the assertion
+    // that would have caught the defect that phase 5 found in the worker:
+    // `renderScheduledJobMetrics` was exported, unit-tested and documented as
+    // being called, and was not — so its three metrics had a green test and no
+    // series in Prometheus.
+    //
+    // Driven through a REAL scrape of the REAL route rather than by calling the
+    // renderers, for the reason this file's header already gives: delete the
+    // `...httpMetrics.render()` spread from health.controller.ts and every
+    // unit test still passes.
+    await request(app.getHttpServer()).get('/healthz').expect(200);
+    const body = await scrape();
+
+    const api = allMetrics().filter((m) => m.source === 'api');
+    expect(api.length).toBeGreaterThan(5);
+    const missing = api.map((m) => m.name).filter((name) => !body.includes(name));
+    // The capacity block is allowed to fail and omit itself — each source is
+    // isolated with Promise.allSettled — but this suite runs against a live
+    // control DB and Redis, so all of it should be here.
+    expect(
+      missing,
+      `declared for the api but absent from a real scrape: ${missing.join(', ')}`,
+    ).toEqual([]);
+
+    for (const m of api) {
+      expect(body).toContain(`# HELP ${m.name} ${m.help}`);
+      expect(body).toContain(`# TYPE ${m.name} ${m.type}`);
+    }
+  });
+
+  it('exports the connection plan this instance is actually running under', async () => {
+    // performance-06's number, finally scrapeable. It must be the plan
+    // TenantPrismaService applies — health.controller.ts resolves it through
+    // loadEnv() for exactly that reason.
+    const body = await scrape();
+    expect(body).toMatch(/libriant_api_tenant_conn_peak \d+/);
+    expect(body).toMatch(/libriant_api_tenant_conn_budget \d+/);
+  });
+});
 
 describe('GET /metrics — request, error and latency series (reliability-17)', () => {
   it('counts a matched route by its PATTERN, with method and status', async () => {

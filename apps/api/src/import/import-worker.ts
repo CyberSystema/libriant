@@ -63,7 +63,13 @@ export async function processImportJob(
   }
 
   const dryRun = phase === 'validate';
-  const client = makeTenantPrismaClient({ databaseUrl: runtimeDbUrl(tenant) });
+  // performance-06's arithmetic, applied here too: this consumer runs at
+  // `concurrency: 1` and walks ONE tenant's rows sequentially, so one
+  // connection is all it can use. Without `maxPoolSize` the pool defaults to 5
+  // — five connections held for the length of a 250 000-row import, outside
+  // the budget `resolveTenantPoolPlan` computes for the sweeps and counted by
+  // nobody.
+  const client = makeTenantPrismaClient({ databaseUrl: runtimeDbUrl(tenant), maxPoolSize: 1 });
 
   // Fresh issue list for this run.
   await controlDb.importRowIssue.deleteMany({ where: { batchId } });

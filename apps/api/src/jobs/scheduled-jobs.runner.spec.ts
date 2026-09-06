@@ -105,8 +105,13 @@ describe('toScheduledJobResult', () => {
 /**
  * reliability-07's other half: the runner knowing whether a run worked is
  * useless while the only place that truth lives is a /healthz JSON blob no
- * alert rule can read. infra/monitoring/alerts.yml has ten rules and not one
- * of them can reference a job.
+ * alert rule can read.
+ *
+ * These assertions were green for three months while the exposition they
+ * describe reached no scrape at all — worker.ts never called this function.
+ * That is why they are no longer the whole story: `queues/worker-surface.spec.ts`
+ * asserts the output actually appears in the worker's /metrics, and
+ * `check:alerts` fails on a declared metric no emitter writes.
  */
 describe('renderScheduledJobMetrics', () => {
   it('exports last_ok, last_run and every handler counter', () => {
@@ -125,14 +130,29 @@ describe('renderScheduledJobMetrics', () => {
       },
     });
 
-    expect(text).toContain('libriant_worker_job_last_ok{job="fine-accrual"} 1');
-    expect(text).toContain('libriant_worker_job_last_ok{job="member-notifications"} 0');
+    expect(text).toContain('libriant_worker_job_last_ok{sweep="fine-accrual"} 1');
+    expect(text).toContain('libriant_worker_job_last_ok{sweep="member-notifications"} 0');
     expect(text).toContain(
-      'libriant_worker_job_last_run_timestamp_seconds{job="fine-accrual"} 1787529600',
+      'libriant_worker_job_last_run_timestamp_seconds{sweep="fine-accrual"} 1787529600',
     );
     expect(text).toContain(
-      'libriant_worker_job_count{job="member-notifications",count="tenantsFailed"} 49',
+      'libriant_worker_job_count{sweep="member-notifications",count="tenantsFailed"} 49',
     );
+  });
+
+  it('labels the sweep `sweep`, never `job`', () => {
+    // `job` is Prometheus's own target label. With the default
+    // `honor_labels: false` a scrape keeps `job="libriant-worker"` and renames
+    // the exposed one to `exported_job` — so an alert templating
+    // {{ $labels.job }} says "libriant-worker" on every page, and `by (job)`
+    // collapses every sweep into one series. Asserted rather than commented,
+    // because the exposition looks completely correct either way and the
+    // damage only appears after the scrape.
+    const text = renderScheduledJobMetrics({
+      'retention-sweep': { at: '2026-08-24T00:00:00.000Z', message: 'ok', ok: true },
+    });
+    expect(text).toContain('sweep="retention-sweep"');
+    expect(text).not.toMatch(/\{job=/);
   });
 
   it('emits no series for a job that has not run yet', () => {

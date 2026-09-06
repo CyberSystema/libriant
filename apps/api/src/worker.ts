@@ -1,19 +1,21 @@
 /**
  * Libriant worker entry point.
  *
- * Hosts every long-running background job the API process can't run
- * inline. Today (after Step 18g):
- *   - email-outbox queue consumer (18d) — drains EmailOutbox rows
- *   - scheduled-jobs queue (18g) — runs the cron-style background jobs
- *     registered in `jobs/registry.ts`: support-session expiry sweeper,
- *     reservation pickup-expiry sweeper, Stripe webhook retry sweep.
+ * Hosts every long-running background job the API process can't run inline.
+ * WHICH jobs is no longer written here: `queues/consumers.ts` is the single
+ * registry, and this file iterates it.
  *
- * Still TODO, will land alongside future steps:
- *   - 18a: before/after diff writer (needs Prisma middleware)
- *   - 18b: upfront announcement delivery materialization at publishAt
- *   - 18c: window-boundary side effects (auto-suggest pre-window
- *          announcement, notify "we're back" subscribers)
- *   - 11/12: ISBN OpenLibrary refresh cron, fine accrual job
+ * That indirection is the point (REL-04). This file used to name its five
+ * consumers four separate times — the /healthz map, the /readyz expression,
+ * the /metrics gauges and the shutdown Promise.all — and the audit found the
+ * readiness expression naming three of them. Two consumers were declared,
+ * started, tracked, and simply absent from the one list that decides whether
+ * the orchestrator pulls a broken worker out of service. Each list read as
+ * complete on its own; only reading all four together showed it.
+ *
+ * So the lists are gone. `WORKER_CONSUMERS` is iterated to start them, and the
+ * three HTTP surfaces are rendered by pure functions in `queues/worker-surface.ts`
+ * — which, unlike this file, a unit test can drive.
  *
  * Exposes `/healthz`, `/readyz`, `/metrics` on `WORKER_PORT` so compose /
  * k8s / a LB can probe without BullMQ awareness.
@@ -21,46 +23,38 @@
 import { createServer } from 'node:http';
 import { setTimeout as wait } from 'node:timers/promises';
 import { loadEnv } from './config/env.js';
-import { startEmailWorker, type EmailWorkerHandle } from './email/email-worker.js';
 import { EmailService } from './email/email.service.js';
-import {
-  CENSUS_INTERVAL_MS,
-  refreshOutboxCensus,
-  renderOutboxCensus,
-} from './email/outbox-census.js';
-import {
-  makeImportWorkerDeps,
-  startImportWorker,
-  type ImportWorkerHandle,
-} from './import/import-worker.js';
-import {
-  startMaintenanceWorker,
-  type MaintenanceWorkerHandle,
-} from './maintenance/maintenance-worker.js';
-import { startExportWorker, type ExportWorkerHandle } from './export/export-worker.js';
+import { CENSUS_INTERVAL_MS, refreshOutboxCensus } from './email/outbox-census.js';
 import { RedisService } from './platform/redis.service.js';
-import { describeTenantPoolPlan, resolveTenantPoolPlan } from './platform/tenant-pool-budget.js';
-import { SCHEDULED_JOBS } from './jobs/registry.js';
-import { startScheduledJobs, type ScheduledJobsHandle } from './jobs/scheduled-jobs.runner.js';
+import {
+  describeFleetConnectionPlan,
+  describeTenantPoolPlan,
+  resolveFleetConnectionPlan,
+  resolveTenantPoolPlan,
+} from './platform/tenant-pool-budget.js';
+import { WORKER_CONSUMERS, type ConsumerDeps } from './queues/consumers.js';
+import {
+  healthzQueues,
+  initialConsumerStates,
+  jobResults,
+  readiness,
+  renderWorkerMetrics,
+  type ConsumerState,
+} from './queues/worker-surface.js';
 
 const env = loadEnv();
 const port = Number(process.env.WORKER_PORT ?? '3002');
 const bootedAt = new Date();
 
 let shuttingDown = false;
-let emailWorker: EmailWorkerHandle | null = null;
-let scheduledJobs: ScheduledJobsHandle | null = null;
-let importWorker: ImportWorkerHandle | null = null;
-let maintenanceWorker: MaintenanceWorkerHandle | null = null;
-let exportWorker: ExportWorkerHandle | null = null;
+
+/**
+ * One entry per registered consumer, in registry order. Every surface below
+ * reads THIS array — there is no second list to fall out of step with it.
+ */
+const states: ConsumerState[] = initialConsumerStates();
 
 const server = createServer((req, res) => {
-  // Treat any registered BullMQ worker handle as "running" only when its
-  // underlying worker is actually running (not closed/paused). A handle that
-  // exists but whose worker died is NOT ready (REL-04).
-  const isRunning = (handle: { worker?: { isRunning(): boolean } } | null | undefined): boolean =>
-    !!handle && (handle.worker ? handle.worker.isRunning() : true);
-
   res.setHeader('Content-Type', 'application/json');
   if (req.url === '/healthz') {
     res.statusCode = shuttingDown ? 503 : 200;
@@ -69,32 +63,23 @@ const server = createServer((req, res) => {
         status: shuttingDown ? 'shutting_down' : 'ok',
         bootedAt: bootedAt.toISOString(),
         nodeEnv: env.nodeEnv,
-        queues: {
-          'email-outbox': emailWorker ? 'running' : 'starting',
-          scheduled: scheduledJobs ? 'running' : 'starting',
-          import: importWorker ? 'running' : 'starting',
-          maintenance: maintenanceWorker ? 'running' : 'starting',
-          export: exportWorker ? 'running' : 'starting',
-        },
-        scheduledLastResults: scheduledJobs?.lastResults() ?? {},
+        queues: healthzQueues(states),
+        scheduledLastResults: jobResults(states),
       }),
     );
     return;
   }
   if (req.url === '/readyz') {
-    // Ready when ALL FIVE queue consumers are running AND Redis is live
-    // (REL-04 / READYZ-MISSING-WORKERS). Previously this omitted the
-    // maintenance + export workers and never re-checked Redis, so a post-boot
-    // Redis partition or a dead consumer still reported 200 and the
-    // orchestrator never pulled the worker. The Redis ping makes readiness a
-    // liveness signal, not a boot-time latch.
-    const handlesUp =
-      !shuttingDown &&
-      isRunning(emailWorker) &&
-      !!scheduledJobs &&
-      isRunning(importWorker) &&
-      isRunning(maintenanceWorker) &&
-      isRunning(exportWorker);
+    // Ready when EVERY registered consumer is running AND Redis is live
+    // (REL-04 / READYZ-MISSING-WORKERS). `readiness()` reads the same array the
+    // starter fills, so a consumer cannot be missing from this check while
+    // being present in the process — which is the exact shape of the defect.
+    //
+    // The Redis ping keeps readiness a LIVENESS signal rather than a boot-time
+    // latch: the BullMQ connections use `maxRetriesPerRequest: null`, so a
+    // post-boot partition queues commands forever instead of erroring.
+    const consumers = readiness(states);
+    const handlesUp = !shuttingDown && consumers.ready;
     // The HTTP handler can't be async, so ping then write the response.
     sharedRedis
       .ping()
@@ -105,48 +90,26 @@ const server = createServer((req, res) => {
           JSON.stringify({
             status: ready ? 'ready' : shuttingDown ? 'shutting_down' : 'not_ready',
             redis: redisOk ? 'up' : 'down',
+            // Named, not counted. An operator reading a 503 needs to know which
+            // capability is missing; "not_ready" sends them to the logs.
+            down: consumers.down,
           }),
         );
       })
       .catch(() => {
         res.statusCode = 503;
-        res.end(JSON.stringify({ status: 'not_ready', redis: 'down' }));
+        res.end(JSON.stringify({ status: 'not_ready', redis: 'down', down: consumers.down }));
       });
     return;
   }
   if (req.url === '/metrics') {
-    const upSec = Math.round((Date.now() - bootedAt.getTime()) / 1000);
-    const emailInFlight = emailWorker?.inFlight() ?? 0;
-    const scheduledInFlight = scheduledJobs?.inFlight() ?? 0;
-    const importInFlight = importWorker?.inFlight() ?? 0;
-    const maintenanceInFlight = maintenanceWorker?.inFlight() ?? 0;
-    const exportInFlight = exportWorker?.inFlight() ?? 0;
     res.setHeader('Content-Type', 'text/plain; version=0.0.4');
     res.end(
-      [
-        '# HELP libriant_worker_uptime_seconds Process uptime in seconds.',
-        '# TYPE libriant_worker_uptime_seconds counter',
-        `libriant_worker_uptime_seconds ${upSec}`,
-        '# HELP libriant_worker_jobs_running Number of jobs currently in-flight.',
-        '# TYPE libriant_worker_jobs_running gauge',
-        `libriant_worker_jobs_running{queue="email-outbox"} ${emailInFlight}`,
-        `libriant_worker_jobs_running{queue="scheduled"} ${scheduledInFlight}`,
-        `libriant_worker_jobs_running{queue="import"} ${importInFlight}`,
-        `libriant_worker_jobs_running{queue="maintenance"} ${maintenanceInFlight}`,
-        `libriant_worker_jobs_running{queue="export"} ${exportInFlight}`,
-        '# HELP libriant_worker_tenant_conn_peak Worst-case tenant DB connections this worker may hold.',
-        '# TYPE libriant_worker_tenant_conn_peak gauge',
-        `libriant_worker_tenant_conn_peak ${tenantPoolPlan.peakConnections}`,
-        '# HELP libriant_worker_tenant_conn_budget Tenant DB connection budget for this worker.',
-        '# TYPE libriant_worker_tenant_conn_budget gauge',
-        `libriant_worker_tenant_conn_budget ${tenantPoolPlan.budget}`,
-        // reliability-10: abandoned ('dead') outbox rows had no surface
-        // anywhere — no endpoint, no metric, no alert, just one console.error
-        // in a rolling Docker log. These gauges are the surface, and
-        // infra/monitoring/alerts.yml turns them into a page.
-        ...renderOutboxCensus(),
-        '',
-      ].join('\n'),
+      renderWorkerMetrics({
+        states,
+        plan: tenantPoolPlan,
+        uptimeSeconds: Math.round((Date.now() - bootedAt.getTime()) / 1000),
+      }),
     );
     return;
   }
@@ -169,11 +132,29 @@ const server = createServer((req, res) => {
  */
 const tenantPoolPlan = resolveTenantPoolPlan('worker', env.tenantClientCacheSize);
 
+/**
+ * The whole fleet's connection arithmetic, printed by the worker because it is
+ * the one process that starts last and can therefore state the total.
+ *
+ * Logged at WARN when it does not fit: `planFleetConnections` never throws — a
+ * capacity misconfiguration must not become an outage — so the only way an
+ * operator learns the fleet is over-committed is this line and the assertion in
+ * `tenant-pool-budget.spec.ts` that keeps the shipped defaults inside it.
+ */
+const fleetPlan = resolveFleetConnectionPlan(
+  env.tenantClientCacheSize,
+  env.tenantDbConnectionLimit,
+);
+
 server.listen(port, () => {
   // eslint-disable-next-line no-console
   console.log(`[worker] listening on :${port} (env=${env.nodeEnv})`);
   // eslint-disable-next-line no-console
   console.log(`[worker] ${describeTenantPoolPlan(tenantPoolPlan)}`);
+  const fleet = `[worker] ${describeFleetConnectionPlan(fleetPlan)}`;
+  if (fleetPlan.problems.length) console.warn(fleet);
+  // eslint-disable-next-line no-console
+  else console.log(fleet);
 });
 
 /**
@@ -187,61 +168,41 @@ void refreshOutboxCensus();
 const outboxCensusTimer = setInterval(() => void refreshOutboxCensus(), CENSUS_INTERVAL_MS);
 outboxCensusTimer.unref?.();
 
-// Boot the queue consumers alongside the HTTP server. If BullMQ fails to
-// connect we keep the HTTP surface alive (so the orchestrator sees the
-// readiness flap) but every send becomes a retry — fail-loud beats
-// fail-silent.
-startEmailWorker()
-  .then((handle) => {
-    emailWorker = handle;
-  })
-  .catch((err) => {
-    console.error(`[worker] failed to start email worker: ${(err as Error).message}`);
-  });
-
 // Scheduled jobs need an EmailService for outgoing notifications (18a
-// session-ended emails). The service uses ioredis for its BullMQ
-// producer + reads loadEnv internally, so direct construction works
-// outside Nest's DI graph.
+// session-ended emails). The service uses ioredis for its BullMQ producer +
+// reads loadEnv internally, so direct construction works outside Nest's DI
+// graph. Shared with the import + maintenance consumers, which take the same
+// Redis for their plan lookups and cache busting; BullMQ gets its own socket
+// inside each start* function.
 const sharedRedis = new RedisService();
 const sharedEmails = new EmailService(sharedRedis);
-startScheduledJobs(SCHEDULED_JOBS, { emails: sharedEmails })
-  .then((handle) => {
-    scheduledJobs = handle;
-  })
-  .catch((err) => {
-    console.error(`[worker] failed to start scheduled jobs: ${(err as Error).message}`);
-  });
+const consumerDeps: ConsumerDeps = { redis: sharedRedis, emails: sharedEmails };
 
-// Bulk-import consumer (validate + commit passes). Shares the process's
-// Redis for its EffectivePlanService limit lookups; BullMQ gets its own
-// socket inside startImportWorker.
-startImportWorker(makeImportWorkerDeps(sharedRedis))
-  .then((handle) => {
-    importWorker = handle;
-  })
-  .catch((err) => {
-    console.error(`[worker] failed to start import worker: ${(err as Error).message}`);
-  });
-
-// Operator maintenance consumer (diagnostics / migrate / fix / vacuum). Shares
-// the process Redis for cache busting; BullMQ gets its own socket inside.
-startMaintenanceWorker({ redis: sharedRedis })
-  .then((handle) => {
-    maintenanceWorker = handle;
-  })
-  .catch((err) => {
-    console.error(`[worker] failed to start maintenance worker: ${(err as Error).message}`);
-  });
-
-// Database-export consumer (csv/json/xlsx/sql → file on the shared storage volume).
-startExportWorker()
-  .then((handle) => {
-    exportWorker = handle;
-  })
-  .catch((err) => {
-    console.error(`[worker] failed to start export worker: ${(err as Error).message}`);
-  });
+/**
+ * Boot every registered consumer alongside the HTTP server.
+ *
+ * One loop, not five hand-written blocks. If BullMQ fails to connect we keep
+ * the HTTP surface alive — so the orchestrator sees readiness flap rather than
+ * a silent process — and the consumer stays `null`, which `readiness()` reports
+ * by name.
+ */
+for (const [index, consumer] of WORKER_CONSUMERS.entries()) {
+  consumer
+    .start(consumerDeps)
+    .then((handle) => {
+      states[index] = { consumer, handle };
+    })
+    .catch((err) => {
+      // Recorded, not just logged. A null handle alone cannot tell "failed to
+      // connect" from "still booting", and /healthz would read `starting` for
+      // the rest of the process's life.
+      states[index] = { consumer, handle: null, failed: true };
+      console.error(
+        `[worker] failed to start the ${consumer.name} consumer ` +
+          `(${consumer.purpose}): ${(err as Error).message}`,
+      );
+    });
+}
 
 /**
  * Hard ceiling on a graceful drain (REL-03). A wedged in-flight job (e.g. a
@@ -268,25 +229,17 @@ async function shutdown(signal: NodeJS.Signals, exitCode = 0) {
   });
 
   const drain = (async () => {
-    // Stop all BullMQ workers in parallel so a slow one doesn't extend the
-    // overall shutdown deadline.
-    await Promise.all([
-      emailWorker?.stop().catch((err) => {
-        console.warn(`[worker] email-worker stop: ${(err as Error).message}`);
-      }),
-      scheduledJobs?.stop().catch((err) => {
-        console.warn(`[worker] scheduled-jobs stop: ${(err as Error).message}`);
-      }),
-      importWorker?.stop().catch((err) => {
-        console.warn(`[worker] import-worker stop: ${(err as Error).message}`);
-      }),
-      maintenanceWorker?.stop().catch((err) => {
-        console.warn(`[worker] maintenance-worker stop: ${(err as Error).message}`);
-      }),
-      exportWorker?.stop().catch((err) => {
-        console.warn(`[worker] export-worker stop: ${(err as Error).message}`);
-      }),
-    ]);
+    // Stop every registered consumer in parallel so a slow one doesn't extend
+    // the overall shutdown deadline. The same array again: a consumer added to
+    // the registry is drained on shutdown without anyone remembering to add it
+    // here — which is the fourth of the four lists REL-04 was about.
+    await Promise.all(
+      states.map((s) =>
+        s.handle?.stop().catch((err) => {
+          console.warn(`[worker] ${s.consumer.name} stop: ${(err as Error).message}`);
+        }),
+      ),
+    );
     // Close the standalone Redis connection the scheduled-jobs EmailService
     // borrows (it lives outside Nest's DI graph, so nothing else disconnects it).
     await sharedRedis.onModuleDestroy().catch((err) => {

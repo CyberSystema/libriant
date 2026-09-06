@@ -286,8 +286,28 @@ dump_bytes=0
 finish() {
   local rc=$?
   local now; now="$(date +%s)"
-  # Metrics are written on EVERY exit path, including the eight aborts. A run
-  # that failed must leave evidence that it ran and failed, or the absent()
+
+  # --preflight writes NOTHING to the dead man's switch — not a metric, not a
+  # heartbeat. It is exempt for exactly the reason the push below already
+  # states: it touches no data, it is run by a human watching the terminal, and
+  # a config check is not a backup.
+  #
+  # It was not exempt until 2.0 phase 5, and that was harmless only for as long
+  # as nothing read `libriant_backup_last_exit_code`. The moment BackupAborted
+  # started paging on it, the exemption became load-bearing: the nightly aborts
+  # at 02:15 and pages; the operator does the first thing this script's own
+  # usage text tells them to do — `backup.sh --preflight`, "config only; touches
+  # no data" — and it exits 0 through this trap, writing exit_code 0 and a fresh
+  # last_run timestamp. The alert resolves, the staleness clock looks reset, and
+  # the night still has no backup. A diagnostic that silences the alarm it is
+  # being used to diagnose is the worst kind of health surface there is.
+  if [ "${PREFLIGHT:-0}" = "1" ]; then
+    rm -f "$RUNLOG"
+    return
+  fi
+
+  # Metrics are written on EVERY other exit path, including the eight aborts. A
+  # run that failed must leave evidence that it ran and failed, or the absent()
   # alert cannot tell it apart from a cron that was never installed.
   obs_set libriant_backup_last_run_timestamp_seconds "$now" \
     'Unix time of the last backup attempt, successful or not.'
@@ -341,18 +361,15 @@ finish() {
   # BackupDegraded in alerts.yml — while a run that aborted produced nothing,
   # and BackupStale does not notice for 36 hours. Only the second is an event.
   #
-  # --preflight is exempt: it touches no data, it is run by a human who is
-  # watching the terminal, and a config check is not a backup.
-  if [ "${PREFLIGHT:-0}" != "1" ]; then
-    if [ "$rc" != "0" ] && [ "$completed" = "0" ]; then
-      ntfy_transition "fail:${stage}" error "Libriant backup FAILED" \
-        "Aborted in stage '${stage}' (exit ${rc}). No usable backup was written tonight. Read /var/log/libriant/backup.log on the server." \
-        "floppy_disk"
-    else
-      ntfy_transition "ok" info "Libriant backup recovered" \
-        "A backup completed again after a failure. Nothing further is needed." \
-        "floppy_disk"
-    fi
+  # (--preflight never reaches here — it returned above.)
+  if [ "$rc" != "0" ] && [ "$completed" = "0" ]; then
+    ntfy_transition "fail:${stage}" error "Libriant backup FAILED" \
+      "Aborted in stage '${stage}' (exit ${rc}). No usable backup was written tonight. Read /var/log/libriant/backup.log on the server." \
+      "floppy_disk"
+  else
+    ntfy_transition "ok" info "Libriant backup recovered" \
+      "A backup completed again after a failure. Nothing further is needed." \
+      "floppy_disk"
   fi
   rm -f "$RUNLOG"
 }

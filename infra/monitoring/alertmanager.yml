@@ -184,3 +184,33 @@ inhibit_rules:
   - source_matchers: ['alertname = HostDiskCritical']
     target_matchers: ['alertname = HostDiskFilling']
     equal: ['instance', 'mountpoint']
+
+  # A worker that is not answering at all will also, a few minutes later, have
+  # every one of its consumers reported down and every sweep reported stale —
+  # by rules that read metrics the dead process is no longer exporting, from the
+  # last scrape before it went. One cause, one page: silence the consequences
+  # while the cause is firing.
+  #
+  # `equal: ['instance']` keeps this scoped to the worker that is actually down;
+  # it does not silence a second worker's consumers if the fleet ever has two.
+  - source_matchers: ['alertname = LibriantWorkerDown']
+    target_matchers:
+      [
+        'alertname =~ "LibriantWorkerConsumerDown|LibriantWorkerQueueWedged|LibriantScheduledJobFailing|LibriantScheduledJobNotRunning|LibriantEmailOutboxStalled"',
+      ]
+    equal: ['instance']
+
+  # LibriantEmailOutboxCensusMissing is separate and carries NO `equal`, because
+  # its expression is `absent(libriant_email_outbox_rows)`. `absent()` returns a
+  # synthetic 1-element vector with only the labels written into the expression —
+  # no `instance`, no `job` — so an inhibit rule with `equal: ['instance']`
+  # compares a label neither side has on the target and never matches. The
+  # alert would have fired thirty minutes into every worker outage, alongside
+  # the LibriantWorkerDown page that already explains it.
+  - source_matchers: ['alertname = LibriantWorkerDown']
+    target_matchers: ['alertname = LibriantEmailOutboxCensusMissing']
+
+  # And the generic target-down rule is the same cause said less usefully.
+  - source_matchers: ['alertname = LibriantWorkerDown']
+    target_matchers: ['alertname = TargetDown']
+    equal: ['instance']

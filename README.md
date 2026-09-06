@@ -2405,28 +2405,39 @@ pnpm --filter @libriant/api worker
 #   [email-worker] started — concurrency=4
 #   [scheduled] started — 3 job(s): support-session-expiry@60s, reservation-pickup-expiry@60s, stripe-webhook-retry@300s
 
-# 2) /healthz exposes both queues + the last result of every scheduled job.
+# 2) /healthz names every registered consumer + the last result of every
+#    scheduled job. `starting` = start() has not resolved; `failed` = it
+#    rejected; `stopped` = it resolved and the BullMQ worker has since died.
 curl -s http://localhost:3022/healthz | jq
 # {
-#   "ok": true,
+#   "status": "ok",
 #   "queues": {
-#     "email":     { "inFlight": 0, "lastResults": {…} },
-#     "scheduled": { "inFlight": 0, "lastResults": {
-#        "support-session-expiry":    { "at": "...", "message": "no expired sessions" },
-#        "reservation-pickup-expiry": { "at": "...", "message": "13 tenant(s) scanned; no pickups to expire" },
-#        "stripe-webhook-retry":      { "at": "...", "message": "no failed events to retry" }
-#     }}
+#     "email-outbox": "running",
+#     "scheduled":    "running",
+#     "import":       "running",
+#     "maintenance":  "running",
+#     "export":       "running"
+#   },
+#   "scheduledLastResults": {
+#     "support-session-expiry":    { "at": "...", "message": "no expired sessions", "ok": true },
+#     "reservation-pickup-expiry": { "at": "...", "message": "13 tenant(s) scanned; no pickups to expire", "ok": true },
+#     "stripe-webhook-retry":      { "at": "...", "message": "no failed events to retry", "ok": true }
 #   }
 # }
 
-# 3) /readyz requires BOTH queues to be alive — flaps red if either Worker dies.
+# 3) /readyz requires EVERY registered consumer to be running AND Redis to
+#    answer. A 503 names what is down rather than just saying not_ready.
 curl -s http://localhost:3022/readyz | jq
+# { "status": "not_ready", "redis": "up",
+#   "down": [{ "queue": "export", "purpose": "produces database exports …" }] }
 
-# 4) /metrics labels each queue gauge separately for Prometheus.
+# 4) /metrics — one series per registered queue, from the same list.
 curl -s http://localhost:3022/metrics
-# # HELP libriant_jobs_in_flight Jobs currently executing per worker.
-# libriant_jobs_in_flight{queue="email"} 0
-# libriant_jobs_in_flight{queue="scheduled"} 0
+# # HELP libriant_worker_jobs_running Number of jobs currently in-flight, by queue.
+# libriant_worker_jobs_running{queue="email-outbox"} 0
+# libriant_worker_jobs_running{queue="scheduled"} 0
+# # HELP libriant_worker_consumer_up Whether each registered queue consumer is running (1) or not (0).
+# libriant_worker_consumer_up{queue="email-outbox"} 1
 ```
 
 **End-to-end drill — actually expire something and watch each job fire:**

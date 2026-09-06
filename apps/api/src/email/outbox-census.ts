@@ -1,4 +1,5 @@
 import { controlDb } from '@libriant/db-control';
+import { metricHeader, metricLine } from '../observability/metrics.registry.js';
 
 /**
  * A periodic head-count of the e-mail outbox, exported as Prometheus gauges.
@@ -121,17 +122,13 @@ export function lastOutboxCensus(): OutboxCensus | null {
 export function renderOutboxCensus(): string[] {
   const snap = latest;
   if (!snap) return [];
-  const lines = [
-    '# HELP libriant_email_outbox_rows E-mail outbox rows by status.',
-    '# TYPE libriant_email_outbox_rows gauge',
-  ];
+  const lines = [...metricHeader('libriant_email_outbox_rows')];
   for (const s of STATUSES) {
-    lines.push(`libriant_email_outbox_rows{status="${s}"} ${snap.byStatus[s]}`);
+    lines.push(metricLine('libriant_email_outbox_rows', snap.byStatus[s], { status: s }));
   }
   lines.push(
-    '# HELP libriant_email_outbox_oldest_pending_seconds Age of the oldest e-mail still owed, in seconds.',
-    '# TYPE libriant_email_outbox_oldest_pending_seconds gauge',
-    `libriant_email_outbox_oldest_pending_seconds ${snap.oldestPendingSeconds}`,
+    ...metricHeader('libriant_email_outbox_oldest_pending_seconds'),
+    metricLine('libriant_email_outbox_oldest_pending_seconds', snap.oldestPendingSeconds),
   );
   return lines;
 }
@@ -139,4 +136,18 @@ export function renderOutboxCensus(): string[] {
 /** Test seam. Never called in production. */
 export function resetOutboxCensus(): void {
   latest = null;
+}
+
+/**
+ * Test seam. Never called in production.
+ *
+ * `worker-surface.spec.ts` asserts that the worker's `/metrics` renders EVERY
+ * metric the registry declares for this process — the assertion that would have
+ * caught `renderScheduledJobMetrics` being exported and never called. These two
+ * gauges are absent until the first census pass completes against the control
+ * database, so without a seam the assertion would have to carry an exception
+ * for them, and an exception is exactly the hole the assertion exists to close.
+ */
+export function seedOutboxCensusForTest(snapshot: OutboxCensus): void {
+  latest = snapshot;
 }

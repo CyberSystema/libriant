@@ -258,6 +258,146 @@ groups:
           description: 'libriant_email_outbox_rows is absent from every scrape target. Either the worker is down, or its first census pass has never completed (control DB unreachable). Until this clears, LibriantEmailOutboxDeadLetters and LibriantEmailOutboxStalled cannot fire.'
 
   # ───────────────────────────────────────────────────────────────────────────
+  # The worker: is anything actually consuming the queues, and are the sweeps
+  # finishing?
+  #
+  # REL-04 made /readyz honest about a dead consumer, which tells the
+  # ORCHESTRATOR. It tells nobody else: a container that flaps out of service at
+  # 02:00 and back in at 02:01 leaves no trace an operator will find, and which
+  # of the five consumers failed is not in the readiness response Prometheus
+  # never sees. These are the same facts as a series.
+  # ───────────────────────────────────────────────────────────────────────────
+  - name: libriant-worker
+    rules:
+      - alert: LibriantWorkerDown
+        # The API has had a named rule since the alerting landed and the worker
+        # never did — it was covered only by the generic TargetDown, which fires
+        # with a description about "a scrape target" and tells the reader
+        # nothing about what has stopped. Everything asynchronous in this
+        # product runs here.
+        expr: up{job="libriant-worker"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: 'The Libriant worker is not answering'
+          description: >-
+            No e-mail is being sent, no scheduled sweep is running, and no
+            import, export or maintenance job is being consumed. The queues
+            themselves are durable — BullMQ and the e-mail outbox both survive
+            this — so the backlog drains once the container is back. Check
+            `dc ps worker` and its log.
+
+      - alert: LibriantWorkerConsumerDown
+        # Per-queue, so the page names the capability. A worker with a dead
+        # `export` consumer still sends every e-mail and runs every sweep; one
+        # with a dead `email-outbox` consumer is silently swallowing password
+        # resets. Those are not the same incident.
+        expr: libriant_worker_consumer_up == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: 'The {{ $labels.queue }} queue consumer is not running'
+          description: >-
+            The worker is up and answering /metrics, but this BullMQ consumer is
+            closed or has lost its Redis connection. Its jobs are accumulating
+            and nothing is draining them. /readyz on the worker returns 503 with
+            a `down` array naming it; check the worker log for
+            `failed to start the {{ $labels.queue }} consumer`, then that
+            consumer's own Redis connection.
+
+      - alert: LibriantWorkerQueueWedged
+        # A job that never finishes, as opposed to a consumer that is not
+        # running. `maintenance` and `export` run at concurrency 1, so one
+        # wedged job blocks the whole queue while `libriant_worker_consumer_up`
+        # stays at 1 and readiness stays green.
+        #
+        # SIX HOURS, and the window is the whole design of this rule. It was
+        # written at 30 minutes first, on the reasoning that "every job in every
+        # queue finishes in seconds to low minutes". That is false:
+        # EXPORT_MAX_RUNTIME_MS is 4 hours (apps/api/src/export/export.constants.ts),
+        # a full-fleet VACUUM is unbounded, and IMPORT_MAX_ROWS is 250 000. A
+        # platform-wide export would have paged, on a healthy system, about
+        # thirty-five minutes in — and the first thing a newly-wired alert
+        # channel delivers teaches its reader whether to trust it.
+        #
+        # Six hours sits above the longest LEGITIMATE occupancy in the process,
+        # so `min_over_time(...[6h]) > 0` — this queue did not go idle once in
+        # six hours — is a statement about a wedge and not about load. The
+        # faster, queue-specific failures have their own rules:
+        # LibriantEmailOutboxStalled watches the backlog age, and the import
+        # stuck-batch sweep reclaims a batch whose BullMQ job is gone.
+        #
+        # The `and on() … uptime > 6h` clause is what makes the window real.
+        # `min_over_time(m[6h])` does NOT require six hours of data — it takes
+        # the minimum of whatever samples exist in the window, so for the first
+        # six hours of every worker process the expression degrades to "busy
+        # since boot", and with `for: 15m` it could page fifteen minutes into a
+        # perfectly ordinary export. Gating on the process's own uptime is the
+        # exact fix: the rule cannot evaluate true until the series has actually
+        # spanned its window.
+        expr: |
+          min_over_time(libriant_worker_jobs_running[6h]) > 0
+            and on() libriant_worker_uptime_seconds > 6 * 3600
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: 'The {{ $labels.queue }} queue has not gone idle in six hours'
+          description: >-
+            Longer than any job in this process is budgeted for, so most likely
+            one is wedged — a stuck export reading a slow tenant database, or a
+            maintenance VACUUM that will not return. Check the worker log for
+            the job that started and never logged a result. BullMQ will not
+            stall-recover it while the process still holds it.
+
+      - alert: LibriantScheduledJobFailing
+        # reliability-07's other half, finally alertable: the runner has always
+        # known whether each sweep worked, and until phase 5 the only place that
+        # truth existed was the worker's /healthz JSON, which no rule can read.
+        #
+        # 30m, not one tick: the fastest sweeps run every 60s with retries
+        # inside the tick, so anything shorter pages on a blip.
+        expr: libriant_worker_job_last_ok == 0
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: 'The {{ $labels.sweep }} sweep has been failing for 30 minutes'
+          description: >-
+            Its last run reported failed units of work — an unreachable tenant
+            database is the usual cause. `libriant_worker_job_count{sweep="{{ $labels.sweep }}"}`
+            carries the handler's own counters, and the worker's /healthz shows
+            the message verbatim.
+
+      - alert: LibriantScheduledJobNotRunning
+        # Failing is one thing; stopping is another, and looks like health. A
+        # scheduler key lost from Redis, or a job renamed in the registry
+        # without its old schedule being reconciled away, leaves the series
+        # frozen at its last run.
+        #
+        # 26h is the smallest threshold that cannot false-alarm: the slowest
+        # band in jobs/registry.ts is 24h (retention-sweep,
+        # storage-usage-recompute).
+        #
+        # WHAT THIS CANNOT CATCH, stated because a rule that reads as wider
+        # coverage than it has is the thing this whole phase is about.
+        # `lastResults` lives in process memory, so a worker restart deletes
+        # every series and the expression has no data to be true about. For a
+        # 24-hour sweep that means a blind window of up to a day after each
+        # deploy. It catches a sweep that stopped WITHOUT a restart — a
+        # scheduler reconciled away, a rename, a Redis key lost — and after a
+        # restart the boot log's `[scheduled] started — N job(s)` line is the
+        # surface that says the schedule was re-registered.
+        expr: time() - libriant_worker_job_last_run_timestamp_seconds > 26 * 3600
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: 'The {{ $labels.sweep }} sweep has not run for over a day'
+          description: >-
+            The job is registered and its series exists, so it ran once in this
+            worker process — and then stopped. Check the worker log for
+            `[scheduled] started` naming it, and BullMQ's job schedulers under
+            the `lbr-bull` prefix.
+
+  # ───────────────────────────────────────────────────────────────────────────
   # The alerts about the alerting, and about the backups.
   #
   # reliability-09: "a backup that never runs, or aborts every night, is
@@ -291,6 +431,43 @@ groups:
         annotations:
           summary: 'No backup has EVER reported success'
           description: 'The metric is absent entirely. Either the nightly cron is not installed, backup.sh cannot write BACKUP_TEXTFILE_DIR, or node-exporter is not reading it (--collector.textfile.directory). Until this clears there is no evidence any backup exists.'
+
+      - alert: BackupAborted
+        # A backup that produced NOTHING tonight, said tonight.
+        #
+        # Everything else here alerts on staleness: BackupStale and
+        # BackupOffsiteStale need 36 hours of no success before they fire, and
+        # BackupNeverRan needs the metric to be absent entirely. So a run that
+        # aborted at 02:15 was first mentioned a day and a half later, with a
+        # second failed night already behind it. The exit code is written on
+        # every exit path, including all eight aborts, precisely so a failed run
+        # leaves evidence — and until now nothing read it.
+        #
+        # `and libriant_backup_degraded == 0` is what makes this safe to page
+        # on, and it is not a refinement — without it this rule is critical
+        # every night on the configuration this repository SHIPS.
+        # backup.sh:618-631 sets `degraded=1` and exits non-zero when
+        # RCLONE_REMOTE is unset and unacknowledged, `.env.prod.example` ships
+        # it blank, and the runbook says "Unset makes the nightly exit non-zero
+        # on purpose". A rule that pages critical every night on a default
+        # install is how a channel gets muted before it has ever said anything
+        # true.
+        #
+        # So the two states the script itself distinguishes get the two
+        # treatments they deserve: `degraded == 1` is "finished, and a promise
+        # is unmet" and belongs to BackupDegraded at warning; `degraded == 0`
+        # with a non-zero exit is "aborted, there is nothing", and that is this.
+        expr: libriant_backup_last_exit_code != 0 and libriant_backup_degraded == 0
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: 'The last backup run ABORTED — no artefact was produced'
+          description: >-
+            scripts/backup.sh exited non-zero without reaching the end, so this
+            night has no backup at all (a merely degraded run — off-site copy or
+            encryption unmet — fires BackupDegraded instead). Read the cause in
+            the backup log on the host. The dailies you still hold are as old as
+            `libriant_backup_last_success_timestamp_seconds`.
 
       - alert: BackupStale
         # The nightly job runs at 02:15. 36h means one missed night alerts, and

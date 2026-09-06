@@ -398,7 +398,7 @@ dc() { docker compose $FILES "$@"; }
 
 # The monitoring stack, which until now was in NO deploy path.
 #
-# infra/monitoring/alerts.yml holds 25 rules — the Postgres and Redis capacity
+# infra/monitoring/alerts.yml holds 32 rules — the Postgres and Redis capacity
 # alerts, the API error-rate and latency alerts, the backup dead-man's switches,
 # and the Watchdog whose entire job is to prove the pipeline is alive. This line
 # and its twin in .github/workflows/deploy.yml composed two files and never the

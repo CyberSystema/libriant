@@ -538,7 +538,7 @@ jobs:
       # The monitoring stack, which until now was in NO deploy path at all.
       #
       # Both compose invocations above — and the one in scripts/deploy-on-host.sh
-      # — listed exactly two files and never infra/monitoring. So the 25 rules in
+      # — listed exactly two files and never infra/monitoring. So the 32 rules in
       # infra/monitoring/alerts.yml, including the backup dead-man's switches and
       # the Watchdog whose entire job is to prove the alert pipeline is alive,
       # were evaluated by nothing, while `pnpm check:alerts` printed a green line
@@ -618,5 +618,5 @@ jobs:
             echo "ALERTING=$STATE"
           REMOTE
           if grep -q '^ALERTING=off' /tmp/monitoring.log; then
-            echo "::warning title=Alerts are not being delivered::infra/monitoring/alertmanager.yml still has [PLACEHOLDER] receivers, so Alertmanager was not started. Prometheus is evaluating all 25 rules and not one of them can reach a person — including BackupNeverRan, the disk-full alerts, and the Watchdog that exists to tell you alerting itself has broken. Put a real destination in that file."
+            echo "::warning title=Alerts are not being delivered::infra/monitoring/alertmanager.yml still has [PLACEHOLDER] receivers, so Alertmanager was not started. Prometheus is evaluating all 32 rules and not one of them can reach a person — including BackupNeverRan, the disk-full alerts, and the Watchdog that exists to tell you alerting itself has broken. Put a real destination in that file."
           fi

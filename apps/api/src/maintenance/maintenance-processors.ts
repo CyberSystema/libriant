@@ -231,7 +231,9 @@ async function runDiagnostics(
     }
     let reachable = true;
     try {
-      const client = makeTenantPrismaClient({ databaseUrl: runtimeDbUrl(t) });
+      // `concurrency: 1` on this consumer, one tenant at a time, one query at a
+      // time — so one connection. See performance-06 and tenant-pool-budget.ts.
+      const client = makeTenantPrismaClient({ databaseUrl: runtimeDbUrl(t), maxPoolSize: 1 });
       try {
         const settings = await client.tenantSetting.findUnique({ where: { id: 1 } });
         if (!settings) {
@@ -374,7 +376,8 @@ async function runFix(
 async function fixTenant(t: Tenant, ctx: Ctx): Promise<MaintenanceTargetResult> {
   const fixed: string[] = [];
   try {
-    const client = makeTenantPrismaClient({ databaseUrl: runtimeDbUrl(t) });
+    // One connection, for the same reason as the integrity pass above.
+    const client = makeTenantPrismaClient({ databaseUrl: runtimeDbUrl(t), maxPoolSize: 1 });
     try {
       const settings = await client.tenantSetting.findUnique({ where: { id: 1 } });
       if (!settings) {

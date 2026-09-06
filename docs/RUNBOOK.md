@@ -34,7 +34,7 @@ Read this before you touch anything.
 | Email          | `EMAIL_DRIVER=console`. Nothing is delivered, and the body is withheld from logs. `BLOCKER launch-readiness-01`. Account recovery is §4.3a, and it works.                               |
 | Billing        | `BILLING_ENABLED=false`, `STRIPE_DRIVER=none`. `billing-02` and `billing-03` are closed; **`BLOCKER billing-04` — no VAT anywhere in the billing path** — still blocks taking money.    |
 | Backups        | None yet. Nothing in the deploy path installs the cron; `install-server.sh --only backup` does (§8.2). `backup.sh` refuses to run without encryption and a dead man's switch (§8.1a/b). |
-| Alerting       | Prometheus evaluates all 25 rules on every deploy. **Nothing reaches a human**: `alertmanager.yml` still has `[PLACEHOLDER]` receivers (§7.1, §7.3).                                    |
+| Alerting       | Prometheus evaluates all 32 rules on every deploy. **Nothing reaches a human**: `alertmanager.yml` still has `[PLACEHOLDER]` receivers (§7.1, §7.3).                                    |
 
 Of the twelve audit blockers, **three are still open**: `launch-readiness-01`
 (no mail is delivered), `privacy-legal-01` (the legal documents still carry
@@ -206,7 +206,7 @@ infra/compose/docker-compose.volume.yml  rebinds 4 volumes onto /mnt/libriant
 | `migrate`         | built `libriant-api`                                                         | **data only** | none / none / none        | none                                                   | — one-shot, must exit 0                                                                                                                                                                                                                                                                                                         |
 | `api`             | built `libriant-api`                                                         | app, data     | 1g / 1.5 / 1024           | `wget localhost:3001/readyz` 15s/5s/8, start 30s       | Real: Redis `PING` **and** `SELECT 1` on the control DB.                                                                                                                                                                                                                                                                        |
 | `web`             | built `libriant-web`                                                         | **app only**  | 768m / 1 / 512            | `wget localhost:3000/api/readyz` 15s/5s/8, start 30s   | Real since `boot-and-config-08`: it fetches `${API_INTERNAL_URL}/readyz` with a 3 s timeout and 503s on failure, so it **does** cross the web→api hop. It probed the constant `/api/healthz` until then, and could not go red no matter what was behind it. `/api/healthz` still exists as pure liveness.                       |
-| `worker`          | built `libriant-api`                                                         | app, data     | 1g / 1 / 512              | `wget localhost:3002/readyz` 30s/5s/5, start 20s       | Real: all five BullMQ consumers running **and** Redis `PING`.                                                                                                                                                                                                                                                                   |
+| `worker`          | built `libriant-api`                                                         | app, data     | 1g / 1 / 512              | `wget localhost:3002/readyz` 30s/5s/5, start 20s       | Real: every consumer in `apps/api/src/queues/consumers.ts` running **and** Redis `PING`. A 503 body names which one is down.                                                                                                                                                                                                    |
 | `postgres`        | `postgres:16-alpine`                                                         | data          | 2g / 2 / 512              | `pg_isready -U libriant -d libriant_control`           | The cluster accepts connections.                                                                                                                                                                                                                                                                                                |
 | `pgbouncer`       | `edoburu/pgbouncer:v1.25.2-p0`                                               | data          | 256m / 0.5 / 256          | **none**                                               | `boot-and-config-15` removed it. `pg_isready` was answered by pgbouncer's own startup-packet reply and stayed green with Postgres unreachable. The real probe is the sidecar below.                                                                                                                                             |
 | `pgbouncer-probe` | `postgres:16-alpine` (the same digest), entrypoint `sleep`                   | data          | 128m / 0.25 / 64          | `psql -h pgbouncer -c 'select 1'` 30s/10s/3, start 30s | The only probe that tells "the pooler answers" from "the pooler can reach Postgres". `api` deliberately does **not** gate on it — a broken diagnostic must not be an outage — but **the deploy health gate does** (§3.8). At 3am: api unhealthy + probe unhealthy is the pooler path; api unhealthy + probe healthy is the API. |
@@ -2638,21 +2638,22 @@ These never touch Compose. They work because the cron line and the deploy script
 source `.env.prod` into their own shell. Full treatment in §8; here is what they
 are.
 
-| Variable                       | Read by                               | What it does                                                                                                                                                                         |
-| ------------------------------ | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `RCLONE_REMOTE`                | `backup.sh`                           | The off-site destination. **Unset makes the nightly exit non-zero on purpose** unless `BACKUP_ALLOW_LOCAL_ONLY=1`.                                                                   |
-| `BACKUP_KEEP_DAYS`             | `backup.sh`                           | Local and remote retention. Default 14.                                                                                                                                              |
-| `BACKUP_ROOT`                  | `backup.sh`                           | Default `/srv/libriant/backups` — the **boot disk**. `install-server.sh` writes the cron line with `BACKUP_ROOT=<data root>/backups` inline, which beats anything the env file says. |
-| `BACKUP_AGE_RECIPIENT`         | `_lib/backup-crypt.sh`                | An `age1…` **public** key. The preferred mode, because the matching identity stays off this host. §4.2e.                                                                             |
-| `BACKUP_AGE_RECIPIENTS_FILE`   | `_lib/backup-crypt.sh`                | A file of recipients, one per line, `#` comments allowed. Alternative to the above.                                                                                                  |
-| `BACKUP_AGE_IDENTITY_FILE`     | `_lib/backup-crypt.sh` (restore only) | The **secret** half. Needed to decrypt. Must not live on the app host.                                                                                                               |
-| `BACKUP_GPG_PASSPHRASE_FILE`   | `_lib/backup-crypt.sh`                | Path to a non-empty, readable file holding a passphrase. The fallback mode.                                                                                                          |
-| `BACKUP_ALLOW_PLAINTEXT`       | `_lib/backup-crypt.sh`                | `1` = a deliberate unencrypted backup. Marks every run degraded, and **aborts outright if `RCLONE_REMOTE` is also set**.                                                             |
-| `BACKUP_ALLOW_LOCAL_ONLY`      | `backup.sh`                           | `1` = "I know there is no off-site copy". Turns the nightly failure into a warning.                                                                                                  |
-| `BACKUP_HEARTBEAT_URL`         | `backup.sh`                           | External dead-man's switch. The only alert that survives losing this host.                                                                                                           |
-| `BACKUP_TEXTFILE_DIR`          | `backup.sh`                           | Where the node-exporter textfile metrics are written. Default `/var/lib/node_exporter/textfile`.                                                                                     |
-| `BACKUP_ALLOW_NO_STORAGE`      | `backup.sh`                           | `1` = proceed with no resolvable storage directory. Do not set it to make an error go away.                                                                                          |
-| `BACKUP_ALLOW_OFFHOST_TENANTS` | `backup.sh`                           | `1` = proceed when a tenant's database is not on this host.                                                                                                                          |
+| Variable                       | Read by                               | What it does                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------ | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `API_INSTANCES`                | `tenant-pool-budget.ts`               | How many `api` containers hold tenant connections at once. Default **1**, because `dc up -d --force-recreate` is stop-then-start. **Set it if you ever scale out** — at the shipped numbers a second instance puts the fleet 62 connections over `max_connections`, and the worker's boot line is where that is reported (`fleet connections: …; OVER BUDGET: …`). |
+| `RCLONE_REMOTE`                | `backup.sh`                           | The off-site destination. **Unset makes the nightly exit non-zero on purpose** unless `BACKUP_ALLOW_LOCAL_ONLY=1`.                                                                                                                                                                                                                                                 |
+| `BACKUP_KEEP_DAYS`             | `backup.sh`                           | Local and remote retention. Default 14.                                                                                                                                                                                                                                                                                                                            |
+| `BACKUP_ROOT`                  | `backup.sh`                           | Default `/srv/libriant/backups` — the **boot disk**. `install-server.sh` writes the cron line with `BACKUP_ROOT=<data root>/backups` inline, which beats anything the env file says.                                                                                                                                                                               |
+| `BACKUP_AGE_RECIPIENT`         | `_lib/backup-crypt.sh`                | An `age1…` **public** key. The preferred mode, because the matching identity stays off this host. §4.2e.                                                                                                                                                                                                                                                           |
+| `BACKUP_AGE_RECIPIENTS_FILE`   | `_lib/backup-crypt.sh`                | A file of recipients, one per line, `#` comments allowed. Alternative to the above.                                                                                                                                                                                                                                                                                |
+| `BACKUP_AGE_IDENTITY_FILE`     | `_lib/backup-crypt.sh` (restore only) | The **secret** half. Needed to decrypt. Must not live on the app host.                                                                                                                                                                                                                                                                                             |
+| `BACKUP_GPG_PASSPHRASE_FILE`   | `_lib/backup-crypt.sh`                | Path to a non-empty, readable file holding a passphrase. The fallback mode.                                                                                                                                                                                                                                                                                        |
+| `BACKUP_ALLOW_PLAINTEXT`       | `_lib/backup-crypt.sh`                | `1` = a deliberate unencrypted backup. Marks every run degraded, and **aborts outright if `RCLONE_REMOTE` is also set**.                                                                                                                                                                                                                                           |
+| `BACKUP_ALLOW_LOCAL_ONLY`      | `backup.sh`                           | `1` = "I know there is no off-site copy". Turns the nightly failure into a warning.                                                                                                                                                                                                                                                                                |
+| `BACKUP_HEARTBEAT_URL`         | `backup.sh`                           | External dead-man's switch. The only alert that survives losing this host.                                                                                                                                                                                                                                                                                         |
+| `BACKUP_TEXTFILE_DIR`          | `backup.sh`                           | Where the node-exporter textfile metrics are written. Default `/var/lib/node_exporter/textfile`.                                                                                                                                                                                                                                                                   |
+| `BACKUP_ALLOW_NO_STORAGE`      | `backup.sh`                           | `1` = proceed with no resolvable storage directory. Do not set it to make an error go away.                                                                                                                                                                                                                                                                        |
+| `BACKUP_ALLOW_OFFHOST_TENANTS` | `backup.sh`                           | `1` = proceed when a tenant's database is not on this host.                                                                                                                                                                                                                                                                                                        |
 
 #### Read by the app, injected by nothing
 
@@ -4225,36 +4226,37 @@ If you reboot _without_ `dc stop`, the stack comes back on its own — but check
 
 ### 7.1 What exists, and what is switched off
 
-| Thing                     | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prometheus, node-exporter | Started by **every deploy** — `scripts/deploy-on-host.sh` and the `Bring up the monitoring stack` step in `deploy.yml` both compose `infra/monitoring/docker-compose.monitoring.yml`, then assert both containers are still running ten seconds later.                                                                                                                                                                                                                                  |
-| Grafana, cAdvisor         | Behind `profiles: ['dashboards']`, which **no deploy path passes**. Opt in deliberately for a diagnosis with `--profile dashboards`. No alert rule reads a cAdvisor metric, and Prometheus labels that target `optional: 'true'` so `TargetDown` does not page about it while it is off.                                                                                                                                                                                                |
-| Alertmanager              | Exists, behind `profiles: ['alerting']`. The deploy passes that profile **only when `alertmanager.yml` carries no `[PLACEHOLDER]` receiver** — so today it does not start, and the deploy prints the red `ALERTS ARE NOT BEING DELIVERED.` banner instead (`deploy-on-host.sh:242-253`; the CI workflow emits `ALERTING=off` for the same state, `.github/workflows/deploy.yml:602`, and this box does not use that path). Fill in the two receiver URLs and the next deploy starts it. |
-| Alert rules               | 25, including a 5xx **ratio**, a per-route error rate and a p95 **latency** rule, backup freshness/encryption, e-mail-outbox dead letters, Redis memory, and a `Watchdog` dead-man's switch routed to its own receiver. `pnpm check:alerts` proves every `libriant_*` metric they name is actually emitted.                                                                                                                                                                             |
-| Grafana dashboards        | **Zero.** Provisioning contains one datasource file and nothing else.                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Grafana contact points    | **Zero.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Error tracker / APM       | **None.** No Sentry, no OTel, nothing. The only durable record of an exception is container stdout.                                                                                                                                                                                                                                                                                                                                                                                     |
-| Uptime monitor            | **None.** Nothing in the repo names a provider, an endpoint or an on-call address.                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Caddy metrics             | **None** — `admin off`, no `metrics` directive. The only publicly exposed component exports nothing.                                                                                                                                                                                                                                                                                                                                                                                    |
+| Thing                     | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prometheus, node-exporter | Started by **every deploy** — `scripts/deploy-on-host.sh` and the `Bring up the monitoring stack` step in `deploy.yml` both compose `infra/monitoring/docker-compose.monitoring.yml`, then assert both containers are still running ten seconds later.                                                                                                                                                                                                                                                                       |
+| Grafana, cAdvisor         | Behind `profiles: ['dashboards']`, which **no deploy path passes**. Opt in deliberately for a diagnosis with `--profile dashboards`. No alert rule reads a cAdvisor metric, and Prometheus labels that target `optional: 'true'` so `TargetDown` does not page about it while it is off.                                                                                                                                                                                                                                     |
+| Alertmanager              | Exists, behind `profiles: ['alerting']`. The deploy passes that profile **only when `alertmanager.yml` carries no `[PLACEHOLDER]` receiver** — so today it does not start, and the deploy prints the red `ALERTS ARE NOT BEING DELIVERED.` banner instead (`deploy-on-host.sh:242-253`; the CI workflow emits `ALERTING=off` for the same state, `.github/workflows/deploy.yml:602`, and this box does not use that path). Fill in the two receiver URLs and the next deploy starts it.                                      |
+| Alert rules               | 32, including a 5xx **ratio**, a per-route error rate and a p95 **latency** rule, backup freshness/encryption/exit-code, e-mail-outbox dead letters, per-queue consumer liveness and per-sweep failure, Redis memory, and a `Watchdog` dead-man's switch routed to its own receiver. `pnpm check:alerts` reads the declarations in `apps/api/src/observability/metrics.registry.ts` and proves BOTH directions: every `libriant_*` a rule names is declared and emitted, and every metric declared `alert: true` has a rule. |
+| Grafana dashboards        | **Zero.** Provisioning contains one datasource file and nothing else.                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Grafana contact points    | **Zero.**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Error tracker / APM       | **None.** No Sentry, no OTel, nothing. The only durable record of an exception is container stdout.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Uptime monitor            | **None.** Nothing in the repo names a provider, an endpoint or an on-call address.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Caddy metrics             | **None** — `admin off`, no `metrics` directive. The only publicly exposed component exports nothing.                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
-**What reaches a human today: nothing.** Prometheus evaluates all 25 rules on
+**What reaches a human today: nothing.** Prometheus evaluates all 32 rules on
 every scrape and they are visible at `/alerts` over an SSH tunnel; Alertmanager
 is not running, so none of them wakes anybody up. Detection time for any outage
 is _until you next look_, which the weekly rhythm sets at seven days. The one
 exception is `BACKUP_HEARTBEAT_URL`, which is an external service and does not
 depend on anything on this box (§8.1b) — which is why §7.3 puts it first.
 
-The 25, by group, for when delivery exists:
+The 32, by group, for when delivery exists:
 
-| Group                    | Rules                                                                                                                                       |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Reachability             | `TargetDown`, `LibriantApiDown`                                                                                                             |
-| Host                     | `HostLowMemory`, `HostSwapping`, `HostDiskFilling` (<15% free 15 m), `HostDiskCritical` (<7% free 5 m), `HostHighCPU`                       |
-| Postgres / Redis         | `LibriantPgConnectionsHigh`, `LibriantPgConnectionsCritical`, `LibriantPgCacheHitLow` (<0.95), `LibriantRedisMemoryHigh`, `…MemoryCritical` |
-| Application errors       | `LibriantApi5xxRate` (>5% of requests, 5 m), `LibriantApiRouteErrors` (one route, 10 m), `LibriantApiLatencyHigh` (p95 > 2 s, 15 m)         |
-| Mail that was never sent | `LibriantEmailOutboxDeadLetters`, `LibriantEmailOutboxStalled`, `LibriantEmailOutboxCensusMissing`                                          |
-| Backup                   | the six in §8.1b                                                                                                                            |
-| Alerting itself          | `Watchdog`                                                                                                                                  |
+| Group                    | Rules                                                                                                                                                                                                                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Reachability             | `TargetDown`, `LibriantApiDown`, `LibriantWorkerDown`                                                                                                                                                                                                                          |
+| Host                     | `HostLowMemory`, `HostSwapping`, `HostDiskFilling` (<15% free 15 m), `HostDiskCritical` (<7% free 5 m), `HostHighCPU`                                                                                                                                                          |
+| Postgres / Redis         | `LibriantPgConnectionsHigh`, `LibriantPgConnectionsCritical`, `LibriantPgCacheHitLow` (<0.95), `LibriantRedisMemoryHigh`, `…MemoryCritical`                                                                                                                                    |
+| Application errors       | `LibriantApi5xxRate` (>5% of requests, 5 m), `LibriantApiRouteErrors` (one route, 10 m), `LibriantApiLatencyHigh` (p95 > 2 s, 15 m)                                                                                                                                            |
+| Mail that was never sent | `LibriantEmailOutboxDeadLetters`, `LibriantEmailOutboxStalled`, `LibriantEmailOutboxCensusMissing`                                                                                                                                                                             |
+| Worker                   | `LibriantWorkerConsumerDown` (per queue), `LibriantWorkerQueueWedged` (6 h without going idle), `LibriantScheduledJobFailing`, `LibriantScheduledJobNotRunning` — all added in 2.0 phase 5, when the both-directions check found the metrics behind them emitted and unalerted |
+| Backup                   | the seven in §8.1b                                                                                                                                                                                                                                                             |
+| Alerting itself          | `Watchdog`                                                                                                                                                                                                                                                                     |
 
 The Postgres and Redis ones read `libriant_pg_*` / `libriant_redis_*` gauges from
 the API's own `/metrics`, so they work without the commented-out exporters. The
@@ -4272,14 +4274,26 @@ tenants by status, storage bytes, PG connections / max / cache hit ratio, Redis
 memory — **and, since `HttpMetricsMiddleware`, a request counter
 (`libriant_api_requests_total`, labelled by route and status) and a latency
 histogram (`libriant_api_request_duration_seconds`)**, which is what the three
-application-error rules above sit on. It also exposes the e-mail-outbox gauges.
-The worker exposes uptime, running jobs per queue, and per-job
-`libriant_worker_job_last_ok` / `_last_run_timestamp_seconds` — a job that has
-never run in this process emits **nothing at all** rather than a fabricated 1 or
-0, so pair the two in any rule you write. `libriant_worker_jobs_total` is
-referenced in the code's types and does **not** exist. Gauges are TTL-cached 15 s
-and isolated with `Promise.allSettled`, so a _missing_ gauge means that subsystem
-failed, not that the API is down.
+application-error rules above sit on. (The e-mail-outbox gauges are on the WORKER's `/metrics`, not the API's — the
+census runs in the worker process. This paragraph said otherwise until 2.0
+phase 5, which is a five-minute detour at 03:00 for anyone curling the wrong
+container.)
+The worker exposes uptime, running jobs per queue, a per-queue
+`libriant_worker_consumer_up`, and per-job `libriant_worker_job_last_ok` /
+`_last_run_timestamp_seconds` / `_count` — a job that has never run in this
+process emits **nothing at all** rather than a fabricated 1 or 0, so pair the
+first two in any rule you write.
+
+> Until 2.0 phase 5 the three `libriant_worker_job_*` gauges reached **no
+> scrape**. `renderScheduledJobMetrics()` was written, exported, unit-tested and
+> documented — including in this section — and `worker.ts` never called it. This
+> paragraph described them as exposed for three months while Prometheus had
+> never seen one. `check:alerts` now fails the build on a declared metric no
+> emitter writes, and `worker-surface.spec.ts` fails on a worker metric the
+> exposition omits.
+
+Gauges are TTL-cached 15 s and isolated with `Promise.allSettled`, so a
+_missing_ gauge means that subsystem failed, not that the API is down.
 
 ### 7.2 The monitoring stack (started by every deploy)
 
@@ -4384,7 +4398,7 @@ Point it at a URL that **traverses to the app**, never at `/healthz`:
 Expect 200. If Cloudflare's Bot Fight Mode returns 403, add a WAF custom rule
 skipping that path — otherwise the monitor is silently useless.
 
-**3. Delivery for the 25 rules that already exist.**
+**3. Delivery for the 32 rules that already exist.**
 
 Nothing needs to be added to the compose file and nothing needs uncommenting.
 Alertmanager is already a service and Prometheus's `alerting:` block is already
@@ -4419,13 +4433,14 @@ receiver, and a different one for `Watchdog`.]**
 
 Know these before you trust a dashboard:
 
-| Surface                        | Lie                                                                                                                                                                                                                                                  |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `https://<any host>/healthz`   | Static 200 from Caddy. Green through a total outage. Still the most contagious wrong idea in this system.                                                                                                                                            |
-| caddy container health         | Hits its own static `:80` probe. Cannot go red while the process lives.                                                                                                                                                                              |
-| `web` `/api/healthz`           | A constant `{status:'ok'}` that touches nothing. It is **not** the container's healthcheck any more (that is `/api/readyz`, which does cross to the API) — but it is still there, and probing it by hand proves nothing.                             |
-| `libriant_worker_jobs_total`   | Referenced in the code's types. Does not exist. Use `libriant_worker_job_last_ok` and `libriant_worker_job_last_run_timestamp_seconds`, and pair them: a job that has never run in this process emits no series at all.                              |
-| a green `dc ps` after a deploy | It says the containers are up. It says nothing about whether `ingest:help` ingested into a corpus somebody has since archived, whether uploads work, or whether the origin certificate expires next week. That is what §3.9 is for, on every deploy. |
+| Surface                        | Lie                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `https://<any host>/healthz`   | Static 200 from Caddy. Green through a total outage. Still the most contagious wrong idea in this system.                                                                                                                                                                                                                                                                               |
+| caddy container health         | Hits its own static `:80` probe. Cannot go red while the process lives.                                                                                                                                                                                                                                                                                                                 |
+| `web` `/api/healthz`           | A constant `{status:'ok'}` that touches nothing. It is **not** the container's healthcheck any more (that is `/api/readyz`, which does cross to the API) — but it is still there, and probing it by hand proves nothing.                                                                                                                                                                |
+| `libriant_worker_jobs_total`   | Referenced in the code's types. Does not exist. Use `libriant_worker_job_last_ok` and `libriant_worker_job_last_run_timestamp_seconds`, and pair them: a job that has never run in this process emits no series at all.                                                                                                                                                                 |
+| worker `/healthz` `queues`     | `running` used to mean "the start promise resolved once", including for a consumer whose BullMQ worker had since died. It now reports `starting` / `failed` / `running` / `stopped` — `failed` is a consumer whose `start()` rejected, which a null handle alone could not tell from "still booting" — and `/readyz` carries a `down: [{queue, purpose}]` array naming what is missing. |
+| a green `dc ps` after a deploy | It says the containers are up. It says nothing about whether `ingest:help` ingested into a corpus somebody has since archived, whether uploads work, or whether the origin certificate expires next week. That is what §3.9 is for, on every deploy.                                                                                                                                    |
 
 Three surfaces this table used to list have been fixed, and are named here so
 nobody re-derives the old fear from an old memory:
@@ -4785,11 +4800,12 @@ The wiring is real, and both halves of it are needed:
 bind-mounts `/var/lib/node_exporter/textfile` into the container read-only.
 Without the flag the file would be written every night and scraped by nothing.
 
-Six rules in `infra/monitoring/alerts.yml` consume it:
+Seven rules in `infra/monitoring/alerts.yml` consume it:
 
 | Alert                        | Expression                                                                    | Severity | For |
 | ---------------------------- | ----------------------------------------------------------------------------- | -------- | --- |
 | `BackupNeverRan`             | `absent(libriant_backup_last_success_timestamp_seconds)`                      | critical | 30m |
+| `BackupAborted`              | `libriant_backup_last_exit_code != 0 and libriant_backup_degraded == 0`       | critical | 15m |
 | `BackupStale`                | `time() - libriant_backup_last_success_timestamp_seconds > 36 * 3600`         | critical | 15m |
 | `BackupOffsiteStale`         | `time() - libriant_backup_offsite_last_success_timestamp_seconds > 36 * 3600` | critical | 15m |
 | `BackupNotEncrypted`         | `libriant_backup_encrypted == 0`                                              | critical | 15m |
@@ -4797,7 +4813,20 @@ Six rules in `infra/monitoring/alerts.yml` consume it:
 | `BackupOffsiteNotConfigured` | `libriant_backup_offsite_configured == 0`                                     | warning  | 6h  |
 
 `absent()` is the point of the first one, and the reason the metric exists at
-all: a rule written as `time() - metric > threshold` evaluates to nothing on a
+`BackupAborted` is the one that says it TONIGHT, and its second clause is not a
+refinement. Everything else here waits 36 hours or for the metric to vanish, so
+a run that aborted at 02:15 was first mentioned a day and a half later with a
+second failed night already behind it. But `libriant_backup_last_exit_code` is
+also non-zero for a run that FINISHED and merely broke a promise — most
+commonly `RCLONE_REMOTE` unset, which `.env.prod.example` ships blank and which
+this runbook says makes the nightly exit non-zero on purpose. Without
+`and libriant_backup_degraded == 0` the rule would page **critical every night
+on a default install**, which is how an alert channel gets muted before it has
+ever said anything true. The two states the script itself distinguishes get the
+two treatments they deserve: degraded-but-finished is `BackupDegraded` at
+warning, and aborted-with-nothing-produced is this.
+
+A note on all: a rule written as `time() - metric > threshold` evaluates to nothing on a
 host that has never taken a backup, which is precisely the fresh-deploy case.
 36 hours on the two staleness rules means one missed night alerts and one late
 run does not — the cron is 02:15.
@@ -4825,7 +4854,7 @@ ping: a broken alarm that looks like a broken backup.
 > unparseable webhook URL, and the service is therefore held behind the
 > `alerting` compose profile and is not started
 > (`docker-compose.monitoring.yml:135`). Prometheus is up, its `alerting:` block
-> is live (`prometheus.yml:20-23`), and it evaluates all 25 rules — they are
+> is live (`prometheus.yml:20-23`), and it evaluates all 32 rules — they are
 > visible at `/alerts` and they reach no human being. Every deploy prints the
 > red banner `ALERTS ARE NOT BEING DELIVERED.` and names `BackupNeverRan` in it
 > (`deploy-on-host.sh:242-253`). **So `BACKUP_HEARTBEAT_URL` is the only channel that
@@ -5719,7 +5748,7 @@ FETCH actually measured. A fixed row count is not a memory bound; the tenant
 schema has unbounded `text` columns, so the tenant, not the constant, decided how
 much memory 5,000 rows was.
 
-It still matters that **all five queue consumers live in one process**: whatever
+It still matters that **every queue consumer lives in one process**: whatever
 kills the worker takes down the email outbox, the imports and all the cron sweeps
 for **every** tenant with it. BullMQ's stalled checker re-runs the job once and
 then fails it — two kills, not a loop.

@@ -1,5 +1,6 @@
 import { Injectable, type NestMiddleware } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
+import { metricHeader, metricLine } from '../observability/metrics.registry.js';
 
 /**
  * Per-request counters and a latency histogram, in Prometheus text format.
@@ -53,11 +54,6 @@ type RouteStats = {
   count: number;
 };
 
-/** Prometheus label values must escape `\`, `"` and newlines. */
-function esc(v: string): string {
-  return v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-}
-
 /**
  * Process-wide registry. A module-level singleton on purpose: the middleware is
  * instantiated by Nest and the renderer lives in HealthController, and the two
@@ -96,38 +92,55 @@ class HttpMetricsRegistry {
     s.buckets[BUCKETS.length] = (s.buckets[BUCKETS.length] ?? 0) + 1; // +Inf
   }
 
-  /** Prometheus text exposition lines. Empty until the first request. */
+  /**
+   * Prometheus text exposition lines. Empty until the first request.
+   *
+   * Names, HELP, TYPE and label KEYS come from
+   * `observability/metrics.registry.ts`; `metricLine` refuses a label the
+   * declaration does not carry, so a `{path=…}` where `{route=…}` was meant
+   * throws here instead of quietly minting a second series that no rule and no
+   * dashboard queries.
+   */
   render(): string[] {
     if (this.routes.size === 0) return [];
-    const lines: string[] = [
-      '# HELP libriant_api_requests_total HTTP requests handled, by method, route pattern and status.',
-      '# TYPE libriant_api_requests_total counter',
-    ];
+    const lines: string[] = [...metricHeader('libriant_api_requests_total')];
     for (const [route, s] of this.routes) {
       for (const [key, n] of s.counts) {
         const sep = key.indexOf(' ');
         const method = key.slice(0, sep);
         const status = key.slice(sep + 1);
-        lines.push(
-          `libriant_api_requests_total{method="${esc(method)}",route="${esc(route)}",status="${esc(status)}"} ${n}`,
-        );
+        lines.push(metricLine('libriant_api_requests_total', n, { method, route, status }));
       }
     }
-    lines.push(
-      '# HELP libriant_api_request_duration_seconds Request latency by route pattern.',
-      '# TYPE libriant_api_request_duration_seconds histogram',
-    );
+    lines.push(...metricHeader('libriant_api_request_duration_seconds'));
     for (const [route, s] of this.routes) {
-      const r = esc(route);
       BUCKETS.forEach((upper, i) => {
         lines.push(
-          `libriant_api_request_duration_seconds_bucket{route="${r}",le="${upper}"} ${s.buckets[i] ?? 0}`,
+          metricLine(
+            'libriant_api_request_duration_seconds',
+            s.buckets[i] ?? 0,
+            { route, le: upper },
+            '_bucket',
+          ),
         );
       });
       lines.push(
-        `libriant_api_request_duration_seconds_bucket{route="${r}",le="+Inf"} ${s.buckets[BUCKETS.length] ?? 0}`,
-        `libriant_api_request_duration_seconds_sum{route="${r}"} ${s.sum.toFixed(6)}`,
-        `libriant_api_request_duration_seconds_count{route="${r}"} ${s.count}`,
+        metricLine(
+          'libriant_api_request_duration_seconds',
+          s.buckets[BUCKETS.length] ?? 0,
+          { route, le: '+Inf' },
+          '_bucket',
+        ),
+        // Rounded to microseconds rather than emitted at full float precision:
+        // 17 significant digits per route per scrape is noise in the exposition
+        // and in every diff of it.
+        metricLine(
+          'libriant_api_request_duration_seconds',
+          Number(s.sum.toFixed(6)),
+          { route },
+          '_sum',
+        ),
+        metricLine('libriant_api_request_duration_seconds', s.count, { route }, '_count'),
       );
     }
     return lines;

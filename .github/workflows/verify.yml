@@ -63,9 +63,21 @@ jobs:
 
       # An alert on a metric nothing emits is a rule that can never fire, and
       # PromQL will not tell you — the expression is valid, it just matches
-      # nothing. This cross-checks the rules against the metrics the code writes
-      # and asserts the dead man's switch exists and is routed separately.
-      - name: Alert rules reference metrics that exist
+      # nothing. The opposite is just as real and completely invisible: a metric
+      # that is emitted, scraped, charted and has NO alert, so the thing it
+      # measures fails in silence. `libriant_backup_last_exit_code` was in that
+      # state — a backup that failed at 03:00 was first mentioned 36 hours later
+      # by BackupStale.
+      #
+      # Since 2.0 phase 5 this reads the declarations in
+      # apps/api/src/observability/metrics.registry.ts and asserts BOTH
+      # directions, plus: every literal metric name in an emitter is declared
+      # (comments stripped, so prose cannot pass for an emission); every
+      # declaration is written by the source it claims — which is how
+      # `renderScheduledJobMetrics` was caught being exported, unit-tested,
+      # documented as called, and never called; every source has a scrape job;
+      # and every libriant_* in the README or the RUNBOOK is a real metric.
+      - name: Every metric is declared, alerted on purpose and actually scraped
         run: pnpm check:alerts
 
       # `@libriant/shared` ships TS source whose barrel re-exports with `.js`

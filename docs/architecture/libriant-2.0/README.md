@@ -58,3 +58,33 @@ It is not a specification anyone has agreed to implement verbatim, and it is not
 a substitute for reading the code. Where the two disagree, **the code is what
 runs** — but a divergence is a fact worth recording here rather than leaving for
 the next person to rediscover. Phases amend it as they land.
+
+## Divergences recorded as phases land
+
+**Phase 5 — metrics registry + queue consolidation.** Two sub-items of the
+master document's phase-5 line describe a repository that does not exist yet,
+and were deliberately not implemented:
+
+- _"the merged **six-queue** list wired into worker.ts"_ — the six queues named
+  in §1 (`notices`, `catalog`, `search`, `report`, `acquisitions`, `webhook`)
+  arrive with the milestones that produce them; the notices queue is phase 22.
+  What exists today is five (`email-outbox`, `scheduled`, `import`,
+  `maintenance`, `export`), and registering six consumers for queues nothing
+  produces would pin `/readyz` at 503 permanently, because readiness is now
+  strictly "every registered consumer is running". The consolidation — one list,
+  four surfaces derived from it — is what phase 5 owed and shipped;
+  `apps/api/src/queues/consumers.ts` is where the sixth is added.
+- _"`EMITTERS` widened to `apps/protocol-gateway/src` and a Rust declaration
+  file"_ — neither exists (`ls apps` is api, desktop, site, web; there is no
+  `Cargo.toml` in the repository). Adding those roots would read as coverage and
+  cover nothing, which is the failure mode `check:alerts` exists to prevent.
+  `SOURCES` in `scripts/check-alerts.ts` is the one place to widen when the
+  gateway lands, and a declaration whose `source` has no entry there fails the
+  build.
+
+Phase 5 also shipped more than the line asked for, because the both-directions
+check found it: five alert rules for metrics that were emitted and unalerted, a
+`libriant-web` scrape job for two gauges that had been rendered and collected by
+nobody since the app was first deployed, and the wiring for
+`renderScheduledJobMetrics` — exported, unit-tested and documented as being
+called by `worker.ts`, which never called it.
