@@ -41,9 +41,16 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import bcrypt from 'bcryptjs';
+import {
+  describeSeedResult,
+  disconnectTenantClient,
+  makeTenantPrismaClient,
+  seedTenantDefaults,
+} from '@libriant/db-tenant';
 import { Client as PgClient } from 'pg';
 import {
   applyTenantRoleGrants,
+  composeRuntimeUrl,
   controlDb,
   dropTenantRoles,
   ensureTenantRoles,
@@ -191,6 +198,25 @@ async function main() {
     log(SCRIPT, 'applying tenant migrations…');
     await applyTenantMigrations(dbUrl);
     await applyTenantRoleGrants({ tenantDbUrl: dbUrl, tenantId });
+
+    // The same seed `/auth/signup` runs. This script ran none at all: a library
+    // provisioned from the command line started with NO `tenant_settings` row —
+    // no currency, no loan period, no renewal cap, no fine rate. Measured
+    // 2026-09-06: `SELECT id, currency FROM tenant_settings LIMIT 1` on a
+    // CLI-created tenant returned zero rows. Signup got all of it.
+    //
+    // Its roles were there (the authorization migration seeds all four) but had
+    // never been reconciled, so it was missing every permission key added to a
+    // template since that migration was written — two, on the tenant measured.
+    //
+    // The values live in `@libriant/db-tenant` precisely so a fifth
+    // provisioning path cannot be written without finding them.
+    log(SCRIPT, 'seeding tenant defaults…');
+    await seedTenantDefaultsFor({
+      adminUrl: dbUrl,
+      roleName: loginRole,
+      password: runtimePassword,
+    });
 
     log(SCRIPT, `ensuring storage dir ${storageRoot}/${tenantId}…`);
     await mkdir(path.join(path.resolve(storageRoot), tenantId), { recursive: true });
@@ -350,6 +376,36 @@ async function dropTenantDatabase(dbName: string): Promise<void> {
     await admin.query(`DROP DATABASE IF EXISTS "${dbName}"`);
   } finally {
     await admin.end();
+  }
+}
+
+/**
+ * Seed the settings row + system roles, and say what it did.
+ *
+ * Through the tenant's OWN runtime credential, not the superuser url the rest
+ * of this script provisions with (tenant-isolation-02). Two reasons, and the
+ * second is the useful one: the role and its grants exist by this point, so
+ * there is no reason to reach for the superuser — and a seed that succeeds is
+ * proof the credential can actually read and write the database it was just
+ * granted. `TenantProvisioningService` runs a dedicated probe for that on the
+ * signup path; this script had neither the probe nor the seed.
+ */
+async function seedTenantDefaultsFor(credential: {
+  adminUrl: string;
+  roleName: string;
+  password: string;
+}): Promise<void> {
+  // Composed AT the call to `makeTenantPrismaClient`, not passed in as an
+  // opaque string: `check:tenant-db-urls` reads this line, and a url arriving
+  // through a parameter is one it cannot tell from the superuser's.
+  const client = makeTenantPrismaClient({
+    databaseUrl: composeRuntimeUrl(credential),
+    maxPoolSize: 1,
+  });
+  try {
+    log(SCRIPT, `  ${describeSeedResult(await seedTenantDefaults(client))}`);
+  } finally {
+    await disconnectTenantClient(client);
   }
 }
 

@@ -34,3 +34,10 @@ export type {
   AuditEvent,
 } from '../node_modules/.prisma/tenant-client/index.js';
 export { reconcileSystemRoles, type ReconcileResult } from './system-roles.js';
+export {
+  DEFAULT_TENANT_SETTINGS,
+  describeSeedResult,
+  seedTenantDefaults,
+  seedTenantSettings,
+  type SeedTenantResult,
+} from './tenant-defaults.js';

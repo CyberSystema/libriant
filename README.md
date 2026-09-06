@@ -88,7 +88,7 @@ pnpm db:down               # stop containers
 
 # Tenant DB lifecycle (provide TENANT_DATABASE_URL):
 pnpm tenant:migrate:deploy   # apply tenant migrations to a tenant DB
-pnpm tenant:seed:defaults    # write the tenant_settings singleton
+pnpm tenant:seed:defaults    # tenant_settings singleton + reconcile the system roles
 pnpm tenant:smoke            # full end-to-end DB invariants drill
 ```
 
@@ -1965,9 +1965,13 @@ STORAGE_ROOT=/srv/libriant/storage \
 # → [tenant-create] plan="starter" billingMode=manual cell=cell-eu-1 dryRun=true
 # → [tenant-create] dry run: validation passed; not provisioning.
 
-# Drop --dry-run to actually create. Output ends with:
+# Drop --dry-run to actually create. Output includes:
+#   [tenant-create] seeding tenant defaults…
+#   [tenant-create]   tenant_settings seeded (loanPeriodDays=14, …); system roles: …
+# …and ends with:
 #   [tenant-create] done. tenant.id=… slug=step20test
-#   [tenant-create]   dbUrl=postgresql://libriant:***@localhost:5432/tenant_…
+#   [tenant-create]   dbUrl=postgresql://libriant:***@localhost:5432/tenant_…  (admin/migration only)
+#   [tenant-create]   runtime role=tenant_…_a
 #   [tenant-create]   storageUrl=file:///srv/libriant/storage/…
 #   [tenant-create]   ⚠  generated owner password (record it now): …   (if --owner-password omitted)
 

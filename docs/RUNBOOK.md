@@ -4074,6 +4074,36 @@ Required: `--slug`, `--name`, `--owner-email`, `--owner-name`. Optional:
 `--cell`, `--owner-password`, `--dry-run`. Idempotent on slug; on a late failure
 it tears the physical database back down.
 
+It also seeds the library's `tenant_settings` row and reconciles its four system
+roles — the same seed `/auth/signup` runs, through the tenant's own database
+credential. **It did not, until 2026-09-07.** A library provisioned from this
+command started with **no settings row at all**: no currency, no loan period, no
+renewal cap, no fine rate. Signup got all of them; there were three copies of
+those defaults in the repository and this path had none.
+
+Its roles were fine — the authorization migration seeds all four, so nobody was
+locked out — but they had never been **reconciled**, so the library was missing
+every permission key added to a shipped template after that migration was
+written. Two, on the tenant this was measured on. Small, and it only grows.
+
+If you provisioned a library with this command before that date, repair it (the
+seed is idempotent and will not touch values a librarian has since set):
+
+```bash
+dc run --rm --no-deps \
+  -e TENANT_DATABASE_URL="$(dc run --rm --no-deps -T migrate sh -lc \
+      'cd /app && node -e "…"')" \
+  migrate sh -lc 'cd /app && TENANT_DATABASE_URL="postgresql://libriant:'"$POSTGRES_PASSWORD"'@postgres:5432/tenant_<id>" pnpm tenant:seed:defaults'
+```
+
+The host has no Node toolchain, so it runs in the `migrate` one-shot like every
+other `pnpm` command in this section; `<id>` is the `tenants.id` of the library,
+and the database is always `tenant_<id>`. Simpler, if you have several: use the
+admin panel's **Maintenance → Integrity fixers**, which seeds a missing settings
+row across every library — but note that it deliberately does **not** reconcile
+roles, because a fleet-wide click must not re-grant a permission a library
+removed from a built-in role on purpose.
+
 Run `--dry-run` first. The generated owner password is printed **once**.
 
 > With `EMAIL_DRIVER=console`, the owner will never receive a verification mail,

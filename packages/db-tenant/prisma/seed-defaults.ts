@@ -1,33 +1,24 @@
 /**
- * Idempotent default-settings seed for a tenant DB.
+ * Idempotent default-settings seed for a tenant DB, from the command line.
  *
- * The provisioning script (Step 20) calls this after creating a fresh tenant
- * DB so the library has working defaults from minute one. Re-running on an
- * existing tenant DB is a no-op for the singleton row; explicit overrides
- * the librarian set will NOT be clobbered.
+ * The VALUES and the seeding logic live in `src/tenant-defaults.ts` — this is
+ * the CLI wrapper around them, and nothing more. It used to carry its own copy
+ * of the defaults object, which is how `maintenance-processors.ts` came to
+ * carry a third and `scripts/tenant-create.ts` came to carry none at all.
+ *
+ * Re-running against an existing tenant DB is safe: the singleton settings row
+ * is left exactly as the librarian set it, and the system roles are reconciled
+ * additively.
  *
  * Usage:
  *   TENANT_DATABASE_URL=postgres://... pnpm seed:defaults
- *
- * The defaults below match a "good first day" for a small public library:
- *   - 14-day loan period
- *   - 2 renewals allowed
- *   - €0.10/day fines, capped at €5
- *   - 48-hour hold pickup window
  */
-import { makeTenantPrismaClient, disconnectTenantClient, reconcileSystemRoles } from '../src';
-
-const DEFAULTS = {
-  id: 1,
-  currency: 'EUR',
-  loanPeriodDays: 14,
-  maxRenewals: 2,
-  finePerDayCents: 10,
-  fineCapCents: 500,
-  holdPickupHours: 48,
-  maxActiveLoans: 0, // 0 = uncapped
-  defaultLocale: 'el',
-};
+import {
+  describeSeedResult,
+  disconnectTenantClient,
+  makeTenantPrismaClient,
+  seedTenantDefaults,
+} from '../src';
 
 async function main() {
   const url = process.env.TENANT_DATABASE_URL;
@@ -37,24 +28,7 @@ async function main() {
   }
   const client = makeTenantPrismaClient({ databaseUrl: url });
   try {
-    const existing = await client.tenantSetting.findUnique({ where: { id: 1 } });
-    if (existing) {
-      console.log('tenant_settings row already exists — leaving values as-is');
-    } else {
-      await client.tenantSetting.create({ data: DEFAULTS });
-      console.log(
-        `tenant_settings seeded: loanPeriodDays=${DEFAULTS.loanPeriodDays}, ` +
-          `maxRenewals=${DEFAULTS.maxRenewals}, ` +
-          `finePerDayCents=${DEFAULTS.finePerDayCents}, ` +
-          `holdPickupHours=${DEFAULTS.holdPickupHours}, ` +
-          `currency=${DEFAULTS.currency}, defaultLocale=${DEFAULTS.defaultLocale}`,
-      );
-    }
-    const roles = await reconcileSystemRoles(client);
-    console.log(
-      `system roles reconciled: ${roles.created} created, ${roles.permissionsAdded} ` +
-        `permission(s) added (none removed — a library's own narrowing is kept).`,
-    );
+    console.log(describeSeedResult(await seedTenantDefaults(client)));
   } finally {
     await disconnectTenantClient(client);
   }

@@ -7,7 +7,7 @@ import { Client as PgClient } from 'pg';
 import {
   makeTenantPrismaClient,
   disconnectTenantClient,
-  reconcileSystemRoles,
+  seedTenantDefaults,
 } from '@libriant/db-tenant';
 import {
   applyTenantRoleGrants,
@@ -297,31 +297,20 @@ export class TenantProvisioningService {
     if (stderr) this.logger.debug(`prisma migrate deploy (stderr): ${stderr.trim()}`);
   }
 
-  /** Insert the singleton `tenant_settings` row with sensible defaults. */
+  /**
+   * Bring the fresh tenant database to a usable state: the singleton
+   * `tenant_settings` row, and the four system roles reconciled against the
+   * shipped templates. Both live in `@libriant/db-tenant` so every provisioning
+   * path seeds the same thing.
+   */
   private async seedDefaults(targetUrl: string): Promise<void> {
     const client = makeTenantPrismaClient({ databaseUrl: targetUrl });
     try {
-      // Reconcile FIRST and unconditionally. It is the seed that must run on
-      // every provision, including a re-run where tenant_settings already
-      // exists — a tenant provisioned through signup used to get no role
-      // reconciliation at all, while one seeded from the CLI did, and an owner
-      // silently ended up one permission short of their own template.
-      await reconcileSystemRoles(client);
-      const existing = await client.tenantSetting.findUnique({ where: { id: 1 } });
-      if (existing) return;
-      await client.tenantSetting.create({
-        data: {
-          id: 1,
-          currency: 'EUR',
-          loanPeriodDays: 14,
-          maxRenewals: 2,
-          finePerDayCents: 10,
-          fineCapCents: 500,
-          holdPickupHours: 48,
-          maxActiveLoans: 0,
-          defaultLocale: 'el',
-        },
-      });
+      // The values and the ordering (roles first and unconditionally, settings
+      // only when absent) live in `@libriant/db-tenant` — this used to be one
+      // of three copies of the same defaults object, beside a fourth
+      // provisioning path that had none.
+      await seedTenantDefaults(client);
     } finally {
       await disconnectTenantClient(client);
     }

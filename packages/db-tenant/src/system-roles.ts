@@ -30,6 +30,15 @@ export interface ReconcileResult {
  * reconciliation at all, while one seeded from the CLI did. The integration
  * suite caught it as an owner missing exactly one key. One implementation,
  * two callers.
+ *
+ * That extraction moved the ROLES and left the SETTINGS behind, and the same
+ * thing happened again: a third copy of the settings defaults appeared in the
+ * maintenance "fix" pass and a fourth provisioning path — `scripts/tenant-create.ts`
+ * — was written with no seed at all, so a library created from the command line
+ * had no `tenant_settings` row and roles that had never been reconciled.
+ * `./tenant-defaults.ts` is where the rest of it went; `seedTenantDefaults`
+ * there is what every PROVISIONING path calls, and this is an implementation
+ * detail of it.
  */
 export async function reconcileSystemRoles(client: TenantPrismaClient): Promise<ReconcileResult> {
   let created = 0;

@@ -28,7 +28,9 @@
 //   1. `dbUrl: true` in a Prisma select is the read of the superuser column.
 //      Allowed only in the files listed below, each with a reason.
 //   2. `makeTenantPrismaClient({ databaseUrl: … })` must be handed
-//      `runtimeDbUrl(...)`. Same allowlist discipline.
+//      `runtimeDbUrl(...)` — or, under scripts/ only, `composeRuntimeUrl(...)`,
+//      which is the primitive `runtimeDbUrl` itself calls and the one a script
+//      can reach. Same allowlist discipline.
 //   3. `encryptedPwd` — the sealed password itself — may only appear where it
 //      is written or opened. A convenience `select` that pulls it into a
 //      response object is how a secret reaches a JSON body.
@@ -177,10 +179,27 @@ for (const file of files.sort()) {
     const m = /\bdatabaseUrl:\s*([^,}\n]+)/.exec(line);
     if (m) {
       const value = m[1]!.trim();
-      if (/^runtimeDbUrl\(/.test(value)) runtimeOpens += 1;
+      // `composeRuntimeUrl(...)` counts too, but ONLY under scripts/. It is the
+      // `@libriant/db-control` primitive `runtimeDbUrl` itself calls, and it is
+      // what a script has to use — scripts cannot reach `runtimeDbUrl`, which
+      // resolves the sealing key through the API's `loadEnv()`. Filing a
+      // correct call onto the admin allowlist would record it as an exception
+      // to the rule it obeys.
+      //
+      // Scoped, because it is weaker than `runtimeDbUrl`: it composes whatever
+      // role and password it is handed, so `composeRuntimeUrl({ adminUrl,
+      // roleName: 'libriant', password: … })` would pass. Under apps/api there
+      // is never a reason to reach past `runtimeDbUrl`, so that door stays
+      // shut; under scripts/ the residual risk is a reviewer's to catch, and
+      // it is one line rather than a whole file on an allowlist.
+      const composed =
+        /^composeRuntimeUrl\(/.test(value) &&
+        (rel.startsWith('scripts/') || rel.includes('/scripts/'));
+      if (/^runtimeDbUrl\(/.test(value) || composed) runtimeOpens += 1;
       else if (!(rel in ADMIN_CLIENT_OPENERS)) {
         problems.push(
-          `${at}: opens a tenant database with \`${value}\` rather than runtimeDbUrl(...).\n` +
+          `${at}: opens a tenant database with \`${value}\` rather than runtimeDbUrl(...)` +
+            `${rel.startsWith('scripts/') ? ' or composeRuntimeUrl(...)' : ''}.\n` +
             `      That connects as the Postgres superuser, which is tenant-isolation-02.\n` +
             `      If this path genuinely needs the superuser, add it to ADMIN_CLIENT_OPENERS ` +
             `in this script with the reason.`,
@@ -214,6 +233,6 @@ console.log(
   `tenant db url check passed: ${scanned} source file(s); ` +
     `${adminReads} reasoned read(s) of the superuser url across ` +
     `${Object.keys(ADMIN_URL_READERS).length} allowlisted file(s); ` +
-    `${runtimeOpens} tenant client(s) opened through runtimeDbUrl(); ` +
+    `${runtimeOpens} tenant client(s) opened through runtimeDbUrl()/composeRuntimeUrl(); ` +
     `the sealed password appears only where it is written or opened.`,
 );

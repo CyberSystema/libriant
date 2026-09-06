@@ -2,7 +2,11 @@ import { randomBytes } from 'node:crypto';
 import { ForbiddenException } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { controlDb } from '@libriant/db-control';
-import { makeTenantPrismaClient, type TenantPrismaClient } from '@libriant/db-tenant';
+import {
+  DEFAULT_TENANT_SETTINGS,
+  makeTenantPrismaClient,
+  type TenantPrismaClient,
+} from '@libriant/db-tenant';
 import { ROLE_TEMPLATES, SUPPORT_DENIED_KEYS } from '@libriant/shared/permissions';
 import { TenantProvisioningService } from '../../src/provisioning/tenant-provisioning.service.js';
 import { PermissionsService } from '../../src/authz/permissions.service.js';
@@ -97,6 +101,28 @@ afterAll(async () => {
   await provisioning.teardown(tenantId).catch(() => undefined);
   await tenants?.onModuleDestroy?.().catch(() => undefined);
   await redis?.onModuleDestroy?.().catch(() => undefined);
+});
+
+describe('what provisioning leaves behind', () => {
+  it('seeds the settings row AND the four system roles, in one call', async () => {
+    // `provision()` above is the real signup path. The assertion is here rather
+    // than in a unit test because the defect it guards was not in any one
+    // path's logic — it was that four provisioning paths each did their own
+    // thing, and one of them (`scripts/tenant-create.ts`) did neither, so a
+    // library created from the command line had no settings row at all.
+    // `apps/api/src/provisioning/tenant-defaults.spec.ts` asserts that every
+    // path calls the shared seed; this asserts the shared seed works.
+    const settings = await db.tenantSetting.findUnique({ where: { id: 1 } });
+    expect(settings, 'provisioning left no tenant_settings row').not.toBeNull();
+    expect(settings).toMatchObject(DEFAULT_TENANT_SETTINGS);
+
+    const roles = await db.role.findMany({
+      where: { isSystem: true },
+      select: { key: true },
+      orderBy: { sortOrder: 'asc' },
+    });
+    expect(roles.map((r) => r.key)).toEqual(['owner', 'admin', 'librarian', 'volunteer']);
+  });
 });
 
 describe('resolving a staff member’s permissions', () => {

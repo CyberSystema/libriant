@@ -5,7 +5,11 @@ import { fileURLToPath } from 'node:url';
 import { Client as PgClient } from 'pg';
 import { controlDb, type SealedPasswordRow } from '@libriant/db-control';
 import type { MaintenanceRun, Prisma } from '@libriant/db-control';
-import { makeTenantPrismaClient, disconnectTenantClient } from '@libriant/db-tenant';
+import {
+  makeTenantPrismaClient,
+  disconnectTenantClient,
+  seedTenantSettings,
+} from '@libriant/db-tenant';
 import { loadEnv } from '../config/env.js';
 import { TENANT_RUNTIME_SELECT, adminDbUrl, runtimeDbUrl } from '../tenancy/tenant-db-url.js';
 import type { RedisService } from '../platform/redis.service.js';
@@ -16,19 +20,6 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** repo-root/packages/db-{tenant,control} — cwd for `prisma migrate …`. */
 const DB_TENANT_DIR = path.resolve(HERE, '..', '..', '..', '..', 'packages', 'db-tenant');
 const DB_CONTROL_DIR = path.resolve(HERE, '..', '..', '..', '..', 'packages', 'db-control');
-
-/** Defaults for a fresh tenant_settings row (mirrors provisioning.seedDefaults). */
-const DEFAULT_TENANT_SETTINGS = {
-  id: 1,
-  currency: 'EUR',
-  loanPeriodDays: 14,
-  maxRenewals: 2,
-  finePerDayCents: 10,
-  fineCapCents: 500,
-  holdPickupHours: 48,
-  maxActiveLoans: 0,
-  defaultLocale: 'el',
-};
 
 /**
  * Maintenance is the one module that legitimately needs BOTH urls: VACUUM and
@@ -379,11 +370,20 @@ async function fixTenant(t: Tenant, ctx: Ctx): Promise<MaintenanceTargetResult> 
     // One connection, for the same reason as the integrity pass above.
     const client = makeTenantPrismaClient({ databaseUrl: runtimeDbUrl(t), maxPoolSize: 1 });
     try {
-      const settings = await client.tenantSetting.findUnique({ where: { id: 1 } });
-      if (!settings) {
-        await client.tenantSetting.create({ data: DEFAULT_TENANT_SETTINGS });
-        fixed.push('seeded tenant_settings');
-      }
+      // The VALUES come from `@libriant/db-tenant`, not from a local copy. This
+      // used to hold a third copy of the defaults object under a comment
+      // reading "mirrors provisioning.seedDefaults" — which it had stopped
+      // doing, in the way that comment invites.
+      //
+      // Settings only, and NOT `seedTenantDefaults`. That would also reconcile
+      // the system roles, and `reconcileSystemRoles` adds back every template
+      // key a role does not hold — including one a library deliberately removed
+      // from a built-in role. Defensible when provisioning a database with no
+      // history; not when an operator clicks "fix" scoped to `all` to repair
+      // one unrelated library and silently re-grants permissions across the
+      // whole fleet. The panel describes this button as touching settings and a
+      // cache, and it should keep being true.
+      if (await seedTenantSettings(client)) fixed.push('seeded tenant_settings');
     } finally {
       await disconnectTenantClient(client);
     }
