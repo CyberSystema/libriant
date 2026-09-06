@@ -6,13 +6,21 @@ const { tenantFindMany, tenantGetClient, tenantDestroy } = vi.hoisted(() => ({
   tenantDestroy: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('@libriant/db-control', () => ({
+vi.mock('@libriant/db-control', async (importOriginal) => ({
+  // Spread the real module: since phase 4 the sweep composes each tenant's
+  // runtime connection string from its sealed credential, so the sealing
+  // helpers have to be the real ones (tenant-isolation-02).
+  ...(await importOriginal<typeof import('@libriant/db-control')>()),
   controlDb: {
     tenant: { findMany: tenantFindMany },
   },
 }));
 vi.mock('../config/env.js', () => ({
-  loadEnv: () => ({ tenantClientCacheSize: 10, tenantClientIdleMs: 60_000 }),
+  loadEnv: () => ({
+    tenantClientCacheSize: 10,
+    tenantClientIdleMs: 60_000,
+    ...TEST_TENANT_DB_ENV,
+  }),
 }));
 vi.mock('../tenancy/tenant-prisma.service.js', () => ({
   // Regular function (not an arrow) so the sweeper's `new TenantPrismaService()`
@@ -24,6 +32,10 @@ vi.mock('../tenancy/tenant-prisma.service.js', () => ({
     };
   }),
 }));
+import {
+  TEST_TENANT_DB_ENV,
+  testSealedCredential,
+} from '../tenancy/__fixtures__/tenant-credential.js';
 
 import { sweepExpiredReservationPickups } from './reservation-expiry.job.js';
 
@@ -149,8 +161,9 @@ describe('sweepExpiredReservationPickups', () => {
       {
         id: 't-1',
         slug: 'acme',
-        dbUrl: '',
+        dbUrl: 'postgresql://libriant:s3cr3t@postgres:5432/tenant_t_1',
         storageUrl: '',
+        dbCredentials: testSealedCredential('t-1'),
         defaultLocale: 'en',
         status: 'active',
         name: 'Acme',
@@ -171,8 +184,9 @@ describe('sweepExpiredReservationPickups', () => {
       {
         id: 't-1',
         slug: 'acme',
-        dbUrl: '',
+        dbUrl: 'postgresql://libriant:s3cr3t@postgres:5432/tenant_t_1',
         storageUrl: '',
+        dbCredentials: testSealedCredential('t-1'),
         defaultLocale: 'en',
         status: 'active',
         name: 'Acme',
@@ -230,8 +244,9 @@ describe('sweepExpiredReservationPickups', () => {
       {
         id: 't-1',
         slug: 'acme',
-        dbUrl: '',
+        dbUrl: 'postgresql://libriant:s3cr3t@postgres:5432/tenant_t_1',
         storageUrl: '',
+        dbCredentials: testSealedCredential('t-1'),
         defaultLocale: 'en',
         status: 'active',
         name: 'Acme',
@@ -273,8 +288,9 @@ describe('sweepExpiredReservationPickups', () => {
       {
         id: 't-1',
         slug: 'acme',
-        dbUrl: '',
+        dbUrl: 'postgresql://libriant:s3cr3t@postgres:5432/tenant_t_1',
         storageUrl: '',
+        dbCredentials: testSealedCredential('t-1'),
         defaultLocale: 'en',
         status: 'active',
         name: 'Acme',
@@ -323,8 +339,9 @@ describe('sweepExpiredReservationPickups', () => {
       {
         id: 't-1',
         slug: 'broken',
-        dbUrl: '',
+        dbUrl: 'postgresql://libriant:s3cr3t@postgres:5432/tenant_t_1',
         storageUrl: '',
+        dbCredentials: testSealedCredential('t-1'),
         defaultLocale: 'en',
         status: 'active',
         name: 'Broken',
@@ -334,8 +351,9 @@ describe('sweepExpiredReservationPickups', () => {
       {
         id: 't-2',
         slug: 'fine',
-        dbUrl: '',
+        dbUrl: 'postgresql://libriant:s3cr3t@postgres:5432/tenant_t_2',
         storageUrl: '',
+        dbCredentials: testSealedCredential('t-2'),
         defaultLocale: 'en',
         status: 'active',
         name: 'Fine',

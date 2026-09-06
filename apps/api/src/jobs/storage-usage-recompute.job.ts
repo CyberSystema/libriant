@@ -4,6 +4,7 @@ import { StorageService } from '../storage/storage.service.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { RedisService } from '../platform/redis.service.js';
+import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { describeError } from './job-error.js';
 import type { JobContext, JobResult } from './jobs.types.js';
@@ -48,18 +49,7 @@ const logger = new Logger('StorageUsageRecompute');
 export async function recomputeStorageUsage(ctx?: JobContext): Promise<JobResult> {
   const tenants = await controlDb.tenant.findMany({
     where: { status: 'active' },
-    select: {
-      id: true,
-      slug: true,
-      name: true,
-      defaultLocale: true,
-      status: true,
-      dbUrl: true,
-      storageUrl: true,
-      customSubdomain: true,
-      tags: true,
-      storageUsedBytes: true,
-    },
+    select: { ...TENANT_CONTEXT_SELECT, storageUsedBytes: true },
   });
 
   // Same rule as every other sweep: never mint a Redis client and use it in the
@@ -84,8 +74,14 @@ export async function recomputeStorageUsage(ctx?: JobContext): Promise<JobResult
     );
     for (const t of tenants) {
       const { storageUsedBytes: before, ...rest } = t;
-      const tenantCtx: TenantContext = { ...rest, resolvedFrom: 'path' };
+      // Constructed INSIDE the per-tenant try. `tenantContextFrom` throws for a
+      // tenant with no sealed database credential (tenant-isolation-02), and a
+      // throw out here would end the sweep for EVERY library at the first
+      // un-backfilled one — turning a single tenant's missing row into a
+      // fleet-wide outage of the nightly job. The counter below is what that
+      // case is for.
       try {
+        const tenantCtx: TenantContext = tenantContextFrom(rest);
         const after = await storage.recomputeUsage(tenantCtx);
         if (after === before) continue;
         corrected++;

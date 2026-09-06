@@ -2,6 +2,11 @@ import { ForbiddenException, Logger } from '@nestjs/common';
 import { controlDb } from '@libriant/db-control';
 import type { ExportJob, Prisma } from '@libriant/db-control';
 import type { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
+import {
+  TENANT_RUNTIME_SELECT,
+  runtimeDbUrl,
+  type TenantRuntimeRow,
+} from '../tenancy/tenant-db-url.js';
 
 const logger = new Logger('ExportConsent');
 
@@ -126,13 +131,13 @@ type Notified = { tenantId: string; slug: string; ok: boolean; error?: string };
  */
 async function recordTenantSideExport(
   tenantPrisma: TenantPrismaService,
-  tenant: { id: string; slug: string; dbUrl: string },
+  tenant: TenantRuntimeRow & { slug: string },
   job: ExportJob,
   requester: ExportRequester,
   consent: ExportConsent | null,
   adminLabel: string | null,
 ): Promise<void> {
-  const client = tenantPrisma.getClient(tenant);
+  const client = tenantPrisma.getClient({ id: tenant.id, dbUrl: runtimeDbUrl(tenant) });
   await client.auditEvent.create({
     data: {
       actorType: 'admin',
@@ -183,7 +188,7 @@ async function fanOutPlatformExport(
 ): Promise<Notified[]> {
   const tenants = await controlDb.tenant.findMany({
     where: { status: { not: 'archived' } },
-    select: { id: true, slug: true, dbUrl: true },
+    select: TENANT_RUNTIME_SELECT,
     orderBy: { slug: 'asc' },
   });
   const results: Notified[] = [];
@@ -218,7 +223,7 @@ export async function discloseAdminExport(
   job: ExportJob,
   requester: ExportRequester,
   consent: ExportConsent | null,
-  tenant: { id: string; slug: string; dbUrl: string } | null,
+  tenant: (TenantRuntimeRow & { slug: string }) | null,
 ): Promise<void> {
   // Resolved once so the librarian's audit row names a human, not a cuid they
   // have no way to look up.

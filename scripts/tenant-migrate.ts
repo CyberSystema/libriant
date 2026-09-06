@@ -44,7 +44,7 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { controlDb } from '@libriant/db-control';
+import { applyTenantRoleGrants, controlDb } from '@libriant/db-control';
 import { makeTenantPrismaClient } from '@libriant/db-tenant';
 import { die, isYes, log, parseArgs } from './_lib/cli.js';
 
@@ -271,6 +271,15 @@ async function main() {
 
       if (outcome.ok) {
         okCount += 1;
+        // Re-grant before anything reads the migrated database. `prisma migrate
+        // deploy` runs as the superuser, so a table it just created is owned by
+        // the superuser and — for a tenant provisioned before the default
+        // privileges were in place — invisible to that tenant's own runtime
+        // role. Silent, total, and it would surface as "relation does not
+        // exist" on a table the operator can see in psql.
+        await applyTenantRoleGrants({ tenantDbUrl: t.dbUrl, tenantId: t.id }).catch((e) => {
+          log(SCRIPT, `  ${t.slug.padEnd(20)} ⚠ could not re-grant: ${(e as Error).message}`);
+        });
         const after = await readTenantState(t.dbUrl);
         await mark(run.id, t, 'ok', {
           appliedCount: outcome.applied,

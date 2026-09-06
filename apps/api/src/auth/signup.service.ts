@@ -179,6 +179,20 @@ export class SignupService {
             foundedYear: input.foundedYear ?? null,
           },
         });
+        // tenant-isolation-02: the sealed password for this library's own
+        // Postgres login role, written in the SAME transaction as the tenant
+        // row. If it is not here, `runtimeDbUrl` refuses to open the database
+        // rather than falling back to the superuser URL — so this row is not a
+        // nice-to-have, it is what makes the library reachable at all.
+        await tx.tenantDbCredential.create({
+          data: {
+            tenantId: tenant.id,
+            roleName: placement.credential.roleName,
+            encryptedPwd: placement.credential.encryptedPwd,
+            encryptionKeyId: placement.credential.encryptionKeyId,
+            encryptionNonce: placement.credential.encryptionNonce,
+          },
+        });
         const user = await tx.user.create({
           data: {
             tenantId: tenant.id,

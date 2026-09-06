@@ -27,6 +27,7 @@ import { loadEnv } from '../config/env.js';
 import { StorageService } from './storage.service.js';
 import { SignedUrlService } from './signed-url.service.js';
 import type { ResourceType } from './drivers/storage-driver.js';
+import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
 
 const RESOURCE_TYPES: readonly ResourceType[] = [
   'covers',
@@ -269,21 +270,11 @@ export class StorageDemoController {
     const { controlDb } = await import('@libriant/db-control');
     const row = await controlDb.tenant.findUnique({
       where: { id: tenantId },
-      select: {
-        id: true,
-        slug: true,
-        name: true,
-        defaultLocale: true,
-        status: true,
-        dbUrl: true,
-        storageUrl: true,
-        customSubdomain: true,
-        tags: true,
-      },
+      select: TENANT_CONTEXT_SELECT,
     });
     if (!row || row.status !== 'active') return null;
     // `resolvedFrom` is irrelevant here — the URL didn't include a tenant.
-    return { ...row, resolvedFrom: 'subdomain' as const };
+    return tenantContextFrom(row, 'subdomain');
   }
 
   private sendFile(

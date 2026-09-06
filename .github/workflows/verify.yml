@@ -135,6 +135,18 @@ jobs:
       - name: Every tenant route declares a permission
         run: pnpm check:permissions
 
+      # `tenants.db_url` is the Postgres SUPERUSER string with the database name
+      # swapped in. Until the per-tenant roles landed it was also what every
+      # request connected with, so the audit read one library's members using the
+      # connection string held for another (tenant-isolation-02) and then found
+      # the same string in plaintext in a passwordless Redis (-03). Nothing in
+      # the type system separates the admin url from the runtime one — both are
+      # `string` — so this asserts that only migrations, pg_dump and VACUUM read
+      # it, that every tenant client is opened through runtimeDbUrl(), and that
+      # the sealed password appears only where it is written or opened.
+      - name: Tenant databases are opened with per-tenant credentials
+        run: pnpm check:tenant-db-urls
+
       # amtool is run against a COPY with the receiver placeholders substituted,
       # not against the file as committed.
       #
@@ -351,6 +363,9 @@ jobs:
       # Quoted: the value is all digits, which unquoted YAML coerces to a
       # float (1.12e+61) — the app then rejects it as non-hex.
       MFA_MASTER_KEY: '0011223344556677889900112233445566778899001122334455667788990011'
+      # Seals each tenant's own Postgres password. Must differ from
+      # MFA_MASTER_KEY — loadEnv() refuses to boot when the two match.
+      TENANT_DB_MASTER_KEY: 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899'
       STRIPE_DRIVER: fake
       STORAGE_ROOT: /tmp/libriant-test-storage
       EMAIL_DRIVER: console
@@ -868,6 +883,7 @@ jobs:
             -e HASH_PEPPER=ci-only-pepper-0123456789abcdefghijklmn \
             -e STORAGE_SIGNING_SECRET=ci-only-storage-secret-0123456789abcd \
             -e MFA_MASTER_KEY=0011223344556677889900112233445566778899001122334455667788990011 \
+            -e TENANT_DB_MASTER_KEY=aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899 \
             -e STRIPE_DRIVER=fake \
             -e EMAIL_DRIVER=console \
             -e STORAGE_ROOT=/tmp/libriant-storage \

@@ -25,6 +25,9 @@
 #   POSTGRES_PASSWORD           — superuser password
 #   SESSION_SECRET / ADMIN_SESSION_SECRET / IMPERSONATION_SECRET — JWT secrets
 #   MFA_MASTER_KEY              — 64-hex (32-byte) AES key
+#   TENANT_DB_MASTER_KEY        — 64-hex (32-byte) AES key sealing each
+#                                 library's own Postgres password. MUST differ
+#                                 from MFA_MASTER_KEY.
 #
 # Optional (default to "not configured" — see x-app-env):
 #   STRIPE_DRIVER=real + STRIPE_API_KEY / STRIPE_WEBHOOK_SECRET — real billing
@@ -69,6 +72,10 @@ x-app-env: &app-env
   ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:?ADMIN_SESSION_SECRET is required}
   IMPERSONATION_SECRET: ${IMPERSONATION_SECRET:?IMPERSONATION_SECRET is required}
   MFA_MASTER_KEY: ${MFA_MASTER_KEY:?MFA_MASTER_KEY is required}
+  # tenant-isolation-02: opens the sealed per-tenant database passwords. Without
+  # it the API refuses to serve any library, which is deliberate — the fallback
+  # would be the superuser url, and that is the finding.
+  TENANT_DB_MASTER_KEY: ${TENANT_DB_MASTER_KEY:?TENANT_DB_MASTER_KEY is required}
   STORAGE_ROOT: /srv/libriant/storage
   STORAGE_SIGNING_SECRET: ${STORAGE_SIGNING_SECRET:-}
   ASSETS_ROOT: /srv/libriant/assets

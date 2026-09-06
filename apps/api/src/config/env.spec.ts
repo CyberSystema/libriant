@@ -30,6 +30,7 @@ function prodEnv(overrides: Record<string, string | undefined> = {}) {
     STORAGE_SIGNING_SECRET: 'storage-secret-long-enough-and-distinct',
     HASH_PEPPER: 'hash-pepper-long-enough-for-the-32-char-floor',
     MFA_MASTER_KEY: '0011223344556677889900112233445566778899001122334455667788990011',
+    TENANT_DB_MASTER_KEY: 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899',
   });
   for (const [k, v] of Object.entries(overrides)) {
     if (v === undefined) delete process.env[k];
@@ -70,6 +71,60 @@ describe('loadEnv — infrastructure the app cannot run without', () => {
       expect(() => loadEnv()).toThrow(new RegExp(`Missing required env var: ${key}`));
     },
   );
+});
+
+describe('loadEnv — the tenant database master key', () => {
+  it('refuses to boot in production without it', () => {
+    // Not optional and not defaultable: without it the API cannot open the
+    // sealed per-tenant passwords, and the only "fallback" available would be
+    // the superuser url — which is tenant-isolation-02 itself.
+    prodEnv({ TENANT_DB_MASTER_KEY: undefined });
+    expect(() => loadEnv()).toThrow(/Missing required env var: TENANT_DB_MASTER_KEY/);
+  });
+
+  it.each(['short', 'zz'.repeat(32), '00'.repeat(16)])(
+    'refuses a key that is not 64 hex characters (%s)',
+    (bad) => {
+      prodEnv({ TENANT_DB_MASTER_KEY: bad });
+      expect(() => loadEnv()).toThrow(/TENANT_DB_MASTER_KEY must be 64 hex characters/);
+    },
+  );
+
+  it('refuses to boot when it is a copy of MFA_MASTER_KEY', () => {
+    // One recovers admin TOTP enrollments; the other opens every library
+    // database. A single key means a leak of either is a leak of both, and the
+    // copy-paste is the natural mistake — same length, same shape, adjacent
+    // lines in the env file.
+    prodEnv({
+      TENANT_DB_MASTER_KEY: '0011223344556677889900112233445566778899001122334455667788990011',
+    });
+    expect(() => loadEnv()).toThrow(/same value/);
+  });
+
+  it('is case-insensitive about that comparison', () => {
+    prodEnv({
+      TENANT_DB_MASTER_KEY:
+        '0011223344556677889900112233445566778899001122334455667788990011'.toUpperCase(),
+    });
+    expect(() => loadEnv()).toThrow(/same value/);
+  });
+
+  it('defaults the superuser fallback to OFF outside development', () => {
+    prodEnv();
+    expect(loadEnv().tenantDbAllowSuperuserFallback).toBe(false);
+    prodEnv({ NODE_ENV: 'test' });
+    expect(loadEnv().tenantDbAllowSuperuserFallback).toBe(false);
+  });
+
+  it('keeps the quickstart working: dev has both keys and they differ', () => {
+    for (const key of Object.keys(process.env)) delete process.env[key];
+    const env = loadEnv();
+    expect(env.tenantDbMasterKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(env.tenantDbMasterKey).not.toBe(env.mfaMasterKey);
+    // …and dev IS allowed the fallback, so `pnpm dev` against a control plane
+    // seeded before phase 4 still starts.
+    expect(env.tenantDbAllowSuperuserFallback).toBe(true);
+  });
 });
 
 describe('loadEnv — the storage and session keys must stay separate', () => {

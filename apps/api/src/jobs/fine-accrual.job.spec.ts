@@ -6,17 +6,29 @@ const { tenantFindMany, tenantGetClient, tenantDestroy } = vi.hoisted(() => ({
   tenantDestroy: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('@libriant/db-control', () => ({
+vi.mock('@libriant/db-control', async (importOriginal) => ({
+  // Spread the real module: since phase 4 the sweep composes each tenant's
+  // runtime connection string from its sealed credential, so the sealing
+  // helpers have to be the real ones (tenant-isolation-02).
+  ...(await importOriginal<typeof import('@libriant/db-control')>()),
   controlDb: { tenant: { findMany: tenantFindMany } },
 }));
 vi.mock('../config/env.js', () => ({
-  loadEnv: () => ({ tenantClientCacheSize: 10, tenantClientIdleMs: 60_000 }),
+  loadEnv: () => ({
+    tenantClientCacheSize: 10,
+    tenantClientIdleMs: 60_000,
+    ...TEST_TENANT_DB_ENV,
+  }),
 }));
 vi.mock('../tenancy/tenant-prisma.service.js', () => ({
   TenantPrismaService: vi.fn(function () {
     return { getClient: tenantGetClient, onModuleDestroy: tenantDestroy };
   }),
 }));
+import {
+  TEST_TENANT_DB_ENV,
+  testSealedCredential,
+} from '../tenancy/__fixtures__/tenant-credential.js';
 
 import { sweepFineAccrual } from './fine-accrual.job.js';
 
@@ -115,10 +127,13 @@ const TENANT = {
   name: 'Acme',
   defaultLocale: 'el',
   status: 'active',
-  dbUrl: 'x',
+  // A real-shaped ADMIN url: `runtimeDbUrl` composes the tenant's own
+  // credential onto this endpoint, so 'x' is no longer parseable input.
+  dbUrl: 'postgresql://libriant:s3cr3t@postgres:5432/tenant_t1',
   storageUrl: 'y',
   customSubdomain: null,
   tags: [],
+  dbCredentials: testSealedCredential('t1'),
 };
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
 

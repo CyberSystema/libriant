@@ -171,6 +171,32 @@ const REGISTRY: VarDef[] = [
       /^[0-9a-fA-F]{64}$/.test(v) ? null : 'must be exactly 64 hex characters (32 bytes).',
     description: 'AES-256-GCM key encrypting admin TOTP secrets in the DB.',
   },
+  {
+    key: 'TENANT_DB_MASTER_KEY',
+    group: 'App secrets',
+    category: 'AES-256-GCM master key (per-tenant database passwords at rest)',
+    origin: 'generated',
+    secret: true,
+    store: 'env',
+    save: 'yes',
+    saveReason:
+      'CRITICAL recovery — the only thing that can open the sealed per-tenant Postgres passwords. Lose it and every library database has to be re-credentialed.',
+    // 'caution', not 'never': unlike MFA_MASTER_KEY there IS a supported
+    // recovery — `pnpm tenant:rotate-db-creds --all` re-issues every library's
+    // password and re-seals it under whatever key is current. It is a real
+    // operation with a real grace period, so the tool warns rather than
+    // refusing, and says what has to follow.
+    rotation: 'caution',
+    rotationNote:
+      'Every existing tenant_db_credentials row stays sealed under the OLD key and stops opening the moment the API restarts — every library 500s. Run `pnpm tenant:rotate-db-creds --all` immediately after changing this, BEFORE restarting the API.',
+    gen: HEX32, // 32 bytes → 64 hex chars
+    requirement: 'prod',
+    insecureDefault: 'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899',
+    validate: (v) =>
+      /^[0-9a-fA-F]{64}$/.test(v) ? null : 'must be exactly 64 hex characters (32 bytes).',
+    description:
+      "AES-256-GCM key sealing each library's own Postgres role password (tenant-isolation-02).",
+  },
 
   // ── Database credential ──
   {

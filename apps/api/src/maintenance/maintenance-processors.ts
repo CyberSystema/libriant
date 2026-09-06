@@ -3,10 +3,11 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { Client as PgClient } from 'pg';
-import { controlDb } from '@libriant/db-control';
+import { controlDb, type SealedPasswordRow } from '@libriant/db-control';
 import type { MaintenanceRun, Prisma } from '@libriant/db-control';
 import { makeTenantPrismaClient, disconnectTenantClient } from '@libriant/db-tenant';
 import { loadEnv } from '../config/env.js';
+import { TENANT_RUNTIME_SELECT, adminDbUrl, runtimeDbUrl } from '../tenancy/tenant-db-url.js';
 import type { RedisService } from '../platform/redis.service.js';
 import type { MaintenanceIssue, MaintenanceTargetResult } from './maintenance.constants.js';
 
@@ -29,7 +30,20 @@ const DEFAULT_TENANT_SETTINGS = {
   defaultLocale: 'el',
 };
 
-type Tenant = { id: string; slug: string; dbUrl: string };
+/**
+ * Maintenance is the one module that legitimately needs BOTH urls: VACUUM and
+ * `prisma migrate status` require the superuser (a non-owner cannot vacuum a
+ * table it does not own), while the integrity check and the "fix" pass read and
+ * write tenant rows and must go through the tenant's own role. So the row
+ * carries the admin url AND the sealed credential, and every call site says
+ * which one it wants.
+ */
+type Tenant = {
+  id: string;
+  slug: string;
+  dbUrl: string;
+  dbCredentials: SealedPasswordRow | null;
+};
 
 type Ctx = {
   redis: RedisService;
@@ -47,7 +61,7 @@ function dbNameFor(tenantId: string): string {
 function listTenants(): Promise<Tenant[]> {
   return controlDb.tenant.findMany({
     where: { status: { not: 'archived' } },
-    select: { id: true, slug: true, dbUrl: true },
+    select: TENANT_RUNTIME_SELECT,
     orderBy: { slug: 'asc' },
   });
 }
@@ -55,7 +69,7 @@ function listTenants(): Promise<Tenant[]> {
 async function tenantById(id: string): Promise<Tenant> {
   const t = await controlDb.tenant.findUnique({
     where: { id },
-    select: { id: true, slug: true, dbUrl: true },
+    select: TENANT_RUNTIME_SELECT,
   });
   if (!t) throw new Error(`Tenant ${id} not found.`);
   return t;
@@ -195,9 +209,29 @@ async function runDiagnostics(
       await ctx.setProgress(++done, total);
       continue;
     }
+    // tenant-isolation-02, reported per library rather than assumed fleet-wide.
+    //
+    // The database-level wall is built PER DATABASE: provisioning revokes
+    // CONNECT from PUBLIC on the database it just created. A library that
+    // predates that — or one whose backfill failed — still grants CONNECT to
+    // PUBLIC, so any authenticated role on the cluster, including another
+    // library's, can open it. Nothing else in the product would say so: the API
+    // refuses to serve such a tenant (`runtimeDbUrl` fails closed), which looks
+    // like an outage, not like an isolation gap.
+    if (!t.dbCredentials) {
+      issues.push({
+        severity: 'error',
+        target,
+        message:
+          'No per-tenant database role: this database still grants CONNECT to PUBLIC and the ' +
+          'API refuses to serve it. Run `pnpm tenant:rotate-db-creds --all`.',
+      });
+      await ctx.setProgress(++done, total);
+      continue;
+    }
     let reachable = true;
     try {
-      const client = makeTenantPrismaClient({ databaseUrl: t.dbUrl });
+      const client = makeTenantPrismaClient({ databaseUrl: runtimeDbUrl(t) });
       try {
         const settings = await client.tenantSetting.findUnique({ where: { id: 1 } });
         if (!settings) {
@@ -219,7 +253,9 @@ async function runDiagnostics(
       });
     }
     if (reachable) {
-      const st = await migrateStatus(DB_TENANT_DIR, 'TENANT_DATABASE_URL', t.dbUrl);
+      // Migration status is a superuser question: `prisma migrate status`
+      // reads `_prisma_migrations`, which the runtime role has no business in.
+      const st = await migrateStatus(DB_TENANT_DIR, 'TENANT_DATABASE_URL', adminDbUrl(t));
       if (st.pending) {
         issues.push({
           severity: 'warning',
@@ -256,7 +292,7 @@ async function runMigrate(
       label: `tenant: ${t.slug}`,
       dir: DB_TENANT_DIR,
       envName: 'TENANT_DATABASE_URL',
-      url: t.dbUrl,
+      url: adminDbUrl(t),
     });
   } else if (run.scope === 'all') {
     for (const t of await listTenants()) {
@@ -264,7 +300,7 @@ async function runMigrate(
         label: `tenant: ${t.slug}`,
         dir: DB_TENANT_DIR,
         envName: 'TENANT_DATABASE_URL',
-        url: t.dbUrl,
+        url: adminDbUrl(t),
       });
     }
   }
@@ -338,7 +374,7 @@ async function runFix(
 async function fixTenant(t: Tenant, ctx: Ctx): Promise<MaintenanceTargetResult> {
   const fixed: string[] = [];
   try {
-    const client = makeTenantPrismaClient({ databaseUrl: t.dbUrl });
+    const client = makeTenantPrismaClient({ databaseUrl: runtimeDbUrl(t) });
     try {
       const settings = await client.tenantSetting.findUnique({ where: { id: 1 } });
       if (!settings) {
@@ -368,9 +404,11 @@ async function runVacuum(
   }
   if (run.scope === 'tenant') {
     const t = await tenantById(run.targetTenantId!);
-    targets.push({ label: `tenant: ${t.slug}`, url: t.dbUrl });
+    // VACUUM requires table ownership; the runtime role has none, by design.
+    targets.push({ label: `tenant: ${t.slug}`, url: adminDbUrl(t) });
   } else if (run.scope === 'all') {
-    for (const t of await listTenants()) targets.push({ label: `tenant: ${t.slug}`, url: t.dbUrl });
+    for (const t of await listTenants())
+      targets.push({ label: `tenant: ${t.slug}`, url: adminDbUrl(t) });
   }
 
   const results: MaintenanceTargetResult[] = [];

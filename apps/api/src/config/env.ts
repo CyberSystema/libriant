@@ -72,6 +72,30 @@ export type AppEnv = {
    */
   mfaMasterKey: string;
   /**
+   * Hex-encoded 32-byte master key that seals every tenant's RUNTIME Postgres
+   * password in `tenant_db_credentials` (tenant-isolation-02).
+   *
+   * Deliberately NOT `mfaMasterKey`: the two protect different populations —
+   * one recovers admin TOTP enrollments, the other opens every library
+   * database — and a single key means a leak of either is a leak of both.
+   * `loadEnv()` refuses to boot when they match.
+   */
+  tenantDbMasterKey: string;
+  /**
+   * Escape hatch for a fleet whose tenants have not been backfilled yet: when
+   * true, a tenant with no `tenant_db_credentials` row falls back to the
+   * superuser admin URL instead of failing the request.
+   *
+   * Off outside development, because the fallback IS the finding. Turn it on
+   * only for the length of a backfill (`pnpm tenant:rotate-db-creds --all`),
+   * and read the warning it logs per tenant while it is on.
+   */
+  tenantDbAllowSuperuserFallback: boolean;
+  /** Per-login-role Postgres limits applied at provisioning + rotation. */
+  tenantDbConnectionLimit: number;
+  tenantDbStatementTimeout: string;
+  tenantDbIdleTxTimeout: string;
+  /**
    * Impersonation session secret. Distinct from `adminSessionSecret` so
    * even a leaked admin cookie cannot impersonate a tenant. JWT TTL
    * mirrors `SupportSession.expiresAt` (4h after redemption).
@@ -462,6 +486,31 @@ export function loadEnv(): AppEnv {
     throw new Error('Env var MFA_MASTER_KEY must be 64 hex characters (a 32-byte key).');
   }
 
+  // tenant-isolation-02: the key that opens every library's database. Same
+  // treatment as MFA_MASTER_KEY — resolved and validated at BOOT, because the
+  // alternative is a fleet that starts green and 500s the first tenant request.
+  const tenantDbMasterKey =
+    nodeEnv === 'development'
+      ? optional(
+          'TENANT_DB_MASTER_KEY',
+          // Fixed dev key, deliberately DIFFERENT from the MFA dev key so the
+          // "these two must not match" check below is exercised by the
+          // quickstart rather than only by production.
+          'aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899',
+        )
+      : required('TENANT_DB_MASTER_KEY');
+  if (!/^[0-9a-fA-F]{64}$/.test(tenantDbMasterKey)) {
+    throw new Error('Env var TENANT_DB_MASTER_KEY must be 64 hex characters (a 32-byte key).');
+  }
+  if (tenantDbMasterKey.toLowerCase() === mfaMasterKey.toLowerCase()) {
+    throw new Error(
+      'TENANT_DB_MASTER_KEY and MFA_MASTER_KEY hold the same value — refusing to boot. ' +
+        'One seals admin TOTP secrets, the other seals every tenant database password; ' +
+        'sharing them means a leak of either is a leak of both. ' +
+        'Generate a distinct value (`openssl rand -hex 32`).',
+    );
+  }
+
   const cookieSecure = optional('SESSION_COOKIE_SECURE', 'auto');
   const isSecure =
     cookieSecure === 'auto'
@@ -559,6 +608,15 @@ export function loadEnv(): AppEnv {
     // MFA mandatory for admins by default outside development (AUTH-06).
     adminMfaRequired: bool('ADMIN_MFA_REQUIRED', !isDev),
     mfaMasterKey,
+    tenantDbMasterKey,
+    // Fails CLOSED outside development: a tenant with no sealed credential is
+    // a tenant that would otherwise be served over the superuser URL, which is
+    // the finding this phase closes. `pnpm tenant:rotate-db-creds --all` is the
+    // backfill, and it is a prerequisite of the deploy that first carries this.
+    tenantDbAllowSuperuserFallback: bool('TENANT_DB_ALLOW_SUPERUSER_FALLBACK', isDev),
+    tenantDbConnectionLimit: num('TENANT_DB_CONNECTION_LIMIT', 40, { int: true, min: 2, max: 500 }),
+    tenantDbStatementTimeout: optional('TENANT_DB_STATEMENT_TIMEOUT', '15s'),
+    tenantDbIdleTxTimeout: optional('TENANT_DB_IDLE_TX_TIMEOUT', '60s'),
     impersonationSecret: requiredSecret(
       'IMPERSONATION_SECRET',
       'dev-only-impersonation-secret-CHANGE-IN-PROD',

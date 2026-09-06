@@ -1624,10 +1624,10 @@ it as the placeholder `your-github-owner`.
 `prod-bootstrap.sh` creates the admin only when **both** values are non-empty.
 
 The script generates and never overwrites: `SESSION_SECRET`, `HASH_PEPPER`,
-`ADMIN_SESSION_SECRET`, `IMPERSONATION_SECRET`, `STORAGE_SIGNING_SECRET` and
-`MFA_MASTER_KEY` — `openssl rand -hex 32`, so **64 hex characters each**, not 32
-— plus `POSTGRES_PASSWORD` and `GRAFANA_ADMIN_PASSWORD` at `-hex 24`, 48
-characters. The byte count is the argument, not the length: regenerate one by
+`ADMIN_SESSION_SECRET`, `IMPERSONATION_SECRET`, `STORAGE_SIGNING_SECRET`,
+`MFA_MASTER_KEY` and `TENANT_DB_MASTER_KEY` — `openssl rand -hex 32`, so **64 hex
+characters each**, not 32 — plus `POSTGRES_PASSWORD` and
+`GRAFANA_ADMIN_PASSWORD` at `-hex 24`, 48 characters. The byte count is the argument, not the length: regenerate one by
 hand with `openssl rand -hex 16` and the API refuses to boot, because
 `MFA_MASTER_KEY` must be exactly 64 hex (AES-256) and `install-server.sh`'s
 `env` step asserts that. `GRAFANA_ADMIN_PASSWORD` is generated here rather than
@@ -2462,9 +2462,9 @@ not recognise, so `BILLING_ENABLED=enabled` and `BILLING_ENABLED=y` both meant
 
 ### 4.2 Hard requirements
 
-**Seven** keys are `${VAR:?}` at the **compose** layer, not six. A missing one
-aborts `docker compose up` before any container is created, and the message ends
-with the text the compose file writes after the `:?`:
+**Eight** keys are `${VAR:?}` at the **compose** layer. A missing one aborts
+`docker compose up` before any container is created, and the message ends with
+the text the compose file writes after the `:?`:
 
 | Key                    | What compose says when it is missing                            |
 | ---------------------- | --------------------------------------------------------------- |
@@ -2474,6 +2474,7 @@ with the text the compose file writes after the `:?`:
 | `ADMIN_SESSION_SECRET` | `ADMIN_SESSION_SECRET is required`                              |
 | `IMPERSONATION_SECRET` | `IMPERSONATION_SECRET is required`                              |
 | `MFA_MASTER_KEY`       | `MFA_MASTER_KEY is required`                                    |
+| `TENANT_DB_MASTER_KEY` | `TENANT_DB_MASTER_KEY is required`                              |
 | `PUBLIC_HOST`          | `PUBLIC_HOST is required (the app host, e.g. app.libriant.com)` |
 
 `PUBLIC_HOST` joined the list with boot-and-config-09 and is referenced from
@@ -2568,17 +2569,18 @@ only; _compose_ = consumed by Compose to shape infrastructure, never an env var
 anywhere; _host_ = read by a script running on the host; _nothing_ = read by
 code that never receives it.
 
-#### The seven that must be right, or nothing starts
+#### The eight that must be right, or nothing starts
 
-| Variable               | Reaches         | What it is                                                         | If it is wrong                                                             | Lost forever? |
-| ---------------------- | --------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------- | ------------- |
-| `POSTGRES_PASSWORD`    | app, compose    | The `libriant` role's password. Applied at initdb and never again. | Every connection fails auth. See §4.4 and the `ensure-env.sh` guard below. | **Yes**       |
-| `SESSION_SECRET`       | app             | HMAC key for library-user session JWTs. ≥ 24 chars.                | Boot refusal if absent/short; every user logged out if changed.            | No            |
-| `ADMIN_SESSION_SECRET` | app             | HMAC key for platform-admin session JWTs. Deliberately distinct.   | Same, for `admin.libriant.com`.                                            | No            |
-| `IMPERSONATION_SECRET` | app             | HMAC key for support-impersonation JWTs. Distinct again.           | Same, for live support sessions.                                           | No            |
-| `MFA_MASTER_KEY`       | app             | 64 hex chars. AES-256-GCM key over admin TOTP secrets at rest.     | Boot refusal on a non-hex/short value; orphans every enrolment if changed. | **Yes**       |
-| `HASH_PEPPER`          | app             | Peppers the IP hash behind the `/apply` throttle. ≥ 32 chars.      | Boot refusal. Changing it resets the throttle history, nothing worse.      | No            |
-| `PUBLIC_HOST`          | app, web, caddy | **The app host** (`app.libriant.com`), not the apex.               | Compose aborts. Wrong-but-set is worse: see §4.6.                          | No            |
+| Variable               | Reaches         | What it is                                                                                                  | If it is wrong                                                                                                                                                                | Lost forever?    |
+| ---------------------- | --------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| `POSTGRES_PASSWORD`    | app, compose    | The `libriant` role's password. Applied at initdb and never again.                                          | Every connection fails auth. See §4.4 and the `ensure-env.sh` guard below.                                                                                                    | **Yes**          |
+| `SESSION_SECRET`       | app             | HMAC key for library-user session JWTs. ≥ 24 chars.                                                         | Boot refusal if absent/short; every user logged out if changed.                                                                                                               | No               |
+| `ADMIN_SESSION_SECRET` | app             | HMAC key for platform-admin session JWTs. Deliberately distinct.                                            | Same, for `admin.libriant.com`.                                                                                                                                               | No               |
+| `IMPERSONATION_SECRET` | app             | HMAC key for support-impersonation JWTs. Distinct again.                                                    | Same, for live support sessions.                                                                                                                                              | No               |
+| `MFA_MASTER_KEY`       | app             | 64 hex chars. AES-256-GCM key over admin TOTP secrets at rest.                                              | Boot refusal on a non-hex/short value; orphans every enrolment if changed.                                                                                                    | **Yes**          |
+| `TENANT_DB_MASTER_KEY` | app             | 64 hex chars. AES-256-GCM key over each library's own Postgres password. Must differ from `MFA_MASTER_KEY`. | Boot refusal on a non-hex/short value, or when it equals `MFA_MASTER_KEY`. Changing it 500s every library until `pnpm tenant:rotate-db-creds --all` re-seals them — see §4.4. | No, but see §4.4 |
+| `HASH_PEPPER`          | app             | Peppers the IP hash behind the `/apply` throttle. ≥ 32 chars.                                               | Boot refusal. Changing it resets the throttle history, nothing worse.                                                                                                         | No               |
+| `PUBLIC_HOST`          | app, web, caddy | **The app host** (`app.libriant.com`), not the apex.                                                        | Compose aborts. Wrong-but-set is worse: see §4.6.                                                                                                                             | No               |
 
 #### Secrets and credentials that are not compose-required
 
@@ -3389,13 +3391,14 @@ needed.
 
 **Recoverable but disruptive:**
 
-| Secret                   | Rotating it                                                                                                                                                       |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SESSION_SECRET`         | Logs out every library user.                                                                                                                                      |
-| `ADMIN_SESSION_SECRET`   | Logs out all platform admins.                                                                                                                                     |
-| `IMPERSONATION_SECRET`   | Kills live support sessions.                                                                                                                                      |
-| `STORAGE_SIGNING_SECRET` | 403s every outstanding signed download link until reissued. Rotate it to a value that is **not** `SESSION_SECRET` — the API refuses to boot if they match (§4.2). |
-| `HASH_PEPPER`            | Resets the application-form IP throttle history.                                                                                                                  |
+| Secret                   | Rotating it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SESSION_SECRET`         | Logs out every library user.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `ADMIN_SESSION_SECRET`   | Logs out all platform admins.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `IMPERSONATION_SECRET`   | Kills live support sessions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `STORAGE_SIGNING_SECRET` | 403s every outstanding signed download link until reissued. Rotate it to a value that is **not** `SESSION_SECRET` — the API refuses to boot if they match (§4.2).                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `HASH_PEPPER`            | Resets the application-form IP throttle history.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `TENANT_DB_MASTER_KEY`   | Seals every library's own Postgres password. Rotating the key alone takes the **whole fleet down** at the next API restart — every `tenant_db_credentials` row is still sealed under the old one, and `runtimeDbUrl` fails closed rather than falling back to the superuser url. It is recoverable, and the recovery is a real procedure: change the value, then run `pnpm tenant:rotate-db-creds --all` **before** restarting the API (it re-issues and re-seals every password under the key that is now current). Must never equal `MFA_MASTER_KEY` — the API refuses to boot if they match. |
 
 Rotation procedure: edit `/srv/libriant/.env.prod`, update the password manager
 **first**, then `dc up -d` to recreate the affected containers. `ensure-env.sh`

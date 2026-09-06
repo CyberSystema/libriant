@@ -2,6 +2,7 @@ import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { applicationNotifyKey } from '../applications/applications.service.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
+import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { RedisService } from '../platform/redis.service.js';
 import { LONGEST_ONE_TIME_LINK_TTL_SEC } from '../auth/one-time-link-ttl.js';
@@ -248,17 +249,7 @@ export async function sweepRetention(ctx?: JobContext): Promise<JobResult> {
   // --- 2. Per-tenant audit log ---------------------------------------------
   const tenants = await controlDb.tenant.findMany({
     where: { status: 'active' },
-    select: {
-      id: true,
-      slug: true,
-      name: true,
-      defaultLocale: true,
-      status: true,
-      dbUrl: true,
-      storageUrl: true,
-      customSubdomain: true,
-      tags: true,
-    },
+    select: TENANT_CONTEXT_SELECT,
   });
 
   const tenantPrisma = new TenantPrismaService('worker');
@@ -279,11 +270,14 @@ export async function sweepRetention(ctx?: JobContext): Promise<JobResult> {
       // The one-connection-per-tenant pin lives in the service's 'worker' role
       // now, not in this URL (performance-06: the old `connection_limit=1`
       // query parameter was silently ignored by Prisma 7's driver adapter).
-      const tenantCtx: TenantContext = {
-        ...t,
-        resolvedFrom: 'path',
-      };
+      // Constructed INSIDE the per-tenant try. `tenantContextFrom` throws for a
+      // tenant with no sealed database credential (tenant-isolation-02), and a
+      // throw out here would end the sweep for EVERY library at the first
+      // un-backfilled one — turning a single tenant's missing row into a
+      // fleet-wide outage of the nightly job. The counter below is what that
+      // case is for.
       try {
+        const tenantCtx: TenantContext = tenantContextFrom(t);
         const res = await sweepTenantAuditLog(tenantCtx, tenantPrisma, plans, now);
         auditRowsDeleted += res.deleted;
         if (res.unlimited) tenantsUnlimited++;

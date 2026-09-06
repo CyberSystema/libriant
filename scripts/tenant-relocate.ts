@@ -53,7 +53,19 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { Client as PgClient } from 'pg';
 import { Redis } from 'ioredis';
-import { controlDb, type Prisma } from '@libriant/db-control';
+import {
+  applyTenantRoleGrants,
+  controlDb,
+  dropTenantRoles,
+  ensureTenantRoles,
+  newRuntimePassword,
+  otherSlot,
+  parseTenantDbMasterKey,
+  sealTenantPassword,
+  slotOfRole,
+  tenantLoginRole,
+  type Prisma,
+} from '@libriant/db-control';
 import { dbNameForTenant, die, isYes, log, parseArgs, urlForDb } from './_lib/cli.js';
 
 const execFileP = promisify(execFile);
@@ -167,7 +179,17 @@ async function main() {
 
   const tenant = await controlDb.tenant.findUnique({
     where: { slug },
-    select: { id: true, slug: true, name: true, dbUrl: true, cellId: true, customSubdomain: true },
+    select: {
+      id: true,
+      slug: true,
+      name: true,
+      dbUrl: true,
+      cellId: true,
+      customSubdomain: true,
+      // Which rotation slot the tenant is live on, so the destination roles
+      // land on the other one.
+      dbCredentials: { select: { roleName: true } },
+    },
   });
   if (!tenant) die(SCRIPT, `tenant "${slug}" not found.`);
 
@@ -246,11 +268,61 @@ async function main() {
     log(SCRIPT, 'verifying destination…');
     await verifyDestination(newDbUrl);
 
-    log(SCRIPT, 'updating control plane (db_url + cell_id)…');
+    // tenant-isolation-02: `pg_restore --no-owner --no-acl` deliberately drops
+    // every grant, and the destination is a DIFFERENT cluster, so this tenant
+    // has no login role there at all. Create one before the cutover.
+    //
+    // Onto the OTHER slot, never the one in use. The source is still serving
+    // reads under its existing credential until the cache bust below; taking
+    // the live slot's name here would mean re-issuing a password that processes
+    // are still holding, for a host they are still pointed at. Alternating
+    // makes the two credentials disjoint, which is what leaves no window.
+    log(SCRIPT, 'creating per-tenant database roles on the destination…');
+    const currentSlot = tenant.dbCredentials
+      ? slotOfRole(tenant.id, tenant.dbCredentials.roleName)
+      : null;
+    const destSlot = currentSlot ? otherSlot(currentSlot) : 'a';
+    const runtimePassword = newRuntimePassword();
+    await ensureTenantRoles({
+      tenantDbUrl: newDbUrl,
+      tenantId: tenant.id,
+      activeSlot: destSlot,
+      password: runtimePassword,
+    });
+    await applyTenantRoleGrants({ tenantDbUrl: newDbUrl, tenantId: tenant.id });
+    const destCredential = sealTenantPassword({
+      tenantId: tenant.id,
+      roleName: tenantLoginRole(tenant.id, destSlot),
+      password: runtimePassword,
+      masterKey: parseTenantDbMasterKey(reqEnv('TENANT_DB_MASTER_KEY')),
+    });
+    log(SCRIPT, `  destination runtime role=${destCredential.roleName}`);
+
+    log(SCRIPT, 'updating control plane (db_url + cell_id + runtime credential)…');
     await controlDb.$transaction(async (tx: Prisma.TransactionClient) => {
       await tx.tenant.update({
         where: { id: tenant.id },
         data: { dbUrl: newDbUrl, cellId: newCellId },
+      });
+      // The address and the credential move together or neither does: a
+      // committed `db_url` pointing at a host where the sealed role does not
+      // exist is a tenant nothing can open.
+      await tx.tenantDbCredential.upsert({
+        where: { tenantId: tenant.id },
+        create: {
+          tenantId: tenant.id,
+          roleName: destCredential.roleName,
+          encryptedPwd: destCredential.encryptedPwd,
+          encryptionKeyId: destCredential.encryptionKeyId,
+          encryptionNonce: destCredential.encryptionNonce,
+        },
+        update: {
+          roleName: destCredential.roleName,
+          encryptedPwd: destCredential.encryptedPwd,
+          encryptionKeyId: destCredential.encryptionKeyId,
+          encryptionNonce: destCredential.encryptionNonce,
+          rotatedAt: new Date(),
+        },
       });
       await tx.auditEvent.create({
         data: {
@@ -433,8 +505,25 @@ async function dropSource(
     log(SCRIPT, `dropped ${dbName} on ${sourceHost}.`);
   } finally {
     await admin.end();
-    await controlDb.$disconnect();
   }
+  // The abandoned cluster still carries this tenant's login roles, and one of
+  // them is the credential the fleet was using right up to the cutover. The
+  // database is gone, so they grant nothing — but a role that can still
+  // authenticate against a cluster is a credential, and leaving it is how a
+  // decommissioned host stays interesting to an attacker.
+  try {
+    const dropped = await dropTenantRoles({ adminUrl: u.toString(), tenantId: tenant.id });
+    if (dropped.length) log(SCRIPT, `dropped ${dropped.length} source role(s) on ${sourceHost}.`);
+  } catch (e) {
+    log(SCRIPT, `warning: could not drop source roles on ${sourceHost}: ${(e as Error).message}`);
+  }
+  await controlDb.$disconnect();
+}
+
+function reqEnv(key: string): string {
+  const v = process.env[key];
+  if (!v || !v.trim()) die(SCRIPT, `missing required env var ${key}`);
+  return v;
 }
 
 async function openReadOnly(tenantId: string, adminId: string) {

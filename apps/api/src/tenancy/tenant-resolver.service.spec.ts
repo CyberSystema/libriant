@@ -9,19 +9,32 @@ const { findUnique, findFirst, update } = vi.hoisted(() => ({
   findFirst: vi.fn(),
   update: vi.fn(),
 }));
-vi.mock('@libriant/db-control', () => ({
+// Spread the real module: `rowToContext` composes the runtime url from the
+// sealed credential now, so the sealing helpers have to be the real ones.
+// `controlDb` is a lazy Proxy, so pulling in the barrel constructs no client.
+vi.mock('@libriant/db-control', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@libriant/db-control')>()),
   controlDb: {
     tenant: { findUnique, findFirst, update },
   },
 }));
 
 // `loadEnv` reads process.env at first call and caches inside the module.
-// For tests we just need it to be cheap + deterministic.
+// For tests we just need it to be cheap + deterministic. The fallback is
+// CLOSED, as outside development: a resolver that quietly handed back the
+// superuser url for a tenant with no credential would satisfy every other
+// assertion in this file.
 vi.mock('../config/env.js', () => ({
-  loadEnv: () => ({ tenantCacheTtlSec: 60, redisUrl: 'redis://localhost:6379' }),
+  loadEnv: () => ({
+    tenantCacheTtlSec: 60,
+    redisUrl: 'redis://localhost:6379',
+    ...TEST_TENANT_DB_ENV,
+  }),
 }));
 
 import type { Redis } from 'ioredis';
+import { tenantLoginRole } from '@libriant/db-control';
+import { TEST_TENANT_DB_ENV, testSealedCredential } from './__fixtures__/tenant-credential.js';
 import { TenantResolverService } from './tenant-resolver.service.js';
 
 function makeFakeRedis() {
@@ -52,6 +65,20 @@ function makeFakeRedis() {
 const SUPERUSER_DB_URL = 'postgresql://libriant:s3cr3t-pg-pw@postgres:5432/tenant_tnt1';
 const TENANT_STORAGE_URL = 'file:///srv/libriant/storage/tnt-1';
 
+/**
+ * tenant-isolation-02: the row carries a real sealed credential, because since
+ * phase 4 `rowToContext` composes the context's `dbUrl` from it. A fixture
+ * without one would exercise the fail-closed branch and nothing else.
+ */
+const TENANT_ROLE = tenantLoginRole('tnt-1', 'a');
+const TENANT_RUNTIME_PASSWORD = 'ab'.repeat(32);
+const SEALED = testSealedCredential('tnt-1', TENANT_RUNTIME_PASSWORD);
+
+/** What `rowToContext` composes: the same endpoint and database, tenant role. */
+function runtimeUrlOn(hostPort = 'postgres:5432') {
+  return `postgresql://${TENANT_ROLE}:${TENANT_RUNTIME_PASSWORD}@${hostPort}/tenant_tnt1`;
+}
+
 function tenantRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: 'tnt-1',
@@ -63,6 +90,7 @@ function tenantRow(overrides: Partial<Record<string, unknown>> = {}) {
     storageUrl: TENANT_STORAGE_URL,
     customSubdomain: null,
     tags: [],
+    dbCredentials: SEALED,
     ...overrides,
   };
 }
@@ -137,19 +165,27 @@ describe('TenantResolverService.resolveBySlug', () => {
 
     const result = await service.resolveBySlug('acme');
 
-    // The caller still gets the addresses — they come from the process-local map.
-    expect(result?.dbUrl).toBe(SUPERUSER_DB_URL);
+    // The caller still gets the addresses — they come from the process-local
+    // map — and `dbUrl` is now the tenant's OWN credential, not the superuser
+    // string the row carries (tenant-isolation-02).
+    expect(result?.dbUrl).toBe(runtimeUrlOn());
+    expect(result?.dbUrl).not.toContain('s3cr3t-pg-pw');
     expect(result?.storageUrl).toBe(TENANT_STORAGE_URL);
 
     // …but the bytes that reached Redis carry neither the fields nor the secret.
     const raw = redis.store.get('tenant:slug:acme') ?? '';
     expect(raw).not.toBe('');
     expect(raw).not.toContain('s3cr3t-pg-pw');
+    expect(raw).not.toContain(TENANT_RUNTIME_PASSWORD);
     expect(raw).not.toContain('dbUrl');
     expect(raw).not.toContain('storageUrl');
+    // Nor the sealed credential itself, which is now joined onto the same row.
+    expect(raw).not.toContain('encryptedPwd');
+    expect(raw).not.toContain('dbCredentials');
     const cached = JSON.parse(raw);
     expect(cached.tenant).not.toHaveProperty('dbUrl');
     expect(cached.tenant).not.toHaveProperty('storageUrl');
+    expect(cached.tenant).not.toHaveProperty('dbCredentials');
     // The routing/identity fields the middleware needs are still shared.
     expect(cached.tenant.status).toBe('active');
     expect(cached.tenant.slug).toBe('acme');
@@ -180,11 +216,11 @@ describe('TenantResolverService.resolveBySlug', () => {
     const result = await service.resolveBySlug('acme');
 
     expect(findUnique).toHaveBeenCalledTimes(1);
-    expect(result?.dbUrl).toBe(SUPERUSER_DB_URL);
+    expect(result?.dbUrl).toBe(runtimeUrlOn());
     // …and the second call is served entirely from cache again.
     const again = await service.resolveBySlug('acme');
     expect(findUnique).toHaveBeenCalledTimes(1);
-    expect(again?.dbUrl).toBe(SUPERUSER_DB_URL);
+    expect(again?.dbUrl).toBe(runtimeUrlOn());
   });
 
   it('forgets the local addresses on invalidate, so a relocate is not served stale', async () => {
@@ -196,7 +232,8 @@ describe('TenantResolverService.resolveBySlug', () => {
     const moved = tenantRow({ dbUrl: 'postgresql://libriant:s3cr3t-pg-pw@pg2:5432/tenant_tnt1' });
     findUnique.mockResolvedValue(moved);
     const after = await service.resolveBySlug('acme');
-    expect(after?.dbUrl).toBe('postgresql://libriant:s3cr3t-pg-pw@pg2:5432/tenant_tnt1');
+    // The relocate moved the HOST; the credential is still the tenant's own.
+    expect(after?.dbUrl).toBe(runtimeUrlOn('pg2:5432'));
   });
 
   it('drops + re-fetches when the cache value is garbage JSON', async () => {

@@ -5,6 +5,7 @@ import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { EmailService } from '../email/email.service.js';
 import { ExportQueueService } from './export-queue.service.js';
 import { EXPORT_TTL_HOURS } from './export.constants.js';
+import { TENANT_RUNTIME_SELECT, type TenantRuntimeRow } from '../tenancy/tenant-db-url.js';
 import {
   discloseAdminExport,
   notifyLibraryOfExport,
@@ -116,7 +117,7 @@ export class ExportService {
     requester: ExportRequester,
     input: { format: ExportFormat; scope: ExportScope; tenantId?: string },
   ): Promise<ExportJob> {
-    let tenant: { id: string; slug: string; dbUrl: string } | null = null;
+    let tenant: (TenantRuntimeRow & { slug: string }) | null = null;
     let consent: ExportConsent | null = null;
     if (input.scope === 'tenant') {
       if (!input.tenantId) {
@@ -124,7 +125,7 @@ export class ExportService {
       }
       const t = await controlDb.tenant.findUnique({
         where: { id: input.tenantId },
-        select: { id: true, slug: true, dbUrl: true },
+        select: TENANT_RUNTIME_SELECT,
       });
       if (!t) throw new NotFoundException('Tenant not found.');
       tenant = t;

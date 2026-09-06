@@ -3,6 +3,7 @@ import { LRUCache } from 'lru-cache';
 import { controlDb, type Prisma } from '@libriant/db-control';
 import { FailOpenMemo, RedisService } from '../platform/redis.service.js';
 import { loadEnv } from '../config/env.js';
+import { TENANT_CREDENTIAL_SELECT, runtimeDbUrl } from './tenant-db-url.js';
 import type { TenantContext } from './tenant-context.js';
 
 /**
@@ -76,6 +77,16 @@ const TENANT_SELECT = {
   storageUrl: true,
   customSubdomain: true,
   tags: true,
+  // The sealed runtime credential, joined in the SAME query as the row it
+  // belongs to. `rowToContext` turns the two into ONE composed runtime URL, so
+  // `dbUrl` on a TenantContext is a per-tenant credential and never the
+  // superuser one (tenant-isolation-02).
+  //
+  // Its presence in this list is also what makes a rotation self-invalidating:
+  // CACHED_COLUMNS is read off these keys, so a write that touches
+  // `dbCredentials` drops the cached context through the same path a rename
+  // does, rather than through a paragraph asking the next writer to remember.
+  dbCredentials: { select: TENANT_CREDENTIAL_SELECT },
 } as const;
 
 const CACHED_COLUMNS: ReadonlySet<string> = new Set(Object.keys(TENANT_SELECT));
@@ -340,9 +351,28 @@ export class TenantResolverService {
       storageUrl: string;
       customSubdomain: string | null;
       tags: string[];
+      dbCredentials: {
+        roleName: string;
+        encryptedPwd: Uint8Array;
+        encryptionKeyId: string;
+        encryptionNonce: Uint8Array;
+      } | null;
     },
     resolvedFrom: TenantContext['resolvedFrom'],
   ): TenantContext {
-    return { ...row, resolvedFrom };
+    // Destructured, not spread. `dbCredentials` is a sealed secret and
+    // `TenantContext` is passed to guards, interceptors and (before
+    // tenant-isolation-03) a JSON serialiser; the only way it cannot ride
+    // along is for it not to be on the object at all.
+    const { dbCredentials, dbUrl: _adminUrl, ...rest } = row;
+    return {
+      ...rest,
+      // The context's `dbUrl` is the RUNTIME url from here on — a credential
+      // scoped to this one database. `assertUrlBelongsToTenant` in
+      // TenantPrismaService is unchanged and still checks the database name on
+      // every call: this is the second wall, not a replacement for the first.
+      dbUrl: runtimeDbUrl({ id: row.id, dbUrl: row.dbUrl, dbCredentials }),
+      resolvedFrom,
+    };
   }
 }

@@ -5,6 +5,7 @@ import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
 import { AnyAdmin } from '../admin/admin-roles.decorator.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
+import { TENANT_RUNTIME_SELECT, runtimeDbUrl } from '../tenancy/tenant-db-url.js';
 import { EffectivePlanService } from './effective-plan.service.js';
 import { breaches, collectUsage, type UsageRow } from './plan-usage.js';
 
@@ -71,7 +72,7 @@ export class AdminPlanUsageController {
     // can meet a 402; the active ones are who the flip lands on.
     const tenants = await controlDb.tenant.findMany({
       where: { status: 'active' },
-      select: { id: true, slug: true, name: true, dbUrl: true },
+      select: { ...TENANT_RUNTIME_SELECT, name: true },
       orderBy: { slug: 'asc' },
     });
 
@@ -84,8 +85,11 @@ export class AdminPlanUsageController {
       try {
         const plan = await this.effective.getPlanAsContracted(tenant.id);
         planSlug = plan.plan?.slug ?? null;
-        const tenantClient = this.tenantPrisma.getClient(tenant);
-        rows = await collectUsage(plan, { tenant, tenantClient });
+        // The RUNTIME credential, not `tenants.db_url` — an admin report reads
+        // library data and has no business holding the superuser string.
+        const runtime = { id: tenant.id, dbUrl: runtimeDbUrl(tenant) };
+        const tenantClient = this.tenantPrisma.getClient(runtime);
+        rows = await collectUsage(plan, { tenant: runtime, tenantClient });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.logger.warn(`over-cap: could not measure tenant ${tenant.slug}: ${message}`);

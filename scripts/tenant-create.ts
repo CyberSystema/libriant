@@ -14,6 +14,8 @@
  *   ENV (required):
  *     CONTROL_DATABASE_URL        — control-plane DB
  *     PG_SUPERUSER_URL            — superuser URL (used to CREATE DATABASE)
+ *     TENANT_DB_MASTER_KEY        — 64 hex; seals the new library's own
+ *                                   Postgres password into tenant_db_credentials
  *
  *   ENV (optional):
  *     STORAGE_ROOT                — defaults to ./.dev-storage
@@ -40,7 +42,16 @@ import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import bcrypt from 'bcryptjs';
 import { Client as PgClient } from 'pg';
-import { controlDb, type Prisma } from '@libriant/db-control';
+import {
+  applyTenantRoleGrants,
+  controlDb,
+  dropTenantRoles,
+  ensureTenantRoles,
+  newRuntimePassword,
+  parseTenantDbMasterKey,
+  sealTenantPassword,
+  type Prisma,
+} from '@libriant/db-control';
 import { assertSlug, dbNameForTenant, die, isYes, log, parseArgs, urlForDb } from './_lib/cli.js';
 
 const execFileP = promisify(execFile);
@@ -157,8 +168,29 @@ async function main() {
   log(SCRIPT, `creating database ${dbName}…`);
   await createTenantDatabase(dbName);
   try {
+    // The library's own Postgres roles, created BEFORE the migrations so the
+    // default-privilege rules cover every table they make (tenant-isolation-02).
+    // `dbUrl` above is the ADMIN url and is what goes on `tenants.db_url`; the
+    // runtime url is composed per process from the sealed password below and is
+    // never persisted anywhere.
+    log(SCRIPT, `creating per-tenant database roles…`);
+    const runtimePassword = newRuntimePassword();
+    const { loginRole } = await ensureTenantRoles({
+      tenantDbUrl: dbUrl,
+      tenantId,
+      activeSlot: 'a',
+      password: runtimePassword,
+    });
+    const credential = sealTenantPassword({
+      tenantId,
+      roleName: loginRole,
+      password: runtimePassword,
+      masterKey: parseTenantDbMasterKey(reqEnv('TENANT_DB_MASTER_KEY')),
+    });
+
     log(SCRIPT, 'applying tenant migrations…');
     await applyTenantMigrations(dbUrl);
+    await applyTenantRoleGrants({ tenantDbUrl: dbUrl, tenantId });
 
     log(SCRIPT, `ensuring storage dir ${storageRoot}/${tenantId}…`);
     await mkdir(path.join(path.resolve(storageRoot), tenantId), { recursive: true });
@@ -178,6 +210,15 @@ async function main() {
           dbUrl,
           storageUrl,
           primaryEmail,
+        },
+      });
+      await tx.tenantDbCredential.create({
+        data: {
+          tenantId: tenant.id,
+          roleName: credential.roleName,
+          encryptedPwd: credential.encryptedPwd,
+          encryptionKeyId: credential.encryptionKeyId,
+          encryptionNonce: credential.encryptionNonce,
         },
       });
       await tx.user.create({
@@ -219,7 +260,8 @@ async function main() {
     });
 
     log(SCRIPT, `done. tenant.id=${tenantId} slug=${slug}`);
-    log(SCRIPT, `  dbUrl=${dbUrl.replace(/:[^:@]+@/, ':***@')}`);
+    log(SCRIPT, `  dbUrl=${dbUrl.replace(/:[^:@]+@/, ':***@')} (admin/migration only)`);
+    log(SCRIPT, `  runtime role=${loginRole}`);
     log(SCRIPT, `  storageUrl=${storageUrl}`);
     if (!v['owner-password']) {
       log(SCRIPT, `  ⚠  generated owner password (record it now): ${password}`);
@@ -229,6 +271,11 @@ async function main() {
     log(SCRIPT, `rolling back: dropping database ${dbName}…`);
     await dropTenantDatabase(dbName).catch((e) => {
       log(SCRIPT, `  teardown warning: ${(e as Error).message}`);
+    });
+    // Roles are cluster-wide and outlive the database. Dropped after it, so
+    // the database-scoped ACLs are already gone and DROP ROLE succeeds.
+    await dropTenantRoles({ adminUrl: reqEnv('PG_SUPERUSER_URL'), tenantId }).catch((e) => {
+      log(SCRIPT, `  role teardown warning: ${(e as Error).message}`);
     });
     throw err;
   } finally {

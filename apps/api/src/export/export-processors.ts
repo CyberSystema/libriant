@@ -13,6 +13,7 @@ import ExcelJS from 'exceljs';
 import { Client as PgClient } from 'pg';
 import { controlDb } from '@libriant/db-control';
 import type { ExportFormat, ExportJob } from '@libriant/db-control';
+import { TENANT_RUNTIME_SELECT, runtimeDbUrl } from '../tenancy/tenant-db-url.js';
 import { loadEnv } from '../config/env.js';
 import { EXPORT_MAX_RUNTIME_MS } from './export.constants.js';
 
@@ -509,26 +510,36 @@ async function addTargetToArchive(
 
 // --- per-DB helpers --------------------------------------------------------
 
+/**
+ * Every tenant target carries that tenant's RUNTIME url — the export worker
+ * reads library data, so it connects as the library's own role and not as the
+ * superuser (tenant-isolation-02). `pg_dump --no-owner --no-privileges` and the
+ * streamed readers both need SELECT and nothing more, which is exactly what
+ * `tenant_<id>_app` holds.
+ *
+ * The `control` target is the one place a superuser string is legitimate, and
+ * `dumpSql` refuses to SQL-dump it at all (EXP-004).
+ */
 async function resolveTargets(job: ExportJob, superuserUrl: string): Promise<Target[]> {
   if (job.scope === 'tenant') {
     const t = await controlDb.tenant.findUnique({
       where: { id: job.targetTenantId ?? '' },
-      select: { slug: true, dbUrl: true },
+      select: TENANT_RUNTIME_SELECT,
     });
     if (!t) throw new Error('Target tenant not found.');
-    return [{ label: t.slug, dbUrl: t.dbUrl }];
+    return [{ label: t.slug, dbUrl: runtimeDbUrl(t) }];
   }
   if (job.scope === 'control') {
     return [{ label: 'control', dbUrl: superuserUrl, isControl: true }];
   }
   const tenants = await controlDb.tenant.findMany({
     where: { status: { not: 'archived' } },
-    select: { slug: true, dbUrl: true },
+    select: TENANT_RUNTIME_SELECT,
     orderBy: { slug: 'asc' },
   });
   return [
     { label: 'control', dbUrl: superuserUrl, isControl: true },
-    ...tenants.map((t) => ({ label: t.slug, dbUrl: t.dbUrl })),
+    ...tenants.map((t) => ({ label: t.slug, dbUrl: runtimeDbUrl(t) })),
   ];
 }
 
@@ -568,7 +579,13 @@ async function dumpSql(target: Target, outPath: string): Promise<void> {
     PGDATABASE: decodeURIComponent(u.pathname.replace(/^\//, '')),
     PGUSER: decodeURIComponent(u.username),
     PGPASSWORD: decodeURIComponent(u.password),
-    PGOPTIONS: `-c statement_timeout=${STATEMENT_TIMEOUT_MS}`,
+    // Both timeouts are overridden here rather than inherited: the tenant's
+    // runtime role carries a 15 s statement cap and a 60 s idle-in-transaction
+    // cap for the request path (tenant-isolation-02), and a dump is neither. A
+    // startup-packet option outranks the role's own setting, so this is the
+    // opt-out the role-level default is designed to allow.
+    PGOPTIONS:
+      `-c statement_timeout=${STATEMENT_TIMEOUT_MS} ` + `-c idle_in_transaction_session_timeout=0`,
     PGCONNECT_TIMEOUT: String(Math.ceil(CONNECTION_TIMEOUT_MS / 1000)),
   };
   // Dump goes to --file, not stdout, so the 16MB maxBuffer cap is unnecessary.

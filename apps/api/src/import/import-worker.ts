@@ -20,6 +20,7 @@ import { loadEnv } from '../config/env.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { RedisService } from '../platform/redis.service.js';
+import { TENANT_RUNTIME_SELECT, runtimeDbUrl } from '../tenancy/tenant-db-url.js';
 import { executeImport } from './engine/runner.js';
 import type { EngineContext, EngineRowResult } from './engine/import-engine.js';
 import { deleteStaged, readStaged } from './import-staging.js';
@@ -54,7 +55,7 @@ export async function processImportJob(
 
   const tenant = await controlDb.tenant.findUnique({
     where: { id: batch.tenantId },
-    select: { dbUrl: true },
+    select: TENANT_RUNTIME_SELECT,
   });
   if (!tenant) {
     await fail(batchId, 'Tenant no longer exists.');
@@ -62,7 +63,7 @@ export async function processImportJob(
   }
 
   const dryRun = phase === 'validate';
-  const client = makeTenantPrismaClient({ databaseUrl: tenant.dbUrl });
+  const client = makeTenantPrismaClient({ databaseUrl: runtimeDbUrl(tenant) });
 
   // Fresh issue list for this run.
   await controlDb.importRowIssue.deleteMany({ where: { batchId } });

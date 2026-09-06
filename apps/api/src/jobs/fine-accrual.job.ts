@@ -2,6 +2,7 @@ import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { Prisma, type TenantPrismaClient } from '@libriant/db-tenant';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
+import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { describeError } from './job-error.js';
 import type { JobResult } from './jobs.types.js';
@@ -40,17 +41,7 @@ const logger = new Logger('FineAccrualSweeper');
 export async function sweepFineAccrual(): Promise<JobResult> {
   const tenants = await controlDb.tenant.findMany({
     where: { status: 'active' },
-    select: {
-      id: true,
-      slug: true,
-      name: true,
-      defaultLocale: true,
-      status: true,
-      dbUrl: true,
-      storageUrl: true,
-      customSubdomain: true,
-      tags: true,
-    },
+    select: TENANT_CONTEXT_SELECT,
   });
 
   const tenantPrisma = new TenantPrismaService('worker');
@@ -58,8 +49,14 @@ export async function sweepFineAccrual(): Promise<JobResult> {
   let failed = 0;
   try {
     for (const t of tenants) {
-      const ctx: TenantContext = { ...t, resolvedFrom: 'path' };
+      // Constructed INSIDE the per-tenant try. `tenantContextFrom` throws for a
+      // tenant with no sealed database credential (tenant-isolation-02), and a
+      // throw out here would end the sweep for EVERY library at the first
+      // un-backfilled one — turning a single tenant's missing row into a
+      // fleet-wide outage of the nightly job. The counter below is what that
+      // case is for.
       try {
+        const ctx: TenantContext = tenantContextFrom(t);
         touched += await accrueOneTenant(ctx, tenantPrisma);
       } catch (err) {
         failed++;

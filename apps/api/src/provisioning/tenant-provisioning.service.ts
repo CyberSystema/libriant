@@ -9,6 +9,17 @@ import {
   disconnectTenantClient,
   reconcileSystemRoles,
 } from '@libriant/db-tenant';
+import {
+  applyTenantRoleGrants,
+  composeRuntimeUrl,
+  dropTenantRoles,
+  ensureTenantRoles,
+  newRuntimePassword,
+  parseTenantDbMasterKey,
+  sealTenantPassword,
+  tenantLoginRole,
+  type SealedPassword,
+} from '@libriant/db-control';
 import { loadEnv } from '../config/env.js';
 
 const execFileP = promisify(execFile);
@@ -22,10 +33,26 @@ export type TenantPlacement = {
   tenantId: string;
   /** Cell that owns this tenant (currently always `cell-eu-1` in dev). */
   cellId: string;
-  /** Postgres URL pointing at the freshly provisioned tenant DB. */
+  /**
+   * The ADMIN url for this tenant's database — superuser, migration-only.
+   * Stored on `tenants.db_url`. It is NOT what the request path connects with;
+   * see `credential` below and `tenancy/tenant-db-url.ts`.
+   */
   dbUrl: string;
   /** Storage URL for this tenant's files. */
   storageUrl: string;
+  /**
+   * The sealed per-tenant runtime password, ready to be written to
+   * `tenant_db_credentials`.
+   *
+   * Returned rather than written here because that table has an FK to
+   * `tenants`, and the tenant row does not exist yet — the caller owns the
+   * transaction that creates both. A tenant row committed WITHOUT this
+   * credential is a tenant the API will refuse to serve (fail-closed in
+   * `runtimeDbUrl`), which is the correct way round: the failure is loud and
+   * at signup, not silent and at superuser privilege.
+   */
+  credential: SealedPassword;
 };
 
 /**
@@ -73,10 +100,27 @@ export class TenantProvisioningService {
     ).href;
 
     await this.createDatabase(dbName);
+    // Roles BEFORE migrations, so `ALTER DEFAULT PRIVILEGES` is already in
+    // force while `prisma migrate deploy` creates the tables — and grants
+    // AFTER them too, because default privileges only cover objects created
+    // after they were set and this database may already carry some.
+    const credential = await this.createRuntimeRoles(input.tenantId, dbUrl);
     await this.applyTenantMigrations(dbUrl);
+    await applyTenantRoleGrants({ tenantDbUrl: dbUrl, tenantId: input.tenantId });
     await this.seedDefaults(dbUrl);
+    // The seed above ran as the superuser. Prove the tenant's OWN credential
+    // can open the database it was just granted, here, while there is still a
+    // teardown path — rather than at the first request of a library that was
+    // told its signup succeeded.
+    await this.verifyRuntimeCredential(input.tenantId, dbUrl, credential.password);
 
-    return { tenantId: input.tenantId, cellId: input.cellId, dbUrl, storageUrl };
+    return {
+      tenantId: input.tenantId,
+      cellId: input.cellId,
+      dbUrl,
+      storageUrl,
+      credential: credential.sealed,
+    };
   }
 
   /**
@@ -100,12 +144,105 @@ export class TenantProvisioningService {
     } finally {
       await admin.end();
     }
+    // Roles are cluster-wide, so dropping the database does not remove them.
+    // Left behind they accumulate for the life of the cluster and — worse —
+    // a tenant id that came round again would inherit a role whose password
+    // somebody else's control-plane row still seals. Dropped AFTER the
+    // database, which is what removes the ACLs and per-database settings that
+    // would otherwise make DROP ROLE fail.
+    try {
+      const dropped = await dropTenantRoles({
+        adminUrl: this.env.pgSuperuserUrl,
+        tenantId,
+      });
+      if (dropped.length) {
+        this.logger.warn(`Dropped ${dropped.length} database role(s) for tenant ${tenantId}.`);
+      }
+    } catch (err) {
+      // Never fatal: teardown is the rollback path for a signup that already
+      // failed, and a leftover role is an operational annoyance while a thrown
+      // error here would mask the original cause.
+      this.logger.warn(
+        `Could not drop database roles for tenant ${tenantId}: ` +
+          `${err instanceof Error ? err.message : err}`,
+      );
+    }
   }
 
   // --- internals ---------------------------------------------------------
 
-  /** Build the per-tenant Postgres URL by swapping the DB name on the
-   *  superuser URL. Keeps host/user/password aligned. */
+  /**
+   * Create this tenant's privilege role and its two login slots, set a fresh
+   * password on slot `a`, and seal it for `tenant_db_credentials`.
+   *
+   * The plaintext exists only inside this call and the verification below; it
+   * is never returned to the caller, never logged, and never written anywhere
+   * but Postgres's own `pg_authid` and the AES-GCM ciphertext.
+   */
+  private async createRuntimeRoles(
+    tenantId: string,
+    dbUrl: string,
+  ): Promise<{ sealed: SealedPassword; password: string }> {
+    const password = newRuntimePassword();
+    const { loginRole } = await ensureTenantRoles({
+      tenantDbUrl: dbUrl,
+      tenantId,
+      activeSlot: 'a',
+      password,
+      limits: {
+        connectionLimit: this.env.tenantDbConnectionLimit,
+        statementTimeout: this.env.tenantDbStatementTimeout,
+        idleInTransactionTimeout: this.env.tenantDbIdleTxTimeout,
+      },
+    });
+    const sealed = sealTenantPassword({
+      tenantId,
+      roleName: loginRole,
+      password,
+      masterKey: parseTenantDbMasterKey(this.env.tenantDbMasterKey),
+    });
+    this.logger.log(`Created database role ${loginRole} for tenant ${tenantId}.`);
+    return { sealed, password };
+  }
+
+  /**
+   * Connect once as the tenant's own role and read a table only the grants make
+   * readable.
+   *
+   * `SELECT 1` would prove authentication and nothing else — a role that can
+   * log in but was granted nothing produces a database that looks fine until
+   * the first query. Reading `tenant_settings`, which `seedDefaults` has just
+   * written, proves CONNECT, USAGE on the schema and SELECT on a migrated
+   * table in one round trip.
+   */
+  private async verifyRuntimeCredential(
+    tenantId: string,
+    dbUrl: string,
+    password: string,
+  ): Promise<void> {
+    const runtimeUrl = composeRuntimeUrl({
+      adminUrl: dbUrl,
+      roleName: tenantLoginRole(tenantId, 'a'),
+      password,
+    });
+    const probe = new PgClient({ connectionString: runtimeUrl });
+    try {
+      await probe.connect();
+      await probe.query('SELECT id FROM tenant_settings LIMIT 1');
+    } catch (err) {
+      throw new Error(
+        `Tenant ${tenantId} was provisioned but its own database role cannot use the ` +
+          `database: ${err instanceof Error ? err.message : err}. Refusing to finish ` +
+          'provisioning — the alternative is a library whose every request 500s.',
+        { cause: err },
+      );
+    } finally {
+      await probe.end().catch(() => undefined);
+    }
+  }
+
+  /** Build the per-tenant ADMIN Postgres URL by swapping the DB name on the
+   *  superuser URL. Migration-only — see tenancy/tenant-db-url.ts. */
   private urlForDb(dbName: string): string {
     const u = new URL(this.env.pgSuperuserUrl);
     u.pathname = `/${dbName}`;

@@ -1548,7 +1548,7 @@
    ],
    "status": "fixed",
    "wave": 7,
-   "note": "adversarially verified 2026-08-26; diff-vs-report confirmed for all six packages",
+   "note": "adversarially verified 2026-08-26 — but that wave closed only the application half (assertUrlBelongsToTenant), and tenant-prisma.service.ts said so: \"The full fix (a per-tenant role, GRANTed to one database, with the secret in the already-modelled TenantDbCredential) has to happen in provisioning.\" That landed 2026-09-06 in Libriant 2.0 phase 4: tenant_<id>_app plus two login slots per database, CONNECT revoked from PUBLIC, the sealed password in tenant_db_credentials, and the runtime url composed in-process. Postgres now refuses one library's credential against another's database — asserted in apps/api/test/integration/tenant-db-credentials.spec.ts and gated by check:tenant-db-urls.",
    "commit": null
   },
   {
@@ -1561,7 +1561,7 @@
    ],
    "status": "fixed",
    "wave": 7,
-   "note": "adversarially verified 2026-08-26; diff-vs-report confirmed for all six packages",
+   "note": "adversarially verified 2026-08-26 (dbUrl left the Redis value). Completed 2026-09-06 in Libriant 2.0 phase 4: the string the request path holds is no longer a superuser credential at all, so the process-local address map now carries a per-database one. The sealed credential is joined onto the same row and is excluded from the cached value by type and by assertion.",
    "commit": null
   },
   {

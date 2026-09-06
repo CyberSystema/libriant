@@ -5457,12 +5457,25 @@ step_env() {
 
   # §4.2 hard requirements, checked here because the failure mode is a container
   # that refuses to boot rather than a warning anyone reads.
-  local mfa ses sto
+  local mfa ses sto tdb
   mfa="$(env_get "$ENV_FILE" MFA_MASTER_KEY || true)"
   case "$mfa" in
     *[!0-9a-fA-F]*|'') die "MFA_MASTER_KEY is missing or not hex in $ENV_FILE." ;;
     *) [ "${#mfa}" = 64 ] || die "MFA_MASTER_KEY is ${#mfa} characters; the API requires exactly 64 hex (AES-256)." ;;
   esac
+  # tenant-isolation-02: same shape, different population. This key seals every
+  # library's own Postgres password; the API refuses to boot without it, and
+  # refuses to boot if it is a copy of MFA_MASTER_KEY.
+  tdb="$(env_get "$ENV_FILE" TENANT_DB_MASTER_KEY || true)"
+  case "$tdb" in
+    *[!0-9a-fA-F]*|'') die "TENANT_DB_MASTER_KEY is missing or not hex in $ENV_FILE." ;;
+    *) [ "${#tdb}" = 64 ] || die "TENANT_DB_MASTER_KEY is ${#tdb} characters; the API requires exactly 64 hex (AES-256)." ;;
+  esac
+  if [ "$tdb" = "$mfa" ]; then
+    die "TENANT_DB_MASTER_KEY equals MFA_MASTER_KEY. One recovers admin TOTP
+     enrolments, the other opens every library database; sharing them means a leak
+     of either is a leak of both. Generate a distinct value (openssl rand -hex 32)."
+  fi
   ses="$(env_get "$ENV_FILE" SESSION_SECRET || true)"
   sto="$(env_get "$ENV_FILE" STORAGE_SIGNING_SECRET || true)"
   if [ -n "$ses" ] && [ "$ses" = "$sto" ]; then
@@ -5470,7 +5483,7 @@ step_env() {
      forgery and anonymous cross-tenant file reads is exactly the oracle that
      separating them prevents. Generate a distinct value (openssl rand -hex 32)."
   fi
-  ok "MFA_MASTER_KEY is 64 hex; STORAGE_SIGNING_SECRET differs from SESSION_SECRET"
+  ok "MFA_MASTER_KEY and TENANT_DB_MASTER_KEY are 64 hex and differ; STORAGE_SIGNING_SECRET differs from SESSION_SECRET"
 
   local abe abp
   abe="$(env_get "$ENV_FILE" ADMIN_BOOTSTRAP_EMAIL || true)"
@@ -5528,6 +5541,10 @@ step_env() {
   printf '                        MFA is mandatory in production with no recovery codes\n'
   printf '    POSTGRES_PASSWORD   the live cluster is keyed to it\n'
   printf '    the origin cert     in no backup; it blocks every deploy if lost\n\n'
+  printf '  And one that is recoverable only by a procedure:\n'
+  printf '    TENANT_DB_MASTER_KEY  opens every library database password. Lose it and\n'
+  printf '                        the whole fleet 500s until you set a new key AND run\n'
+  printf '                        `pnpm tenant:rotate-db-creds --all` before restarting.\n\n'
   pause_for "Copy it now (as ${DEPLOY_USER}: cat ${ENV_FILE})."
 }
 

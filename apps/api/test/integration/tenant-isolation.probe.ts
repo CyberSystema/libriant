@@ -10,7 +10,12 @@ import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { Client as PgClient } from 'pg';
-import { controlDb } from '@libriant/db-control';
+import {
+  composeRuntimeUrl,
+  controlDb,
+  openTenantPassword,
+  parseTenantDbMasterKey,
+} from '@libriant/db-control';
 import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { RedisService } from '../../src/platform/redis.service.js';
@@ -352,23 +357,62 @@ describe('tenant-isolation audit probe', () => {
     await redis.client.del(`tenant:slug:${slugA}`);
   });
 
-  it('P10 every tenant DB is reachable with the SAME credentials', async () => {
-    const a = await controlDb.tenant.findUnique({ where: { id: idA }, select: { dbUrl: true } });
-    const b = await controlDb.tenant.findUnique({ where: { id: idB }, select: { dbUrl: true } });
+  it('P10 the ADMIN url is still shared; the RUNTIME url is not', async () => {
+    // tenant-isolation-02 was recorded here as "every tenant DB is reachable
+    // with the SAME credentials". Half of that is still true and is meant to
+    // be: `tenants.db_url` is the superuser string, and since phase 4 it is
+    // used only for CREATE DATABASE, migrations, pg_dump and VACUUM. The half
+    // that changed is what the REQUEST PATH holds, so this probe now records
+    // both and the difference between them.
+    const a = await controlDb.tenant.findUnique({
+      where: { id: idA },
+      select: { dbUrl: true, dbCredentials: true },
+    });
+    const b = await controlDb.tenant.findUnique({
+      where: { id: idB },
+      select: { dbUrl: true, dbCredentials: true },
+    });
     const ua = new URL(a!.dbUrl);
     const ub = new URL(b!.dbUrl);
     note(
-      `P10 A role=${ua.username} B role=${ub.username} sameCreds=${ua.username === ub.username && ua.password === ub.password}`,
+      `P10 admin role A=${ua.username} B=${ub.username} sameCreds=${ua.username === ub.username && ua.password === ub.password}`,
     );
-    // Connect to B's database using the URL the API holds for A (creds only differ in dbname).
+
+    // The original demonstration, against the ADMIN url: this still works, and
+    // is exactly why nothing on a request path is allowed to hold it.
     const spoof = new URL(a!.dbUrl);
     spoof.pathname = ub.pathname;
     const c = new PgClient({ connectionString: spoof.toString() });
     await c.connect();
     const res = await c.query('select count(*)::int as n from members');
     await c.end();
-    note(`P10 connected to B's DB using A's connection credentials: members=${res.rows[0].n}`);
+    note(`P10a admin url for A opened B's DB: members=${res.rows[0].n}`);
+
     const cred = await controlDb.tenantDbCredential.count();
-    note(`P10 tenant_db_credentials rows: ${cred}`);
+    note(`P10b tenant_db_credentials rows: ${cred}`);
+    if (!a?.dbCredentials || !b?.dbCredentials) {
+      note('P10c NO per-tenant credential — this fleet has not been backfilled.');
+      return;
+    }
+    // …and the same demonstration against what the API actually connects with.
+    const masterKey = parseTenantDbMasterKey(env.tenantDbMasterKey);
+    const runtimeA = composeRuntimeUrl({
+      adminUrl: a.dbUrl,
+      roleName: a.dbCredentials.roleName,
+      password: openTenantPassword({ tenantId: idA, row: a.dbCredentials, masterKey }),
+    });
+    note(`P10c runtime role A=${new URL(runtimeA).username}`);
+    const spoofRuntime = new URL(runtimeA);
+    spoofRuntime.pathname = ub.pathname;
+    const c2 = new PgClient({ connectionString: spoofRuntime.toString() });
+    try {
+      await c2.connect();
+      const r2 = await c2.query('select count(*)::int as n from members');
+      note(`P10d !!! runtime url for A opened B's DB: members=${r2.rows[0].n}`);
+    } catch (err) {
+      note(`P10d runtime url for A refused by B's DB: ${(err as Error).message}`);
+    } finally {
+      await c2.end().catch(() => undefined);
+    }
   });
 });

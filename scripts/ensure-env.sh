@@ -139,6 +139,11 @@ ensure_rand ADMIN_SESSION_SECRET 32
 ensure_rand IMPERSONATION_SECRET 32
 ensure_rand STORAGE_SIGNING_SECRET 32
 ensure_rand MFA_MASTER_KEY 32        # 32 bytes -> 64 hex chars (AES-256)
+# Seals every library's own Postgres password (tenant-isolation-02). Generated
+# separately from MFA_MASTER_KEY on purpose: the API refuses to boot when the
+# two match, because one recovers admin TOTP enrollments and the other opens
+# every tenant database.
+ensure_rand TENANT_DB_MASTER_KEY 32  # 32 bytes -> 64 hex chars (AES-256)
 ensure_rand POSTGRES_PASSWORD 24     # preserved if the DB already has one
 # Grafana's admin login, which reaches every metric this fleet produces. It has
 # to be generated HERE rather than left to the operator, because the monitoring

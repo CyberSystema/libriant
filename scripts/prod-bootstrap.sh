@@ -365,6 +365,35 @@ fi
 # and the correct action is cheap and is printed below: a tenant whose database
 # cannot be migrated is a tenant that cannot serve, so either fix it or archive
 # the row, which is what makes the fan-out skip it.
+# tenant-isolation-02: every library needs its OWN Postgres login role before
+# the API will serve it. `runtimeDbUrl` fails CLOSED for a tenant with no row in
+# `tenant_db_credentials` — deliberately, because the only alternative is the
+# superuser url, which is the finding.
+#
+# `--missing-only` is what makes this safe to run unconditionally: it touches a
+# tenant only if that tenant has no credential at all, so on a fleet that has
+# already been backfilled it prints one line and exits. It is NOT a rotation.
+#
+# It runs BEFORE tenant:migrate on purpose. The migrator re-issues grants after
+# applying a migration, and it can only do that for a tenant whose privilege
+# role exists — so the order is: roles, then schema, then the grants that cover
+# what the schema just created.
+#
+# Fatal, for the same reason the migration below is: a tenant without a
+# credential is a tenant that 500s on every request, and a deploy that reported
+# success while that was true is exactly the class of failure boot-and-config-04
+# removed from the line beneath this one.
+echo "[bootstrap] ensuring every tenant has its own database credential ..."
+if ! pnpm tenant:rotate-db-creds --all --missing-only; then
+  echo "[bootstrap] FATAL: one or more tenants could not be given a database role." >&2
+  echo "[bootstrap] Those libraries would 500 on every request (the API refuses to open" >&2
+  echo "[bootstrap] a tenant database with the superuser credential), so api/worker will" >&2
+  echo "[bootstrap] NOT start and the fleet stays on the previous image." >&2
+  echo "[bootstrap] The per-slug summary above names the failures. Usual causes: the" >&2
+  echo "[bootstrap] tenant database is unreachable, or PG_SUPERUSER_URL lacks CREATEROLE." >&2
+  exit 1
+fi
+
 echo "[bootstrap] migrating existing tenant databases ..."
 if ! pnpm tenant:migrate; then
   echo "[bootstrap] FATAL: one or more tenant databases did not migrate (see the per-slug" >&2
