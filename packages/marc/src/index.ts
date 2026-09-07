@@ -30,6 +30,9 @@
  * | change a record                     | `applyOps` (`invert` undoes ONE op)    |
  * | show what changed                   | `diff`                                 |
  * | decide whether to write a version   | `sameContent`, `contentHash`           |
+ * | check a record against a format     | `validate` + `shippedSchema`           |
+ * | decide whether an EDIT may be saved | `validateDelta`                        |
+ * | start a new record                  | `SHIPPED_TEMPLATES`, `recordFromTemplate` |
  */
 
 export * from './types.js';
@@ -40,6 +43,18 @@ export * from './path.js';
 export * from './ops.js';
 export * from './diff.js';
 export * from './canonical.js';
+export * from './avram.js';
+export * from './issues.js';
+export * from './validate.js';
+export * from './rules.js';
+export * from './templates.js';
+export {
+  SHIPPED_PROFILES,
+  UNAVAILABLE_PROFILES,
+  shippedSchema,
+  shippedSchemas,
+  type ShippedProfile,
+} from './definitions.js';
 export * from './linkage.js';
 export {
   canEncodeMarc8,

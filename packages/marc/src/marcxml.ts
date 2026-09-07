@@ -151,8 +151,18 @@ function readOneRecord(children: Node[]): ParsedRecord {
         anomalies.push({ code: ANOMALY.tagMalformed, tag, occurrence, saw: tag });
       }
       // A missing or empty indicator attribute means a blank, which is a SPACE.
-      // Every exporter that writes `ind1=""` means one.
-      const ind = (v: string | undefined): string => (v && v.length ? (v[0] as string) : ' ');
+      // Every exporter that writes `ind1=""` means one. An indicator LONGER than
+      // one character is data loss, so it is reported rather than quietly
+      // trimmed — and a stored over-long indicator is invisible afterwards,
+      // because every serializer emits two characters while the content hash
+      // remembers three.
+      const ind = (v: string | undefined): string => {
+        if (!v || !v.length) return ' ';
+        if (v.length > 1) {
+          anomalies.push({ code: ANOMALY.indicatorTruncated, tag, occurrence, saw: v });
+        }
+        return v[0] as string;
+      };
       const s: Subfield[] = [];
       for (const sub of childrenOf(child, 'datafield')) {
         if (!('subfield' in sub)) continue;

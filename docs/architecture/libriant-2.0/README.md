@@ -349,3 +349,117 @@ byte-mutated records through read-then-write with zero non-`MarcError`
 exceptions, 200,000 random byte strings through MARC-8 decode-then-encode with
 11,222 encodable and **100 % byte-identical**, and 20,000 generated single ops
 through apply-then-invert with zero failures.
+
+**Phase 8 — format definitions and the validator.** Delivered: the Avram-shaped
+definition model, the layered loader, the validator, `validateDelta`, rule packs
+and templates as data, `check:marc-schema` as the seventeenth gate, and
+`scripts/gen-marc-schema.ts`. What diverges is almost all about the same thing —
+phase 8's central input is exactly as absent as phase 7's `codetables.xml` — and
+the shape of the answer is different, because the failure mode is different.
+
+- **A validator's failure is a FALSE ACCUSATION, so its refusal is silence.**
+  Phase 7 made damage loud (U+FFFD plus a typed anomaly) because a wrong MARC-8
+  mapping corrupts data silently. A wrong validation rule does the opposite: it
+  accuses a correct record, and a librarian who cannot save because of it
+  switches validation off — after which it protects nothing. That is the failure
+  the architecture already names at line 163. So every unverified rule here is
+  SILENT, and three mechanisms make that safe rather than useless:
+
+  **Open world.** A tag, subfield code or indicator the definition does not
+  mention produces no issue at all. MARC 21 reserves 9XX and every X9X for local
+  use and LC's own distributed records carry 906, 925, 955; a closed-world
+  validator flags a library's own fields on every save. It also makes a partial
+  definition safe — an undescribed field is unconstrained rather than wrong.
+
+  **A confidence cap.** The shipped definition declares
+  `coverage.confidence: "transcribed"`, and the validator caps every rule it
+  reads out of that file — repeatability, indicator lists, subfield lists,
+  obsolescence, field length — at WARNING. Only STRUCTURAL rules, which come from
+  the format rather than from a row somebody typed (an indicator is two
+  characters; a control field has no subfields), are errors. So a mistranscribed
+  row costs a spurious warning and can never refuse a save. Running
+  `scripts/gen-marc-schema.ts` against a vendored authority is what flips it to
+  `"generated"` and turns the same rules into errors — that one word is the whole
+  of what this phase owes a later session.
+
+  **A coverage channel.** "No issues" from a definition describing 41 tags is a
+  lie of omission and would make this phase worse than nothing, so `validate`
+  returns `uncheckedTags` beside the issues, and a caller that shows a green tick
+  without showing them is misreporting.
+
+- **One definition ships, not five.** MARC 21 bibliographic, 41 fields,
+  hand-transcribed. MARC 21 authority and holdings and UNIMARC bibliographic and
+  authorities are **declared and refused** — `shippedSchema('unimarc/bibliographic')`
+  throws naming the profile and the reason, rather than returning an empty
+  definition that would validate every record clean. UNIMARC is the exact
+  analogue of phase 7's Greek MARC-8 table: it is what ABEKT exports and
+  therefore what the Greek market runs on, which is precisely why it must come
+  from IFLA rather than from memory.
+
+  Absent from the definition on purpose and recorded in its own `coverage.limits`:
+  the material-specific 008/18-34 and 006/01-17 blocks (seven layouts
+  discriminated by Leader/06 and /07), all fifteen 007 layouts, and 880 — whose
+  indicators MIRROR the field it links to, so giving it a list of its own would
+  be wrong for every record that has one.
+
+- **"Zero false positives on LC-published-valid records" is replaced.** There are
+  no LC records here. What `check:marc-schema` asserts instead is that the
+  definition raises **zero errors on all 5,000 records of the phase-7 corpus** —
+  which is not a substitute for real records but is not circular either: that
+  corpus was written to test byte-level round-tripping, its tags were chosen to
+  exercise a serializer, and it predates this definition. A deliberate break
+  proved the check bites: marking 650 non-repeatable produced 2,544 errors.
+
+- **`validateDelta` subtracts a MULTISET keyed on `(rule, tag, code, position,
+subject)` — and on nothing else.** `subject` is the machine-readable thing the
+  rule objects to (the indicator value, the offending code). Deliberately
+  excluded: the occurrence ordinal, because deleting the second of five 650s
+  renumbers the rest and every pre-existing issue on them would look new; the
+  field's content, because a cataloguer fixing a typo in `245 $a` must not be
+  blocked by a pre-existing illegal indicator on that same 245; the message text,
+  because rewording it in a later release must not turn every stored record's
+  issues into new ones; and the severity, because promoting a warning is a policy
+  change and not an edit.
+
+  One hole is left open and stated rather than closed: an edit that fixes one
+  fault and introduces another with the SAME identity nets to zero and does not
+  block. It errs toward letting the librarian save, which is the direction this
+  whole design errs in.
+
+- **The issue limit applies to the RESULT, never to either side of a delta.**
+  Limiting each side first is the obvious implementation and it is wrong in the
+  one direction that matters: a `before` truncated at the limit drops pre-existing
+  faults from the subtraction, so they reappear as INTRODUCED and block a save the
+  edit had nothing to do with — on exactly the ruined record where the amnesty
+  matters most.
+
+- **`ValidationMode` is named here, not in phase 10.** `'block'` is the default
+  and the only one a cataloguer's save uses; `'record'` writes the issues and
+  flags the record instead of refusing it, which is what the phase-19/20 cutover,
+  phase 35's migration adapters, phase 30's overlay and phase 37's batch undo all
+  need — none of them may be stopped by a fault that was already in the data.
+
+- **The key names are a reconstruction and say so.** Neither the Avram
+  specification nor its companion JSON Schema is in this repository. `fields`,
+  `label`, `repeatable`, `indicator1`, `subfields`, `positions`, `codes`,
+  `deprecated` are from memory of the language; the shape is right and individual
+  spellings may not be. Nothing depends on them being Avram's — it is our own
+  file format, read only by our loader — and `coverage.source` records which it
+  is. The one place a spelling could have bitten is handled defensively: a blank
+  indicator is accepted as `" "`, `"#"` or `"_"`, because reading only one
+  spelling would reject every blank indicator in a file that used another, and a
+  blank is the most common indicator value in MARC.
+
+Two shape gaps are recorded so a later session does not have to rediscover them.
+`AvramField.positions` needs to become a discriminated set of layouts with the
+selector expressed as DATA (`{select: ['LDR/06','LDR/07'], layouts: {...}}`) before
+the 008/006/007 blocks can land; and phase 28's positional editor will additionally
+want a `default` per position and an ORDERED strength list for Leader/17, neither
+of which the current shape has.
+
+Three defects in the committed phase-7 codec were found while building this and
+are fixed here: `readMarcXml` silently truncated an over-long indicator attribute
+with no anomaly, `fromMarcJson` did the same without refusing, and the new
+`indicator-truncated` anomaly names both. A stored over-long indicator is
+otherwise invisible — every serializer emits two characters while the content
+hash remembers three.

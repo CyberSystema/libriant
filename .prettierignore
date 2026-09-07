@@ -19,3 +19,7 @@ apps/site/dist/
 # which would make the gate fail on a file nobody edited — so the generator, not
 # prettier, is the formatter of record here.
 docs/api/
+# Committed format definitions. Their SHA-256 is recorded in digests.json and
+# checked by `pnpm check:marc-schema`, so a reformat would fail a gate on a file
+# nobody edited. The generator, not prettier, is the formatter of record.
+packages/marc/src/definitions/

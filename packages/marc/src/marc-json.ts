@@ -115,8 +115,20 @@ export function fromMarcJson(input: unknown): MarcRecord {
       throw new MarcError('marc-json-shape', `Field ${tag} is neither a string nor an object.`);
     }
     const df = body as { ind1?: unknown; ind2?: unknown; subfields?: unknown };
-    const ind = (v: unknown): string =>
-      typeof v === 'string' && v.length ? (v[0] as string) : ' ';
+    // An indicator longer than one character is data loss. `fromMarcJson`
+    // returns a bare record rather than a ParsedRecord, so it refuses instead of
+    // reporting — a caller handing this function a two-character `ind1` has a
+    // bug, and silently keeping half of it would hide it.
+    const ind = (v: unknown, which: string): string => {
+      if (typeof v !== 'string' || !v.length) return ' ';
+      if (v.length > 1) {
+        throw new MarcError(
+          'marc-json-shape',
+          `${tag} ${which} is ${JSON.stringify(v)}; an indicator is one character.`,
+        );
+      }
+      return v[0] as string;
+    };
     if (!Array.isArray(df.subfields)) {
       throw new MarcError('marc-json-shape', `Field ${tag} needs a "subfields" array.`);
     }
@@ -137,7 +149,7 @@ export function fromMarcJson(input: unknown): MarcRecord {
         `${tag} $${code} is ${value === null ? 'null' : typeof value}; a subfield value is text.`,
       );
     });
-    return { t: tag, i: `${ind(df.ind1)}${ind(df.ind2)}`, s };
+    return { t: tag, i: `${ind(df.ind1, 'ind1')}${ind(df.ind2, 'ind2')}`, s };
   });
 
   return { leader, fields };

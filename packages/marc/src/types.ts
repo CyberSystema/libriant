@@ -157,6 +157,8 @@ export const ANOMALY = {
   controlFieldHasSubfields: 'control-field-has-subfields',
   /** A data field began with a delimiter, so it had no indicators; blanks used. */
   dataFieldHasNoIndicators: 'data-field-has-no-indicators',
+  /** An indicator was longer than one character and was cut to its first. */
+  indicatorTruncated: 'indicator-truncated',
   /** A subfield delimiter was the last byte, so no code followed it. */
   subfieldCodeTruncated: 'subfield-code-truncated',
   /** Bytes appeared between the indicators and the first delimiter. */
@@ -201,6 +203,8 @@ export const ANOMALY_MESSAGE: Readonly<Record<AnomalyCode, string>> = {
   [ANOMALY.tagMalformed]: 'A field tag was blank or contained an unexpected character.',
   [ANOMALY.controlFieldHasSubfields]: 'A control field contained subfield markers.',
   [ANOMALY.dataFieldHasNoIndicators]: 'A field began with a subfield marker and had no indicators.',
+  [ANOMALY.indicatorTruncated]:
+    'An indicator held more than one character; only the first was kept.',
   [ANOMALY.subfieldCodeTruncated]: 'A subfield marker was the last character, with no code.',
   [ANOMALY.dataBeforeFirstSubfield]: 'A field contained text before its first subfield.',
   [ANOMALY.dataFieldHasNoSubfields]: 'A field had indicators but no subfields.',

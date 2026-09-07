@@ -180,6 +180,22 @@ jobs:
       - name: The published API contract is generated, not maintained
         run: pnpm check:openapi
 
+      # A validator driven by data has a failure mode a validator written in code
+      # does not: a misspelled key in a JSON definition is not a syntax error, it
+      # is a rule that silently stops applying — and the symptom, fewer
+      # complaints, looks exactly like progress.
+      #
+      # So this asserts the committed definitions load, are honest about their own
+      # coverage (a partial definition that does not say so is the dangerous
+      # kind), have not been hand-edited since their digest was recorded, and bind
+      # only tags they define. Then it runs every one of the 5,000 generated
+      # records through the validator and requires ZERO errors — which is what
+      # stands in for "zero false positives on LC-published-valid records" in a
+      # repository that has no LC records: the corpus was written for phase 7 to
+      # test byte round-tripping, so it is not tuned to this definition.
+      - name: The format definitions are honest and raise nothing on ordinary MARC
+        run: pnpm check:marc-schema
+
       # amtool is run against a COPY with the receiver placeholders substituted,
       # not against the file as committed.
       #

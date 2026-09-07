@@ -1,0 +1,1279 @@
+{
+  "title": "MARC 21 Format for Bibliographic Data",
+  "description": "A PARTIAL, hand-transcribed definition. Read `coverage` before trusting a clean result: this file describes the fields it can state with confidence and is silent about everything else, and silence means unchecked, not valid.",
+  "url": "https://www.loc.gov/marc/bibliographic/",
+  "profile": "marc21/bibliographic",
+  "version": "unknown — see coverage.limits",
+  "coverage": {
+    "source": "hand-transcribed from memory of MARC 21; NOT generated from LC",
+    "limits": "Field and subfield lists, indicator value lists and obsolescence are transcribed from memory and may be wrong or out of date, which is why coverage.confidence is \"transcribed\" and no rule in this file can block a save. Absent entirely: the material-specific 008/18-34 and 006/01-17 blocks (seven layouts discriminated by Leader/06 and /07), every 007 layout (fifteen, keyed on 007/00), 008/00-05 and 008/07-14 date validation, 880 (its indicators mirror the linked field and must not be given their own list), the whole 9XX local block and every field not listed here. `pnpm marc:schema` regenerates this file from a vendored authority and is the only way its confidence becomes \"generated\".",
+    "fieldCount": 41,
+    "confidence": "transcribed"
+  },
+  "fields": {
+    "LDR": {
+      "label": "Leader",
+      "length": 24,
+      "positions": {
+        "05": {
+          "label": "Record status",
+          "codes": {
+            "a": {},
+            "c": {},
+            "d": {},
+            "n": {},
+            "p": {}
+          }
+        },
+        "06": {
+          "label": "Type of record",
+          "codes": {
+            "a": {},
+            "c": {},
+            "d": {},
+            "e": {},
+            "f": {},
+            "g": {},
+            "i": {},
+            "j": {},
+            "k": {},
+            "m": {},
+            "o": {},
+            "p": {},
+            "r": {},
+            "t": {}
+          }
+        },
+        "07": {
+          "label": "Bibliographic level",
+          "codes": {
+            "a": {},
+            "b": {},
+            "c": {},
+            "d": {},
+            "i": {},
+            "m": {},
+            "s": {}
+          }
+        },
+        "17": {
+          "label": "Encoding level",
+          "codes": {
+            " ": {},
+            "1": {},
+            "2": {},
+            "3": {},
+            "4": {},
+            "5": {},
+            "7": {},
+            "8": {},
+            "u": {},
+            "z": {}
+          }
+        },
+        "18": {
+          "label": "Descriptive cataloging form",
+          "codes": {
+            " ": {},
+            "a": {},
+            "c": {},
+            "i": {},
+            "n": {},
+            "u": {}
+          }
+        }
+      }
+    },
+    "001": {
+      "label": "Control Number",
+      "repeatable": false
+    },
+    "003": {
+      "label": "Control Number Identifier",
+      "repeatable": false
+    },
+    "005": {
+      "label": "Date and Time of Latest Transaction",
+      "repeatable": false,
+      "length": 16
+    },
+    "006": {
+      "label": "Fixed-Length Data Elements — Additional Material Characteristics",
+      "repeatable": true,
+      "length": 18
+    },
+    "007": {
+      "label": "Physical Description Fixed Field",
+      "repeatable": true
+    },
+    "008": {
+      "label": "Fixed-Length Data Elements",
+      "repeatable": false,
+      "length": 40,
+      "positions": {
+        "06": {
+          "label": "Type of date/Publication status",
+          "codes": {
+            "b": {},
+            "c": {},
+            "d": {},
+            "e": {},
+            "i": {},
+            "k": {},
+            "m": {},
+            "n": {},
+            "p": {},
+            "q": {},
+            "r": {},
+            "s": {},
+            "t": {},
+            "u": {},
+            "|": {}
+          }
+        },
+        "35-37": {
+          "label": "Language"
+        },
+        "38": {
+          "label": "Modified record",
+          "codes": {
+            " ": {},
+            "d": {},
+            "o": {},
+            "r": {},
+            "s": {},
+            "x": {},
+            "|": {}
+          }
+        },
+        "39": {
+          "label": "Cataloging source",
+          "codes": {
+            " ": {},
+            "c": {},
+            "d": {},
+            "u": {},
+            "|": {}
+          }
+        }
+      }
+    },
+    "010": {
+      "label": "Library of Congress Control Number",
+      "repeatable": false,
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "b": {
+          "repeatable": true
+        },
+        "z": {
+          "repeatable": true
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "020": {
+      "label": "International Standard Book Number",
+      "repeatable": true,
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "c": {
+          "repeatable": false
+        },
+        "q": {
+          "repeatable": true
+        },
+        "z": {
+          "repeatable": true
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "022": {
+      "label": "International Standard Serial Number",
+      "repeatable": true,
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "l": {
+          "repeatable": false
+        },
+        "m": {
+          "repeatable": true
+        },
+        "y": {
+          "repeatable": true
+        },
+        "z": {
+          "repeatable": true
+        },
+        "2": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "040": {
+      "label": "Cataloging Source",
+      "repeatable": false,
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "b": {
+          "repeatable": false
+        },
+        "c": {
+          "repeatable": false
+        },
+        "d": {
+          "repeatable": true
+        },
+        "e": {
+          "repeatable": true
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "041": {
+      "label": "Language Code",
+      "repeatable": true,
+      "indicator1": {
+        "label": "Translation indication",
+        "codes": {
+          " ": {},
+          "0": {},
+          "1": {}
+        }
+      }
+    },
+    "100": {
+      "label": "Main Entry — Personal Name",
+      "repeatable": false,
+      "indicator1": {
+        "label": "Type of personal name entry element",
+        "codes": {
+          "0": {},
+          "1": {},
+          "3": {}
+        }
+      },
+      "indicator2": {
+        "label": "Undefined",
+        "codes": {
+          " ": {}
+        }
+      },
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "b": {
+          "repeatable": false
+        },
+        "c": {
+          "repeatable": true
+        },
+        "d": {
+          "repeatable": false
+        },
+        "e": {
+          "repeatable": true
+        },
+        "q": {
+          "repeatable": false
+        },
+        "0": {
+          "repeatable": true
+        },
+        "1": {
+          "repeatable": true
+        },
+        "4": {
+          "repeatable": true
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "110": {
+      "label": "Main Entry — Corporate Name",
+      "repeatable": false,
+      "indicator1": {
+        "label": "Type of corporate name entry element",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {}
+        }
+      },
+      "indicator2": {
+        "label": "Undefined",
+        "codes": {
+          " ": {}
+        }
+      }
+    },
+    "111": {
+      "label": "Main Entry — Meeting Name",
+      "repeatable": false,
+      "indicator1": {
+        "label": "Type of meeting name entry element",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {}
+        }
+      },
+      "indicator2": {
+        "label": "Undefined",
+        "codes": {
+          " ": {}
+        }
+      }
+    },
+    "130": {
+      "label": "Main Entry — Uniform Title",
+      "repeatable": false,
+      "indicator1": {
+        "label": "Nonfiling characters",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {},
+          "9": {}
+        }
+      },
+      "indicator2": {
+        "label": "Undefined",
+        "codes": {
+          " ": {}
+        }
+      }
+    },
+    "240": {
+      "label": "Uniform Title",
+      "repeatable": false,
+      "indicator1": {
+        "label": "Uniform title printed or displayed",
+        "codes": {
+          "0": {},
+          "1": {}
+        }
+      },
+      "indicator2": {
+        "label": "Nonfiling characters",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {},
+          "9": {}
+        }
+      }
+    },
+    "245": {
+      "label": "Title Statement",
+      "repeatable": false,
+      "required": true,
+      "indicator1": {
+        "label": "Title added entry",
+        "codes": {
+          "0": {},
+          "1": {}
+        }
+      },
+      "indicator2": {
+        "label": "Nonfiling characters",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {},
+          "9": {}
+        }
+      },
+      "subfields": {
+        "a": {
+          "repeatable": false,
+          "required": true,
+          "label": "Title"
+        },
+        "b": {
+          "repeatable": false
+        },
+        "c": {
+          "repeatable": false
+        },
+        "f": {
+          "repeatable": false
+        },
+        "g": {
+          "repeatable": false
+        },
+        "h": {
+          "repeatable": false
+        },
+        "k": {
+          "repeatable": true
+        },
+        "n": {
+          "repeatable": true
+        },
+        "p": {
+          "repeatable": true
+        },
+        "s": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "246": {
+      "label": "Varying Form of Title",
+      "repeatable": true,
+      "indicator1": {
+        "label": "Note/added entry controller",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {}
+        }
+      },
+      "indicator2": {
+        "label": "Type of title",
+        "codes": {
+          " ": {},
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {}
+        }
+      }
+    },
+    "250": {
+      "label": "Edition Statement",
+      "repeatable": true,
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "b": {
+          "repeatable": false
+        },
+        "3": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "260": {
+      "label": "Publication, Distribution, etc. (Imprint)",
+      "repeatable": true,
+      "indicator1": {
+        "label": "Sequence of publishing statements",
+        "codes": {
+          " ": {},
+          "2": {},
+          "3": {}
+        }
+      }
+    },
+    "264": {
+      "label": "Production, Publication, Distribution, Manufacture, and Copyright Notice",
+      "repeatable": true,
+      "indicator1": {
+        "label": "Sequence of statements",
+        "codes": {
+          " ": {},
+          "2": {},
+          "3": {}
+        }
+      },
+      "indicator2": {
+        "label": "Function of entity",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {}
+        }
+      }
+    },
+    "300": {
+      "label": "Physical Description",
+      "repeatable": true,
+      "subfields": {
+        "a": {
+          "repeatable": true
+        },
+        "b": {
+          "repeatable": false
+        },
+        "c": {
+          "repeatable": true
+        },
+        "e": {
+          "repeatable": false
+        },
+        "f": {
+          "repeatable": true
+        },
+        "g": {
+          "repeatable": true
+        },
+        "3": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "440": {
+      "label": "Series Statement/Added Entry — Title",
+      "repeatable": true,
+      "deprecated": true,
+      "replacedBy": "490 for the statement, and 800/810/811/830 for the added entry",
+      "indicator2": {
+        "label": "Nonfiling characters",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {},
+          "9": {}
+        }
+      },
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "n": {
+          "repeatable": true
+        },
+        "p": {
+          "repeatable": true
+        },
+        "v": {
+          "repeatable": false
+        },
+        "x": {
+          "repeatable": false
+        },
+        "0": {
+          "repeatable": true
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "490": {
+      "label": "Series Statement",
+      "repeatable": true,
+      "indicator1": {
+        "label": "Series tracing policy",
+        "codes": {
+          "0": {},
+          "1": {}
+        }
+      },
+      "indicator2": {
+        "label": "Undefined",
+        "codes": {
+          " ": {}
+        }
+      }
+    },
+    "500": {
+      "label": "General Note",
+      "repeatable": true,
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "3": {
+          "repeatable": false
+        },
+        "5": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "504": {
+      "label": "Bibliography, etc. Note",
+      "repeatable": true
+    },
+    "505": {
+      "label": "Formatted Contents Note",
+      "repeatable": true,
+      "indicator1": {
+        "label": "Display constant controller",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "8": {}
+        }
+      },
+      "indicator2": {
+        "label": "Level of content designation",
+        "codes": {
+          " ": {},
+          "0": {}
+        }
+      }
+    },
+    "520": {
+      "label": "Summary, etc.",
+      "repeatable": true,
+      "indicator1": {
+        "label": "Display constant controller",
+        "codes": {
+          " ": {},
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "8": {}
+        }
+      }
+    },
+    "600": {
+      "label": "Subject Added Entry — Personal Name",
+      "repeatable": true,
+      "indicator2": {
+        "label": "Thesaurus",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {}
+        }
+      },
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "v": {
+          "repeatable": true
+        },
+        "x": {
+          "repeatable": true
+        },
+        "y": {
+          "repeatable": true
+        },
+        "z": {
+          "repeatable": true
+        },
+        "0": {
+          "repeatable": true
+        },
+        "1": {
+          "repeatable": true
+        },
+        "2": {
+          "repeatable": false
+        },
+        "3": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "610": {
+      "label": "Subject Added Entry — Corporate Name",
+      "repeatable": true,
+      "indicator2": {
+        "label": "Thesaurus",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {}
+        }
+      },
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "v": {
+          "repeatable": true
+        },
+        "x": {
+          "repeatable": true
+        },
+        "y": {
+          "repeatable": true
+        },
+        "z": {
+          "repeatable": true
+        },
+        "0": {
+          "repeatable": true
+        },
+        "1": {
+          "repeatable": true
+        },
+        "2": {
+          "repeatable": false
+        },
+        "3": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "611": {
+      "label": "Subject Added Entry — Meeting Name",
+      "repeatable": true,
+      "indicator2": {
+        "label": "Thesaurus",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {}
+        }
+      },
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "v": {
+          "repeatable": true
+        },
+        "x": {
+          "repeatable": true
+        },
+        "y": {
+          "repeatable": true
+        },
+        "z": {
+          "repeatable": true
+        },
+        "0": {
+          "repeatable": true
+        },
+        "1": {
+          "repeatable": true
+        },
+        "2": {
+          "repeatable": false
+        },
+        "3": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "630": {
+      "label": "Subject Added Entry — Uniform Title",
+      "repeatable": true,
+      "indicator2": {
+        "label": "Thesaurus",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {}
+        }
+      },
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "v": {
+          "repeatable": true
+        },
+        "x": {
+          "repeatable": true
+        },
+        "y": {
+          "repeatable": true
+        },
+        "z": {
+          "repeatable": true
+        },
+        "0": {
+          "repeatable": true
+        },
+        "1": {
+          "repeatable": true
+        },
+        "2": {
+          "repeatable": false
+        },
+        "3": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "650": {
+      "label": "Subject Added Entry — Topical Term",
+      "repeatable": true,
+      "indicator2": {
+        "label": "Thesaurus",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {}
+        }
+      },
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "v": {
+          "repeatable": true
+        },
+        "x": {
+          "repeatable": true
+        },
+        "y": {
+          "repeatable": true
+        },
+        "z": {
+          "repeatable": true
+        },
+        "0": {
+          "repeatable": true
+        },
+        "1": {
+          "repeatable": true
+        },
+        "2": {
+          "repeatable": false
+        },
+        "3": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      },
+      "indicator1": {
+        "label": "Level of subject",
+        "codes": {
+          " ": {},
+          "0": {},
+          "1": {},
+          "2": {}
+        }
+      }
+    },
+    "651": {
+      "label": "Subject Added Entry — Geographic Name",
+      "repeatable": true,
+      "indicator2": {
+        "label": "Thesaurus",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {}
+        }
+      },
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "v": {
+          "repeatable": true
+        },
+        "x": {
+          "repeatable": true
+        },
+        "y": {
+          "repeatable": true
+        },
+        "z": {
+          "repeatable": true
+        },
+        "0": {
+          "repeatable": true
+        },
+        "1": {
+          "repeatable": true
+        },
+        "2": {
+          "repeatable": false
+        },
+        "3": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "655": {
+      "label": "Index Term — Genre/Form",
+      "repeatable": true,
+      "indicator1": {
+        "label": "Type of heading",
+        "codes": {
+          " ": {},
+          "0": {}
+        }
+      },
+      "indicator2": {
+        "label": "Thesaurus",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {}
+        }
+      },
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "v": {
+          "repeatable": true
+        },
+        "x": {
+          "repeatable": true
+        },
+        "y": {
+          "repeatable": true
+        },
+        "z": {
+          "repeatable": true
+        },
+        "0": {
+          "repeatable": true
+        },
+        "2": {
+          "repeatable": false
+        },
+        "3": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "653": {
+      "label": "Index Term — Uncontrolled",
+      "repeatable": true,
+      "indicator1": {
+        "label": "Level of index term",
+        "codes": {
+          " ": {},
+          "0": {},
+          "1": {},
+          "2": {}
+        }
+      },
+      "indicator2": {
+        "label": "Type of term",
+        "codes": {
+          " ": {},
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {}
+        }
+      }
+    },
+    "700": {
+      "label": "Added Entry — Personal Name",
+      "repeatable": true,
+      "indicator1": {
+        "label": "Type of personal name entry element",
+        "codes": {
+          "0": {},
+          "1": {},
+          "3": {}
+        }
+      },
+      "indicator2": {
+        "label": "Type of added entry",
+        "codes": {
+          " ": {},
+          "2": {}
+        }
+      },
+      "subfields": {
+        "a": {
+          "repeatable": false
+        },
+        "b": {
+          "repeatable": false
+        },
+        "c": {
+          "repeatable": true
+        },
+        "d": {
+          "repeatable": false
+        },
+        "e": {
+          "repeatable": true
+        },
+        "q": {
+          "repeatable": false
+        },
+        "t": {
+          "repeatable": false
+        },
+        "0": {
+          "repeatable": true
+        },
+        "1": {
+          "repeatable": true
+        },
+        "4": {
+          "repeatable": true
+        },
+        "5": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    },
+    "710": {
+      "label": "Added Entry — Corporate Name",
+      "repeatable": true,
+      "indicator1": {
+        "label": "Type of corporate name entry element",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {}
+        }
+      },
+      "indicator2": {
+        "label": "Type of added entry",
+        "codes": {
+          " ": {},
+          "2": {}
+        }
+      }
+    },
+    "830": {
+      "label": "Series Added Entry — Uniform Title",
+      "repeatable": true,
+      "indicator2": {
+        "label": "Nonfiling characters",
+        "codes": {
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "5": {},
+          "6": {},
+          "7": {},
+          "8": {},
+          "9": {}
+        }
+      }
+    },
+    "856": {
+      "label": "Electronic Location and Access",
+      "repeatable": true,
+      "indicator1": {
+        "label": "Access method",
+        "codes": {
+          " ": {},
+          "0": {},
+          "1": {},
+          "2": {},
+          "3": {},
+          "4": {},
+          "7": {}
+        }
+      },
+      "indicator2": {
+        "label": "Relationship",
+        "codes": {
+          " ": {},
+          "0": {},
+          "1": {},
+          "2": {},
+          "8": {}
+        }
+      },
+      "subfields": {
+        "u": {
+          "repeatable": true
+        },
+        "y": {
+          "repeatable": true
+        },
+        "z": {
+          "repeatable": true
+        },
+        "3": {
+          "repeatable": false
+        },
+        "6": {
+          "repeatable": false
+        },
+        "8": {
+          "repeatable": true
+        }
+      }
+    }
+  },
+  "groups": [
+    {
+      "label": "main entry",
+      "tags": [
+        "100",
+        "110",
+        "111",
+        "130"
+      ]
+    }
+  ]
+}
