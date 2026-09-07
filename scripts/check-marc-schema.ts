@@ -155,20 +155,23 @@ if (!bibliographic) {
     const report = validate(record, schemaForRecord(schema, record));
     checked += 1;
     for (const tag of report.uncheckedTags) unchecked.add(tag);
+    // Zero ISSUES, not zero errors. "Zero errors" is close to vacuous while the
+    // definition declares `confidence: "transcribed"`, because no table rule CAN
+    // produce an error — so the assertion that would actually catch a wrong
+    // indicator list or a wrong repeatability row has to count warnings too.
     for (const issue of report.issues) {
-      if (issue.severity !== 'error') continue;
       offenders.set(describeIssue(issue), (offenders.get(describeIssue(issue)) ?? 0) + 1);
     }
   }
   if (checked !== 5000) fail(`the corpus produced ${checked} records, not 5000.`);
   if (offenders.size) {
     fail(
-      `the shipped definition raises errors on the generated corpus, which is ordinary MARC:\n` +
+      `the shipped definition complains about the generated corpus, which is ordinary MARC:\n` +
         [...offenders].map(([text, n]) => `    ${n}x ${text}`).join('\n'),
     );
   }
   console.log(
-    `check:marc-schema: ${checked} corpus records, 0 errors; ` +
+    `check:marc-schema: ${checked} corpus records, 0 issues of any severity; ` +
       `tags never checked: ${[...unchecked].sort().join(', ') || 'none'}`,
   );
 }
@@ -176,19 +179,25 @@ if (!bibliographic) {
 // -- rule packs --------------------------------------------------------------
 
 {
-  const forms = new Map<string, string>();
+  // Packs COMPOSE and are not required to partition Leader/18 — RDA and ISBD are
+  // orthogonal, and a record coded 'i' is both. What must hold instead is that
+  // every value a pack selects on is a Leader/18 code the definition defines,
+  // so a pack cannot key on a byte that can never appear.
+  const ldr18 = new Set(
+    Object.keys(bibliographic?.fields.LDR?.positions?.['18']?.codes ?? {}).map((c) =>
+      c === '#' || c === '_' ? ' ' : c,
+    ),
+  );
   for (const pack of RULE_PACKS) {
+    if (!pack.note.trim()) fail(`rule pack "${pack.id}" has no note saying what it is for.`);
     for (const form of pack.descriptiveForm) {
-      const already = forms.get(form);
-      if (already) {
+      if (ldr18.size && !ldr18.has(form)) {
         fail(
-          `Leader/18 "${form}" selects both the ${already} and the ${pack.id} rule pack. ` +
-            'A record must select exactly one.',
+          `rule pack "${pack.id}" selects on Leader/18 = ${JSON.stringify(form)}, which the ` +
+            'definition does not list as a legal value. It could never be selected.',
         );
       }
-      forms.set(form, pack.id);
     }
-    if (!pack.note.trim()) fail(`rule pack "${pack.id}" has no note saying what it is for.`);
   }
 }
 

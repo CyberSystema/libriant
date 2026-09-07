@@ -78,6 +78,16 @@ export type AvramPosition = {
 
 export type AvramField = {
   readonly label?: string;
+  /**
+   * A cap on THIS field's table rules, independent of the schema's.
+   *
+   * A rule pack and a tenant override are layers with their own provenance: a
+   * pack's rules were hand-authored here and must stay warnings even after the
+   * BASE definition is regenerated and promoted to `generated`, or the day
+   * somebody vendors an authority is the day three hand-written RDA rules start
+   * refusing saves. The effective cap is the weaker of this and the schema's.
+   */
+  readonly confidence?: 'generated' | 'transcribed';
   readonly repeatable?: boolean;
   readonly required?: boolean;
   readonly deprecated?: boolean;

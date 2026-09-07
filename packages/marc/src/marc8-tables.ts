@@ -12,9 +12,9 @@
  * disk.
  *
  * That file is not in this repository and the session that wrote this had no
- * network. So two of the ten graphic sets are populated here — **Basic Latin**
- * and **Extended Latin (ANSEL)** — and the other eight are declared as known-but-
- * unsupported rather than guessed.
+ * network. So two of the TWELVE graphic sets `MARC8_SET` names are populated
+ * here — **Basic Latin** and **Extended Latin (ANSEL)** — and the other ten are
+ * declared as known-but-unsupported rather than guessed.
  *
  * That split is a decision, not an omission:
  *

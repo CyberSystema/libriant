@@ -463,3 +463,52 @@ with no anomaly, `fromMarcJson` did the same without refusing, and the new
 `indicator-truncated` anomaly names both. A stored over-long indicator is
 otherwise invisible — every serializer emits two characters while the content
 hash remembers three.
+
+**Phase 8, review round.** The completeness critic returned after the phase was
+committed and confirmed the shape — open world, the confidence cap, the coverage
+channel and the issue identity all stand unchanged — while landing five findings
+worth the follow-up commit. Two were real defects:
+
+- **Five name-subject fields carried 650's subfield list verbatim.** So an
+  ordinary `600` with `$d 1883-1957` and `$t Zorba`, and a `700` with a
+  relationship `$i`, raised three warnings on a perfectly correct record —
+  measured before the fix. The cause is that a subfield list is a CLOSED-WORLD
+  claim: `subfield-not-allowed` fires only when `def.subfields` exists. So the
+  list is now given only where it can be stated completely (010, 020, 022, 040,
+  245, 250, 300, 440, 500) and omitted everywhere else, which asserts nothing
+  rather than something wrong.
+
+- **`check:marc-schema`'s headline assertion was nearly vacuous.** It required
+  zero ERRORS across the corpus — but with `confidence: "transcribed"` no table
+  rule CAN produce an error, so the check could not have caught a wrong indicator
+  list or a wrong repeatability row. It now requires zero ISSUES of any severity,
+  which passes today and therefore cost nothing to tighten. Proved by deleting
+  the LCSH value from 650's indicator-2 list: 5,000 hits, where the old assertion
+  would have stayed green.
+
+And three design corrections:
+
+- **Rule packs COMPOSE; they do not partition Leader/18.** RDA and ISBD are
+  orthogonal — a record coded `i` is both "described under RDA" and "ISBD
+  punctuation included" — so `packsFor` returns a list and the gate no longer
+  requires the packs to be disjoint. What it checks instead is that every value a
+  pack selects on is a Leader/18 code the definition lists, so a pack cannot key
+  on a byte that could never appear.
+
+- **Confidence is per-LAYER, not per-schema.** A pack's rules were hand-authored
+  here, and inheriting the base definition's confidence meant that the day
+  somebody vendors an authority and the base is promoted to `generated`, three
+  hand-written RDA rules would start refusing saves. `AvramField.confidence` caps
+  a field independently, and the effective severity is the weaker of the two.
+
+- `ValidationResult` was dead code contradicting the design beside it, and
+  phase 7's `marc8-tables.ts` header said "two of the ten graphic sets" where the
+  codec names twelve. Both fixed.
+
+Left open deliberately, and recorded so the next session does not rediscover it:
+a persisted issue set must carry the definition's identity (profile, digest,
+confidence) so a definition change is treated as "recompute" rather than
+"trust" — that belongs with phase 10's storage, not here. And the validator has
+no compiled sidecar yet: at a 5M-record catalogue the per-call work of
+normalising indicator code sets and parsing position ranges should be done once
+at `loadSchema` rather than per record.

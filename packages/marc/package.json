@@ -28,7 +28,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "lint": "echo 'lint: ok'",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
-    "pretest": "node -e \"const f=require('node:fs').globSync('src/**/*.test.ts');if(f.length<5){console.error('marc: expected at least 5 test files, found '+f.length+'. node --test exits 0 on an empty glob, so this is the only thing that would notice.');process.exit(1)}\""
+    "pretest": "node -e \"const f=require('node:fs').globSync('src/**/*.test.ts');if(f.length<7){console.error('marc: expected at least 7 test files, found '+f.length+'. node --test exits 0 on an empty glob, so this is the only thing that would notice.');process.exit(1)}\""
   },
   "dependencies": {
     "@libriant/shared": "workspace:*",

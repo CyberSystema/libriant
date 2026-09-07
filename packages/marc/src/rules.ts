@@ -62,9 +62,22 @@ export const RULE_PACKS: readonly RulePack[] = [
       'for. A record coded as RDA and missing them is incomplete rather than wrong.',
     override: {
       fields: {
-        '336': { label: 'Content Type', repeatable: true, required: true },
-        '337': { label: 'Media Type', repeatable: true, required: true },
-        '338': { label: 'Carrier Type', repeatable: true, required: true },
+        // `confidence: 'transcribed'` on each: these three rules were written
+        // here, and regenerating the BASE definition from an authority must not
+        // promote them into errors that refuse saves.
+        '336': {
+          label: 'Content Type',
+          repeatable: true,
+          required: true,
+          confidence: 'transcribed',
+        },
+        '337': { label: 'Media Type', repeatable: true, required: true, confidence: 'transcribed' },
+        '338': {
+          label: 'Carrier Type',
+          repeatable: true,
+          required: true,
+          confidence: 'transcribed',
+        },
       },
     },
   },
@@ -81,10 +94,11 @@ export const RULE_PACKS: readonly RulePack[] = [
   {
     id: 'isbd',
     label: 'ISBD punctuation',
-    // ' ' and 'u' are non-ISBD and unknown; 'n' is non-ISBD punctuation omitted.
-    // 'c' is ISBD punctuation OMITTED and is growing under RDA — reading it as
-    // "not ISBD" is the mistake the 2.0 plan calls out by name.
-    descriptiveForm: ['c'],
+    // BOTH 'i' and 'c' are ISBD: 'i' includes the punctuation and 'c' omits it.
+    // 'c' is growing under RDA, and reading it as "not ISBD" is the mistake the
+    // 2.0 plan calls out by name. So an RDA record is also an ISBD record —
+    // which is why packs COMPOSE rather than partition Leader/18.
+    descriptiveForm: ['i', 'c'],
     note:
       'Leader/18 = "c" means ISBD punctuation omitted — the record IS ISBD, and the display ' +
       'layer must generate the punctuation rather than pass it through. It is growing under RDA.',
@@ -92,10 +106,21 @@ export const RULE_PACKS: readonly RulePack[] = [
   },
 ];
 
-/** The pack a record selects for itself, or null when its Leader/18 selects none. */
-export function packFor(record: MarcRecord): RulePack | null {
+/**
+ * Every pack a record selects for itself, in declaration order.
+ *
+ * A LIST, not one: RDA and ISBD are orthogonal, not alternatives. Leader/18 =
+ * 'i' means both "described under RDA" and "ISBD punctuation included", and a
+ * function returning one of them would silently drop the other.
+ */
+export function packsFor(record: MarcRecord): RulePack[] {
   const form = leaderAt(record.leader, 'descriptiveCatalogingForm') || ' ';
-  return RULE_PACKS.find((pack) => pack.descriptiveForm.includes(form)) ?? null;
+  return RULE_PACKS.filter((pack) => pack.descriptiveForm.includes(form));
+}
+
+/** The first pack a record selects, for a caller that wants a label. */
+export function packFor(record: MarcRecord): RulePack | null {
+  return packsFor(record)[0] ?? null;
 }
 
 /**
@@ -110,7 +135,7 @@ export function schemaForRecord(
   record: MarcRecord,
   tenantOverride?: AvramOverride,
 ): AvramSchema {
-  const pack = packFor(record);
-  const withPack = pack ? applyOverride(base, pack.override) : base;
-  return tenantOverride ? applyOverride(withPack, tenantOverride) : withPack;
+  let schema = base;
+  for (const pack of packsFor(record)) schema = applyOverride(schema, pack.override);
+  return tenantOverride ? applyOverride(schema, tenantOverride) : schema;
 }

@@ -6,7 +6,7 @@
   "version": "unknown — see coverage.limits",
   "coverage": {
     "source": "hand-transcribed from memory of MARC 21; NOT generated from LC",
-    "limits": "Field and subfield lists, indicator value lists and obsolescence are transcribed from memory and may be wrong or out of date, which is why coverage.confidence is \"transcribed\" and no rule in this file can block a save. Absent entirely: the material-specific 008/18-34 and 006/01-17 blocks (seven layouts discriminated by Leader/06 and /07), every 007 layout (fifteen, keyed on 007/00), 008/00-05 and 008/07-14 date validation, 880 (its indicators mirror the linked field and must not be given their own list), the whole 9XX local block and every field not listed here. `pnpm marc:schema` regenerates this file from a vendored authority and is the only way its confidence becomes \"generated\".",
+    "limits": "Field and subfield lists, indicator value lists and obsolescence are transcribed from memory and may be wrong or out of date, which is why coverage.confidence is \"transcribed\" and no rule in this file can block a save. Subfield lists are given ONLY where they can be stated completely (010, 020, 022, 040, 245, 250, 300, 440, 500); every other field omits `subfields` on purpose, because a partial list is a closed-world claim and would flag a name-subject $t or a relationship $i on an ordinary record. Absent entirely: the material-specific 008/18-34 and 006/01-17 blocks (seven layouts discriminated by Leader/06 and /07), every 007 layout (fifteen, keyed on 007/00), 008/00-05 and 008/07-14 date validation, 880 (its indicators mirror the linked field and must not be given their own list), the whole 9XX local block and every field not listed here. `pnpm marc:schema` regenerates this file from a vendored authority and is the only way its confidence becomes \"generated\".",
     "fieldCount": 41,
     "confidence": "transcribed"
   },
@@ -284,41 +284,6 @@
         "label": "Undefined",
         "codes": {
           " ": {}
-        }
-      },
-      "subfields": {
-        "a": {
-          "repeatable": false
-        },
-        "b": {
-          "repeatable": false
-        },
-        "c": {
-          "repeatable": true
-        },
-        "d": {
-          "repeatable": false
-        },
-        "e": {
-          "repeatable": true
-        },
-        "q": {
-          "repeatable": false
-        },
-        "0": {
-          "repeatable": true
-        },
-        "1": {
-          "repeatable": true
-        },
-        "4": {
-          "repeatable": true
-        },
-        "6": {
-          "repeatable": false
-        },
-        "8": {
-          "repeatable": true
         }
       }
     },
@@ -732,41 +697,6 @@
           "6": {},
           "7": {}
         }
-      },
-      "subfields": {
-        "a": {
-          "repeatable": false
-        },
-        "v": {
-          "repeatable": true
-        },
-        "x": {
-          "repeatable": true
-        },
-        "y": {
-          "repeatable": true
-        },
-        "z": {
-          "repeatable": true
-        },
-        "0": {
-          "repeatable": true
-        },
-        "1": {
-          "repeatable": true
-        },
-        "2": {
-          "repeatable": false
-        },
-        "3": {
-          "repeatable": false
-        },
-        "6": {
-          "repeatable": false
-        },
-        "8": {
-          "repeatable": true
-        }
       }
     },
     "610": {
@@ -783,41 +713,6 @@
           "5": {},
           "6": {},
           "7": {}
-        }
-      },
-      "subfields": {
-        "a": {
-          "repeatable": false
-        },
-        "v": {
-          "repeatable": true
-        },
-        "x": {
-          "repeatable": true
-        },
-        "y": {
-          "repeatable": true
-        },
-        "z": {
-          "repeatable": true
-        },
-        "0": {
-          "repeatable": true
-        },
-        "1": {
-          "repeatable": true
-        },
-        "2": {
-          "repeatable": false
-        },
-        "3": {
-          "repeatable": false
-        },
-        "6": {
-          "repeatable": false
-        },
-        "8": {
-          "repeatable": true
         }
       }
     },
@@ -836,41 +731,6 @@
           "6": {},
           "7": {}
         }
-      },
-      "subfields": {
-        "a": {
-          "repeatable": false
-        },
-        "v": {
-          "repeatable": true
-        },
-        "x": {
-          "repeatable": true
-        },
-        "y": {
-          "repeatable": true
-        },
-        "z": {
-          "repeatable": true
-        },
-        "0": {
-          "repeatable": true
-        },
-        "1": {
-          "repeatable": true
-        },
-        "2": {
-          "repeatable": false
-        },
-        "3": {
-          "repeatable": false
-        },
-        "6": {
-          "repeatable": false
-        },
-        "8": {
-          "repeatable": true
-        }
       }
     },
     "630": {
@@ -888,41 +748,6 @@
           "6": {},
           "7": {}
         }
-      },
-      "subfields": {
-        "a": {
-          "repeatable": false
-        },
-        "v": {
-          "repeatable": true
-        },
-        "x": {
-          "repeatable": true
-        },
-        "y": {
-          "repeatable": true
-        },
-        "z": {
-          "repeatable": true
-        },
-        "0": {
-          "repeatable": true
-        },
-        "1": {
-          "repeatable": true
-        },
-        "2": {
-          "repeatable": false
-        },
-        "3": {
-          "repeatable": false
-        },
-        "6": {
-          "repeatable": false
-        },
-        "8": {
-          "repeatable": true
-        }
       }
     },
     "650": {
@@ -939,41 +764,6 @@
           "5": {},
           "6": {},
           "7": {}
-        }
-      },
-      "subfields": {
-        "a": {
-          "repeatable": false
-        },
-        "v": {
-          "repeatable": true
-        },
-        "x": {
-          "repeatable": true
-        },
-        "y": {
-          "repeatable": true
-        },
-        "z": {
-          "repeatable": true
-        },
-        "0": {
-          "repeatable": true
-        },
-        "1": {
-          "repeatable": true
-        },
-        "2": {
-          "repeatable": false
-        },
-        "3": {
-          "repeatable": false
-        },
-        "6": {
-          "repeatable": false
-        },
-        "8": {
-          "repeatable": true
         }
       },
       "indicator1": {
@@ -1001,41 +791,6 @@
           "6": {},
           "7": {}
         }
-      },
-      "subfields": {
-        "a": {
-          "repeatable": false
-        },
-        "v": {
-          "repeatable": true
-        },
-        "x": {
-          "repeatable": true
-        },
-        "y": {
-          "repeatable": true
-        },
-        "z": {
-          "repeatable": true
-        },
-        "0": {
-          "repeatable": true
-        },
-        "1": {
-          "repeatable": true
-        },
-        "2": {
-          "repeatable": false
-        },
-        "3": {
-          "repeatable": false
-        },
-        "6": {
-          "repeatable": false
-        },
-        "8": {
-          "repeatable": true
-        }
       }
     },
     "655": {
@@ -1059,38 +814,6 @@
           "5": {},
           "6": {},
           "7": {}
-        }
-      },
-      "subfields": {
-        "a": {
-          "repeatable": false
-        },
-        "v": {
-          "repeatable": true
-        },
-        "x": {
-          "repeatable": true
-        },
-        "y": {
-          "repeatable": true
-        },
-        "z": {
-          "repeatable": true
-        },
-        "0": {
-          "repeatable": true
-        },
-        "2": {
-          "repeatable": false
-        },
-        "3": {
-          "repeatable": false
-        },
-        "6": {
-          "repeatable": false
-        },
-        "8": {
-          "repeatable": true
         }
       }
     },
@@ -1136,47 +859,6 @@
         "codes": {
           " ": {},
           "2": {}
-        }
-      },
-      "subfields": {
-        "a": {
-          "repeatable": false
-        },
-        "b": {
-          "repeatable": false
-        },
-        "c": {
-          "repeatable": true
-        },
-        "d": {
-          "repeatable": false
-        },
-        "e": {
-          "repeatable": true
-        },
-        "q": {
-          "repeatable": false
-        },
-        "t": {
-          "repeatable": false
-        },
-        "0": {
-          "repeatable": true
-        },
-        "1": {
-          "repeatable": true
-        },
-        "4": {
-          "repeatable": true
-        },
-        "5": {
-          "repeatable": false
-        },
-        "6": {
-          "repeatable": false
-        },
-        "8": {
-          "repeatable": true
         }
       }
     },
@@ -1241,26 +923,6 @@
           "1": {},
           "2": {},
           "8": {}
-        }
-      },
-      "subfields": {
-        "u": {
-          "repeatable": true
-        },
-        "y": {
-          "repeatable": true
-        },
-        "z": {
-          "repeatable": true
-        },
-        "3": {
-          "repeatable": false
-        },
-        "6": {
-          "repeatable": false
-        },
-        "8": {
-          "repeatable": true
         }
       }
     }

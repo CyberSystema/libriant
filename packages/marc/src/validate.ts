@@ -127,8 +127,13 @@ export function validate(
     else truncated = true;
   };
   // A rule read out of the definition's tables may not exceed the confidence
-  // the definition declares for itself. See this module's header.
-  const table: IssueSeverity = schema.coverage.confidence === 'generated' ? 'error' : 'warning';
+  // declared for it — the weaker of the field's own and the schema's. See this
+  // module's header, and `AvramField.confidence` for why a field has one.
+  const severityFor = (def?: { confidence?: 'generated' | 'transcribed' }): IssueSeverity =>
+    schema.coverage.confidence === 'generated' && def?.confidence !== 'transcribed'
+      ? 'error'
+      : 'warning';
+  const table: IssueSeverity = severityFor();
 
   // --- the leader -------------------------------------------------------
   const leaderDef = schema.fields.LDR;
@@ -148,7 +153,7 @@ export function validate(
     if (def.repeatable === false && fields.length > 1) {
       add({
         rule: RULE.fieldNotRepeatable,
-        severity: table,
+        severity: severityFor(def),
         message: `${tag} may appear only once in a record; this record has ${fields.length}.`,
         at: { tag },
       });
@@ -160,7 +165,7 @@ export function validate(
     if (def.required && !byTag.has(tag)) {
       add({
         rule: RULE.fieldMissing,
-        severity: table,
+        severity: severityFor(def),
         message: `${tag}${def.label ? ` (${def.label})` : ''} is required and is not in this record.`,
         at: { tag },
       });
@@ -227,10 +232,10 @@ export function validate(
     }
 
     if (!isDataField(field)) {
-      checkFixed(field.t, field.v, def, occurrence, add, table);
+      checkFixed(field.t, field.v, def, occurrence, add, severityFor(def));
       continue;
     }
-    checkDataField(field, def, occurrence, add, table);
+    checkDataField(field, def, occurrence, add, severityFor(def));
   }
 
   return {

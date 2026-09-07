@@ -196,6 +196,13 @@ jobs:
       - name: The format definitions are honest and raise nothing on ordinary MARC
         run: pnpm check:marc-schema
 
+      # And the generator's own check mode, which SKIPS with a printed reason
+      # while no authority is vendored and starts diffing the committed
+      # definitions against it the day one is. Kept as its own step so the skip
+      # is visible in the log rather than buried inside another gate.
+      - name: Format definitions match their upstream authority, if one is vendored
+        run: pnpm marc:schema --check
+
       # amtool is run against a COPY with the receiver placeholders substituted,
       # not against the file as committed.
       #

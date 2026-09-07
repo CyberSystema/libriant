@@ -4,9 +4,10 @@ import { generateCorpus } from './__fixtures__/corpus.js';
 import { validateSchema } from './avram.js';
 import { SHIPPED_PROFILES, UNAVAILABLE_PROFILES, shippedSchema } from './definitions.js';
 import { readIso2709Record } from './iso2709.js';
-import { RULE_PACKS, packFor, schemaForRecord } from './rules.js';
+import { RULE_PACKS, packFor, packsFor, schemaForRecord } from './rules.js';
 import { SHIPPED_TEMPLATES, checkTemplate, recordFromTemplate } from './templates.js';
 import { validate } from './validate.js';
+import type { MarcRecord } from './types.js';
 
 /**
  * The SHIPPED definition, templates and rule packs — as opposed to
@@ -107,6 +108,31 @@ test('the fill character is accepted wherever a coded 008 position is defined', 
   }
 });
 
+test('a subfield list is a closed-world claim, so it is given only where it is complete', () => {
+  // The false positive this catches, measured before it was fixed: 600/610/611/
+  // 630/651 carried 650's subfield list verbatim, so an ordinary name-subject
+  // with `$d 1883-1957` and `$t Zorba` raised two warnings, and a 700 with a
+  // relationship `$i` raised a third. `subfieldNotAllowed` fires only when
+  // `def.subfields` exists — so omitting the list asserts NOTHING rather than
+  // something wrong, which is the safe direction.
+  const withLists = Object.entries(SCHEMA.fields)
+    .filter(([, f]) => f.subfields)
+    .map(([tag]) => tag)
+    .sort();
+  assert.deepEqual(withLists, ['010', '020', '022', '040', '245', '250', '300', '440', '500']);
+
+  const record: MarcRecord = {
+    leader: '00000nam a2200000 a 4500',
+    fields: [
+      { t: '245', i: '10', s: [{ a: 'T' }] },
+      { t: '600', i: '10', s: [{ a: 'Kazantzakis, Nikos,' }, { d: '1883-1957' }, { t: 'Zorba' }] },
+      { t: '700', i: '12', s: [{ a: 'Eco, Umberto,' }, { i: 'Contains (work):' }] },
+      { t: '110', i: '2 ', s: [{ a: 'Greece.' }, { b: 'Ministry of Culture.' }] },
+    ],
+  };
+  assert.deepEqual(validate(record, SCHEMA).issues, []);
+});
+
 test('the main-entry group is a group, not four independent rules', () => {
   const group = SCHEMA.groups?.find((g) => g.label === 'main entry');
   assert.deepEqual(group?.tags, ['100', '110', '111', '130']);
@@ -177,6 +203,45 @@ test('a record selects its own rule pack from Leader/18', () => {
   assert.equal(packFor(at18('i'))?.id, 'rda');
   assert.equal(packFor(at18('c'))?.id, 'isbd');
   assert.equal(packFor(at18(' ')), null, 'a non-ISBD record selects nothing');
+});
+
+test('rule packs COMPOSE; they do not partition Leader/18', () => {
+  // RDA and ISBD are orthogonal, not alternatives: Leader/18 = 'i' means both
+  // "described under RDA" and "ISBD punctuation included". A selector returning
+  // one pack would silently drop the other.
+  const rda = { leader: '00000nam a2200000 i 4500', fields: [] };
+  assert.deepEqual(
+    packsFor(rda).map((p) => p.id),
+    ['rda', 'isbd'],
+  );
+  assert.deepEqual(
+    packsFor({ leader: '00000nam a2200000 c 4500', fields: [] }).map((p) => p.id),
+    ['isbd'],
+  );
+  assert.deepEqual(
+    packsFor({ leader: '00000nam a2200000 a 4500', fields: [] }).map((p) => p.id),
+    ['aacr2'],
+  );
+});
+
+test("a rule pack's own rules are never promoted when the base is regenerated", () => {
+  // The packs were hand-authored here. The day somebody vendors an authority and
+  // the BASE definition becomes `generated`, three hand-written RDA rules must
+  // not start refusing saves.
+  const generated = {
+    ...SCHEMA,
+    coverage: { ...SCHEMA.coverage, confidence: 'generated' as const },
+  };
+  const rda = {
+    leader: '00000nam a2200000 i 4500',
+    fields: [{ t: '245', i: '10', s: [{ a: 'x' }] }],
+  };
+  const issues = validate(rda, schemaForRecord(generated, rda)).issues;
+  assert.equal(issues.length, 3);
+  assert.ok(
+    issues.every((i) => i.severity === 'warning'),
+    'the pack caps itself even under a generated base',
+  );
 });
 
 test('Leader/18 "c" means ISBD punctuation OMITTED, not "not ISBD"', () => {
