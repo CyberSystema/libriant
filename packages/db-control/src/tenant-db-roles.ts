@@ -172,6 +172,25 @@ export async function ensureTenantRoles(args: {
 }
 
 /**
+ * Every schema a tenant's runtime role may touch.
+ *
+ * `public` is the 1.0 schema; `lbr2` is the Libriant 2.0 one, which lives beside
+ * it until the phase-20 cutover promotes it (see
+ * `packages/db-tenant/src/v2.ts`).
+ *
+ * An EXPLICIT list rather than "every non-system schema". Granting whatever
+ * happens to exist would mean a schema nobody thought about silently becoming
+ * reachable by the runtime role, and this file exists precisely to be able to
+ * say what that role can reach. Phase 20 removes `lbr2` from this list and
+ * leaves `public`, because by then they are the same schema.
+ *
+ * Found by phase 10: without `lbr2` here, every 2.0 write failed with
+ * `42501 permission denied for schema lbr2` — invisible to phase 9's tests,
+ * which all connect as the superuser.
+ */
+const TENANT_SCHEMAS = ['public', 'lbr2'] as const;
+
+/**
  * Re-issue every grant. Separate from {@link ensureTenantRoles} because it runs
  * again after every migration: `ALTER DEFAULT PRIVILEGES` only covers objects
  * created AFTER it was set, and a table created by a migration that ran before
@@ -201,25 +220,39 @@ async function grantOn(
   // credential for another cluster role useless against this database.
   await c.query(`REVOKE ALL ON DATABASE "${dbName}" FROM PUBLIC`);
   await c.query(`GRANT CONNECT, TEMPORARY ON DATABASE "${dbName}" TO "${privilege}"`);
-  // Schema. USAGE only, deliberately NOT CREATE: every table in a tenant
-  // database is created by `prisma migrate deploy` as the superuser, so the
-  // runtime role having DDL rights would buy nothing and cost the ability to
-  // say the runtime cannot alter the schema.
-  await c.query(`REVOKE ALL ON SCHEMA public FROM PUBLIC`);
-  await c.query(`GRANT USAGE ON SCHEMA public TO "${privilege}"`);
-  await c.query(`GRANT ALL ON ALL TABLES IN SCHEMA public TO "${privilege}"`);
-  await c.query(`GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO "${privilege}"`);
-  await c.query(`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO "${privilege}"`);
-  // …and everything a future migration creates, without a follow-up step.
-  await c.query(
-    `ALTER DEFAULT PRIVILEGES FOR ROLE "${owner}" IN SCHEMA public GRANT ALL ON TABLES TO "${privilege}"`,
-  );
-  await c.query(
-    `ALTER DEFAULT PRIVILEGES FOR ROLE "${owner}" IN SCHEMA public GRANT ALL ON SEQUENCES TO "${privilege}"`,
-  );
-  await c.query(
-    `ALTER DEFAULT PRIVILEGES FOR ROLE "${owner}" IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO "${privilege}"`,
-  );
+
+  for (const schema of TENANT_SCHEMAS) {
+    // A schema is granted only once it exists. `lbr2` is created by the 2.0
+    // baseline migration, and `createRuntimeRoles` runs BEFORE migrations on a
+    // brand-new database — so on the first pass this skips it and the
+    // post-migration call (TenantProvisioningService.provision, and
+    // `tenant:migrate` after every deploy) picks it up. Granting on a
+    // non-existent schema would fail with 3F000 and abort provisioning.
+    const exists = await c.query('SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname = $1', [
+      schema,
+    ]);
+    if (exists.rowCount === 0) continue;
+
+    // Schema. USAGE only, deliberately NOT CREATE: every table in a tenant
+    // database is created by `prisma migrate deploy` as the superuser, so the
+    // runtime role having DDL rights would buy nothing and cost the ability to
+    // say the runtime cannot alter the schema.
+    await c.query(`REVOKE ALL ON SCHEMA "${schema}" FROM PUBLIC`);
+    await c.query(`GRANT USAGE ON SCHEMA "${schema}" TO "${privilege}"`);
+    await c.query(`GRANT ALL ON ALL TABLES IN SCHEMA "${schema}" TO "${privilege}"`);
+    await c.query(`GRANT ALL ON ALL SEQUENCES IN SCHEMA "${schema}" TO "${privilege}"`);
+    await c.query(`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA "${schema}" TO "${privilege}"`);
+    // …and everything a future migration creates, without a follow-up step.
+    await c.query(
+      `ALTER DEFAULT PRIVILEGES FOR ROLE "${owner}" IN SCHEMA "${schema}" GRANT ALL ON TABLES TO "${privilege}"`,
+    );
+    await c.query(
+      `ALTER DEFAULT PRIVILEGES FOR ROLE "${owner}" IN SCHEMA "${schema}" GRANT ALL ON SEQUENCES TO "${privilege}"`,
+    );
+    await c.query(
+      `ALTER DEFAULT PRIVILEGES FOR ROLE "${owner}" IN SCHEMA "${schema}" GRANT EXECUTE ON FUNCTIONS TO "${privilege}"`,
+    );
+  }
 }
 
 /**

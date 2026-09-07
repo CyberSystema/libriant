@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  CLIENTS_PER_TENANT,
   planTenantPool,
   planFleetConnections,
   describeTenantPoolPlan,
@@ -299,5 +300,68 @@ describe('planFleetConnections (the aggregate budget)', () => {
     expect(text).toContain('fleet connections:');
     expect(text).toContain(`of ${SHIPPED_MAX_CONNECTIONS}`);
     expect(text).toContain('per tenant');
+  });
+
+  // -- phase 10: two datamodels, two pools per tenant -----------------------
+
+  describe('two Prisma clients per tenant', () => {
+    it('keeps the peak inside the per-instance budget when a second client lands', () => {
+      // Phase 10 gives every cached tenant a SECOND client, because the 2.0
+      // datamodel lives in its own Postgres schema and its own generated
+      // client. Each opens its own pool, so the naive arithmetic doubles.
+      const one = planTenantPool({ role: 'api', requestedCacheSize: 20, requestedPoolMax: 5 });
+      const two = planTenantPool({
+        role: 'api',
+        requestedCacheSize: 20,
+        requestedPoolMax: 5,
+        clientsPerTenant: 2,
+      });
+
+      // Assert on peakConnections, not on poolMax: a test that pinned poolMax
+      // would pass while the box quietly opened twice its budget.
+      expect(one.peakConnections).toBeLessThanOrEqual(one.perInstanceBudget);
+      expect(two.peakConnections).toBeLessThanOrEqual(two.perInstanceBudget);
+
+      // And the clamp actually bit — without it this would be 200 against a
+      // server max_connections of 200, i.e. the whole box refusing connections
+      // rather than one slow endpoint.
+      expect(two.poolMax).toBeLessThan(one.poolMax);
+      expect(two.clamped.join(' ')).toContain('client(s)');
+    });
+
+    it('reports the real peak rather than the single-client one', () => {
+      const plan = planTenantPool({
+        role: 'api',
+        requestedCacheSize: 4,
+        requestedPoolMax: 2,
+        clientsPerTenant: 2,
+      });
+      expect(plan.clientsPerTenant).toBe(2);
+      expect(plan.peakConnections).toBe(
+        plan.clientCacheSize * plan.poolMax * plan.clientsPerTenant * plan.concurrentInstances,
+      );
+    });
+
+    it('the worker yields cache size, not pool depth, to fit two clients', () => {
+      // A sweep is sequential, so poolMax is already 1 and cannot give. The
+      // cache is what has to shrink.
+      const plan = planTenantPool({
+        role: 'worker',
+        requestedCacheSize: 20,
+        requestedPoolMax: 5,
+        clientsPerTenant: 2,
+      });
+      expect(plan.poolMax).toBe(1);
+      expect(plan.peakConnections).toBeLessThanOrEqual(
+        plan.perInstanceBudget * plan.concurrentInstances,
+      );
+    });
+
+    it('CLIENTS_PER_TENANT is what the running services actually use', () => {
+      // The constant exists so phase 20 has one place to change when the 1.0
+      // datamodel is deleted. If it ever disagrees with reality the budget is a
+      // fiction, so pin it.
+      expect(CLIENTS_PER_TENANT).toBe(2);
+    });
   });
 });

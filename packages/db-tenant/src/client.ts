@@ -9,7 +9,11 @@
 // old `datasources` constructor option.
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../node_modules/.prisma/tenant-client/index.js';
+import { PrismaClient as PrismaClientV2 } from '../node_modules/.prisma/tenant-v2-client/index.js';
+import { V2_SCHEMA } from './v2.js';
 export type TenantPrismaClient = PrismaClient;
+/** The Libriant 2.0 client, bound to the `lbr2` schema. */
+export type TenantPrismaClientV2 = PrismaClientV2;
 
 /**
  * Default per-client pool ceiling. Matches the documented `connection_limit=5`
@@ -64,9 +68,55 @@ export function makeTenantPrismaClient(opts: MakeTenantClientOptions): TenantPri
 }
 
 /**
+ * The same tenant database, through the 2.0 datamodel.
+ *
+ * ## The schema is an ADAPTER option, and nothing else works
+ *
+ * `packages/db-tenant/src/v2.ts` exports `withV2Schema`, which puts
+ * `?schema=lbr2` on the URL. That is correct for the Prisma CLI — `migrate
+ * deploy` reads it, creates the schema and keeps its `_prisma_migrations`
+ * inside it — and it does NOTHING at runtime. Measured against this generated
+ * client, three ways:
+ *
+ *   bare url, no adapter option        -> search_path is `"$user", public`;
+ *                                         marcRecord.count() fails on
+ *                                         `public.marc_records`
+ *   url + `?schema=lbr2`, no option    -> IDENTICAL failure
+ *   bare url + `{ schema: 'lbr2' }`    -> works
+ *
+ * So the URL is passed through UNMODIFIED here and the schema is handed to
+ * `PrismaPg`'s second argument. Running the runtime URL through `withV2Schema`
+ * would be harmless but misleading — it would look like the thing making this
+ * work.
+ *
+ * ## Raw SQL is NOT covered by that option
+ *
+ * Also measured: with `{ schema: 'lbr2' }` in force, `$queryRaw` still executes
+ * at the session's default search_path, so `SELECT … FROM marc_records` throws
+ * `relation "marc_records" does not exist`. Every hand-written statement in a
+ * 2.0 service must say `lbr2.`. The model API is schema-aware; raw SQL is not.
+ */
+export function makeTenantPrismaClientV2(opts: MakeTenantClientOptions): TenantPrismaClientV2 {
+  const adapter = new PrismaPg(
+    {
+      connectionString: opts.databaseUrl,
+      max: resolveMaxPoolSize(opts.maxPoolSize),
+    },
+    { schema: V2_SCHEMA },
+  );
+  return new PrismaClientV2({
+    adapter,
+    log: opts.log ?? ['warn', 'error'],
+    errorFormat: 'minimal',
+  });
+}
+
+/**
  * Gracefully close a tenant client (typically called on process shutdown
  * or LRU eviction).
  */
-export async function disconnectTenantClient(client: TenantPrismaClient): Promise<void> {
+export async function disconnectTenantClient(
+  client: TenantPrismaClient | TenantPrismaClientV2,
+): Promise<void> {
   await client.$disconnect();
 }

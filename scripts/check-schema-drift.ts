@@ -122,10 +122,17 @@ const PACKAGES: Pkg[] = [
         'so a device replica can order a catalogue change against a circulation change. Prisma ' +
         'has no standalone-sequence concept; it only knows sequences it owns behind ' +
         '`autoincrement()`.',
-      'ALTER TABLE "marc_records" ALTER COLUMN "row_version" SET DEFAULT nextval(\'record_version_seq\'::regclass), ALTER COLUMN "row_version" DROP DEFAULT;':
-        'The other half of dropping that sequence — Prisma renders the pair as one statement. ' +
-        'The column keeps its `@default(dbgenerated(...))` in the datamodel; only the sequence ' +
-        'object itself is surplus.',
+      'DROP SEQUENCE "marc_public_no_seq";':
+        'The `public_no` sequence — the printable record number. A sequence rather than a ' +
+        'counter row because `public_no` has no format and no reset, so a counter would ' +
+        'serialise every catalogue create behind one row lock for nothing. Prisma has no ' +
+        'standalone-sequence concept.',
+      'ALTER TABLE "marc_records" ALTER COLUMN "public_no" SET DEFAULT nextval(\'marc_public_no_seq\'::regclass), ALTER COLUMN "public_no" DROP DEFAULT, ALTER COLUMN "row_version" SET DEFAULT nextval(\'record_version_seq\'::regclass), ALTER COLUMN "row_version" DROP DEFAULT;':
+        'The other half of dropping those two sequences — Prisma renders every column default ' +
+        'it wants to change on one table as a SINGLE statement, so this entry covers both and ' +
+        'must be re-recorded whenever a third sequence-defaulted column is added. Both columns ' +
+        'keep their `@default(dbgenerated(...))` in the datamodel; only the sequence objects ' +
+        'are surplus.',
     },
   },
   {

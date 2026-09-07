@@ -6,10 +6,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * real module drags in the generated client for no benefit here — the subject
  * is which URL the service is willing to open, not what it opens it with.
  */
-const { makeTenantPrismaClient } = vi.hoisted(() => ({
+const { makeTenantPrismaClient, makeTenantPrismaClientV2 } = vi.hoisted(() => ({
   makeTenantPrismaClient: vi.fn(() => ({ $disconnect: vi.fn(async () => undefined) })),
+  // Phase 10: every cached tenant holds BOTH datamodels. Mocked here too, or
+  // the guard tests fail on a missing export rather than on what they assert.
+  makeTenantPrismaClientV2: vi.fn(() => ({ $disconnect: vi.fn(async () => undefined) })),
 }));
-vi.mock('@libriant/db-tenant', () => ({ makeTenantPrismaClient }));
+vi.mock('@libriant/db-tenant', () => ({ makeTenantPrismaClient, makeTenantPrismaClientV2 }));
 
 vi.mock('../config/env.js', () => ({
   loadEnv: () => ({ tenantClientCacheSize: 10, tenantClientIdleMs: 60_000 }),
@@ -26,6 +29,7 @@ describe('TenantPrismaService cross-tenant routing guard (tenant-isolation-02)',
 
   beforeEach(() => {
     makeTenantPrismaClient.mockClear();
+    makeTenantPrismaClientV2.mockClear();
     service = new TenantPrismaService();
   });
 
@@ -84,6 +88,12 @@ describe('TenantPrismaService cross-tenant routing guard (tenant-isolation-02)',
     service.getClient({ id: TENANT_A, dbUrl: moved });
 
     expect(makeTenantPrismaClient).toHaveBeenCalledTimes(2);
+    // BOTH datamodels rebuild. A relocate that rebuilt only the 1.0 client
+    // would leave the 2.0 one pointing at the tenant's OLD database — a
+    // cross-tenant read, which is the failure this whole service exists to
+    // prevent, and it would be invisible to every test that only asserts the
+    // 1.0 client.
+    expect(makeTenantPrismaClientV2).toHaveBeenCalledTimes(2);
     expect(makeTenantPrismaClient).toHaveBeenLastCalledWith(
       expect.objectContaining({ databaseUrl: moved }),
     );

@@ -26,11 +26,15 @@
 /// `write()` takes as a precondition.
 /// @replicated entity_kind=marc_record
 model MarcRecord {
-  id String @id
+  id String @id @default(cuid())
 
   /// Per-tenant monotonic, and the number a librarian actually reads out over
   /// the phone. Distinct from `id` on purpose: a cuid is unspeakable.
-  publicNo BigInt @unique @map("public_no")
+  ///
+  /// Minted by a sequence rather than a counter row — see the phase-10
+  /// migration for why the patron-number rule does not apply here. Gaps on a
+  /// rolled-back create are accepted: this is an identifier, not a count.
+  publicNo BigInt @unique @default(dbgenerated("nextval('marc_public_no_seq'::regclass)")) @map("public_no")
 
   kind   MarcRecordKind
   schema MarcSchema
@@ -162,6 +166,9 @@ model MarcRecordVersion {
   record MarcRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
 
   @@unique([recordId, version], map: "marc_record_versions_key")
+  /// The 409 path: recover the document a stale caller was holding, from the
+  /// only thing it sends about it — `expectedContentHash`.
+  @@index([recordId, contentHash], map: "marc_record_versions_hash_idx")
   @@index([recordId, version(sort: Desc)], map: "marc_record_versions_desc_idx")
   @@index([createdAt(sort: Desc), id(sort: Desc)], map: "marc_record_versions_sweep_idx")
   @@map("marc_record_versions")

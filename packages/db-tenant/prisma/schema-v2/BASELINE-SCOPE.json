@@ -765,9 +765,9 @@
     },
     "marc_record_locks": {
       "status": "deferred",
-      "phase": "11-50",
+      "phase": "10b",
       "group": "Bibliographic",
-      "reason": "The projection, satellites and authority work of M1/M5."
+      "reason": "§3 names this table in one list and specifies no column of it anywhere in the document. Its shape is forced entirely by phase 10’s acceptance criterion (\"lock acquire/heartbeat/expiry/take-over each write the expected audit action\"), so it is designed in 10b together with the four operations that give those columns meaning. It is NOT part of the write path: a record lock is a human’s intent to hold a record open in an editor, and an import, an overlay, a merge and a batch job all have to be able to write a record a cataloguer has open."
     },
     "marc_record_versions": {
       "status": "created",

@@ -36,7 +36,7 @@
 /// the marker, which is a one-line migration. Turning a firehose off after a
 /// fleet has consumed it is the expensive direction.
 model Fee {
-  id String @id
+  id String @id @default(cuid())
 
   /// Phase 9d gives these two an FK. See the docblock.
   accountId String @map("account_id")

@@ -48,9 +48,11 @@ export type TenantPoolPlan = {
   clientCacheSize: number;
   /** Max Postgres connections per tenant client. */
   poolMax: number;
+  /** Prisma clients per cached tenant — 2 from phase 10 (the 1.0 and 2.0 datamodels). */
+  clientsPerTenant: number;
   /** How many service instances of this role can be alive at the same time. */
   concurrentInstances: number;
-  /** clientCacheSize × poolMax × concurrentInstances — the whole role's peak. */
+  /** clientCacheSize × poolMax × clientsPerTenant × concurrentInstances. */
   peakConnections: number;
   /** Connections the whole role is allowed to reach. */
   budget: number;
@@ -131,12 +133,38 @@ const readInt = (name: string, fallback: number): number => {
  * Pure planner — all inputs explicit so the arithmetic can be unit-tested
  * without an environment.
  */
+/**
+ * Prisma clients a cached tenant entry holds: the 1.0 client and the 2.0 one.
+ *
+ * A constant rather than a literal 2 so the day phase 20 deletes the 1.0
+ * datamodel there is one place to change, and the change is visible in a diff
+ * next to the budget it moves.
+ */
+export const CLIENTS_PER_TENANT = 2;
+
 export function planTenantPool(input: {
   role: TenantPoolRole;
   requestedCacheSize: number;
   requestedPoolMax: number;
   serverMaxConnections?: number;
   reservedConnections?: number;
+  /**
+   * How many Prisma clients each cached tenant holds. Default 1.
+   *
+   * TWO from phase 10, and this parameter exists because the second one is
+   * otherwise invisible arithmetic. `TenantPrismaService` caches one entry per
+   * tenant, and that entry now holds a 1.0 client AND a 2.0 client — the 2.0
+   * datamodel lives in its own Postgres schema and its own generated client, so
+   * a service that touches `marc_records` cannot use the 1.0 one.
+   *
+   * Each client opens its own pool. Without this input the plan would keep
+   * reporting a peak of `cacheSize × poolMax` while the process actually opened
+   * twice that: at the shipped `api` numbers, 100 reported against 200 real,
+   * versus a per-instance budget of 118 and a server `max_connections` of 200.
+   * That is not a slow endpoint, it is the whole box refusing connections —
+   * including the ones the control plane needs to tell anybody why.
+   */
+  clientsPerTenant?: number;
 }): TenantPoolPlan {
   const { role } = input;
   const serverMaxConnections = Math.max(
@@ -155,8 +183,12 @@ export function planTenantPool(input: {
   const budget = Math.max(1, Math.floor(shared * ROLE_SHARE[role]));
   const perInstanceBudget = Math.max(1, Math.floor(budget / owners));
 
+  const clientsPerTenant = Math.max(1, Math.floor(input.clientsPerTenant ?? 1));
   let cacheSize = Math.max(1, Math.floor(input.requestedCacheSize));
   let poolMax = Math.max(1, Math.floor(input.requestedPoolMax));
+
+  /** What one instance would really open, counting every client per tenant. */
+  const spend = () => cacheSize * poolMax * clientsPerTenant;
 
   if (role === 'worker') {
     if (poolMax > 1) {
@@ -174,11 +206,12 @@ export function planTenantPool(input: {
   // The LRU size is a working-set decision the operator makes; the pool DEPTH
   // is what yields to the connection budget. Shrinking the cache instead would
   // make every request past the 20th tenant pay a fresh connect.
-  if (cacheSize * poolMax > perInstanceBudget) {
-    const fitted = Math.max(1, Math.floor(perInstanceBudget / cacheSize));
+  if (spend() > perInstanceBudget) {
+    const fitted = Math.max(1, Math.floor(perInstanceBudget / (cacheSize * clientsPerTenant)));
     if (fitted < poolMax) {
       clamped.push(
-        `poolMax ${poolMax}→${fitted} so ${cacheSize} tenant clients × ${fitted} ≤ ${perInstanceBudget}`,
+        `poolMax ${poolMax}→${fitted} so ${cacheSize} tenant(s) × ${clientsPerTenant} client(s) ` +
+          `× ${fitted} ≤ ${perInstanceBudget}`,
       );
       poolMax = fitted;
     }
@@ -186,10 +219,11 @@ export function planTenantPool(input: {
   // Only if a single connection per tenant client still overshoots does the
   // cache itself have to give — at that point the box simply cannot hold this
   // many tenants at once and thrashing is better than refusing connections.
-  if (cacheSize * poolMax > perInstanceBudget) {
-    const fitted = Math.max(1, perInstanceBudget);
+  if (spend() > perInstanceBudget) {
+    const fitted = Math.max(1, Math.floor(perInstanceBudget / (poolMax * clientsPerTenant)));
     clamped.push(
-      `clientCacheSize ${cacheSize}→${fitted} (budget ${perInstanceBudget} is below one per tenant)`,
+      `clientCacheSize ${cacheSize}→${fitted} (budget ${perInstanceBudget} is below ` +
+        `${clientsPerTenant} client(s) per tenant)`,
     );
     cacheSize = fitted;
   }
@@ -198,8 +232,9 @@ export function planTenantPool(input: {
     role,
     clientCacheSize: cacheSize,
     poolMax,
+    clientsPerTenant,
     concurrentInstances: owners,
-    peakConnections: cacheSize * poolMax * owners,
+    peakConnections: cacheSize * poolMax * clientsPerTenant * owners,
     budget,
     perInstanceBudget,
     serverMaxConnections,
@@ -216,6 +251,8 @@ export function resolveTenantPoolPlan(
     role,
     requestedCacheSize,
     requestedPoolMax: readInt('TENANT_DB_POOL_MAX', 5),
+    // Both datamodels. See `clientsPerTenant` on planTenantPool.
+    clientsPerTenant: CLIENTS_PER_TENANT,
     serverMaxConnections: readInt('PG_MAX_CONNECTIONS', DEFAULT_SERVER_MAX_CONNECTIONS),
     reservedConnections: readInt('PG_RESERVED_CONNECTIONS', DEFAULT_RESERVED_CONNECTIONS),
   });
@@ -225,9 +262,13 @@ export function resolveTenantPoolPlan(
 export function describeTenantPoolPlan(plan: TenantPoolPlan): string {
   const owners =
     plan.concurrentInstances > 1 ? ` × ${plan.concurrentInstances} concurrent sweep(s)` : '';
+  // The per-tenant client count is in the line whenever it is not 1, because a
+  // boot log reading "10 client(s) × 5 connection(s) = peak 100" that does not
+  // multiply out is a line an operator stops trusting.
+  const datamodels = plan.clientsPerTenant > 1 ? ` × ${plan.clientsPerTenant} datamodel(s)` : '';
   const base =
-    `tenant pool [${plan.role}]: ${plan.clientCacheSize} client(s) × ${plan.poolMax} connection(s)` +
-    `${owners} = peak ${plan.peakConnections} of a ${plan.budget} budget` +
+    `tenant pool [${plan.role}]: ${plan.clientCacheSize} tenant(s) × ${plan.poolMax} connection(s)` +
+    `${datamodels}${owners} = peak ${plan.peakConnections} of a ${plan.budget} budget` +
     ` (server max_connections ${plan.serverMaxConnections})`;
   return plan.clamped.length ? `${base}; clamped: ${plan.clamped.join('; ')}` : base;
 }
@@ -325,6 +366,8 @@ export function planFleetConnections(input: {
   reservedConnections?: number;
   apiInstances?: number;
   perTenantConnectionLimit: number;
+  /** See `clientsPerTenant` on {@link planTenantPool}. Default 1. */
+  clientsPerTenant?: number;
 }): FleetConnectionPlan {
   const serverMaxConnections = Math.max(
     1,
@@ -340,6 +383,10 @@ export function planFleetConnections(input: {
     requestedPoolMax: input.requestedPoolMax,
     serverMaxConnections,
     reservedConnections: reserved,
+    // Carried into BOTH role plans, so the fleet total counts the second client
+    // too. Left off, this function would report a fleet that fits while every
+    // process in it opened twice what it claimed.
+    clientsPerTenant: input.clientsPerTenant,
   };
   const api = planTenantPool({ role: 'api', ...common });
   const worker = planTenantPool({ role: 'worker', ...common });
@@ -400,6 +447,8 @@ export function resolveFleetConnectionPlan(
   return planFleetConnections({
     requestedCacheSize,
     requestedPoolMax: readInt('TENANT_DB_POOL_MAX', 5),
+    // Both datamodels. See `clientsPerTenant` on planTenantPool.
+    clientsPerTenant: CLIENTS_PER_TENANT,
     serverMaxConnections: readInt('PG_MAX_CONNECTIONS', DEFAULT_SERVER_MAX_CONNECTIONS),
     reservedConnections: readInt('PG_RESERVED_CONNECTIONS', DEFAULT_RESERVED_CONNECTIONS),
     apiInstances: readInt('API_INSTANCES', DEFAULT_API_INSTANCES),

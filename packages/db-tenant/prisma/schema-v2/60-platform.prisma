@@ -146,7 +146,7 @@ model SyncClientChange {
 /// makes an INSERT fail outright, which is loud, and deliberately preferred to a
 /// DEFAULT partition that silently swallows rows into an unpartitionable heap.
 model AuditLogEntry {
-  id String
+  id String @default(cuid())
 
   occurredAt DateTime @default(now()) @db.Timestamptz(3) @map("occurred_at")
 

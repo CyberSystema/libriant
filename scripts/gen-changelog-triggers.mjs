@@ -56,7 +56,9 @@ const FIELD_MAP = /@map\("([^"]+)"\)/;
 /** Every model carrying the marker, with the physical facts a trigger needs. */
 export function replicatedModels() {
   const found = [];
-  for (const file of readdirSync(SCHEMA_DIR).filter((f) => f.endsWith('.prisma')).sort()) {
+  for (const file of readdirSync(SCHEMA_DIR)
+    .filter((f) => f.endsWith('.prisma'))
+    .sort()) {
     const lines = readFileSync(path.join(SCHEMA_DIR, file), 'utf8').split('\n');
     let pendingKind = null;
     let model = null;
@@ -75,7 +77,14 @@ export function replicatedModels() {
         // means the docblock was detached by an edit, and silently attaching
         // it to the next model would put a trigger on the wrong table.
         model = pendingKind
-          ? { file, name: start[1], entityKind: pendingKind, pk: null, table: null, hasBranchId: false }
+          ? {
+              file,
+              name: start[1],
+              entityKind: pendingKind,
+              pk: null,
+              table: null,
+              hasBranchId: false,
+            }
           : null;
         pendingKind = null;
         continue;
@@ -107,27 +116,71 @@ export function replicatedModels() {
  * Written once and shared by every trigger, so the twelve facts a change event
  * carries are decided in exactly one place.
  *
- * ACTOR. A trigger cannot see who is logged in, so the actor arrives through
- * two session settings that the request-scoped Prisma middleware sets. When they
- * are absent — a psql session, a migration, the nightly sweep — the event is
- * attributed to `system`, which is true. `current_setting(…, true)` is the
- * missing-is-NULL form; without the second argument an unset GUC raises 42704
- * and would abort the librarian's transaction.
+ * ## Three names, and why every obvious spelling of this statement is wrong
  *
- * OP. `archive` and `restore` are distinguished from `update` here rather than
- * left to consumers, because a soft delete is a DISAPPEARANCE to every consumer
- * — the OPAC must drop the record, the index must remove it — and making each
- * replica infer that from an `archived_at` column it would have to know about is
- * the coupling the projection exists to prevent. Tables with no `archived_at`
- * (and `marc_records`, which uses `deleted_at`) simply never emit them.
+ * A trigger function body is re-resolved at RUNTIME under whatever `search_path`
+ * the calling session happens to have. The first version of this said
+ * `INSERT INTO change_events`, and it passed every test phase 9 shipped —
+ * because the smoke test does `SET search_path = lbr2, public` and the census
+ * test only reads `pg_catalog`. From an application connection, whose
+ * search_path is the default, EVERY write to a replicated table failed:
  *
- * PAYLOAD. `to_jsonb(NEW)` for now, NULL on delete. This is a whole-row
- * projection and is deliberately temporary: §4.3 gives phase 11 a single
- * projection function that serves the indexer, the OPAC record page, the OAI
- * rendition and the report builder, and this is replaced by a call to it. The
- * one thing it must not do meanwhile is omit the payload entirely, because then
- * a consumer would have to read back through the row it is being told about and
- * would race the next write.
+ *     ERROR: relation "change_events" does not exist
+ *     CONTEXT: PL/pgSQL function lbr2.lbr2_write_change_event() line 44
+ *
+ * There are THREE such names, not one, and fixing only the obvious one moves the
+ * error rather than removing it: the INSERT target; the sequence inside
+ * `nextval('record_version_seq')`, which is a regclass literal and is also
+ * resolved through search_path; and the `::audit_actor_kind` cast.
+ *
+ * `ALTER FUNCTION … SET search_path = lbr2, pg_catalog` fixes all three, and was
+ * measured to work. It is deliberately NOT what this does, because it stores the
+ * schema name as TEXT: after phase 20's cutover (`ALTER SCHEMA lbr2 RENAME TO
+ * public`) the pinned path names a schema that no longer exists and every write
+ * fails again — measured. That is a landmine in the one migration that can least
+ * afford one.
+ *
+ * So every name resolves through `TG_TABLE_SCHEMA`, the schema of the table
+ * whose trigger fired, which is by construction the schema the feed lives in
+ * whatever it is called today. Measured to work at the default search_path AND
+ * after the rename. The dynamic statement costs nothing: 5,000 inserts took
+ * 290 ms with a pinned search_path and 289 ms this way, because Postgres caches
+ * the plan for a stable query string.
+ *
+ * ## ACTOR, and the empty string that is not NULL
+ *
+ * A trigger cannot see who is logged in, so the actor arrives through three
+ * session settings the request-scoped transaction sets. When they are absent — a
+ * psql session, a migration, the nightly sweep — the event is attributed to
+ * `system`, which is true.
+ *
+ * `current_setting(…, true)` is the missing-is-NULL form; without the second
+ * argument an unset GUC raises 42704 and would abort the librarian's
+ * transaction. `COALESCE` alone is still not enough, and that is the second
+ * measured bug: once a transaction has called `set_config(…, true)` and
+ * committed, the setting on that backend is not NULL again — it is the EMPTY
+ * STRING. On a pooled connection the next UNATTRIBUTED write then fails with
+ * `22P02 invalid input value for enum audit_actor_kind: ""`, on whatever reuses
+ * that backend, which may be a background job rather than the code that caused
+ * it. Hence `NULLIF(…, '')` inside every read.
+ *
+ * ## OP
+ *
+ * `archive` and `restore` are distinguished from `update` here rather than left
+ * to consumers, because a soft delete is a DISAPPEARANCE to every consumer — the
+ * OPAC must drop the record, the index must remove it — and making each replica
+ * infer that from an `archived_at` column it would have to know about is the
+ * coupling the projection exists to prevent. Tables with no `archived_at` (and
+ * `marc_records`, which uses `deleted_at`) simply never emit them.
+ *
+ * ## PAYLOAD
+ *
+ * `to_jsonb(NEW)` for now, NULL on delete. A whole-row projection, deliberately
+ * temporary: §4.3 gives phase 11 one projection function serving the indexer,
+ * the OPAC record page, the OAI rendition and the report builder, and this is
+ * replaced by a call to it. The one thing it must not do meanwhile is omit the
+ * payload entirely, because then a consumer would have to read back through the
+ * row it is being told about and would race the next write.
  */
 function functionSql() {
   return `CREATE OR REPLACE FUNCTION lbr2_write_change_event() RETURNS trigger
@@ -138,8 +191,6 @@ DECLARE
   v_has_branch   boolean := TG_ARGV[2]::boolean;
   v_row          jsonb;
   v_op           text;
-  v_entity_id    text;
-  v_branch_id    text;
   v_payload      jsonb;
   v_archived_col text;
 BEGIN
@@ -169,28 +220,28 @@ BEGIN
     END IF;
   END IF;
 
-  v_entity_id := v_row ->> v_pk_column;
-  IF v_has_branch THEN
-    v_branch_id := v_row ->> 'branch_id';
-  END IF;
-
-  INSERT INTO change_events (
-    entity_kind, entity_id, op, branch_id, row_version, payload,
-    actor_kind, actor_id, device_id
-  ) VALUES (
+  -- EVERY name resolved through TG_TABLE_SCHEMA. See the header for why the
+  -- three obvious spellings of this statement are each wrong.
+  EXECUTE pg_catalog.format(
+    'INSERT INTO %1$I.change_events ('
+    '  entity_kind, entity_id, op, branch_id, row_version, payload,'
+    '  actor_kind, actor_id, device_id'
+    ') VALUES ('
+    '  $1, $2, $3, $4, pg_catalog.nextval(%2$L), $5,'
+    '  COALESCE(NULLIF(pg_catalog.current_setting(''libriant.actor_kind'', true), ''''),'
+    '           ''system'')::%1$I.audit_actor_kind,'
+    '  NULLIF(pg_catalog.current_setting(''libriant.actor_id'', true), ''''),'
+    '  NULLIF(pg_catalog.current_setting(''libriant.device_id'', true), '''')'
+    ')',
+    TG_TABLE_SCHEMA,
+    TG_TABLE_SCHEMA || '.record_version_seq'
+  )
+  USING
     v_entity_kind,
-    v_entity_id,
+    v_row ->> v_pk_column,
     v_op,
-    v_branch_id,
-    pg_catalog.nextval('record_version_seq'),
-    v_payload,
-    COALESCE(
-      pg_catalog.current_setting('libriant.actor_kind', true),
-      'system'
-    )::audit_actor_kind,
-    pg_catalog.current_setting('libriant.actor_id', true),
-    pg_catalog.current_setting('libriant.device_id', true)
-  );
+    CASE WHEN v_has_branch THEN v_row ->> 'branch_id' END,
+    v_payload;
 
   RETURN NULL;  -- AFTER trigger; the return value is ignored.
 END;

@@ -1,6 +1,11 @@
 import { Inject, Injectable, Logger, Optional, OnModuleDestroy } from '@nestjs/common';
 import { LRUCache } from 'lru-cache';
-import { makeTenantPrismaClient, type TenantPrismaClient } from '@libriant/db-tenant';
+import {
+  makeTenantPrismaClient,
+  makeTenantPrismaClientV2,
+  type TenantPrismaClient,
+  type TenantPrismaClientV2,
+} from '@libriant/db-tenant';
 import { loadEnv } from '../config/env.js';
 import {
   describeTenantPoolPlan,
@@ -11,8 +16,24 @@ import {
 } from '../platform/tenant-pool-budget.js';
 import type { TenantContext } from './tenant-context.js';
 
+/**
+ * One cache entry per tenant, holding BOTH datamodels.
+ *
+ * Not two caches, deliberately. `assertUrlBelongsToTenant`, the
+ * relocate-rebuild path and the eviction/disconnect story are each things that
+ * must happen for a tenant, not for a client — and two caches means two places
+ * that can disagree about which URL a tenant is on. A relocation that rebuilt
+ * the 1.0 client and left a 2.0 client pointing at the old database would be a
+ * cross-tenant read, which is the failure this service exists to prevent.
+ *
+ * The 2.0 client is built EAGERLY beside the 1.0 one rather than on first use,
+ * so `clientsPerTenant: 2` in the connection budget is the truth rather than an
+ * upper bound, and so a tenant's connection cost does not depend on which
+ * endpoint happened to be called first.
+ */
 type Entry = {
   client: TenantPrismaClient;
+  clientV2: TenantPrismaClientV2;
   dbUrl: string;
 };
 
@@ -128,9 +149,10 @@ export class TenantPrismaService implements OnModuleDestroy {
       // Called on eviction or explicit delete — disconnect *async* but
       // we don't await (LRU dispose can't be async).
       dispose: (entry: Entry, key: string) => {
-        entry.client
-          .$disconnect()
-          .then(() => this.logger.debug(`Disconnected tenant client for ${key}`))
+        // BOTH, or an eviction leaks a pool per tenant and the connection
+        // budget silently stops describing reality.
+        Promise.allSettled([entry.client.$disconnect(), entry.clientV2.$disconnect()])
+          .then(() => this.logger.debug(`Disconnected tenant clients for ${key}`))
           .catch((err: unknown) =>
             this.logger.warn(
               `Disconnect failed for ${key}: ${err instanceof Error ? err.message : err}`,
@@ -146,6 +168,21 @@ export class TenantPrismaService implements OnModuleDestroy {
    * happens after a tenant relocation.
    */
   getClient(ctx: Pick<TenantContext, 'id' | 'dbUrl'>): TenantPrismaClient {
+    return this.entryFor(ctx).client;
+  }
+
+  /**
+   * The same tenant database through the Libriant 2.0 datamodel.
+   *
+   * A separate client because the 2.0 tables live in their own Postgres schema
+   * and their own generated Prisma client — see `packages/db-tenant/src/v2.ts`.
+   * Same cache entry, same URL, same isolation guard.
+   */
+  getClientV2(ctx: Pick<TenantContext, 'id' | 'dbUrl'>): TenantPrismaClientV2 {
+    return this.entryFor(ctx).clientV2;
+  }
+
+  private entryFor(ctx: Pick<TenantContext, 'id' | 'dbUrl'>): Entry {
     // Checked on EVERY call, not only on construction (tenant-isolation-02).
     // Gating it on the cache-miss path would make the guard's coverage depend
     // on cache state, which is exactly the kind of reasoning a cross-tenant
@@ -153,20 +190,25 @@ export class TenantPrismaService implements OnModuleDestroy {
     assertUrlBelongsToTenant(ctx.id, ctx.dbUrl);
     const existing = this.cache.get(ctx.id);
     if (existing && existing.dbUrl === ctx.dbUrl) {
-      return existing.client;
+      return existing;
     }
     if (existing) {
-      this.logger.debug(`dbUrl changed for tenant ${ctx.id}; rebuilding client.`);
-      // Removing triggers `dispose` which disconnects the old client.
+      this.logger.debug(`dbUrl changed for tenant ${ctx.id}; rebuilding clients.`);
+      // Removing triggers `dispose`, which disconnects BOTH old clients.
       this.cache.delete(ctx.id);
     }
     const client = makeTenantPrismaClient({
       databaseUrl: ctx.dbUrl,
       maxPoolSize: this.plan.poolMax,
     });
-    this.cache.set(ctx.id, { client, dbUrl: ctx.dbUrl });
-    this.logger.debug(`Created tenant client for ${ctx.id} (cache size: ${this.cache.size}).`);
-    return client;
+    const clientV2 = makeTenantPrismaClientV2({
+      databaseUrl: ctx.dbUrl,
+      maxPoolSize: this.plan.poolMax,
+    });
+    const entry: Entry = { client, clientV2, dbUrl: ctx.dbUrl };
+    this.cache.set(ctx.id, entry);
+    this.logger.debug(`Created tenant clients for ${ctx.id} (cache size: ${this.cache.size}).`);
+    return entry;
   }
 
   /** Force-eviction (e.g. when an admin archives a tenant). */
@@ -188,7 +230,9 @@ export class TenantPrismaService implements OnModuleDestroy {
     // Disconnect everything synchronously on shutdown.
     const entries = Array.from(this.cache.values());
     this.cache.clear();
-    await Promise.allSettled(entries.map((e) => e.client.$disconnect()));
-    this.logger.log(`Disconnected ${entries.length} tenant client(s).`);
+    await Promise.allSettled(
+      entries.flatMap((e) => [e.client.$disconnect(), e.clientV2.$disconnect()]),
+    );
+    this.logger.log(`Disconnected ${entries.length} tenant client pair(s).`);
   }
 }

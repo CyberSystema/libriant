@@ -20,7 +20,7 @@
 /// @replicated entity_kind=holdings_record
 model HoldingsRecord {
   /// Not `id`. See the docblock — the name is forced by the items DDL.
-  recordId String @id @map("record_id")
+  recordId String @id @default(cuid()) @map("record_id")
 
   branchId String @map("branch_id")
 
@@ -47,7 +47,7 @@ model HoldingsRecord {
 /// policy tables the rules matrix resolves to, which are phase 9b/13.
 /// @replicated entity_kind=item_type
 model ItemType {
-  id String @id
+  id String @id @default(cuid())
 
   code     String
   name     String
@@ -69,7 +69,7 @@ model ItemType {
 /// appears in a circulation rule selector, the split above has been undone.
 /// @replicated entity_kind=material_type
 model MaterialType {
-  id String @id
+  id String @id @default(cuid())
 
   code     String
   name     String
@@ -105,7 +105,7 @@ model MaterialType {
 /// offline inventory wand.
 /// @replicated entity_kind=item
 model Item {
-  id String @id
+  id String @id @default(cuid())
 
   holdingsRecordId String @map("holdings_record_id")
   /// Kept in step with the holdings record inside the same transaction. Present

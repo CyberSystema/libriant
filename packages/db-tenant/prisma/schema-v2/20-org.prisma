@@ -48,7 +48,7 @@ model IanaTimezone {
 /// due date land at closing time on a day the branch is actually open.
 /// @replicated entity_kind=branch
 model Branch {
-  id String @id
+  id String @id @default(cuid())
 
   code     String
   name     String
@@ -137,7 +137,7 @@ model Branch {
 /// phase-15 service that knows what they are for.
 /// @replicated entity_kind=shelving_location
 model ShelvingLocation {
-  id String @id
+  id String @id @default(cuid())
 
   branchId String @map("branch_id")
   code     String

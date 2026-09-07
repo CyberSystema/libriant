@@ -64,6 +64,7 @@ index    CREATE INDEX loans_patron_open_idx ON loans USING btree (patron_id) WHE
 index    CREATE INDEX loans_status_due_id_idx ON loans USING btree (status, due_at, id)
 index    CREATE INDEX marc_record_versions_batch_idx ON marc_record_versions USING btree (batch_job_id) WHERE (batch_job_id IS NOT NULL)
 index    CREATE INDEX marc_record_versions_desc_idx ON marc_record_versions USING btree (record_id, version DESC)
+index    CREATE INDEX marc_record_versions_hash_idx ON marc_record_versions USING btree (record_id, content_hash)
 index    CREATE INDEX marc_record_versions_sweep_idx ON marc_record_versions USING btree (created_at DESC, id DESC)
 index    CREATE INDEX marc_records_deleted_idx ON marc_records USING btree (deleted_at) WHERE (deleted_at IS NOT NULL)
 index    CREATE INDEX marc_records_kind_status_updated_at_id_idx ON marc_records USING btree (kind, status, updated_at DESC, id DESC)

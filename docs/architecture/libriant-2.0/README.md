@@ -716,3 +716,160 @@ The changelog trigger attributes an actor from `current_setting('libriant.actor_
 and falls back to `system`. Nothing sets those yet — the request-scoped middleware
 that does is phase 10 — so every event in a phase-9 database is `system`, which is
 true rather than convenient.
+
+---
+
+## Phase 10a — the MARC store: the write path
+
+Delivered as **10a**: the write path, versions, diff and restore, complete.
+**10b** — `marc_record_locks` and the acquire/heartbeat/expiry/take-over
+lifecycle — is deferred, and the manifest says so rather than a comment: its
+`BASELINE-SCOPE.json` entry moved from a milestone bucket (`"11-50"`, which is
+what made it invisible to phase-10 planning in the first place) to `"10b"` with
+the real reason.
+
+The seam is not arbitrary. Four of the five acceptance clauses are write-path
+and exactly one is locks; and a record lock is a different mechanism at a
+different timescale — a human's intent to hold a record open for ten minutes —
+which **must never gate `write()`**, because an import, an overlay, a merge and
+a batch job all have to be able to write a record a cataloguer has open. §3
+names the table in one list and specifies no column of it anywhere in 1,054
+lines, so its whole shape is forced by the acceptance criterion, and it is
+designed with the four operations that give those columns meaning.
+
+### Two bugs in phase 9, both of which its own tests could not see
+
+**The changelog trigger could not fire from an application connection.** A
+trigger body is re-resolved at RUNTIME under the CALLING session's
+`search_path`, and phase 9's function had THREE unqualified names. Every test
+phase 9 wrote happened to supply a path — the smoke modules do
+`SET search_path = lbr2, public`, the census spec only reads `pg_catalog` — so
+from any ordinary connection the FIRST write to any replicated table failed:
+
+    ERROR:  relation "change_events" does not exist
+    CONTEXT: PL/pgSQL function lbr2.lbr2_write_change_event() line 44
+
+`marc_records` therefore could not be written at all, which is why this is
+phase 10a's first commit rather than a 9b. Fixing only the obvious name moves
+the error rather than removing it: the sequence inside
+`nextval('record_version_seq')` is a regclass literal resolved the same way, and
+`::audit_actor_kind` is a third.
+
+`ALTER FUNCTION … SET search_path = lbr2, pg_catalog` fixes all three and was
+measured to work — and is NOT what this does, because it stores the schema name
+as text, so after phase 20's `ALTER SCHEMA lbr2 RENAME TO public` it names a
+schema that no longer exists and every write fails again (also measured). Every
+name now resolves through `TG_TABLE_SCHEMA`, which is correct before and after
+the rename. It costs nothing: 5,000 inserts took 290 ms pinned and 289 ms this
+way, because Postgres caches the plan for a stable query string.
+
+**`COALESCE(current_setting(…, true), 'system')` is correct exactly once per
+backend.** After a transaction has called `set_config(…, true)` and committed,
+the setting is not NULL again — it is the EMPTY STRING. So the next
+UNATTRIBUTED write on that pooled connection would have failed with
+`22P02 invalid input value for enum audit_actor_kind: ""`, landing on whatever
+reused the backend, which may be a nightly job rather than the request that
+caused it. `NULLIF(…, '')` now wraps every read.
+
+Neither is visible to the census fixture, which captures `pg_get_triggerdef` —
+that does not include the function body. Both are covered by runtime regression
+tests that drive a real Prisma client, which is the only thing that would have
+caught them.
+
+**And a third, found by the first integration run:** the per-tenant runtime role
+had no grants on `lbr2` at all, so every 2.0 write failed with
+`42501 permission denied for schema lbr2`. `packages/db-control/src/tenant-db-roles.ts`
+granted on a hardcoded `public`; it now iterates an explicit `TENANT_SCHEMAS`
+list, skipping schemas that do not exist yet (roles are applied before
+migrations on a new database, and again after). Invisible to every phase-9 test,
+all of which connect as the superuser.
+
+### The concurrency design, decided by measurement
+
+Three mechanisms appear in one phase and they are easy to conflate. They are
+NOT interchangeable, and each was measured on the real tables:
+
+| variant                                              | 2-way                  | 25-way  |
+| ---------------------------------------------------- | ---------------------- | ------- |
+| naive (read, compare in JS, unconditional UPDATE)    | 2 winners / 3 versions | 25 / 26 |
+| **advisory lock AFTER the read**, hash checked in JS | 2 / 3                  | 25 / 26 |
+| advisory lock FIRST, no hash check                   | 2 / 3                  | —       |
+| advisory lock FIRST, hash checked in JS              | 1 / 2                  | 1 / 2   |
+| CAS (`UPDATE … WHERE content_hash = $expected`)      | 1 / 2                  | 1 / 2   |
+
+The second row is the one worth naming: it is the natural left-to-right reading
+of "advisory lock → hash precondition" and it gives **exactly the protection of
+no lock at all**, because both readers complete before either lock is requested.
+The lock must be the FIRST statement of the transaction, before any read.
+
+BOTH are used, at READ COMMITTED, because each covers something the other does
+not. The CAS cannot prevent a deadlock — two writers touching
+`marc_record_contents` and `marc_records` in opposite orders produce `40P01` —
+and the lock cannot detect staleness. Raising the isolation level instead
+"works" and is wrong for this criterion: REPEATABLE READ and SERIALIZABLE both
+yield one winner, but the loser gets `40001`, a retry-shaped error carrying
+neither the current record nor the diff the clause demands.
+
+`locks.ts` lands here rather than in phase 16 so this is not a 26th hand-rolled
+call site. The CI grep phase 16 also specifies does NOT land: there are 25 bare
+call sites in 1.0 services, and a gate shipped with 25 allowlist entries
+pointing at code the cutover deletes is a gate that checks nothing.
+
+### 005 cannot be monotonic from the wall clock
+
+The clause is "two consecutive edits produce strictly increasing 005". MARC 005
+has TENTHS-of-a-second resolution, and a complete write transaction was measured
+at **1.60 ms** — ten consecutive edits produced ten IDENTICAL stamps. So a
+wall-clock stamper does not merely risk a collision; under this write path it
+collides essentially always.
+
+Worse, the obvious test passes on it: two supertest PATCHes are usually more than
+100 ms apart. The test is therefore written IN-PROCESS, ten edits back to back,
+asserting ten distinct stamps read from the STORED document. The stamper is
+`max(clockTick, previous + 0.1s)`, and the consequence is deliberate: a burst of
+edits pushes 005 ahead of real time by a tenth of a second each. That is correct
+for MARC — 005 is a transaction timestamp whose job is to order versions — but
+it will look wrong to anyone diffing it against `updated_at`.
+
+### Three things the tests changed about the implementation
+
+**One statement, or two change events per edit.** The CAS and the `row_version`
+bump were originally two UPDATEs on `marc_records`, and every UPDATE fires the
+changelog trigger — so one edit wrote TWO change events and every consumer would
+have processed the record twice. Folded into one raw statement with `RETURNING`.
+The `row_version` bump is not optional either: phase 9's decision to give
+`marc_record_contents` no trigger rests on "every content write bumps the
+parent's row_version in the same transaction".
+
+**005 is excluded from every diff, exactly as it is from the hash.** `diff()`
+knows nothing about 005 and reports it as an ordinary field change, so without
+this every history row would read "changed 005, 245" and — worse — a save that
+changed nothing would come back `verdict: 'changed'` and write a version row,
+which §2 explicitly forbids.
+
+**Leader/05 follows the content, not the act of saving.** Setting it to `c`
+before diffing makes a no-op save change the leader, which IS a change, so the
+record is no longer identical to itself. It is now set only when the content
+actually moved.
+
+### Left open, deliberately
+
+`ValidationMode` is still declared and unused: phase 8 named the type and left
+the behaviour here, and 10a fixes `block` as the only mode. Note what that
+currently means — the shipped definition reports `confidence: 'transcribed'`, so
+every table-driven rule is capped at WARNING and the only errors that can block
+a save are the three STRUCTURAL ones (`indicator-malformed`, `data-field-empty`,
+`field-kind-mismatch`). A test written around "a repeated 245 blocks the save"
+would fail, and correctly.
+
+Phase 8's other inheritance is also still open and is recorded again so it does
+not evaporate between two phases that each believe the other owns it: a
+persisted issue set must carry the definition's identity (profile, digest,
+confidence) so a definition change is treated as "recompute" rather than
+"trust". 10a persists no issue set — `needs_review` is a boolean — so the
+obligation passes to whichever phase first stores one.
+
+`projectInTransaction()` is an explicit empty method inside the write
+transaction. §2 requires the relational projection to be recomputed "inside the
+same transaction as every write", and phase 11 owns it; leaving the hole visible
+means phase 11 fills it rather than restructuring the write path.

@@ -63,6 +63,9 @@ importers:
       '@libriant/db-tenant':
         specifier: workspace:*
         version: link:../../packages/db-tenant
+      '@libriant/marc':
+        specifier: workspace:*
+        version: link:../../packages/marc
       '@libriant/shared':
         specifier: workspace:*
         version: link:../../packages/shared

@@ -20,6 +20,7 @@ import { CustomizationModule } from './customization/customization.module.js';
 import { DesktopModule } from './desktop/desktop.module.js';
 import { EmailModule } from './email/email.module.js';
 import { FinesModule } from './fines/fines.module.js';
+import { BibModule } from './bib/bib.module.js';
 import { HelpModule } from './help/help.module.js';
 import { ImportModule } from './import/import.module.js';
 import { LoansModule } from './loans/loans.module.js';
@@ -80,6 +81,7 @@ import { ApplicationsModule } from './applications/applications.module.js';
     PrivacyModule,
     LoansModule,
     FinesModule,
+    BibModule,
     ReservationsModule,
     TenantSettingsModule,
     AuditModule,

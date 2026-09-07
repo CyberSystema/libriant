@@ -16,6 +16,7 @@
   "dependencies": {
     "@libriant/db-control": "workspace:*",
     "@libriant/db-tenant": "workspace:*",
+    "@libriant/marc": "workspace:*",
     "@libriant/shared": "workspace:*",
     "@libriant/site": "workspace:*",
     "@nestjs/common": "^11.2.1",
