@@ -764,10 +764,10 @@
       "reason": "§3 or §2 gives it a full CREATE TABLE block."
     },
     "marc_record_locks": {
-      "status": "deferred",
-      "phase": "10b",
+      "status": "created",
+      "basis": "skeleton",
       "group": "Bibliographic",
-      "reason": "§3 names this table in one list and specifies no column of it anywhere in the document. Its shape is forced entirely by phase 10’s acceptance criterion (\"lock acquire/heartbeat/expiry/take-over each write the expected audit action\"), so it is designed in 10b together with the four operations that give those columns meaning. It is NOT part of the write path: a record lock is a human’s intent to hold a record open in an editor, and an import, an overlay, a merge and a batch job all have to be able to write a record a cataloguer has open."
+      "reason": "§3 named this table in one list and specified no column of it. Phase 10b designed it from the acceptance criterion and from measurement: `record_id` is the PRIMARY KEY because Postgres refuses a liveness index predicate (42P17), so uniqueness lives in the key and liveness in the acquire predicate; `session_id` is in the guard because without it 25 tabs belonging to the SAME cataloguer all won a live lock (measured 25 winners, 0 refused); and `displaced_holder_user_id`/`displaced_reason` exist because the upsert that acquires is also the one that displaces, and clause 5 needs `lock_expired` and `lock_taken_over` to be distinguishable. Recorded as `skeleton` rather than `specified`: the document specified nothing, so this is a designed table and a later phase adding a column to it is expected."
     },
     "marc_record_versions": {
       "status": "created",

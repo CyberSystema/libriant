@@ -3,6 +3,7 @@ import { IdempotencyInterceptor } from '../platform/idempotency.interceptor.js';
 import { TenantModule } from '../tenancy/tenant.module.js';
 import { BibController } from './bib.controller.js';
 import { BibWriteService } from './bib-write.service.js';
+import { BibLockService } from './bib-lock.service.js';
 
 /**
  * The MARC store.
@@ -17,8 +18,8 @@ import { BibWriteService } from './bib-write.service.js';
  */
 @Module({
   imports: [TenantModule],
-  providers: [BibWriteService, IdempotencyInterceptor],
+  providers: [BibWriteService, BibLockService, IdempotencyInterceptor],
   controllers: [BibController],
-  exports: [BibWriteService],
+  exports: [BibWriteService, BibLockService],
 })
 export class BibModule {}

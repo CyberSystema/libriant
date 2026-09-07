@@ -1,4 +1,5 @@
 import { sweepExpiredReservationPickups } from './reservation-expiry.job.js';
+import { sweepExpiredMarcLocks } from './marc-lock-expiry.job.js';
 import { sweepExpiredSupportSessions } from './support-session-expiry.job.js';
 import { sweepFailedStripeWebhooks } from './stripe-retry.job.js';
 import { sweepFineAccrual } from './fine-accrual.job.js';
@@ -39,6 +40,16 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     name: 'reservation-pickup-expiry',
     intervalMs: 60_000,
     handler: () => sweepExpiredReservationPickups(),
+  },
+  {
+    // Five minutes, not one. This sweep is NOT what makes an expired lock
+    // acquirable — that lives in the acquire predicate and needs no job — so
+    // its only job is to write the audit row for a lock that lapsed and was
+    // never touched again. Nothing waits on it, and running it every minute
+    // would scan every tenant sixty times an hour to usually find nothing.
+    name: 'marc-lock-expiry',
+    intervalMs: 5 * 60_000,
+    handler: () => sweepExpiredMarcLocks(),
   },
   {
     name: 'stripe-webhook-retry',

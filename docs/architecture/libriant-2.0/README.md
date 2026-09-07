@@ -873,3 +873,143 @@ obligation passes to whichever phase first stores one.
 transaction. §2 requires the relational projection to be recomputed "inside the
 same transaction as every write", and phase 11 owns it; leaving the hole visible
 means phase 11 fills it rather than restructuring the write path.
+
+---
+
+## Phase 10b — the record lock
+
+The last of phase 10's five acceptance clauses: "lock acquire/heartbeat/expiry/
+take-over each write the expected audit action." `marc_record_locks` is now
+`created` in BASELINE-SCOPE.json — eighteen tables.
+
+§3 names this table in one list and specifies no column of it anywhere in 1,054
+lines, so every column is either forced by that clause, forced by a foreign key,
+or forced by a measurement. The three that were considered and rejected are
+recorded in the model docblock, because the expensive guess in a schema is a
+column nobody asked for.
+
+### The one thing a reader cannot re-derive from the SQL
+
+**A stopped sweep costs the audit trail and never a frozen record.** Liveness
+lives in the acquire predicate — `WHERE expires_at <= now() OR …` — and was
+measured to work with no sweep in the database at all. That is the property to
+keep if this is ever refactored: a design where the job is what makes a lapsed
+lock acquirable would freeze every record whose editor crashed, until a worker
+somewhere caught up.
+
+The shape follows from a refusal. The intuitive design is many rows plus a
+partial unique index on the live ones:
+
+    CREATE UNIQUE INDEX … ON marc_record_locks (record_id) WHERE expires_at > now();
+    ERROR:  42P17: functions in index predicate must be marked IMMUTABLE
+
+Postgres is right to refuse: an index predicate must be a property of the row,
+and "is this lock still live" is a property of the row AND the clock. So the
+uniqueness went into the primary key — one row per record, ever — and the
+liveness into the predicate.
+
+### A lock is held by a TAB, not by a person
+
+The strongest measurement in the phase, with all 25 clients provably parked on a
+barrier before release (25/25 not-granted advisory ShareLocks in `pg_locks`):
+
+| guard                           | contenders                                      | winners | refused |
+| ------------------------------- | ----------------------------------------------- | ------- | ------- |
+| `holder_user_id` only           | 25 tabs, **all the same cataloguer**, live lock | **25**  | 0       |
+| `holder_user_id` + `session_id` | same                                            | 0       | 25      |
+| holder + session                | 25 users, free record                           | 1       | 24      |
+| holder + session                | 25 users, EXPIRED lock                          | 1       | 24      |
+| holder + session                | 25 users, LIVE lock held by a non-contender     | 0       | 25      |
+
+Without `session_id`, every tab a cataloguer opens silently inherits her own
+lock, and she loses her work the first time she opens a second one. The last row
+is the other half: a live lock is never taken by accident. Taking one is a
+separate, deliberate act that must QUOTE the incumbent — `seenSessionId` makes
+take-over a compare-and-swap on the holder, so a stale banner cannot displace
+somebody the user never saw. Measured: right incumbent succeeds, stale incumbent
+is refused, nothing sent is refused.
+
+### Clause 5's vacuity trap, and why BOTH expiry mechanisms are required
+
+The natural test — expire a lock, acquire it as somebody else, assert an
+`expired` audit row — **actually exercises take-over**, and passes under a design
+with no expiry concept at all. Measured: an acquire whose predicate is a bare
+`OR $force` against a LIVE lock gives 25 winners at 25-way, and every one writes
+the row that test asserts.
+
+So the test has NO SECOND ACTOR anywhere in it: a lock lapses, nobody ever
+touches the record again, and the row must still exist. That scenario cannot be
+constructed under a TTL-only design, and the fact that it cannot is the signal
+that a sweep is required.
+
+The converse is asserted too, and it is the correctness half: a lapsed lock is
+acquirable with no sweep having run.
+
+Neither mechanism covers the other's case, which is why there are two:
+
+- **Lapsed and re-acquired.** The acquire notices and records
+  `displaced_reason = 'expired'`. A sweep on a five-minute interval is usually
+  too late, so a sweep-only design writes nothing here.
+- **Lapsed and never touched again.** No acquire ever happens, so a
+  lazy-capture-only design writes nothing here, and "who had this record open
+  when it was last edited" is unanswerable.
+
+They cannot double-write, and that is structural rather than guarded: because the
+sweep DELETEs rather than marking, the next acquire on that record is a fresh
+INSERT with no displaced holder and takes the "nothing was displaced" branch.
+Exactly one expiry row per lapse, whichever mechanism gets there first, with no
+idempotency check anywhere. **If the sweep is ever changed to a soft delete, that
+property is lost** — the integration spec asserts it directly.
+
+### The lock is advisory, and nothing enforces it
+
+`BibWriteService.write()` does not read it and must not learn to. An import, an
+overlay, a merge, a batch job and the phase-19 copy-forward all have to be able
+to write a record a cataloguer has open; a lock that could refuse a save would be
+one somebody has to override at 2am. The spec asserts a save by a person who does
+NOT hold the lock succeeds and leaves the lock untouched.
+
+Measured, the foreign key cannot gate it by accident either: an uncommitted lock
+INSERT does not block the write path's UPDATE, because the acquire holds KEY
+SHARE on `marc_records` while the write takes FOR NO KEY UPDATE, and those do not
+conflict.
+
+### Decisions worth their sentence
+
+**The audit rows go to 1.0's `public.audit_log`**, through the existing
+`TenantAuditService`, exactly as 10a's do. Writing `lbr2.audit_log` instead was
+considered and rejected: phase 19's copy-forward routes 1.0's rows into that
+table with "row counts exact" as an acceptance assertion, so a non-empty target
+at cutover fails it by exactly the number of lock rows — and the v2 smoke asserts
+that table is empty. It keeps zero writers until phase 19.
+
+**No new permission key.** `cat.bib.write` covers acquire, heartbeat, take-over
+and release; `cat.bib.read` covers reading the holder. `cat.lock.override` was
+considered and deferred, because `permissions.ts` records that keys are forever
+and no library has yet asked for a workflow where taking a record from a
+colleague is a privilege rather than a conversation.
+
+**No `@replicated` marker and no changelog trigger.** A lock beats every sixty
+seconds while an editor is open; replicating it would make it the largest
+producer in the feed to tell consumers about something none of them wants.
+`check:changelog-coverage` enforces both directions, so the absence of both is a
+checked decision — it still reports nine and nine.
+
+**No index beyond the primary key.** Measured over 3,000 heartbeats with VACUUM
+FULL between trials: 100.0% HOT updates with no secondary index, 87.2% with one
+on `expires_at`. The table is bounded at one row per record ever opened, so the
+sweep's scan is cheaper than the write amplification.
+
+**Release exists although the clause does not name it.** Without it a cataloguer
+who closes the editor holds the record for the rest of the TTL, and the only way
+to get it back is to take it over — which then writes a `lock_taken_over` row
+saying somebody was displaced when nobody was. It is a DELETE, and the TTL CHECK
+(`expires_at > acquired_at`) makes "release by backdating" illegal so there is
+exactly one way to give a record back. That constraint has a testing consequence
+worth knowing: a fixture that wants an already-lapsed lock must backdate
+`acquired_at` too, or the constraint refuses the fixture itself.
+
+**The heartbeat audits once per session, not once per beat.** A beat is ~0.12 ms
+every sixty seconds; auditing all of them would write ten permanent rows per
+record per session to record that somebody left a tab open. `heartbeat_count` is
+what makes "first beat" answerable without a second read.

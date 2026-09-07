@@ -92,6 +92,8 @@ model MarcRecord {
   content  MarcRecordContent?
   versions MarcRecordVersion[]
   items    Item[]
+  /// At most one, and it is advisory: nothing in the write path reads it.
+  lock     MarcRecordLock?
 
   @@index([kind, status, updatedAt(sort: Desc), id(sort: Desc)])
   @@index([kind, recordTypeCode, bibLevelCode], map: "marc_records_type_idx")
@@ -172,4 +174,131 @@ model MarcRecordVersion {
   @@index([recordId, version(sort: Desc)], map: "marc_record_versions_desc_idx")
   @@index([createdAt(sort: Desc), id(sort: Desc)], map: "marc_record_versions_sweep_idx")
   @@map("marc_record_versions")
+}
+
+/// A cataloguer's claim on a record they have open in the editor.
+///
+/// §3 names this table in one list and specifies no column of it anywhere in
+/// 1,054 lines, so every column below is either forced by phase 10's acceptance
+/// criterion ("lock acquire/heartbeat/expiry/take-over each write the expected
+/// audit action"), forced by a foreign key, or forced by a measurement. The
+/// three that were considered and REJECTED are recorded at the bottom, because
+/// a column nobody asked for is the expensive kind of guess in a schema.
+///
+/// ## This is not a database lock, and it must never gate a write
+///
+/// The write path has its own two mechanisms — an advisory lock for the
+/// milliseconds of the save, and a content-hash compare-and-swap for staleness.
+/// This is a third thing at a different timescale: a HUMAN's intent to hold a
+/// record open for ten minutes, which has to survive a connection drop, be
+/// visible to another person's SELECT, and be taken over.
+///
+/// `BibWriteService.write()` does not read it and must not learn to: an import,
+/// an overlay, a merge, a batch job and the phase-19 copy-forward all have to be
+/// able to write a record a cataloguer has open. In 10b the lock is ADVISORY —
+/// it tells the editor whom to name in a banner, and nothing refuses a save.
+/// Measured, the foreign key cannot gate it either by accident: an uncommitted
+/// lock INSERT does not block the write path's UPDATE, because the acquire holds
+/// KEY SHARE on `marc_records` while the write takes FOR NO KEY UPDATE, and
+/// those do not conflict.
+///
+/// ## One row per record, and why the liveness is not in an index
+///
+/// `record_id` is the PRIMARY KEY, so "one lock per record" is structural and a
+/// take-over is a single upsert rather than a delete-then-insert with a window
+/// in the middle. The obvious alternative — many rows plus
+/// `CREATE UNIQUE INDEX … WHERE expires_at > now()` — is refused by Postgres:
+///
+///     ERROR:  42P17: functions in index predicate must be marked IMMUTABLE
+///
+/// So the uniqueness lives in the key and the LIVENESS lives in the acquire
+/// predicate, which compares a stored instant. That is also why a stopped sweep
+/// can never freeze a record: expiry is evaluated on every acquire, not by a job.
+///
+/// ## No `@replicated` marker, deliberately
+///
+/// A lock beats every sixty seconds while an editor is open. Replicating it
+/// would make it the largest producer in the change feed, to tell consumers
+/// about something no consumer wants: the OPAC does not care who is typing, and
+/// an offline replica must not inherit a lock it cannot heartbeat.
+/// `check:changelog-coverage` enforces both directions against the committed
+/// SQL, so the absence of a marker AND of a trigger is a checked decision rather
+/// than an omission.
+model MarcRecordLock {
+  /// FORCED, three ways: it is the FK target, it is the uniqueness, and making
+  /// it the key is what lets take-over be one statement.
+  recordId String @id @map("record_id")
+
+  /// FORCED by the criterion — take-over must name a victim, and all four audit
+  /// actions must name a subject.
+  ///
+  /// A bare control-plane cuid with NO foreign key, by the house rule that
+  /// applies to every actor id in a tenant database: there is no cross-database
+  /// referential integrity, and pretending otherwise is how a restore fails.
+  holderUserId String @map("holder_user_id")
+
+  /// FORCED BY MEASUREMENT, and it is the single strongest result in this phase.
+  ///
+  /// With the guard on `holder_user_id` alone, 25 contenders who are all the
+  /// SAME PERSON in 25 different browser tabs, racing a live lock held by that
+  /// person's first tab: **25 winners, 0 refused**. Every tab silently inherits
+  /// the lock, and the cataloguer loses her work the first time she opens a
+  /// second one. With `session_id` in the guard: 0 winners, 25 refused.
+  ///
+  /// A lock is held by a TAB, not by a person.
+  sessionId String @map("session_id")
+
+  /// FORCED by what the audit row and the refused caller must say: how long the
+  /// incumbent has held it. Not derivable from `expires_at` once a heartbeat has
+  /// moved it.
+  acquiredAt DateTime @default(now()) @db.Timestamptz(3) @map("acquired_at")
+
+  /// FORCED. Since liveness cannot be an index predicate (42P17 above), it must
+  /// be a stored instant the acquire predicate compares. Measured sufficient on
+  /// its own for correctness with no sweep in the database at all.
+  expiresAt DateTime @db.Timestamptz(3) @map("expires_at")
+
+  /// FORCED, and the pair that keeps clause 5's four actions distinguishable.
+  ///
+  /// The upsert that acquires is also the upsert that displaces, so the row it
+  /// returns has to say WHOM it displaced and WHY — otherwise the caller cannot
+  /// tell whether it just wrote `lock_expired` or `lock_taken_over`, and the two
+  /// become one indistinguishable event.
+  displacedHolderUserId String? @map("displaced_holder_user_id")
+  /// `expired` | `taken_over`, CHECKed in the migration.
+  displacedReason       String? @map("displaced_reason")
+
+  /// INVENTED, and it earns its place by serving the word "heartbeat" in the
+  /// acceptance criterion at a bounded cost.
+  ///
+  /// The audit row is written only on the FIRST beat of a session (count 1), not
+  /// on every one: a heartbeat is ~0.12 ms and beats every 60 s, so auditing all
+  /// of them would write ten permanent rows per record per session to record
+  /// that somebody left a tab open. The counter is what makes "first beat" a
+  /// question the database can answer without a second read.
+  heartbeatCount Int @default(0) @map("heartbeat_count")
+
+  record MarcRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  // REJECTED, each for a stated reason, so the next person does not re-propose
+  // them:
+  //
+  //   heartbeat_at / last_seen_at — the same fact twice. `expires_at` minus the
+  //     TTL IS the last beat, always, because every heartbeat writes both.
+  //   holder_name — the house pattern for turning an actor id into a display
+  //     name is read-time batch resolution against the control database
+  //     (`AuditService` already does exactly this), not denormalisation that
+  //     goes stale the first time somebody marries.
+  //   taken_over_at — equals `acquired_at` of the row that did the taking; the
+  //     same statement sets both.
+  //   released_at — release is a DELETE. A soft-delete column would turn a
+  //     one-row-per-record table into an append log and reopen the uniqueness
+  //     question that 42P17 proves an index cannot answer.
+  //   branch_id / device_id / ip_address / lock_reason — speculative. None is
+  //     asked for by the criterion, by a foreign key or by a measurement. Device
+  //     attribution is M8.
+  //   an index on expires_at — measured to cost HOT updates (100% → 87.2% over
+  //     3,000 heartbeats), and the table is bounded at one row per record ever
+  //     opened. Add it when a sweep is measured slow, not before.
+  @@map("marc_record_locks")
 }

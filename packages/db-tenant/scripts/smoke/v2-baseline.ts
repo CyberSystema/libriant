@@ -34,7 +34,7 @@ import { expectSqlstate, ok, note, v2Query, type SmokeModule } from './_lib.js';
 
 /** The tables this baseline creates, per module. Both a checklist and the teardown order. */
 const TABLES: Readonly<Record<string, readonly string[]>> = {
-  'v2-marc': ['marc_records', 'marc_record_contents', 'marc_record_versions'],
+  'v2-marc': ['marc_records', 'marc_record_contents', 'marc_record_versions', 'marc_record_locks'],
   'v2-org': ['iana_timezones', 'branches', 'shelving_locations'],
   'v2-holdings-items': ['holdings_records', 'item_types', 'material_types', 'items'],
   'v2-circulation': ['patrons', 'loans'],

@@ -234,3 +234,39 @@ export function parseOps(raw: unknown[]): { ops: MarcOp[] } | { errors: string[]
 export function toMarcRecord(dto: CreateRecordDto): MarcRecord {
   return { leader: dto.leader, fields: dto.fields as unknown as MarcRecord['fields'] };
 }
+
+/**
+ * A browser tab's identity, and why the lock is keyed on it.
+ *
+ * A lock is held by a TAB, not by a person. Measured: with the guard on the
+ * holder alone, 25 contenders who are all the same cataloguer in 25 different
+ * tabs, racing a live lock held by her first tab, produce 25 winners and 0
+ * refusals — every tab silently inherits the lock and she loses her work the
+ * first time she opens a second one.
+ *
+ * Opaque to the server: the client mints one per editor session and sends it
+ * back. Bounded so it cannot become a place to smuggle a payload.
+ */
+export class LockSessionDto {
+  @IsString()
+  @trim()
+  @Length(8, 100)
+  sessionId!: string;
+}
+
+export class AcquireLockDto extends LockSessionDto {
+  /**
+   * The session the caller believes is holding the record.
+   *
+   * Present ONLY on a deliberate take-over, and it makes that a compare-and-swap
+   * on the incumbent rather than a blind force: if somebody else has taken the
+   * record since the banner was drawn, the take-over is refused instead of
+   * displacing a person the user never saw. Measured — quoting the right
+   * incumbent succeeds, quoting a stale one is refused.
+   */
+  @IsOptional()
+  @IsString()
+  @trim()
+  @Length(8, 100)
+  seenSessionId?: string;
+}
