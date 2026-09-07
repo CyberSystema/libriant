@@ -1,0 +1,240 @@
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+//
+// §2 and §3 of the master architecture use twelve enum types by name in their
+// DDL. FIVE of them state their values; SEVEN do not appear anywhere in the
+// document except as a column type. Those seven are chosen here, and each one
+// carries the reasoning, because an enum is the one thing in this baseline that
+// is expensive to get wrong in BOTH directions:
+//
+//   - ADDING a value later is cheap. `ALTER TYPE … ADD VALUE` is a catalogue
+//     write, and since Postgres 12 it may run inside a transaction provided the
+//     new value is not used in the same one.
+//   - REORDERING or REMOVING one is not. Label order is what `ORDER BY` on an
+//     enum column sorts by, so a reorder silently changes every query that
+//     sorts on it, and a removal requires rewriting every table that uses the
+//     type.
+//
+// So each of the seven is deliberately MINIMAL — only values the document
+// actually names or a constraint actually forces — and later phases are
+// expected to append. A short enum that grows is a correct enum; a long one
+// guessed today is a reorder waiting to happen.
+
+// -- Stated by the document ---------------------------------------------------
+
+/// Leader/06 record kind. Values stated verbatim at MASTER-ARCHITECTURE.md:60.
+enum MarcRecordKind {
+  bibliographic
+  authority
+  holdings
+  classification
+
+  @@map("marc_record_kind")
+}
+
+/// Which MARC dialect the record is in. Stated at MASTER-ARCHITECTURE.md:61.
+/// `unimarc` is first-class from day one because ABEKT — the system most Greek
+/// libraries are migrating off — is UNIMARC, and a schema that could only hold
+/// MARC 21 would have to be migrated again at phase 50.
+enum MarcSchema {
+  marc21
+  unimarc
+
+  @@map("marc_schema")
+}
+
+/// Editorial state. Values stated at MASTER-ARCHITECTURE.md:62.
+enum MarcRecordStatus {
+  draft
+  in_process
+  complete
+  suppressed
+  deleted
+
+  @@map("marc_record_status")
+}
+
+/// Call-number scheme. NOT invented: these are exactly the six schemes
+/// `@libriant/shared/callnumber` implements a sort-key generator for
+/// (packages/shared/src/callnumber/normalize.ts:49), and a seventh value here
+/// would be a scheme whose `call_number_sort` nothing can compute.
+enum CallNumberScheme {
+  ddc
+  lcc
+  udc
+  nlm
+  alphanum
+  local
+
+  @@map("call_number_scheme")
+}
+
+/// Loan state.
+///
+/// The first four are FORCED, not chosen: `loans_closed_consistency`
+/// (MASTER-ARCHITECTURE.md:402) is `(closed_at IS NULL) = (status IN
+/// ('active','claims_returned','claims_never_borrowed','recalled'))`, which
+/// names them as exactly the open set. `returned` and `lost` are the two closed
+/// states the surrounding prose names.
+///
+/// `claims_returned` deliberately keeps the loan OPEN: the patron says they
+/// brought it back and the shelf says otherwise, the item is unaccounted for,
+/// and it must not be re-lendable while that is true.
+enum LoanStatus {
+  active
+  recalled
+  claims_returned
+  claims_never_borrowed
+  returned
+  lost
+
+  @@map("loan_status")
+}
+
+// -- Chosen here; the document names the type and never its values ------------
+
+/// Who did it.
+///
+/// CHOSEN. 1.0's `AuditActorType` is (user, admin, system) and those three
+/// carry over unchanged so the phase-19 copy-forward is a straight cast.
+/// `device` is added because `change_events` and `sync_client_changes` both
+/// carry a `device_id`, and from M8 an offline client writes rows on its own
+/// authority — recording those as `system` would make the reconciliation report
+/// unable to say which wand did what.
+enum AuditActorKind {
+  user
+  admin
+  system
+  device
+
+  @@map("audit_actor_kind")
+}
+
+/// What kind of place a branch is.
+///
+/// CHOSEN, minimally. `branch` is the default the document gives
+/// (MASTER-ARCHITECTURE.md:191). `system` is the root of the hierarchy — the
+/// library service itself, `parent_branch_id IS NULL` and `depth = 0` — and it
+/// exists because ISIL and `marc_org_code` are properties of the SERVICE, not
+/// of a reading room. `bookmobile` and `storage` are the two physical kinds a
+/// Greek public library actually has that circulate differently (a bookmobile
+/// is a pickup location on a timetable; closed storage is not a pickup location
+/// at all). `virtual` holds electronic material that has no shelf, which the
+/// `NOT NULL permanent_location_id` on `items` otherwise makes unrepresentable.
+enum BranchKind {
+  system
+  branch
+  bookmobile
+  storage
+  virtual
+
+  @@map("branch_kind")
+}
+
+/// Where a copy is in the circulation cycle.
+///
+/// CHOSEN, and deliberately narrower than 1.0's `BookCopyStatus`. This is the
+/// CIRCULATION state only: `not_for_loan_code`, `damaged_code`, `lost_code` and
+/// `withdrawn_at` are separate columns on the same table by design, and the
+/// generated `is_shelf_available` reads all five. Folding "damaged" back in as
+/// a status would make an item both `damaged` and `damaged_code IS NULL`, and
+/// the two answers would drift.
+///
+/// `in_transit` and `awaiting_pickup` are the two states the transit desk
+/// (phase 21) and the hold shelf (phase 17) need and 1.0 has no way to express
+/// — in 1.0 a copy moving between branches is simply `on_loan` to nobody.
+enum ItemStatus {
+  available
+  on_loan
+  in_transit
+  awaiting_pickup
+  in_process
+  missing
+
+  @@map("item_status")
+}
+
+/// Which channel produced a circulation event.
+///
+/// CHOSEN: one value per channel §5 of the master architecture gives a phase to
+/// and that can create a loan — the staff desk (default), the public catalogue
+/// (phase 33), a self-check unit over SIP2 (phase 61), a partner system over
+/// NCIP (phase 62), the REST API (phase 56), the offline client replaying its
+/// queue (phase 78) and kiosk mode (phase 81).
+///
+/// This is a STATISTICAL bucket, and it survives anonymisation: "how many
+/// checkouts happened at the self-check?" is an ISO 2789 return element, and it
+/// has to remain answerable after `patron_id` is nulled.
+enum EventSource {
+  desk
+  opac
+  sip2
+  ncip
+  api
+  offline
+  kiosk
+
+  @@map("event_source")
+}
+
+/// What has happened to a charge.
+///
+/// CHOSEN: the first four mirror the four money columns on `fees` exactly
+/// (`amount_cents` outstanding, then `paid_cents`, `waived_cents`,
+/// `written_off_cents`), so the status is always derivable from the ledger and
+/// can be asserted against it.
+///
+/// `cancelled` is separate from `waived` on purpose. Waiving is a decision to
+/// forgive a debt that was correctly owed and is a reportable act a librarian
+/// needs a permission for; cancelling is the correction of a charge that should
+/// never have been raised. Collapsing them loses the distinction an auditor
+/// asks about first.
+enum FeeStatus {
+  outstanding
+  paid
+  waived
+  written_off
+  cancelled
+
+  @@map("fee_status")
+}
+
+/// How a record arrived.
+///
+/// CHOSEN: the three serializations `packages/marc` implements
+/// (`iso2709.ts`, MARCXML, MARC-in-JSON) plus `manual` for a record typed into
+/// the editor, which has no source bytes at all. This is what decides whether
+/// `marc_record_contents.source_blob` can be non-NULL, so a value that is not a
+/// byte format would be a lie about the fidelity promise.
+enum MarcSourceFormat {
+  iso2709
+  marcxml
+  marc_json
+  manual
+
+  @@map("marc_source_format")
+}
+
+/// Why a version row exists.
+///
+/// CHOSEN: one value per write path §6 gives a phase to. `edit` is the dual-mode
+/// editor (28-29), `import` a migration adapter (35), `overlay` copy cataloguing
+/// applying `marc_overlay_rules` (30), `batch` a batch edit (37), `merge` a
+/// duplicate merge (39), `restore` a version restore (10), `delete` the
+/// tombstone that `deletedRecord=persistent` promises OAI-PMH harvesters (59).
+///
+/// This is what the version list shows a cataloguer as the reason for a change,
+/// so it is a user-facing vocabulary, not an implementation detail.
+enum MarcChangeKind {
+  create
+  edit
+  import
+  overlay
+  batch
+  merge
+  restore
+  delete
+
+  @@map("marc_change_kind")
+}

@@ -1,0 +1,173 @@
+// ---------------------------------------------------------------------------
+// Platform — the changelog, device sync, and the audit trail
+// ---------------------------------------------------------------------------
+
+/// THE feed. Written by TRIGGERS, never by application code.
+///
+/// §4.2 makes this the one outbox, deleting the four rival ones the domain specs
+/// proposed. Trigger-written rather than `emit()`-called because a forgotten
+/// `emit()` breaks a replica and the search index silently and permanently, and
+/// nothing ever fails — whereas a trigger cannot be forgotten by a developer
+/// writing a service, only by one writing a migration, which `check:changelog-
+/// coverage` is here to catch.
+///
+/// ## `commit_xmin` — an addition to §3, and why it is here rather than later
+///
+/// §4.2 specifies the read watermark as
+/// `WHERE seq > $1 AND row_version < pg_snapshot_xmin(pg_current_snapshot())`.
+/// That does not type-check, and the reason is not a missing cast: measured,
+/// `pg_snapshot_xmin(pg_current_snapshot())` returns `xid8` and `row_version` is
+/// `bigint`, so Postgres refuses with `operator does not exist: bigint < xid8`.
+/// Casting would make it run and would still be wrong — a sequence value and a
+/// transaction id are unrelated counters, so the comparison could not do the job
+/// it exists for.
+///
+/// The job is real, and it is subtle: `seq` is assigned when the row is INSERTED
+/// but becomes visible when the transaction COMMITS. A reader that has seen
+/// seq=100 can still have a transaction holding seq=99 open beside it; if it
+/// records 100 as its watermark, 99 is skipped forever the moment it commits.
+/// The fix is to compare on something that orders by COMMIT, which is what a
+/// transaction id does — hence a real `xid8` column defaulted to
+/// `pg_catalog.pg_current_xact_id()`.
+///
+/// It is added now because `change_events` is append-only: adding the column in
+/// phase 16, when the first consumer needs it, means backfilling rows whose
+/// commit order is no longer knowable.
+///
+/// Prisma has no `xid8`, so the column is `Unsupported` — present in the
+/// database, invisible to the generated client, and read by the consumer's raw
+/// query. That is correct here: nothing in the application should ever write it.
+model ChangeEvent {
+  seq BigInt @id @default(autoincrement())
+
+  occurredAt DateTime @default(now()) @db.Timestamptz(3) @map("occurred_at")
+
+  /// The `@replicated entity_kind=…` value from the model whose trigger fired.
+  entityKind String @map("entity_kind")
+  entityId   String @map("entity_id")
+
+  /// CHECKed to ('insert','update','delete','archive','restore'). `archive` and
+  /// `restore` are distinct from `update` because a soft delete is a
+  /// disappearance to every consumer — the OPAC must drop the record, the index
+  /// must remove it — and making a replica infer that from an `archived_at` it
+  /// would have to know about defeats the point of a projection.
+  op       String
+  branchId String? @map("branch_id")
+
+  /// From `record_version_seq`, shared with `marc_records.row_version`, so a
+  /// device can order a catalogue change against a circulation change.
+  rowVersion BigInt @map("row_version")
+
+  /// The projection an indexer consumes. NULL on delete — there is nothing left
+  /// to project, and the `entity_id` is all a consumer needs to remove it.
+  payload Json? @db.JsonB
+
+  actorKind AuditActorKind @map("actor_kind")
+  actorId   String?        @map("actor_id")
+
+  deviceId       String?               @map("device_id")
+  clientChangeId String?               @db.Uuid @map("client_change_id")
+  /// See the docblock. Defaulted in the migration to
+  /// `pg_catalog.pg_current_xact_id()`.
+  commitXmin     Unsupported("xid8")?  @map("commit_xmin")
+
+  @@index([entityKind, seq], map: "change_events_kind_seq_idx")
+  @@index([branchId, seq], map: "change_events_branch_seq_idx")
+  @@map("change_events")
+}
+
+/// How far each consumer has read.
+///
+/// One row per `'search'`, `'opac-cache'`, `'webhook:<id>'`, `'device:<id>'`,
+/// `'union'`. Deliberately a plain text key rather than an enum: a webhook and a
+/// device are created at runtime, and an enum would need a migration per
+/// subscriber.
+model ChangeConsumer {
+  consumer  String   @id
+  lastSeq   BigInt   @default(0) @map("last_seq")
+  updatedAt DateTime @default(now()) @db.Timestamptz(3) @map("updated_at")
+
+  @@map("change_consumers")
+}
+
+/// Durable, transactional, exactly-once replay for the offline client.
+///
+/// This is what kills A7-02. 1.0 caps offline work at 18 hours
+/// (`apps/web/lib/offline-queue.ts` `MAX_QUEUE_AGE_MS`), chosen with six hours of
+/// margin under the Redis idempotency TTL — so the product's offline promise is
+/// bounded by a cache eviction policy. Written here INSIDE the same transaction
+/// as the effect, the bound disappears: the record of "this change was applied"
+/// is as durable as the change.
+///
+/// `request_hash` is the safety catch. A replay whose hash differs from the
+/// recorded one is a DIFFERENT request reusing an id, and it must 409 rather
+/// than silently return the old response or apply twice.
+model SyncClientChange {
+  deviceId       String @map("device_id")
+  clientChangeId String @db.Uuid @map("client_change_id")
+  deviceSeq      BigInt @map("device_seq")
+
+  requestHash  String @map("request_hash")
+  responseJson Json   @db.JsonB @map("response_json")
+
+  /// Ties the replay back to the feed, so a device can tell whether the change
+  /// it is replaying is one it already saw come back down.
+  serverEventSeq BigInt? @map("server_event_seq")
+
+  appliedAt DateTime @default(now()) @db.Timestamptz(3) @map("applied_at")
+
+  @@id([deviceId, clientChangeId])
+  @@index([appliedAt], map: "sync_client_changes_applied_idx")
+  @@map("sync_client_changes")
+}
+
+/// The tenant-side audit trail, partitioned monthly.
+///
+/// A fresh 2.0 table in the `lbr2` schema rather than a conversion of 1.0's:
+/// there is no `ALTER` that partitions an existing heap, so converting would be
+/// a rebuild-and-copy anyway, and the phase-19 copy-forward is the right place
+/// for that. Here it is simply created correctly the first time.
+///
+/// The composite primary key is FORCED, not chosen. Measured:
+///
+///     CREATE TABLE audit_p (id text PRIMARY KEY, occurred_at timestamptz(3))
+///       PARTITION BY RANGE (occurred_at);
+///     ERROR:  0A000: unique constraint on partitioned table must include all
+///             partitioning columns
+///
+/// So `id` alone cannot be the key, and every reader that looks a row up by id
+/// alone will scan every partition. That is the price of partitioning and it is
+/// worth paying: an audit log is the one table that grows without bound and is
+/// almost always queried by time window, and dropping a partition is the only
+/// retention mechanism that does not spend hours in `DELETE`.
+///
+/// Partitions themselves are created by the migration for a starting window and
+/// maintained thereafter by a job — phase 16 owns it. A missing future partition
+/// makes an INSERT fail outright, which is loud, and deliberately preferred to a
+/// DEFAULT partition that silently swallows rows into an unpartitionable heap.
+model AuditLogEntry {
+  id String
+
+  occurredAt DateTime @default(now()) @db.Timestamptz(3) @map("occurred_at")
+
+  actorKind AuditActorKind @map("actor_kind")
+  actorId   String?        @map("actor_id")
+
+  action     String
+  entityKind String  @map("entity_kind")
+  entityId   String? @map("entity_id")
+  branchId   String? @map("branch_id")
+
+  summary String?
+  /// Before/after, or whatever the action needs to be explicable a year later.
+  detail  Json?   @db.JsonB
+
+  ipAddress String? @map("ip_address")
+  userAgent String? @map("user_agent")
+  deviceId  String? @map("device_id")
+
+  @@id([id, occurredAt])
+  @@index([occurredAt(sort: Desc)], map: "audit_log_occurred_idx")
+  @@index([entityKind, entityId, occurredAt(sort: Desc)], map: "audit_log_entity_idx")
+  @@map("audit_log")
+}

@@ -26,7 +26,12 @@
       "outputs": []
     },
     "@libriant/db-tenant#prisma:generate": {
-      "inputs": ["prisma/schema/**", "prisma.config.ts"],
+      "inputs": [
+        "prisma/schema/**",
+        "prisma.config.ts",
+        "prisma/schema-v2/**",
+        "prisma-v2.config.ts"
+      ],
       "outputs": ["node_modules/.prisma/**"]
     },
     "test": {

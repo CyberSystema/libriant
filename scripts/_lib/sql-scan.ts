@@ -9,6 +9,15 @@
  * prisma migrate deploy wraps each file in a transaction` appears in SEVEN
  * migrations, and a naive `grep CONCURRENTLY` fails all seven.
  *
+ * (That sentence is, as it happens, false — measured in phase 9: deploy does
+ * not wrap a file, and a mid-file failure leaves earlier DDL committed. The
+ * four applied migrations that state it are left exactly as written, because
+ * Prisma checksums a migration and refuses to deploy when one it has recorded
+ * no longer hashes the same. Correcting history here would break every database
+ * that has run them, which is the same reason this repository fixes a bad
+ * migration with a NEW migration. The claim is corrected where it is still
+ * load-bearing: `online-track.ts` and `check-migration-safety.ts`.)
+ *
  * So: remove line comments, block comments and ordinary string literals, and
  * KEEP dollar-quoted bodies, because a `$function$ … $function$` block is
  * executable code and everything a gate cares about can hide in one.

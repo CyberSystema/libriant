@@ -1,0 +1,157 @@
+// ---------------------------------------------------------------------------
+// The organisation — branches, and the places inside them
+// ---------------------------------------------------------------------------
+
+/// The IANA time zone names this database will accept.
+///
+/// NOT a §3 table. It exists because the acceptance criterion "a non-IANA
+/// timezone is rejected" has no cheap expression as a CHECK, and all three
+/// alternatives were measured:
+///
+///   - `CHECK (tz IN (SELECT name FROM pg_catalog.pg_timezone_names))` is
+///     refused outright: `0A000 — cannot use subquery in check constraint`.
+///   - An `IMMUTABLE` SQL wrapper over `pg_timezone_names`, used as a CHECK,
+///     works and costs **11.1 ms per row** — 111 seconds for 10,000 inserts,
+///     against 4.6 ms with no constraint at all. `pg_timezone_names` is a
+///     set-returning function that walks the tzdata tree on every call, and
+///     marking that wrapper IMMUTABLE is a lie besides: tzdata changes.
+///   - A foreign key to this table costs **8.2 µs per row** — about 1,350×
+///     faster — and raises a plain `23503`.
+///
+/// Seeded from `pg_catalog.pg_timezone_names` MINUS `Factory` and `posixrules`.
+/// Those two exclusions are load-bearing in two ways. They are the only names
+/// `Intl.DateTimeFormat` refuses of the 181 that Postgres knows and
+/// `Intl.supportedValuesOf('timeZone')` does not list (the other 179 are IANA
+/// backward links, which the runtime canonicalises), so excluding them makes
+/// this table a strict subset of what the application layer can format with —
+/// the safe direction. And `posixrules` is the single row on which the two
+/// Postgres 16.15 builds on this machine disagree (599 rows vs 598), so
+/// excluding it makes a seeded tenant identical on both, and removes the
+/// `pg_restore` hazard where a COPY re-validates the FK against newer tzdata.
+///
+/// The check has to be in the DATABASE and not only in TypeScript, because
+/// phase 19's copy-forward is PL/pgSQL and writes `branches` without going
+/// through the application at all.
+model IanaTimezone {
+  name String @id
+
+  branches Branch[]
+
+  @@map("iana_timezones")
+}
+
+/// A library, a branch of one, or a place that behaves like one.
+///
+/// This table is where `circ-5` is fixed. 1.0 has no timezone anywhere, so
+/// "calendar-day" fine billing is not merely wrong, it is inexpressible: every
+/// due date is 24-hour arithmetic on an instant. `timezone` here is what makes a
+/// due date land at closing time on a day the branch is actually open.
+/// @replicated entity_kind=branch
+model Branch {
+  id String @id
+
+  code     String
+  name     String
+  /// Per-locale display names. The catalogue is bilingual el/en and a branch
+  /// name is one of the few strings a library authors itself.
+  nameI18n Json   @default("{}") @db.JsonB @map("name_i18n")
+
+  /// ISO 15511. GR-prefixed and assigned by EKT. Required before this library
+  /// can be an ILL partner (it is the NCIP agency id and 852 $a), and null until
+  /// somebody applies for one.
+  isil        String?
+  /// MARC organisation code — 040 $a / 852 $a.
+  marcOrgCode String? @map("marc_org_code")
+
+  parentBranchId String? @map("parent_branch_id")
+  /// Maintained by `branches_guard_cycle()`, not by the application. Denormalised
+  /// so an OPAC branch picker is one indexed read rather than a recursive CTE.
+  depth          Int     @default(0) @db.SmallInt
+  kind           BranchKind @default(branch)
+
+  /// IANA, foreign-keyed to `iana_timezones`. THE circ-5 fix.
+  timezone      String
+  currency      String @default("EUR") @db.Char(3)
+  defaultLocale String @default("el") @map("default_locale")
+
+  /// No `REFERENCES calendars(id)` yet: `calendars` is deferred to phase 9b
+  /// (see BASELINE-SCOPE.json), and §3 is the only id column in this block
+  /// written WITHOUT a REFERENCES clause, so whether it is a real FK is
+  /// undecided in the document. Adding the constraint later is `ADD CONSTRAINT`,
+  /// which is the cheap direction; guessing wrong now is not.
+  calendarId String? @map("calendar_id")
+
+  /// §3 writes this as `address_* text`, which is a glob and not SQL. These five
+  /// are the columns the existing library-profile feature already collects at
+  /// signup (`db-control` `addressStreet`/`City`/`PostalCode`/`Region`/`Country`),
+  /// reused verbatim rather than inventing a third address shape for the same
+  /// data.
+  addressStreet     String? @map("address_street")
+  addressCity       String? @map("address_city")
+  addressPostalCode String? @map("address_postal_code")
+  addressRegion     String? @map("address_region")
+  /// ISO-3166 alpha-2, defaulting to GR as everywhere else in this codebase.
+  addressCountry    String? @default("GR") @map("address_country")
+
+  geoLat Decimal? @db.Decimal(9, 6) @map("geo_lat")
+  geoLon Decimal? @db.Decimal(9, 6) @map("geo_lon")
+
+  circulates       Boolean @default(true)
+  pickupLocation   Boolean @default(true) @map("pickup_location")
+  isFloatingMember Boolean @default(false) @map("is_floating_member")
+  opacVisible      Boolean @default(true) @map("opac_visible")
+  staffOnly        Boolean @default(false) @map("staff_only")
+  illSupplier      Boolean @default(false) @map("ill_supplier")
+
+  settings     Json @default("{}") @db.JsonB
+  customFields Json @default("{}") @db.JsonB @map("custom_fields")
+  sortOrder    Int  @default(0) @map("sort_order")
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  tz           IanaTimezone @relation(fields: [timezone], references: [name], onDelete: Restrict)
+  parentBranch Branch?      @relation("BranchTree", fields: [parentBranchId], references: [id], onDelete: Restrict)
+  childBranches Branch[]    @relation("BranchTree")
+
+  shelvingLocations ShelvingLocation[]
+  itemsOwned        Item[]             @relation("ItemOwningBranch")
+  itemsCurrent      Item[]             @relation("ItemCurrentBranch")
+
+  @@index([parentBranchId])
+  @@map("branches")
+}
+
+/// A shelf, a room, a reading area — where a copy physically is.
+///
+/// SKELETON. §3 names this table and never describes it; every column below
+/// except `id` is either forced by `items.permanent_location_id NOT NULL
+/// REFERENCES shelving_locations(id)` or is a §3 convention column. It is
+/// recorded as `created-skeleton` in BASELINE-SCOPE.json and the smoke module
+/// asserts only that it exists and is empty — never that it round-trips a
+/// domain object, which would be a claim this schema has not earned.
+///
+/// The columns a real one needs — OPAC display name, whether it is browsable,
+/// the 852 $b/$c mapping, floating-collection membership — belong with the
+/// phase-15 service that knows what they are for.
+/// @replicated entity_kind=shelving_location
+model ShelvingLocation {
+  id String @id
+
+  branchId String @map("branch_id")
+  code     String
+  name     String
+  nameI18n Json   @default("{}") @db.JsonB @map("name_i18n")
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  branch            Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  itemsPermanent    Item[] @relation("ItemPermanentLocation")
+  itemsTemporary    Item[] @relation("ItemTemporaryLocation")
+
+  @@index([branchId])
+  @@map("shelving_locations")
+}

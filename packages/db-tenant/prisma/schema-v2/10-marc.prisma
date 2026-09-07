@@ -1,0 +1,168 @@
+// ---------------------------------------------------------------------------
+// The MARC store — the system of record
+// ---------------------------------------------------------------------------
+//
+// Three tables, deliberately. Identity is narrow and hot; the document is 1:1
+// beside it and never selected by accident; versions are append-only full
+// snapshots.
+//
+// The 1:1 split is not tidiness. TOAST keeps a fat jsonb off the heap page only
+// PROVIDED NOTHING SELECTS IT, and Prisma's default `findMany` selects every
+// scalar column of a model. Putting `content` on `marc_records` would mean every
+// facet count, every OPAC list and every report drags 1.6 KB of document per row
+// through the buffer cache. As two models it is unrepresentable: you cannot
+// accidentally select a column that belongs to a table you did not join, and
+// `source_blob bytea` stays out of `SELECT *` forever.
+//
+// Ordinary reads never touch either satellite. Facets, reports, the OPAC and the
+// search indexer all read the relational projection (phase 11), which is why a
+// 5M-record catalogue can be indexed without the document being read at all.
+
+/// A MARC record's identity. Narrow, hot, never carries the document.
+///
+/// `content_hash` is sha256 over the canonical NFC JSON EXCLUDING field 005,
+/// because 005 is the transaction timestamp and including it would make every
+/// record differ from itself. It is the optimistic-concurrency token phase 10's
+/// `write()` takes as a precondition.
+/// @replicated entity_kind=marc_record
+model MarcRecord {
+  id String @id
+
+  /// Per-tenant monotonic, and the number a librarian actually reads out over
+  /// the phone. Distinct from `id` on purpose: a cuid is unspeakable.
+  publicNo BigInt @unique @map("public_no")
+
+  kind   MarcRecordKind
+  schema MarcSchema
+  status MarcRecordStatus
+
+  leader String @db.Char(24)
+
+  /// sha256 over canonical NFC JSON, EXCLUDING 005. 32 bytes, CHECKed.
+  contentHash    Bytes @map("content_hash")
+  currentVersion Int   @default(1) @map("current_version")
+
+  /// The total order every replica and index reads the feed in. Drawn from
+  /// `record_version_seq`, which `change_events.row_version` also draws from, so
+  /// a device can order a record change against a loan change.
+  rowVersion BigInt @default(dbgenerated("nextval('record_version_seq'::regclass)")) @map("row_version")
+
+  /// Leader/05, DERIVED from `status` rather than stored independently. Two
+  /// places holding the same fact is two places to disagree.
+  recordStatusCode String  @db.Char(1) @map("record_status_code")
+  recordTypeCode   String? @db.Char(1) @map("record_type_code")
+  bibLevelCode     String? @db.Char(1) @map("bib_level_code")
+  encodingLevel    String? @db.Char(1) @map("encoding_level")
+
+  /// Leader/09. `' '` is MARC-8, `'a'` is UCS/Unicode. Set from the EXPORT
+  /// encoding on write, never copied from the source: a UTF-8 record emitted
+  /// with a blank /09 is mojibake at the far end.
+  charsetCode String @default("a") @db.Char(1) @map("charset_code")
+
+  controlNumber       String? @map("control_number")
+  controlNumberSource String? @map("control_number_source")
+
+  /// 008/00-05, derived from `created_at` and NEVER rewritten. Every "titles
+  /// added this year" statistic and the ISO 2789 return depend on that.
+  dateEntered String? @db.Char(6) @map("date_entered")
+
+  /// Set when this record loses a merge. The survivor keeps its own id, so every
+  /// permalink, hold and audit target pointing at the loser still resolves.
+  mergedIntoId String? @map("merged_into_id")
+
+  needsReview Boolean @default(false) @map("needs_review")
+
+  /// Control-plane cuids. No FK, by house rule — there is no cross-database
+  /// referential integrity and pretending otherwise is how a tenant restore
+  /// fails.
+  createdByUserId String? @map("created_by_user_id")
+  updatedByUserId String? @map("updated_by_user_id")
+
+  createdAt DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt DateTime  @db.Timestamptz(3) @map("updated_at")
+  deletedAt DateTime? @db.Timestamptz(3) @map("deleted_at")
+
+  mergedInto MarcRecord?  @relation("MarcRecordMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedFrom MarcRecord[] @relation("MarcRecordMerge")
+
+  content  MarcRecordContent?
+  versions MarcRecordVersion[]
+  items    Item[]
+
+  @@index([kind, status, updatedAt(sort: Desc), id(sort: Desc)])
+  @@index([kind, recordTypeCode, bibLevelCode], map: "marc_records_type_idx")
+  @@index([rowVersion], map: "marc_records_row_version_idx")
+  @@map("marc_records")
+}
+
+/// The document. Deliberately 1:1, deliberately not a column on `marc_records`.
+model MarcRecordContent {
+  recordId String @id @map("record_id")
+
+  /// A compact superset of MARC-in-JSON: an ORDERED array of fields, each
+  /// `{t, v}` or `{t, i, s}`, where `s` is an ordered array of single-key
+  /// objects. A map would silently destroy repeated subfields and subfield
+  /// order, which is most of what a MARC record is.
+  content Json @db.JsonB
+
+  sourceFormat        MarcSourceFormat @map("source_format")
+  sourceEncoding      String?          @map("source_encoding")
+  sourceNormalization String?          @map("source_normalization")
+
+  /// The ORIGINAL BYTES, verbatim, so an unedited imported record re-exports
+  /// exactly what arrived. NULLed on first edit, because after an edit the
+  /// promise is round-trip idempotence, not byte identity, and keeping stale
+  /// bytes would let `?fidelity=source` serve a record that no longer exists.
+  sourceBlob       Bytes?  @map("source_blob")
+  sourceBlobSha256 Bytes?  @map("source_blob_sha256")
+  /// Whether `serialize(parse(blob)) === blob` held at import. Recorded rather
+  /// than assumed: it is false for a real fraction of real exporters, and a
+  /// library is entitled to know which of its records are affected.
+  sourceRoundtrips Boolean @default(true) @map("source_roundtrips")
+
+  /// What the reader had to tolerate — `packages/marc`'s anomaly slugs.
+  anomalies Json @default("[]") @db.JsonB
+
+  updatedAt DateTime @db.Timestamptz(3) @map("updated_at")
+
+  record MarcRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@map("marc_record_contents")
+}
+
+/// Append-only full snapshots.
+///
+/// Snapshots, not a diff chain. A record averages 1.6 KB and LZ4-compresses
+/// about 4:1, so the storage argument for a chain is weak; and "restore version
+/// N" becomes a copy rather than a replay, which cannot be subtly wrong the way
+/// a replay can. A corrupted link in a chain silently corrupts every version
+/// after it and nothing detects that until someone restores.
+///
+/// `bigserial`, not a cuid: high-volume, ordered, never user-facing.
+model MarcRecordVersion {
+  id       BigInt @id @default(autoincrement())
+  recordId String @map("record_id")
+  version  Int
+
+  leader      String @db.Char(24)
+  content     Json   @db.JsonB
+  contentHash Bytes  @map("content_hash")
+
+  changeKind    MarcChangeKind @map("change_kind")
+  changeSummary String?        @map("change_summary")
+  /// Which tags this version touched, so the version list can say "245, 650"
+  /// without diffing two documents to render one row.
+  changedTags   String[]       @default([]) @map("changed_tags")
+  batchJobId    String?        @map("batch_job_id")
+
+  actorKind AuditActorKind @map("actor_kind")
+  actorId   String?        @map("actor_id")
+  createdAt DateTime       @default(now()) @db.Timestamptz(3) @map("created_at")
+
+  record MarcRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@unique([recordId, version], map: "marc_record_versions_key")
+  @@index([recordId, version(sort: Desc)], map: "marc_record_versions_desc_idx")
+  @@index([createdAt(sort: Desc), id(sort: Desc)], map: "marc_record_versions_sweep_idx")
+  @@map("marc_record_versions")
+}

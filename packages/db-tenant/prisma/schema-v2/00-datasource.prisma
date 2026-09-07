@@ -1,0 +1,82 @@
+// Libriant 2.0 — the tenant schema.
+//
+// One database per library, and from phase 20 this is the ONLY datamodel in
+// it. Until then it lives beside the 1.0 folder in `prisma/schema/`, because
+// Prisma refuses two models on one physical table and 2.0 `loans` has to exist
+// eleven phases before 1.0 `loans` can be dropped. See `prisma-v2.config.ts`.
+//
+// ## The conventions, and the gate that holds them
+//
+// Every one of these is enforced by `pnpm check:schema-conventions`, which
+// reads the DDL this folder RENDERS TO rather than the Prisma field names —
+// Prisma field names are camelCase by design, so a gate reading them would
+// pass on a schema with no `@map` at all.
+//
+//   - snake_case physical columns, via `@map` / `@@map`. 1.0's quoted
+//     camelCase forces double-quoting in every raw statement, every psql
+//     session and every report query somebody writes at 2am.
+//   - `timestamptz(3)` for instants, `date` / `time` for civil values. Never a
+//     bare `DateTime`: Prisma renders that as `TIMESTAMP(3)` — WITHOUT time
+//     zone — and all 60 instant columns in 1.0 are wrong in exactly that way.
+//     A single one wrong in 2.0 is a two-or-three-hour per-row shift on the
+//     production host that no later migration can distinguish from real data.
+//   - `BigInt` minor units + `String @db.Char(3)` currency, always paired, for
+//     anything a patron can be charged. 1.0 has five 32-bit `INTEGER` amounts
+//     and two `TEXT` currencies.
+//   - `id text` cuid, never re-keyed. The two legitimate exceptions are
+//     single-row settings tables, and the exemption is tied to the presence of
+//     the single-row CHECK that justifies it, not to a bare type allowance.
+//   - `archived_at` soft delete, with partial uniques scoped
+//     `WHERE archived_at IS NULL`.
+//   - Bare text cuids across the control-plane boundary, with NO foreign key.
+//
+// ## The numeric prefixes are load-bearing, again
+//
+// Prisma reads a schema folder in lexical order and declaration order decides
+// the order of models in the generated client. Same rule as `prisma/schema/`
+// (see its README): a new module appends at the end, and renumbering an
+// existing file rewrites the client for no reason. This folder starts a fresh
+// sequence at 00 because it generates a SEPARATE client.
+//
+// ## What is deliberately NOT here
+//
+// §3 of the master architecture names 184 tenant tables. This folder holds 16.
+// Which 16, and why each of the other 168 is absent, is not a matter of
+// judgement or memory: `prisma/schema-v2/BASELINE-SCOPE.json` names every one
+// of the 184 with a status, and `pnpm check:schema-conventions` fails if a
+// table exists that the manifest does not claim, if the manifest claims one
+// that does not exist, or if a table the manifest defers has been created
+// anyway.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+  // One level deeper than it looks: with a schema FOLDER, Prisma resolves a
+  // relative output path against the folder, not against the file. Left at
+  // `../`, generate writes the client into `prisma/` while every import keeps
+  // resolving the stale copy in the package root, and nothing fails.
+  output          = "../../node_modules/.prisma/tenant-v2-client"
+}
+
+datasource db {
+  provider = "postgresql"
+  // NO `extensions` list, deliberately.
+  //
+  // Extensions are installed once per DATABASE, in `public`, and are reached
+  // from `lbr2` through the search_path this schema's migrations set. Listing
+  // them here would make `prisma migrate diff` compare them against the `lbr2`
+  // namespace, find them absent, and propose `CREATE EXTENSION` — which
+  // `check:schema-drift` correctly reads as a missing migration, on every run,
+  // forever.
+  //
+  // Ownership therefore stays where it already was: `scripts/tenant-create.ts`
+  // and `TenantProvisioningService` create them before any migration runs, the
+  // 1.0 datasource declares the four it uses, and the 2.0 baseline migration
+  // adds `btree_gist` and `btree_gin` with an explicit `WITH SCHEMA public`.
+  //
+  // btree_gist is what makes `EXCLUDE USING gist (x WITH =, range WITH &&)`
+  // possible on a scalar-plus-range key — how a double-booked room and an
+  // overlapping calendar exception become impossible rather than unlikely.
+  // Measured: an EXCLUDE constraint in `lbr2` resolves btree_gist installed in
+  // `public` and raises 23P01 correctly.
+}

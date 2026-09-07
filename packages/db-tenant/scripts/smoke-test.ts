@@ -1,405 +1,105 @@
 /**
- * End-to-end smoke test for the tenant schema.
+ * The tenant smoke test — a runner over modules.
  *
- * Exercises every entity and every DB-level invariant against a real
- * Postgres. Used as a CI gate: drift in the schema that breaks a real
- * workflow shows up here.
+ * ## Why it is split
  *
- * Workflow under test:
- *   1. Create two authors, one book co-authored by them, two copies.
- *   2. Create a member, check out one copy → loan #1.
- *   3. Try to check the same copy out to a second member → MUST FAIL
- *      (partial unique index `loans_one_active_per_copy`).
- *   4. Return loan #1. Now the copy is available.
- *   5. Place a reservation. Try to place a second by the same member on
- *      the same book → MUST FAIL.
- *   6. Define a custom field on `book`. Verify the entity_kind/key
- *      regex (lowercase snake_case, etc.).
- *   7. Define a custom collection ("dvds") with two fields, insert two
- *      records, verify they round-trip with JSONB data.
- *   8. Add an audit entry for the support-impersonation simulation.
- *   9. Verify all constraints from the negative side (ISBN shape,
- *      member-number shape, loan chronology, etc.).
- *  10. Clean up.
+ * It used to be one 400-line `main()` with a hand-ordered list of thirteen
+ * `deleteMany` calls at the end. That shape had three costs that phase 9 could
+ * not carry: a failure anywhere stopped everything after it, so one broken
+ * invariant hid every other; there was no way to run just the part you were
+ * working on; and the teardown list was correct only until somebody added a
+ * table, at which point the symptom is a foreign-key error in cleanup that reads
+ * like a test failure.
  *
- * Run: TENANT_DATABASE_URL=postgres://... pnpm smoke
+ * So: one module per schema area, each owning its own teardown, and a runner
+ * that CONTINUES PAST A FAILURE so a single run reports everything that is
+ * broken rather than the first thing.
+ *
+ *   pnpm tenant:smoke                    # every module
+ *   pnpm tenant:smoke --only=v2-fees     # one
+ *   pnpm tenant:smoke --list             # what there is
+ *
+ * `pnpm tenant:smoke` with no arguments stays CI's single entry point, and it
+ * still exits non-zero if anything failed.
+ *
+ * ## The 1.0 module is deleted by phase 20
+ *
+ * `v1-workflow` is the original test, moved wholesale and otherwise unchanged.
+ * It exercises `public`; the 2.0 modules exercise `lbr2`. Phase 20 drops the 1.0
+ * tables and this module goes with them.
  */
-import {
-  makeTenantPrismaClient,
-  disconnectTenantClient,
-  type TenantPrismaClient,
-  Prisma,
-} from '../src';
+import { makeTenantPrismaClient, disconnectTenantClient } from '../src';
+import type { SmokeModule } from './smoke/_lib.js';
+import { v1Workflow } from './smoke/v1-workflow.js';
+import { v2Modules } from './smoke/v2-baseline.js';
 
-function ok(label: string) {
-  console.log(`  ✓ ${label}`);
-}
-function note(label: string) {
-  console.log(`  • ${label}`);
-}
+const MODULES: SmokeModule[] = [v1Workflow, ...v2Modules];
 
-/**
- * Run a Prisma call expected to fail, and assert that the error message
- * contains AT LEAST ONE of the provided fragments. Prisma redacts the
- * underlying PG constraint name for some error classes (notably unique
- * violations), so we accept either the named constraint OR Prisma's
- * generic phrasing.
- */
-async function expectError(
-  promise: Promise<unknown>,
-  expectedFragments: string | string[],
-  label: string,
-) {
-  const fragments = Array.isArray(expectedFragments) ? expectedFragments : [expectedFragments];
-  try {
-    await promise;
-    throw new Error(
-      `[FAIL] Expected error matching ${JSON.stringify(fragments)} but call succeeded: ${label}`,
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const lower = msg.toLowerCase();
-    const matched = fragments.some((f) => lower.includes(f.toLowerCase()));
-    if (!matched) {
-      throw new Error(
-        `[FAIL] Expected error matching one of ${JSON.stringify(fragments)} for "${label}" but got:\n${msg}`,
-      );
-    }
-    ok(`${label} → rejected as expected`);
-  }
+const args = process.argv.slice(2);
+const only = args.find((a) => a.startsWith('--only='))?.slice('--only='.length);
+
+if (args.includes('--list')) {
+  for (const m of MODULES) console.log(`  ${m.name.padEnd(20)} ${m.describes}`);
+  process.exit(0);
 }
 
-async function cleanup(db: TenantPrismaClient) {
-  // Order matters: delete dependent rows first.
-  await db.auditEvent.deleteMany({});
-  await db.fine.deleteMany({});
-  await db.loan.deleteMany({});
-  await db.reservation.deleteMany({});
-  await db.collectionRecord.deleteMany({});
-  await db.collectionField.deleteMany({});
-  await db.collection.deleteMany({});
-  await db.fieldDefinition.deleteMany({});
-  await db.bookAuthor.deleteMany({});
-  await db.bookCopy.deleteMany({});
-  await db.book.deleteMany({});
-  await db.author.deleteMany({});
-  await db.member.deleteMany({});
-}
-
-async function main() {
-  const url = process.env.TENANT_DATABASE_URL;
-  if (!url) {
-    console.error('TENANT_DATABASE_URL must be set.');
-    process.exit(1);
-  }
-  const db = makeTenantPrismaClient({ databaseUrl: url });
-
-  try {
-    console.log('— cleanup before smoke test —');
-    await cleanup(db);
-
-    // -----------------------------------------------------------------
-    console.log('\nStep 1: authors, book, copies');
-    const kazantzakis = await db.author.create({
-      data: {
-        fullName: 'Νίκος Καζαντζάκης',
-        sortName: 'καζαντζακης νικος',
-        birthYear: 1883,
-        deathYear: 1957,
-      },
-    });
-    ok('created author (Καζαντζάκης)');
-
-    const sherrard = await db.author.create({
-      data: {
-        fullName: 'Philip Sherrard',
-        sortName: 'sherrard philip',
-        birthYear: 1922,
-        deathYear: 1995,
-      },
-    });
-    ok('created author (Sherrard, translator)');
-
-    const book = await db.book.create({
-      data: {
-        title: 'Ο Καπετάν Μιχάλης',
-        sortTitle: 'καπετα ν μιχα λη ς ο',
-        searchText: 'ο καπετα ν μιχα λη ς νικο ς καζαντζα κη ς freedom and death philip sherrard',
-        isbn13: '9789600000000',
-        publisher: 'Καζαντζάκης Publications',
-        publicationYear: 1953,
-        language: 'el',
-        numPages: 480,
-        authors: {
-          create: [
-            { authorId: kazantzakis.id, order: 0 },
-            { authorId: sherrard.id, order: 1, role: 'translator' },
-          ],
-        },
-      },
-    });
-    ok('created book with two authors via nested write');
-
-    const copy1 = await db.bookCopy.create({
-      data: {
-        bookId: book.id,
-        barcode: 'BK-0001',
-        shelfLocation: 'Section A · Shelf 3',
-        priceCents: 1800,
-      },
-    });
-    const copy2 = await db.bookCopy.create({
-      data: { bookId: book.id, barcode: 'BK-0002', shelfLocation: 'Section A · Shelf 3' },
-    });
-    ok(`created two book copies (status=${copy1.status})`);
-
-    // -----------------------------------------------------------------
-    console.log('\nStep 2: member, loan');
-    const m1 = await db.member.create({
-      data: {
-        memberNumber: 'M-2026-0001',
-        fullName: 'Μαρία Παπαδοπούλου',
-        sortName: 'παπαδοπουλου μαρια',
-        searchText: 'μαρια παπαδοπουλου maria papadopoulou m-2026-0001',
-        email: 'maria@example.test',
-      },
-    });
-    const m2 = await db.member.create({
-      data: {
-        memberNumber: 'M-2026-0002',
-        fullName: 'Γιώργος Ιωάννου',
-        sortName: 'ιωαννου γιωργος',
-        searchText: 'γιωργος ιωαννου giorgos ioannou m-2026-0002',
-        email: 'giorgos@example.test',
-      },
-    });
-    ok('created two members');
-
-    const now = new Date();
-    const due = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
-    const loan1 = await db.loan.create({
-      data: { copyId: copy1.id, memberId: m1.id, loanedAt: now, dueAt: due },
-    });
-    ok(`created loan #1 (status=${loan1.status}, due in 14 days)`);
-
-    // -----------------------------------------------------------------
-    console.log('\nStep 3: ADVERSARIAL — second active loan on same copy must fail');
-    await expectError(
-      db.loan.create({
-        data: { copyId: copy1.id, memberId: m2.id, loanedAt: now, dueAt: due },
-      }),
-      // Prisma surfaces a partial-unique-index violation as a generic
-      // "Unique constraint failed" (the index name isn't in the message, and
-      // Prisma 7 quotes the column as `"copyId"`), so match on the stable phrase.
-      ['loans_one_active_per_copy', 'Unique constraint failed'],
-      'second active loan on same copy',
-    );
-
-    // -----------------------------------------------------------------
-    console.log('\nStep 4: return loan #1');
-    const returned = await db.loan.update({
-      where: { id: loan1.id },
-      data: { returnedAt: new Date(), status: 'returned' },
-    });
-    ok(`returned loan #1 (returnedAt=${returned.returnedAt?.toISOString()})`);
-
-    // After return, a new loan on copy1 should succeed.
-    const loan2 = await db.loan.create({
-      data: { copyId: copy1.id, memberId: m2.id, loanedAt: now, dueAt: due },
-    });
-    ok(`fresh loan on same copy now possible (loan2 id=${loan2.id})`);
-
-    // -----------------------------------------------------------------
-    console.log('\nStep 5: reservations');
-    const r1 = await db.reservation.create({
-      data: {
-        bookId: book.id,
-        memberId: m1.id,
-        queuePosition: 1,
-      },
-    });
-    ok(`reservation #1 created (status=${r1.status}, position=${r1.queuePosition})`);
-
-    console.log('\nADVERSARIAL — same member queueing twice for same book must fail');
-    await expectError(
-      db.reservation.create({
-        data: { bookId: book.id, memberId: m1.id, queuePosition: 2 },
-      }),
-      ['reservations_one_active_per_book_member', 'Unique constraint failed'],
-      'same member, second active reservation on same book',
-    );
-
-    console.log('\nADVERSARIAL — reservation status=queued without queuePosition must fail');
-    await expectError(
-      db.reservation.create({
-        data: { bookId: book.id, memberId: m2.id, status: 'queued', queuePosition: null },
-      }),
-      'reservations_queue_position_when_queued',
-      'queued reservation without queue position',
-    );
-
-    // -----------------------------------------------------------------
-    console.log('\nStep 6: custom field definition on book');
-    const fd = await db.fieldDefinition.create({
-      data: {
-        entityKind: 'book',
-        fieldKey: 'shelf_section',
-        labelJson: { en: 'Shelf section', el: 'Τομέας ραφιού' },
-        type: 'short_text',
-        required: false,
-        sortOrder: 0,
-      },
-    });
-    ok(`created field definition (key=${fd.fieldKey})`);
-
-    console.log('\nADVERSARIAL — uppercase field key must fail');
-    await expectError(
-      db.fieldDefinition.create({
-        data: {
-          entityKind: 'book',
-          fieldKey: 'NotSnake',
-          labelJson: { en: 'X', el: 'Χ' },
-          type: 'short_text',
-        },
-      }),
-      'field_definitions_key_format',
-      'uppercase / camelCase field key',
-    );
-
-    // Write a custom-fields value through the regular book update path.
-    const bookWithCustom = await db.book.update({
-      where: { id: book.id },
-      data: { customFields: { shelf_section: 'A-3' } as Prisma.InputJsonValue },
-    });
-    note(
-      `book.customFields after update = ${JSON.stringify(bookWithCustom.customFields)} (round-trips through JSONB)`,
-    );
-
-    // -----------------------------------------------------------------
-    console.log('\nStep 7: custom collection');
-    const dvdCollection = await db.collection.create({
-      data: {
-        slug: 'dvds',
-        singularLabelJson: { en: 'DVD', el: 'DVD' },
-        pluralLabelJson: { en: 'DVDs', el: 'DVD' },
-        iconAssetRef: 'icons/book',
-        fields: {
-          create: [
-            {
-              fieldKey: 'title',
-              labelJson: { en: 'Title', el: 'Τίτλος' },
-              type: 'short_text',
-              required: true,
-              sortOrder: 0,
-            },
-            {
-              fieldKey: 'runtime_minutes',
-              labelJson: { en: 'Runtime (min)', el: 'Διάρκεια (λεπτά)' },
-              type: 'number',
-              sortOrder: 1,
-            },
-          ],
-        },
-      },
-      include: { fields: true },
-    });
-    ok(`created collection "${dvdCollection.slug}" with ${dvdCollection.fields.length} fields`);
-
-    const dvd1 = await db.collectionRecord.create({
-      data: {
-        collectionId: dvdCollection.id,
-        data: { title: 'Ο Καπετάν Μιχάλης (1955 film)', runtime_minutes: 116 },
-        searchText: 'ο καπετα ν μιχα λη ς 1955 film',
-      },
-    });
-    ok(`inserted collection record (id=${dvd1.id})`);
-
-    console.log('\nADVERSARIAL — invalid slug shape on collection must fail');
-    await expectError(
-      db.collection.create({
-        data: {
-          slug: 'NOT-OK',
-          singularLabelJson: { en: 'X', el: 'Χ' },
-          pluralLabelJson: { en: 'X', el: 'Χ' },
-        },
-      }),
-      'collections_slug_format',
-      'uppercase slug on collection',
-    );
-
-    // -----------------------------------------------------------------
-    console.log('\nStep 8: audit event linked to a support session');
-    const audit = await db.auditEvent.create({
-      data: {
-        actorType: 'admin',
-        actorId: 'admin-cuid-from-control-plane',
-        action: 'book.updated',
-        targetType: 'book',
-        targetId: book.id,
-        afterJson: { title: book.title },
-        supportSessionId: 'support-session-cuid-from-control-plane',
-      },
-    });
-    ok(
-      `audit entry (action=${audit.action}, supportSession=${audit.supportSessionId?.slice(0, 12)}…)`,
-    );
-
-    // -----------------------------------------------------------------
-    console.log('\nStep 9: adversarial — schema-level shape constraints');
-    await expectError(
-      db.book.create({
-        data: {
-          title: 'Bad ISBN Book',
-          sortTitle: 'bad isbn book',
-          searchText: 'bad isbn book',
-          isbn13: '978-X', // wrong shape
-        },
-      }),
-      'books_isbn13_shape',
-      'invalid ISBN-13 shape',
-    );
-
-    await expectError(
-      db.member.create({
-        data: {
-          memberNumber: 'invalid lower', // must be uppercase / digits / -/_
-          fullName: 'X',
-          sortName: 'x',
-          searchText: 'x',
-        },
-      }),
-      'members_member_number_format',
-      'invalid member number shape',
-    );
-
-    await expectError(
-      db.loan.create({
-        data: { copyId: copy2.id, memberId: m1.id, loanedAt: due, dueAt: now }, // dueAt < loanedAt
-      }),
-      'loans_due_after_loaned',
-      'loan due date before loan date',
-    );
-
-    await expectError(
-      db.fine.create({
-        data: { memberId: m1.id, amountCents: -100, reason: 'X' },
-      }),
-      'fines_amount_nonneg',
-      'negative fine amount',
-    );
-
-    // -----------------------------------------------------------------
-    console.log('\nStep 10: cleanup');
-    await cleanup(db);
-    ok('cleanup complete');
-
-    console.log('\nALL SMOKE-TEST STEPS PASSED ✓');
-  } finally {
-    await disconnectTenantClient(db);
-  }
-}
-
-main().catch((err) => {
-  console.error('\n❌ SMOKE TEST FAILED:\n', err);
+const selected = only ? MODULES.filter((m) => m.name === only) : MODULES;
+if (only && selected.length === 0) {
+  console.error(
+    `✗ no smoke module named "${only}". Known: ${MODULES.map((m) => m.name).join(', ')}`,
+  );
   process.exit(1);
-});
+}
+
+const url = process.env.TENANT_DATABASE_URL;
+if (!url) {
+  console.error(
+    '✗ TENANT_DATABASE_URL is not set. This test needs a migrated tenant database:\n' +
+      '    pnpm db:up && TENANT_DATABASE_URL=postgresql://libriant:libriant@localhost:5432/libriant_demo pnpm tenant:smoke',
+  );
+  process.exit(1);
+}
+
+const db = makeTenantPrismaClient({ databaseUrl: url, maxPoolSize: 1 });
+const failures: Array<{ module: string; error: string }> = [];
+
+try {
+  for (const mod of selected) {
+    console.log(`\n▸ ${mod.name} — ${mod.describes}`);
+    try {
+      await mod.run(db);
+    } catch (err) {
+      // Continue. One broken invariant must not hide the other five modules;
+      // knowing everything that is wrong in one run is the difference between
+      // one fix and six round trips.
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`  ✗ ${message}`);
+      failures.push({ module: mod.name, error: message });
+    } finally {
+      // ALWAYS, including after a failure. A module that dies part-way has left
+      // rows behind, and without this every later module fails its "exists and
+      // is empty" check for a reason that is not its own — one real failure
+      // reported as three, two of them pointing at innocent modules.
+      try {
+        await mod.reset?.(db);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`  ✗ ${mod.name}: teardown failed — ${message}`);
+        failures.push({ module: `${mod.name} (teardown)`, error: message });
+      }
+    }
+  }
+} finally {
+  await disconnectTenantClient(db);
+}
+
+if (failures.length) {
+  console.error(`\n✗ tenant smoke: ${failures.length} of ${selected.length} module(s) failed\n`);
+  for (const f of failures) console.error(`    ${f.module}: ${f.error}`);
+  process.exit(1);
+}
+
+console.log(
+  `\n✓ tenant smoke: ${selected.length} module(s) green` +
+    (only ? '' : ` (${MODULES.map((m) => m.name).join(', ')})`),
+);

@@ -8,6 +8,7 @@ import {
   makeTenantPrismaClient,
   disconnectTenantClient,
   seedTenantDefaults,
+  withV2Schema,
 } from '@libriant/db-tenant';
 import {
   applyTenantRoleGrants,
@@ -277,6 +278,13 @@ export class TenantProvisioningService {
       await target.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
       await target.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
       await target.query('CREATE EXTENSION IF NOT EXISTS citext');
+      // The 2.0 baseline needs both, and listing them in the Prisma datasource
+      // is not enough: this block runs BEFORE any migration, so an extension
+      // named only there is missing at the moment the baseline tries to use it.
+      // btree_gist is what makes the calendar and booking EXCLUDE constraints
+      // possible at all.
+      await target.query('CREATE EXTENSION IF NOT EXISTS btree_gist');
+      await target.query('CREATE EXTENSION IF NOT EXISTS btree_gin');
     } finally {
       await target.end();
     }
@@ -288,13 +296,27 @@ export class TenantProvisioningService {
    * table (`_prisma_migrations`) and from its in-tx replay logic.
    */
   private async applyTenantMigrations(targetUrl: string): Promise<void> {
-    const { stderr, stdout } = await execFileP('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
-      cwd: DB_TENANT_DIR,
-      env: { ...process.env, TENANT_DATABASE_URL: targetUrl },
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    if (stdout) this.logger.debug(`prisma migrate deploy: ${stdout.trim()}`);
-    if (stderr) this.logger.debug(`prisma migrate deploy (stderr): ${stderr.trim()}`);
+    // The 2.0 baseline lives in its own Postgres schema and its own migration
+    // folder, with its own `_prisma_migrations` inside that schema. Both must be
+    // deployed: a tenant that gets only the 1.0 folder is a database every 2.0
+    // service fails against at its first query. See `packages/db-tenant/src/v2.ts`.
+    for (const folder of [
+      { label: '1.0', args: [] as string[], url: targetUrl },
+      { label: '2.0', args: ['--config', 'prisma-v2.config.ts'], url: withV2Schema(targetUrl) },
+    ]) {
+      const { stderr, stdout } = await execFileP(
+        'pnpm',
+        ['exec', 'prisma', 'migrate', 'deploy', ...folder.args],
+        {
+          cwd: DB_TENANT_DIR,
+          env: { ...process.env, TENANT_DATABASE_URL: folder.url },
+          maxBuffer: 8 * 1024 * 1024,
+        },
+      );
+      if (stdout) this.logger.debug(`prisma migrate deploy ${folder.label}: ${stdout.trim()}`);
+      if (stderr)
+        this.logger.debug(`prisma migrate deploy ${folder.label} (stderr): ${stderr.trim()}`);
+    }
   }
 
   /**

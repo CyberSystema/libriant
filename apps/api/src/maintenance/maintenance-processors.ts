@@ -9,6 +9,7 @@ import {
   makeTenantPrismaClient,
   disconnectTenantClient,
   seedTenantSettings,
+  withV2Schema,
 } from '@libriant/db-tenant';
 import { loadEnv } from '../config/env.js';
 import { TENANT_RUNTIME_SELECT, adminDbUrl, runtimeDbUrl } from '../tenancy/tenant-db-url.js';
@@ -269,8 +270,22 @@ async function runMigrate(
   run: MaintenanceRun,
   ctx: Ctx,
 ): Promise<{ results: MaintenanceTargetResult[] }> {
-  type Target = { label: string; dir: string; envName: string; url: string };
+  type Target = { label: string; dir: string; envName: string; url: string; args?: string[] };
   const targets: Target[] = [];
+  // A tenant needs BOTH migration folders. The 2.0 baseline lives in its own
+  // Postgres schema with its own `_prisma_migrations`, so it is a second target
+  // rather than a second flag — which also means it gets its own row in the
+  // maintenance report and a failure names which of the two failed.
+  const tenantTargets = (t: { slug: string; url: string }): Target[] => [
+    { label: `tenant: ${t.slug}`, dir: DB_TENANT_DIR, envName: 'TENANT_DATABASE_URL', url: t.url },
+    {
+      label: `tenant: ${t.slug} (2.0)`,
+      dir: DB_TENANT_DIR,
+      envName: 'TENANT_DATABASE_URL',
+      url: withV2Schema(t.url),
+      args: ['--config', 'prisma-v2.config.ts'],
+    },
+  ];
   if (run.scope === 'control' || run.scope === 'all') {
     targets.push({
       label: 'control DB',
@@ -281,20 +296,10 @@ async function runMigrate(
   }
   if (run.scope === 'tenant') {
     const t = await tenantById(run.targetTenantId!);
-    targets.push({
-      label: `tenant: ${t.slug}`,
-      dir: DB_TENANT_DIR,
-      envName: 'TENANT_DATABASE_URL',
-      url: adminDbUrl(t),
-    });
+    targets.push(...tenantTargets({ slug: t.slug, url: adminDbUrl(t) }));
   } else if (run.scope === 'all') {
     for (const t of await listTenants()) {
-      targets.push({
-        label: `tenant: ${t.slug}`,
-        dir: DB_TENANT_DIR,
-        envName: 'TENANT_DATABASE_URL',
-        url: adminDbUrl(t),
-      });
+      targets.push(...tenantTargets({ slug: t.slug, url: adminDbUrl(t) }));
     }
   }
 
@@ -313,13 +318,18 @@ async function migrateDeploy(tgt: {
   dir: string;
   envName: string;
   url: string;
+  args?: string[];
 }): Promise<MaintenanceTargetResult> {
   try {
-    const { stdout, stderr } = await execFileP('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
-      cwd: tgt.dir,
-      env: { ...process.env, [tgt.envName]: tgt.url },
-      maxBuffer: 16 * 1024 * 1024,
-    });
+    const { stdout, stderr } = await execFileP(
+      'pnpm',
+      ['exec', 'prisma', 'migrate', 'deploy', ...(tgt.args ?? [])],
+      {
+        cwd: tgt.dir,
+        env: { ...process.env, [tgt.envName]: tgt.url },
+        maxBuffer: 16 * 1024 * 1024,
+      },
+    );
     const out = `${stdout}\n${stderr}`;
     if (/No pending migrations/i.test(out))
       return { target: tgt.label, ok: true, summary: 'up to date' };

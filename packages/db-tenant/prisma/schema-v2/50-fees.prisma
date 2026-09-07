@@ -1,0 +1,80 @@
+// ---------------------------------------------------------------------------
+// Fees
+// ---------------------------------------------------------------------------
+
+/// One charge against one borrower.
+///
+/// Fully specified by §3. The rest of the fee module — `fee_types`,
+/// `patron_accounts`, the double-entry `account_transactions` /
+/// `account_entries` / `fee_allocations` trio, cash drawers, receipts, terminals
+/// and `ledger_discrepancies` — is deferred to phase 9d with the phase-18
+/// service, because the double-entry invariant (`SUM(debit) = SUM(credit)` per
+/// transaction) is that phase's design and inventing the tables that carry it
+/// now would be inventing the ledger.
+///
+/// So `account_id` and `fee_type_id` are `NOT NULL` bare text with no FK, as §3
+/// writes them. That is honest rather than lax: they are the columns phase 9d
+/// will constrain, and a fee row cannot be written until then anyway.
+///
+/// `outstanding_cents` is a GENERATED column and is therefore absent from this
+/// model — Prisma has no generated-column concept, so it lives in the migration
+/// SQL and is allowlisted in `check:schema-drift`. Generated rather than
+/// computed in the application because a balance that two code paths compute
+/// differently is the single most damaging bug class in a fee ledger, and this
+/// makes disagreement impossible.
+///
+/// `fees_one_open_accrual_per_loan` preserves the 1.0 `INSERT … ON CONFLICT …
+/// DO UPDATE` upsert verbatim (DATA-1), which is why a return racing the accrual
+/// sweep does not abort the librarian's transaction. With `timestamptz` the 1.0
+/// `NOW() AT TIME ZONE 'UTC'` workaround finally becomes a plain
+/// `pg_catalog.now()`.
+///
+/// NOT `@replicated`, deliberately. The overdue-fine sweep touches every
+/// accruing fee every night, so a trigger here would be the single largest
+/// producer in the feed — and no consumer reads it yet. The patron's OPAC
+/// balance and the offline replica will want it; phase 18 and phase 78 can add
+/// the marker, which is a one-line migration. Turning a firehose off after a
+/// fleet has consumed it is the expensive direction.
+model Fee {
+  id String @id
+
+  /// Phase 9d gives these two an FK. See the docblock.
+  accountId String @map("account_id")
+  patronId  String @map("patron_id")
+  feeTypeId String @map("fee_type_id")
+
+  /// Always paired with the `*_cents` columns below. §3's convention is bigint
+  /// minor units + `char(3)`, never a float and never a bare number: a fee is
+  /// money and money has a currency even in a single-currency library, because
+  /// the first consortium makes that false.
+  currency String @db.Char(3)
+
+  loanId    String? @map("loan_id")
+  itemId    String? @map("item_id")
+  holdId    String? @map("hold_id")
+  bookingId String? @map("booking_id")
+  branchId  String  @map("branch_id")
+
+  amountCents      BigInt @map("amount_cents")
+  taxCents         BigInt @default(0) @map("tax_cents")
+  paidCents        BigInt @default(0) @map("paid_cents")
+  waivedCents      BigInt @default(0) @map("waived_cents")
+  writtenOffCents  BigInt @default(0) @map("written_off_cents")
+
+  status FeeStatus @default(outstanding)
+
+  /// An overdue fine grows while the item is out. `accrued_through` is how far
+  /// it has been calculated, so a sweep that runs twice does not double-charge
+  /// and a sweep that misses a day can catch up.
+  isAccruing     Boolean   @default(false) @map("is_accruing")
+  accrualPolicy  Json?     @db.JsonB @map("accrual_policy")
+  accruedThrough DateTime? @db.Timestamptz(3) @map("accrued_through")
+
+  reason    String
+  createdAt DateTime  @db.Timestamptz(3) @map("created_at")
+  closedAt  DateTime? @db.Timestamptz(3) @map("closed_at")
+
+  @@index([patronId, status])
+  @@index([loanId])
+  @@map("fees")
+}

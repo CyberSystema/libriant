@@ -1,0 +1,208 @@
+// ---------------------------------------------------------------------------
+// Holdings and items — what the library physically has
+// ---------------------------------------------------------------------------
+
+/// A MARC 21 Holdings (MFHD) record: what this library holds of a title, at a
+/// location, and on what terms.
+///
+/// SKELETON, but with one column NOT of my choosing. §3 writes
+/// `items.holdings_record_id text NOT NULL REFERENCES holdings_records(record_id)`
+/// — `record_id`, not `id`. That deviates from the §3 convention "`id text`
+/// cuid, never re-keyed", and it is kept anyway: the FK target is the one thing
+/// the document states about this table, and silently renaming it would make the
+/// items DDL (which IS fully specified) wrong. `check:schema-conventions`
+/// exempts it by name with this reason rather than by relaxing the rule.
+///
+/// Everything else here is the minimum an item can hang off. The 852/853-855/
+/// 863-868 compressed-holdings statement machinery, the mandatory holdings 008
+/// (retention, completeness and lending policy — which is what an ILL partner
+/// actually reads), and `bib_id` back-linking all belong to phase 11.
+/// @replicated entity_kind=holdings_record
+model HoldingsRecord {
+  /// Not `id`. See the docblock — the name is forced by the items DDL.
+  recordId String @id @map("record_id")
+
+  branchId String @map("branch_id")
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  items Item[]
+
+  @@index([branchId])
+  @@map("holdings_records")
+}
+
+/// POLICY. What the rules matrix keys on.
+///
+/// SKELETON. Split from `material_types` deliberately, and that split is the
+/// one thing §3 says about either: conflating "how this circulates" with "what
+/// this physically is" is the most common ILS data-model mistake, and it is why
+/// a reference copy of an ordinary book needs a hack in Koha. Here a reference
+/// copy is an `item_type` of `reference` on a `material_type` of `book`, and
+/// nothing is special-cased.
+///
+/// Loan periods, renewal counts and hold rules are NOT here: they live in the
+/// policy tables the rules matrix resolves to, which are phase 9b/13.
+/// @replicated entity_kind=item_type
+model ItemType {
+  id String @id
+
+  code     String
+  name     String
+  nameI18n Json   @default("{}") @db.JsonB @map("name_i18n")
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  itemsPermanent Item[] @relation("ItemType")
+  itemsTemporary Item[] @relation("ItemTemporaryType")
+
+  @@map("item_types")
+}
+
+/// The RDA carrier. Display and facets only — never policy.
+///
+/// SKELETON. §3 is explicit that this drives nothing: if a material type ever
+/// appears in a circulation rule selector, the split above has been undone.
+/// @replicated entity_kind=material_type
+model MaterialType {
+  id String @id
+
+  code     String
+  name     String
+  nameI18n Json   @default("{}") @db.JsonB @map("name_i18n")
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  items Item[]
+
+  @@map("material_types")
+}
+
+/// A physical copy.
+///
+/// Fully specified by §3. Two things in here are load-bearing and easy to
+/// undo by accident:
+///
+/// `is_shelf_available` is a GENERATED column, not a `status = 'available'`
+/// predicate, and it is absent from this model because Prisma has no generated-
+/// column concept — it lives in the migration SQL and is allowlisted in
+/// `check:schema-drift`. The reason it is generated at all: Prisma emits
+/// `status = CAST($1::text AS item_status)` and `enum_in` is only STABLE, so the
+/// planner can never prove an enum-predicate partial index. That is exactly why
+/// `loans_active_dueAt_idx` had to be dropped in 1.0, and a boolean the planner
+/// CAN reason about is the fix.
+///
+/// `call_number_sort` is produced by `@libriant/shared/callnumber` and is pure
+/// ASCII, fixed-width, zero-padded. Tenant databases are created `el_GR.UTF-8`;
+/// a non-ASCII sort key reorders under that collation — the perf-13 trap — and
+/// shelf order has to be byte-identical in Postgres, in the browser and in the
+/// offline inventory wand.
+/// @replicated entity_kind=item
+model Item {
+  id String @id
+
+  holdingsRecordId String @map("holdings_record_id")
+  /// Kept in step with the holdings record inside the same transaction. Present
+  /// so a copy can be found from a bib without a two-level join on every read.
+  bibId            String @map("bib_id")
+
+  barcode     String?
+  /// Folded per `@libriant/shared/greek`. The uniqueness is on THIS, not on
+  /// `barcode`, so two copies cannot differ only by case or accent.
+  barcodeNorm String? @map("barcode_norm")
+
+  itemTypeId          String  @map("item_type_id")
+  /// Course reserves and "new books" — a temporary policy identity that expires
+  /// without rewriting the item's real type.
+  temporaryItemTypeId String? @map("temporary_item_type_id")
+  materialTypeId      String? @map("material_type_id")
+
+  owningBranchId  String @map("owning_branch_id")
+  /// Floating collections move THIS and leave `owning_branch_id` alone, so a
+  /// floated copy still counts against the branch that paid for it.
+  currentBranchId String @map("current_branch_id")
+
+  permanentLocationId String  @map("permanent_location_id")
+  temporaryLocationId String? @map("temporary_location_id")
+
+  callNumberPrefix String?          @map("call_number_prefix")
+  callNumberBase   String?          @map("call_number_base")
+  callNumberSuffix String?          @map("call_number_suffix")
+  copyNumber       String?          @map("copy_number")
+  /// PURE ASCII, fixed-width. See the docblock.
+  callNumberSort   String?          @map("call_number_sort")
+  callNumberScheme CallNumberScheme @default(ddc) @map("call_number_scheme")
+
+  enumeration String?
+  chronology  String?
+
+  status      ItemStatus @default(available)
+  statusSince DateTime   @default(now()) @db.Timestamptz(3) @map("status_since")
+  /// No FK: `item_status_reasons` is deferred to phase 9c with the phase-15
+  /// service that defines it. §3 writes this column without a REFERENCES clause
+  /// too.
+  statusReasonId String? @map("status_reason_id")
+
+  /// Four separate code columns rather than four more `item_status` values, so
+  /// a copy can be simultaneously on loan and flagged damaged — which is the
+  /// normal case when a return desk finds a torn page.
+  notForLoanCode String?   @map("not_for_loan_code")
+  damagedCode    String?   @map("damaged_code")
+  lostCode       String?   @map("lost_code")
+  withdrawnAt    DateTime? @db.Timestamptz(3) @map("withdrawn_at")
+
+  restrictedAccess Boolean @default(false) @map("restricted_access")
+  holdable         Boolean @default(true)
+  bookable         Boolean @default(false)
+
+  priceCents           BigInt? @map("price_cents")
+  replacementCostCents BigInt? @map("replacement_cost_cents")
+
+  acquiredAt      DateTime? @db.Date @map("acquired_at")
+  accessionNumber String?   @map("accession_number")
+  publicNote      String?   @map("public_note")
+  staffNote       String?   @map("staff_note")
+
+  /// ISO 28560. `rfid_afi` is 0xC2 secured/in-library and 0x07 unsecured/on-loan
+  /// — that polarity is the one a security gate acts on, and inverting it alarms
+  /// on every checked-out book while letting every shelved book walk out.
+  rfidTagUid    String?   @map("rfid_tag_uid")
+  rfidAfi       Int?      @db.SmallInt @map("rfid_afi")
+  rfidWrittenAt DateTime? @db.Timestamptz(3) @map("rfid_written_at")
+
+  inventoriedAt      DateTime? @db.Timestamptz(3) @map("inventoried_at")
+  lastSeenAt         DateTime? @db.Timestamptz(3) @map("last_seen_at")
+  lastSeenAtBranchId String?   @map("last_seen_at_branch_id")
+
+  checkoutCount Int @default(0) @map("checkout_count")
+  renewalCount  Int @default(0) @map("renewal_count")
+
+  customFields Json @default("{}") @db.JsonB @map("custom_fields")
+
+  createdAt  DateTime  @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  holdingsRecord    HoldingsRecord   @relation(fields: [holdingsRecordId], references: [recordId], onDelete: Restrict)
+  bib               MarcRecord       @relation(fields: [bibId], references: [id], onDelete: Restrict)
+  itemType          ItemType         @relation("ItemType", fields: [itemTypeId], references: [id])
+  temporaryItemType ItemType?        @relation("ItemTemporaryType", fields: [temporaryItemTypeId], references: [id])
+  materialType      MaterialType?    @relation(fields: [materialTypeId], references: [id])
+  owningBranch      Branch           @relation("ItemOwningBranch", fields: [owningBranchId], references: [id])
+  currentBranch     Branch           @relation("ItemCurrentBranch", fields: [currentBranchId], references: [id])
+  permanentLocation ShelvingLocation @relation("ItemPermanentLocation", fields: [permanentLocationId], references: [id])
+  temporaryLocation ShelvingLocation? @relation("ItemTemporaryLocation", fields: [temporaryLocationId], references: [id])
+
+  loans Loan[]
+
+  @@index([currentBranchId, callNumberSort, id], map: "items_shelf_order_idx")
+  @@index([holdingsRecordId])
+  @@index([itemTypeId])
+  @@map("items")
+}

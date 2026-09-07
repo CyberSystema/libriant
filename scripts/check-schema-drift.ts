@@ -48,6 +48,28 @@ interface Pkg {
   readonly schema: string;
   /** Statements the migrations legitimately have and the datamodel cannot express. */
   readonly allowed: Readonly<Record<string, string>>;
+  /**
+   * How the "what the migrations built" side is obtained.
+   *
+   * `replay` is `--from-migrations`: Prisma builds a throwaway copy from the
+   * migration files. It is the cheaper form and it is what the 1.0 schemas use.
+   *
+   * `deploy` runs `prisma migrate deploy` into the shadow database and then
+   * diffs against that. Needed for the 2.0 folder because `--from-migrations`
+   * always replays into `public`, while the 2.0 datamodel lives in `lbr2` — so
+   * the replay form compares the schema against an empty namespace and proposes
+   * creating all seventeen tables, every run, forever.
+   *
+   * It is also the stronger check: it compares the datamodel against what a real
+   * deploy actually produces, rather than against a replay of the same files.
+   */
+  readonly mode?: 'replay' | 'deploy';
+  /** Extra CLI args, e.g. selecting a second Prisma config. */
+  readonly args?: readonly string[];
+  /** Appended to the shadow URL, e.g. `?schema=lbr2`. */
+  readonly urlSuffix?: string;
+  /** Env var the CLI reads the datasource URL from. */
+  readonly urlEnv?: string;
 }
 
 const GIN_JSONB = 'A GIN index on a jsonb custom-fields column. Prisma cannot express `USING gin`.';
@@ -75,6 +97,35 @@ const PACKAGES: Pkg[] = [
         'A `text_pattern_ops` index. Prisma cannot express an operator class, and under the ' +
         '`el_GR.UTF-8` collation these databases are created with, a plain btree cannot serve ' +
         "`LIKE 'M-2026-%'` at all (perf-13).",
+    },
+  },
+  {
+    dir: 'packages/db-tenant',
+    schema: './prisma/schema-v2',
+    mode: 'deploy',
+    args: ['--config', 'prisma-v2.config.ts'],
+    urlSuffix: '?schema=lbr2',
+    urlEnv: 'TENANT_DATABASE_URL',
+    allowed: {
+      'ALTER TABLE "items" DROP COLUMN "is_shelf_available";':
+        'A STORED generated column. Prisma has no generated-column concept, so the datamodel ' +
+        'cannot hold it. It is generated rather than an index predicate because Prisma emits ' +
+        '`status = CAST($1::text AS item_status)` and `enum_in` is only STABLE, so the planner ' +
+        'can never prove an enum-predicate partial index — the reason `loans_active_dueAt_idx` ' +
+        'had to be dropped in 1.0.',
+      'ALTER TABLE "fees" DROP COLUMN "outstanding_cents";':
+        'A STORED generated column: amount + tax - paid - waived - written_off. Generated so ' +
+        'that two code paths cannot compute a balance differently, which is the most damaging ' +
+        'bug class available in a fee ledger.',
+      'DROP SEQUENCE "record_version_seq";':
+        'A bare sequence shared by `marc_records.row_version` and `change_events.row_version`, ' +
+        'so a device replica can order a catalogue change against a circulation change. Prisma ' +
+        'has no standalone-sequence concept; it only knows sequences it owns behind ' +
+        '`autoincrement()`.',
+      'ALTER TABLE "marc_records" ALTER COLUMN "row_version" SET DEFAULT nextval(\'record_version_seq\'::regclass), ALTER COLUMN "row_version" DROP DEFAULT;':
+        'The other half of dropping that sequence — Prisma renders the pair as one statement. ' +
+        'The column keeps its `@default(dbgenerated(...))` in the datamodel; only the sequence ' +
+        'object itself is surplus.',
     },
   },
   {
@@ -132,14 +183,48 @@ for (const pkg of PACKAGES) {
   // The lock file records the provider the migrations were written for. Without
   // it `migrate diff --from-migrations` refuses to run at all, which is how its
   // absence from db-tenant went unnoticed until this gate was written.
-  const lock = path.join(cwd, 'prisma', 'migrations', 'migration_lock.toml');
+  const migrationsDir = pkg.schema.includes('-v2') ? 'migrations-v2' : 'migrations';
+  const lock = path.join(cwd, 'prisma', migrationsDir, 'migration_lock.toml');
   if (!existsSync(lock)) {
-    fail(`${pkg.dir}: prisma/migrations/migration_lock.toml is missing.`);
+    fail(`${pkg.dir}: prisma/${migrationsDir}/migration_lock.toml is missing.`);
     continue;
   }
   if (!/provider\s*=\s*"postgresql"/.test(readFileSync(lock, 'utf8'))) {
     fail(`${pkg.dir}: migration_lock.toml does not record the postgresql provider.`);
     continue;
+  }
+
+  const pkgUrl = `${shadowUrl}${pkg.urlSuffix ?? ''}`;
+  const extra = pkg.args ? [...pkg.args] : [];
+  // In `deploy` mode the shadow database IS the target, so SHADOW_DATABASE_URL
+  // must be unset: Prisma refuses outright when the two are the same database
+  // ("The shadow database you configured appears to be the same as the main
+  // database"). In `replay` mode it is the throwaway Prisma builds into.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (pkg.mode === 'deploy') {
+    delete env.SHADOW_DATABASE_URL;
+  } else {
+    env.SHADOW_DATABASE_URL = pkgUrl;
+  }
+  if (pkg.urlEnv) env[pkg.urlEnv] = pkgUrl;
+
+  if (pkg.mode === 'deploy') {
+    // Build the "what the migrations produce" side by actually deploying them.
+    try {
+      execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy', ...extra], {
+        cwd,
+        env,
+        encoding: 'utf8',
+        maxBuffer: 32 * 1024 * 1024,
+      });
+    } catch (err) {
+      const e = err as { stdout?: string; stderr?: string; message: string };
+      fail(
+        `${pkg.dir} (${pkg.schema}): the migrations do not apply to a clean shadow database — ` +
+          `${(e.stderr || e.stdout || e.message).trim().slice(0, 400)}`,
+      );
+      continue;
+    }
   }
 
   let script: string;
@@ -151,15 +236,17 @@ for (const pkg of PACKAGES) {
         'prisma',
         'migrate',
         'diff',
-        '--from-migrations',
-        './prisma/migrations',
+        ...(pkg.mode === 'deploy'
+          ? ['--from-config-datasource']
+          : ['--from-migrations', './prisma/migrations']),
         '--to-schema',
         pkg.schema,
         '--script',
+        ...extra,
       ],
       {
         cwd,
-        env: { ...process.env, SHADOW_DATABASE_URL: shadowUrl },
+        env,
         encoding: 'utf8',
         maxBuffer: 32 * 1024 * 1024,
       },
@@ -167,7 +254,9 @@ for (const pkg of PACKAGES) {
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message: string };
     fail(
-      `${pkg.dir}: migrate diff failed — ${(e.stderr || e.stdout || e.message).trim().slice(0, 400)}`,
+      `${pkg.dir} (${pkg.schema}): migrate diff failed — ${(e.stderr || e.stdout || e.message)
+        .trim()
+        .slice(0, 400)}`,
     );
     continue;
   }

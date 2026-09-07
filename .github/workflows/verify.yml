@@ -121,9 +121,10 @@ jobs:
 
       # Migration SQL that cannot run, or runs and quietly corrupts. Four rules,
       # each one a mistake this repo has already made or is one phase from
-      # making: CONCURRENTLY inside the transactional track (which prisma
-      # migrate deploy wraps in a transaction, so it simply fails at apply
-      # time); an unqualified search_path-sensitive call in an index
+      # making: CONCURRENTLY inside the transactional track (a transactional
+      # migration opens its own BEGIN/COMMIT and CONCURRENTLY cannot run inside
+      # one; note that `prisma migrate deploy` does NOT wrap a file for you —
+      # measured in phase 9); an unqualified search_path-sensitive call in an index
       # expression, generated column, CHECK or DEFAULT (see
       # 20260825200000_qualify_immutable_unaccent); a bare cast to timestamptz,
       # which reads the existing value in the SESSION's zone and would shift
@@ -202,6 +203,31 @@ jobs:
       # is visible in the log rather than buried inside another gate.
       - name: Format definitions match their upstream authority, if one is vendored
         run: pnpm marc:schema --check
+
+      # The 2.0 schema conventions, checked against the DDL the datamodel
+      # RENDERS TO rather than against Prisma field names — a gate reading field
+      # names would pass a schema with no @map at all. Needs no database: the
+      # render is done with the connection string pointed at a closed port, so a
+      # future Prisma that needed one would fail here loudly instead of quietly
+      # starting to skip.
+      #
+      # It also holds the baseline's SCOPE: §3 names ~180 tenant tables and the
+      # baseline builds 17, and BASELINE-SCOPE.json accounts for every one of
+      # them in both directions. That is what keeps "we did not build these" a
+      # checked fact rather than an omission somebody has to notice in review.
+      - name: The 2.0 schema keeps its conventions and declares its scope
+        run: pnpm check:schema-conventions
+
+      # Every @replicated model has a change trigger and vice versa.
+      #
+      # Compared against the COMMITTED migration SQL, never against the
+      # generator's output — regenerating the triggers and comparing them to the
+      # markers they were generated from would be comparing a function to its own
+      # input, and could not fail for any reason. Whether a provisioned library
+      # actually HAS those triggers is a different question, answered by
+      # tenant-schema-census.spec.ts against pg_trigger.
+      - name: Every replicated model has a change trigger, and vice versa
+        run: pnpm check:changelog-coverage
 
       # amtool is run against a COPY with the receiver placeholders substituted,
       # not against the file as committed.
@@ -680,12 +706,34 @@ jobs:
         env:
           TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
 
+      # The 2.0 baseline, into its own schema in the SAME database — which is
+      # what the phase-9 acceptance criterion means by "applies to a 1.0 tenant
+      # DB as a second schema, not yet cut over". libriant_demo has just had the
+      # 1.0 migrations applied above, so this is that case exactly, and the
+      # smoke run below then exercises both schemas side by side.
+      #
+      # btree_gist/btree_gin are created by tenant-create.ts and
+      # TenantProvisioningService for a real tenant; libriant_demo is made by
+      # `createdb`, so they are created here.
+      - name: Apply the 2.0 baseline to libriant_demo as a second schema
+        run: |
+          set -euo pipefail
+          psql "$TENANT_DATABASE_URL" -v ON_ERROR_STOP=1 \
+            -c 'CREATE EXTENSION IF NOT EXISTS btree_gist' \
+            -c 'CREATE EXTENSION IF NOT EXISTS btree_gin'
+          pnpm --filter @libriant/db-tenant prisma:migrate:deploy:v2
+        env:
+          TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
+
       - name: Seed tenant defaults
         run: pnpm tenant:seed:defaults
         env:
           TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
 
-      - name: Run tenant smoke test (catalog → loan → reservation → custom collection)
+      # Seven modules: the 1.0 workflow against `public`, and six 2.0 modules
+      # against `lbr2`. The runner continues past a failure, so one broken
+      # invariant reports itself rather than hiding the other six.
+      - name: Run tenant smoke test (1.0 workflow + the six 2.0 baseline modules)
         run: pnpm tenant:smoke
         env:
           TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo

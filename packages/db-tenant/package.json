@@ -12,10 +12,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "echo 'lint: ok'",
-    "prisma:generate": "prisma generate",
+    "prisma:generate": "prisma generate && prisma generate --config prisma-v2.config.ts",
     "prisma:format": "prisma format",
-    "prisma:validate": "prisma validate",
+    "prisma:validate": "prisma validate && prisma validate --config prisma-v2.config.ts",
     "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:migrate:deploy:v2": "prisma migrate deploy --config prisma-v2.config.ts",
     "prisma:studio": "prisma studio",
     "seed:defaults": "tsx prisma/seed-defaults.ts",
     "smoke": "tsx scripts/smoke-test.ts"

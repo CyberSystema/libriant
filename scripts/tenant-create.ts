@@ -46,6 +46,7 @@ import {
   disconnectTenantClient,
   makeTenantPrismaClient,
   seedTenantDefaults,
+  withV2Schema,
 } from '@libriant/db-tenant';
 import { Client as PgClient } from 'pg';
 import {
@@ -358,6 +359,13 @@ async function createTenantDatabase(dbName: string): Promise<void> {
     await target.query('CREATE EXTENSION IF NOT EXISTS pg_trgm');
     await target.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
     await target.query('CREATE EXTENSION IF NOT EXISTS citext');
+    // The 2.0 baseline needs both, and listing them in the Prisma datasource
+    // is not enough: this block runs BEFORE any migration, so an extension
+    // named only there is missing at the moment the baseline tries to use it.
+    // btree_gist is what makes the calendar and booking EXCLUDE constraints
+    // possible at all.
+    await target.query('CREATE EXTENSION IF NOT EXISTS btree_gist');
+    await target.query('CREATE EXTENSION IF NOT EXISTS btree_gin');
   } finally {
     await target.end();
   }
@@ -410,11 +418,23 @@ async function seedTenantDefaultsFor(credential: {
 }
 
 async function applyTenantMigrations(targetUrl: string): Promise<void> {
-  const { stdout, stderr } = await execFileP('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
-    cwd: DB_TENANT_DIR,
-    env: { ...process.env, TENANT_DATABASE_URL: targetUrl },
-    maxBuffer: 16 * 1024 * 1024,
-  });
+  // Both folders. The 2.0 baseline lives in its own Postgres schema with its own
+  // `_prisma_migrations`; a tenant that gets only the 1.0 folder is a database
+  // every 2.0 service fails against at its first query.
+  await deployOneFolder(targetUrl, []);
+  await deployOneFolder(withV2Schema(targetUrl), ['--config', 'prisma-v2.config.ts']);
+}
+
+async function deployOneFolder(targetUrl: string, extra: string[]): Promise<void> {
+  const { stdout, stderr } = await execFileP(
+    'pnpm',
+    ['exec', 'prisma', 'migrate', 'deploy', ...extra],
+    {
+      cwd: DB_TENANT_DIR,
+      env: { ...process.env, TENANT_DATABASE_URL: targetUrl },
+      maxBuffer: 16 * 1024 * 1024,
+    },
+  );
   if (stdout?.trim()) process.stdout.write(stdout);
   if (stderr?.trim()) process.stderr.write(stderr);
 }

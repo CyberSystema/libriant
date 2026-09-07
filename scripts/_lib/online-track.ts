@@ -1,9 +1,21 @@
 /**
  * The online migration track: schema changes that must not hold a write lock.
  *
- * `prisma migrate deploy` wraps each migration file in a transaction. That is
- * the right default — a migration either happens or it does not — but it makes
- * two necessary operations impossible:
+ * MEASURED, and it is not what this repository believed. `prisma migrate
+ * deploy` does NOT wrap a migration file in a transaction. Prisma 7.9.1,
+ * Postgres 16.15, a file containing `CREATE TABLE probe_tx_two (...);
+ * SELECT 1/0;`: the deploy fails with P3018, and `probe_tx_two` SURVIVES, with
+ * a `finished_at IS NULL` row left in `_prisma_migrations` that blocks every
+ * later deploy on that tenant until somebody runs `migrate resolve` by hand.
+ *
+ * The rule that follows from it is unchanged, but its REASON is not: a
+ * transactional migration is atomic because it OPENS ITS OWN `BEGIN`/`COMMIT`
+ * (measured: with the wrapper, the same failing file leaves nothing behind),
+ * and CONCURRENTLY cannot run inside THAT. So an index build that must not hold
+ * a write lock still belongs here, and a migration that wants atomicity still
+ * has to ask for it.
+ *
+ * Either way, a transaction makes two necessary operations impossible:
  *
  *   CREATE INDEX CONCURRENTLY cannot run inside a transaction at all. Seven
  *   migrations in this repo say so in prose and then build the index the

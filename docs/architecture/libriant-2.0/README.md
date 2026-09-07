@@ -512,3 +512,207 @@ confidence) so a definition change is treated as "recompute" rather than
 no compiled sidecar yet: at a 5M-record catalogue the per-call work of
 normalising indicator code sets and parsing position ranges should be done once
 at `loadSchema` rather than per record.
+
+---
+
+## Phase 9 — the 2.0 baseline migration
+
+Delivered as **9a**: the mechanism complete, the tables partial, and the
+partiality machine-checked. That is the phase-7/8 precedent — the codec and the
+validator shipped whole while the DATA (MARC-8 tables, the Avram definition)
+shipped partial and refused rather than faked — and it applies here for a
+measured reason.
+
+**The scope, in numbers.** §3 names about 180 tenant tables. The phase-9 line
+enumerates 50 of them, and §6 asserts 12 more are "the baseline tables" (phase 14
+says "service layer over the baseline tables: categories, patrons, cards,
+identifiers, addresses…"), so the honest figure is 62. Of those 62, **ten have a
+full `CREATE TABLE` block anywhere in the document**. Eighteen appear _exactly
+once_ in 900 lines — the §3 list entry and nowhere else — and `calendar_exceptions`
+is one of them, while the phase's own acceptance criterion demands behaviour from
+it ("overlapping calendar exceptions raise `23P01`") without ever saying what its
+columns are.
+
+Writing 52 tables of invented columns into a SQUASHED BASELINE is the expensive
+direction of the asymmetry this program runs on: a later migration that adds a
+table is cheap, and a wrong column type is a data migration on a live catalogue.
+So 9a builds the ten specified tables, five skeletons forced by their foreign
+keys, `audit_log`, and one support table — seventeen — and
+`prisma/schema-v2/BASELINE-SCOPE.json` names all 219 tables §3 mentions with a
+status each. `check:schema-conventions` fails if a model has no entry, if an
+entry claims a table that does not exist, or if either drifts. "We did not build
+these" is a fact CI enforces, not an omission a reviewer has to notice.
+
+9b (circulation spine) is authored with phases 12–13, 9c (patron record and item
+satellites) with 14–15, 9d (the fee ledger and notices) with 18 and 22 — in each
+case with the phase whose design decides the columns. Nothing about "one squashed
+migration" is lost: `prisma migrate deploy` applies a FOLDER, and a fresh tenant
+still reaches 2.0 in one deploy.
+
+### Four measurements that changed the design
+
+**1. `prisma migrate deploy` does NOT wrap a migration file in a transaction.**
+Eight migration files, `scripts/_lib/online-track.ts`,
+`scripts/check-migration-safety.ts` and `verify.yml` all said it does. Measured
+on Prisma 7.9.1 / Postgres 16.15: a file containing `CREATE TABLE probe_tx_two
+(…); SELECT 1/0;` fails with `P3018`, **the table survives**, and a
+`finished_at IS NULL` row is left in `_prisma_migrations` that blocks every later
+deploy on that tenant until somebody runs `migrate resolve` by hand. An explicit
+`BEGIN;`/`COMMIT;` restores atomicity exactly — proved both ways against this
+baseline: with the wrapper a deliberately broken copy leaves **0** tables, without
+it **44**.
+
+The rule that follows (no `CONCURRENTLY` in the transactional track) is unchanged,
+but its reason is now stated correctly: a transactional migration is atomic
+because it opens its own transaction. The four APPLIED migrations that state the
+old reason are left exactly as written — Prisma checksums a migration and editing
+an applied one breaks every database that has run it, which is why this repository
+fixes a bad migration with a NEW migration. `sql-scan.ts` records why they stay
+wrong.
+
+**2. "A second schema" is literal, and it is what makes the phase possible at
+all.** Nine physical table names collide with 1.0, including `loans` — which
+cannot be deferred, because phase 16 builds the 2.0 circulation engine on it and
+phase 16 precedes the cutover. Two Prisma schema folders solve the _modelling_
+collision (`P1012`) and not the Postgres one: `CREATE TABLE loans` still fails
+with `42P07`. A second Postgres schema solves both. Measured: `migrate deploy`
+against `…?schema=lbr2` creates the schema, keeps `_prisma_migrations` **inside**
+it (so the two ledgers are independent rather than shared), and `public.loans`
+(14 columns) coexists with `lbr2.loans` (41). `public.audit_log` stays a heap
+while `lbr2.audit_log` is partitioned. Phase 20's cutover is then
+`ALTER SCHEMA public RENAME TO v1_archive; ALTER SCHEMA lbr2 RENAME TO public;`
+— the exact shape §10 already specifies for the rollback, measured to leave every
+constraint working.
+
+**3. "A non-IANA timezone is rejected" cannot be a CHECK.** A subquery is refused
+outright (`0A000`). An `IMMUTABLE` wrapper over `pg_timezone_names` works and
+costs **11.1 ms per row** — 111 seconds for 10,000 inserts against 4.6 ms with no
+constraint — because that function walks the tzdata tree on every call, and
+marking a wrapper over it IMMUTABLE is false anyway. A foreign key to a seeded
+`iana_timezones` costs **8.2 µs**, about 1,350× less, and raises `23503`. Seeded
+`MINUS ('Factory','posixrules')`: those are the only two names Postgres knows that
+`Intl.DateTimeFormat` refuses (the other 179 it does not list are backward links
+it canonicalises), so the table is a strict subset of what the app layer can
+format with — and `posixrules` is the single row on which the two Postgres 16.15
+builds on this machine disagree, so excluding it makes a seeded tenant identical
+on both (597 rows). `+02:00` is refused too, deliberately: a fixed offset has no
+DST, which is `circ-5` in a new costume. The check must be in the DATABASE because
+phase 19's copy-forward is PL/pgSQL and writes `branches` without going through
+TypeScript at all.
+
+**4. `default_toast_compression = lz4` is not an assertable property.** With
+database-level lz4 in force, a session that does `SET
+default_toast_compression='pglz'` writes a pglz row and `attcompression` stays
+empty. So the GUC is set (it is the right default for everything added later) AND
+six named TOAST-bearing columns get an explicit `SET COMPRESSION lz4`, which is
+durable and is what the census asserts. Note for phase 19: `SET COMPRESSION` does
+not rewrite existing rows, so it must be in place before the bulk copy-forward.
+
+### Two additions to §3, both deliberate
+
+**`change_events.commit_xmin`.** §4.2 specifies the read watermark as
+`row_version < pg_snapshot_xmin(pg_current_snapshot())`. That does not run —
+measured, the function returns `xid8` and `row_version` is `bigint`, so Postgres
+refuses with `operator does not exist: bigint < xid8` — and casting would make it
+run while still being wrong, since a sequence value and a transaction id are
+unrelated counters. The job is real: `seq` is assigned at INSERT and becomes
+visible at COMMIT, so a reader that has seen seq=100 can have a transaction
+holding seq=99 open beside it, and recording 100 loses 99 forever. A real `xid8`
+column defaulted to `pg_current_xact_id()` fixes it, and it is added NOW because
+`change_events` is append-only: adding it in phase 16 means backfilling rows whose
+commit order is no longer knowable.
+
+**`iana_timezones`.** Not a §3 table; it exists so the timezone check can be a
+foreign key. See measurement 3.
+
+### What was chosen rather than derived, and where the reasoning lives
+
+Seven of the twelve enum types §2/§3 use by name have **no value list anywhere in
+the document** — `audit_actor_kind`, `branch_kind`, `item_status`,
+`event_source`, `fee_status`, `marc_source_format`, `marc_change_kind`. Each is
+chosen in `01-enums.prisma` with its reasoning, and each is deliberately MINIMAL,
+because adding a label later is a catalogue write while reordering one silently
+changes every `ORDER BY` on that column. Enum label order is in the census fixture
+for the same reason.
+
+`branches_guard_cycle()` gets one comment line in §3. Three things it does not say
+are decided in the migration prose: it raises `23514` (already handled as a
+constraint violation everywhere in this codebase, so a cycle surfaces to a
+librarian as a refused save rather than a 500); it DOES recompute descendants when
+a parent moves — the case an implementer skips, asserted with a three-level tree;
+and depth is maintained on every write while the descendant recompute fires only
+on an actual change of parent.
+
+`branches.address_*` is a glob in §3, not SQL. It became the five columns the
+existing library-profile feature already collects at signup, rather than a third
+address shape for the same data. `branches.calendar_id` is left un-FK'd: it is the
+only id column in that block written without a `REFERENCES` clause, `calendars` is
+9b, and `ADD CONSTRAINT` later is the cheap direction.
+
+`holdings_records`' primary key is `record_id`, not `id` — a deviation from the
+§3 convention that is FORCED by the items DDL (`REFERENCES holdings_records(record_id)`),
+which is the one thing the document states about that table.
+`check:schema-conventions` exempts it by name with that reason rather than
+weakening the rule.
+
+### Dropped from phase 9
+
+**`bookings`.** The phase-9 line names it; §6 phase 97 (M12) says "Events, spaces,
+equipment, **bookings with the EXCLUDE constraints**, waitlists, iCal". §3 gives it
+no `CREATE TABLE` — only an `ALTER` adding the exclusion, referencing a `spaces`
+table that is not in phase 9's scope and an unnamed range column. Every column
+would be invented and phase 97 would rewrite them. The `btree_gist` justification
+survives without it, and the mechanism is proved instead: the integration test
+builds a scalar-plus-range `EXCLUDE` in `lbr2` against `btree_gist` installed in
+`public` and asserts the real `23P01`.
+
+**`schemaMajor = 2`.** The critic's plan set it; this does not. It records which
+generation a database IS, and after this migration a tenant is still a 1.0
+database with an empty 2.0 schema beside it. `tenant-migrate --plan` and the
+control-plane cache key off that flag, so setting it now would tell every tool the
+cutover had happened. Phase 20 sets it, in the transaction that performs one.
+
+### The gates, and what each must survive
+
+`check:schema-conventions` (18) reads the DDL the datamodel RENDERS TO, never
+Prisma field names — a gate reading field names would pass a schema with no `@map`
+at all. It needs no database (the render is done against a closed port). Seven
+break tests were run and all fire: a dropped `@map`; a bare `DateTime` rendering as
+`TIMESTAMP` without zone; a `BigInt` amount become `Int`; a model with no manifest
+entry (and the reverse); a non-singleton integer id; an exemption that matches
+nothing; and **an empty schema folder, which must FAIL rather than pass** —
+`migrate diff --from-empty` on an empty folder exits 0 with an empty script, which
+is the exact shape of the vacuous gate the last three phases each shipped once.
+
+`check:changelog-coverage` (19) compares the `@replicated` markers against the
+COMMITTED migration SQL in both directions, and never against the generator's
+output — regenerating the triggers and comparing them to the markers they were
+generated from is comparing a function to its own input and cannot fail. The
+load-bearing break test is exactly that: one `CREATE TRIGGER` hand-deleted from
+the migration WITHOUT re-running the generator, which fails. So do a removed
+marker with its trigger left behind, a changed `@@map`, a trigger reading the wrong
+primary key, and the truly vacuous state where markers and triggers are both gone.
+
+Both gates also caught a live one: `check:migration-safety` was not scanning
+`prisma/migrations-v2` at all, so the largest migration in the repository was
+ungated. Its folder list is now explicit and it refuses to report success having
+scanned zero migrations.
+
+### Left open, deliberately
+
+`marc_record_contents` has no changelog trigger: it is 1:1 with `marc_records` and
+every content write bumps the parent in the same transaction, so one event per edit
+is right. If phase 10's `write()` ever writes content without touching the parent,
+that reasoning fails and the marker must move. `fees` has none either, for a churn
+reason recorded on the model — the nightly accrual sweep would make it the largest
+producer in the feed, and no consumer reads it yet.
+
+`change_events.payload` is `to_jsonb(NEW)`, a whole-row projection, and is
+deliberately temporary: §4.3 gives phase 11 one projection function serving the
+indexer, the OPAC page, the OAI rendition and the report builder, and this is
+replaced by a call to it.
+
+The changelog trigger attributes an actor from `current_setting('libriant.actor_kind')`
+and falls back to `system`. Nothing sets those yet — the request-scoped middleware
+that does is phase 10 — so every event in a phase-9 database is `system`, which is
+true rather than convenient.

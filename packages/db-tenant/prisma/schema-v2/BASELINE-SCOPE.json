@@ -1,0 +1,1295 @@
+{
+  "$comment": [
+    "THE MACHINE-CHECKED SCOPE OF THE 2.0 BASELINE.",
+    "",
+    "Phase 9 as specified creates \"every cross-domain table in §3\". §3 names ~180 tenant",
+    "tables and gives a full CREATE TABLE for twelve of them, two of which §6 assigns to",
+    "other phases. So the baseline inherits ten specified tables and fifty-odd that exist",
+    "only as a name in a list — eighteen of which appear exactly once in the whole 900-line",
+    "document. Inventing their columns in a SQUASHED BASELINE is the expensive direction:",
+    "a later migration that adds a table is cheap, and a wrong column type is a data",
+    "migration on a live catalogue.",
+    "",
+    "So this file names every table §3 mentions and what was done about it. It is not",
+    "documentation: `pnpm check:schema-conventions` fails if a v2 model has no entry here,",
+    "and `tenant-schema-census.spec.ts` fails if a `created` table is missing from a freshly",
+    "provisioned database or if a `deferred` one has appeared. \"We did not build these\" is",
+    "therefore a fact CI enforces, not an omission a reviewer has to notice.",
+    "",
+    "Names were extracted mechanically from the `·`-separated inventory paragraphs of §3.",
+    "The `phase` on a deferred entry is the owning MILESTONE from §6, not a per-table claim."
+  ],
+  "baselineMigration": "20260907120000_baseline_2_0",
+  "schema": "lbr2",
+  "tables": {
+    "_libriant_online_migrations": {
+      "status": "deferred",
+      "phase": "various",
+      "group": "Platform",
+      "reason": "Owned by the phase that first needs it; see §6."
+    },
+    "_libriant_schema_state": {
+      "status": "deferred",
+      "phase": "various",
+      "group": "Platform",
+      "reason": "Owned by the phase that first needs it; see §6."
+    },
+    "account_entries": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "account_transactions": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "acq_budget_balances": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_budgets": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_claims": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_fiscal_years": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_fund_transactions": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_fund_tx_one_encumbrance_per_line": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_funds": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_invoice_lines": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_invoices": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_ledgers": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_order_line_funds": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_order_lines": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_orders": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_receipts": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_suggestions": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "acq_vendors": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "ai_audit_log": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "ai_usage_windows": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "analytics.fact_circulation": {
+      "status": "deferred",
+      "phase": "26/27/86",
+      "group": "Search & analytics",
+      "reason": "Projections and the analytics schema."
+    },
+    "analytics.fact_finance": {
+      "status": "deferred",
+      "phase": "26/27/86",
+      "group": "Search & analytics",
+      "reason": "Projections and the analytics schema."
+    },
+    "analytics.fact_holdings_snapshot": {
+      "status": "deferred",
+      "phase": "26/27/86",
+      "group": "Search & analytics",
+      "reason": "Projections and the analytics schema."
+    },
+    "analytics.fact_search": {
+      "status": "deferred",
+      "phase": "26/27/86",
+      "group": "Search & analytics",
+      "reason": "Projections and the analytics schema."
+    },
+    "analytics.manual_statistics": {
+      "status": "deferred",
+      "phase": "26/27/86",
+      "group": "Search & analytics",
+      "reason": "Projections and the analytics schema."
+    },
+    "api_keys": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "audit_log": {
+      "status": "created",
+      "basis": "skeleton",
+      "group": "Platform",
+      "reason": "Named by the phase-9 line, with no §3 DDL. Columns are 1.0 `audit_log` restated under the 2.0 conventions; the partitioning and the composite key are new and forced."
+    },
+    "authors": {
+      "status": "dropped",
+      "group": "Dropped by the cutover",
+      "reason": "A 1.0 table the phase-20 cutover drops. Never created in lbr2."
+    },
+    "authors_sortname_unique_active": {
+      "status": "dropped",
+      "group": "Dropped by the cutover",
+      "reason": "A 1.0 table the phase-20 cutover drops. Never created in lbr2."
+    },
+    "bib_classifications": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "bib_duplicate_candidates": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "bib_embeddings": {
+      "status": "deferred",
+      "phase": "26/27/86",
+      "group": "Search & analytics",
+      "reason": "Projections and the analytics schema."
+    },
+    "bib_heading_links": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "bib_identifiers": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "bib_record_aliases": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "bib_records": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "bib_search_projection": {
+      "status": "deferred",
+      "phase": "26/27/86",
+      "group": "Search & analytics",
+      "reason": "Projections and the analytics schema."
+    },
+    "book_authors": {
+      "status": "dropped",
+      "group": "Dropped by the cutover",
+      "reason": "A 1.0 table the phase-20 cutover drops. Never created in lbr2."
+    },
+    "book_copies": {
+      "status": "dropped",
+      "group": "Dropped by the cutover",
+      "reason": "A 1.0 table the phase-20 cutover drops. Never created in lbr2."
+    },
+    "booking_recurrences": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "bookings": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "books": {
+      "status": "dropped",
+      "group": "Dropped by the cutover",
+      "reason": "A 1.0 table the phase-20 cutover drops. Never created in lbr2."
+    },
+    "books_isbn13_unique_active": {
+      "status": "dropped",
+      "group": "Dropped by the cutover",
+      "reason": "A 1.0 table the phase-20 cutover drops. Never created in lbr2."
+    },
+    "branches": {
+      "status": "created",
+      "basis": "specified",
+      "group": "Platform",
+      "reason": "§3 or §2 gives it a full CREATE TABLE block."
+    },
+    "browse_terms": {
+      "status": "deferred",
+      "phase": "26/27/86",
+      "group": "Search & analytics",
+      "reason": "Projections and the analytics schema."
+    },
+    "calendar_exceptions": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "calendar_hours": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "calendars": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "cancellation_reasons": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "cash_drawer_movements": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "cash_drawer_sessions": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "catalog_settings": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "catalog_templates": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "change_consumers": {
+      "status": "created",
+      "basis": "specified",
+      "group": "Platform",
+      "reason": "§3 or §2 gives it a full CREATE TABLE block."
+    },
+    "change_events": {
+      "status": "created",
+      "basis": "specified",
+      "group": "Platform",
+      "reason": "§3 or §2 gives it a full CREATE TABLE block."
+    },
+    "circulation_overrides": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "circulation_policy_version": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "circulation_rules": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "circulation_statistics": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "collection_fields": {
+      "status": "deferred",
+      "phase": "various",
+      "group": "Platform",
+      "reason": "Owned by the phase that first needs it; see §6."
+    },
+    "collection_records": {
+      "status": "deferred",
+      "phase": "various",
+      "group": "Platform",
+      "reason": "Owned by the phase that first needs it; see §6."
+    },
+    "collections": {
+      "status": "legacy",
+      "group": "Platform",
+      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+    },
+    "consortia": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "consortium_members": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "consortium_service_tokens": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "course_reserves": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "courses": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "custom_field_values": {
+      "status": "deferred",
+      "phase": "various",
+      "group": "Platform",
+      "reason": "Owned by the phase that first needs it; see §6."
+    },
+    "desktop_releases": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "devices": {
+      "status": "deferred",
+      "phase": "various",
+      "group": "Platform",
+      "reason": "Owned by the phase that first needs it; see §6."
+    },
+    "digital_loans": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "digital_object_files": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "digital_objects": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "digital_titles": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "edi_messages": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "equipment_units": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "event_registrations": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "event_series": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "events": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "feature_modules": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "federated_identities": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "fee_allocations": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "fee_payment_intents": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "fee_types": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "fees": {
+      "status": "created",
+      "basis": "specified",
+      "group": "Fees",
+      "reason": "§3 or §2 gives it a full CREATE TABLE block."
+    },
+    "field_definitions": {
+      "status": "legacy",
+      "group": "Platform",
+      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+    },
+    "fines": {
+      "status": "dropped",
+      "group": "Dropped by the cutover",
+      "reason": "A 1.0 table the phase-20 cutover drops. Never created in lbr2."
+    },
+    "fixed_due_date_ranges": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "fixed_due_date_sets": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "floating_rules": {
+      "status": "deferred",
+      "phase": "9c/15",
+      "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
+      "reason": "Item satellites land with the phase-15 service that defines them."
+    },
+    "hold_groups": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "hold_policies": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "hold_ratio_alerts": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "holdings_records": {
+      "status": "created",
+      "basis": "skeleton",
+      "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
+      "reason": "Created because a specified table foreign-keys to it. Columns are deliberately incomplete; see the model docblock."
+    },
+    "holds": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "iana_timezones": {
+      "status": "created",
+      "basis": "support",
+      "group": "(not in §3)",
+      "reason": "Not a §3 table. It exists so `branches.timezone` can be a foreign key, which is the only affordable way to satisfy \"a non-IANA timezone is rejected\" — see the migration."
+    },
+    "identity_providers": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "ill_costs": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "ill_messages": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "ill_partners": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "ill_request_rota": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "ill_requests": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "ill_settings": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "inventory_scans": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "inventory_session_actions": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "inventory_sessions": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "item_notes": {
+      "status": "deferred",
+      "phase": "9c/15",
+      "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
+      "reason": "Item satellites land with the phase-15 service that defines them."
+    },
+    "item_status_history": {
+      "status": "deferred",
+      "phase": "9c/15",
+      "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
+      "reason": "Item satellites land with the phase-15 service that defines them."
+    },
+    "item_status_reasons": {
+      "status": "deferred",
+      "phase": "9c/15",
+      "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
+      "reason": "Item satellites land with the phase-15 service that defines them."
+    },
+    "item_text": {
+      "status": "deferred",
+      "phase": "26/27/86",
+      "group": "Search & analytics",
+      "reason": "Projections and the analytics schema."
+    },
+    "item_transfers": {
+      "status": "deferred",
+      "phase": "9c/15",
+      "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
+      "reason": "Item satellites land with the phase-15 service that defines them."
+    },
+    "item_types": {
+      "status": "created",
+      "basis": "skeleton",
+      "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
+      "reason": "Created because a specified table foreign-keys to it. Columns are deliberately incomplete; see the model docblock."
+    },
+    "items": {
+      "status": "created",
+      "basis": "specified",
+      "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
+      "reason": "§3 or §2 gives it a full CREATE TABLE block."
+    },
+    "ledger_discrepancies": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "licence_activations": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "licences": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "loan_events": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "loan_policies": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "loans": {
+      "status": "created",
+      "basis": "specified",
+      "group": "Circulation",
+      "reason": "§3 or §2 gives it a full CREATE TABLE block."
+    },
+    "lost_item_fee_policies": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "marc_batch_job_items": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "marc_batch_jobs": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "marc_field_definition_overrides": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "marc_overlay_rules": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "marc_record_contents": {
+      "status": "created",
+      "basis": "specified",
+      "group": "Bibliographic",
+      "reason": "§3 or §2 gives it a full CREATE TABLE block."
+    },
+    "marc_record_locks": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "marc_record_versions": {
+      "status": "created",
+      "basis": "specified",
+      "group": "Bibliographic",
+      "reason": "§3 or §2 gives it a full CREATE TABLE block."
+    },
+    "marc_records": {
+      "status": "created",
+      "basis": "specified",
+      "group": "Bibliographic",
+      "reason": "§3 or §2 gives it a full CREATE TABLE block."
+    },
+    "material_types": {
+      "status": "created",
+      "basis": "skeleton",
+      "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
+      "reason": "Created because a specified table foreign-keys to it. Columns are deliberately incomplete; see the model docblock."
+    },
+    "member_number_counters": {
+      "status": "dropped",
+      "group": "Dropped by the cutover",
+      "reason": "A 1.0 table the phase-20 cutover drops. Never created in lbr2."
+    },
+    "members": {
+      "status": "dropped",
+      "group": "Dropped by the cutover",
+      "reason": "A 1.0 table the phase-20 cutover drops. Never created in lbr2."
+    },
+    "migration_run_tenants": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "migration_runs": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "notice_deliveries": {
+      "status": "deferred",
+      "phase": "9d/22",
+      "group": "Notices",
+      "reason": "dedupe_key format and channel resolution are phase 22 design."
+    },
+    "notice_policies": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "notice_queue": {
+      "status": "deferred",
+      "phase": "9d/22",
+      "group": "Notices",
+      "reason": "dedupe_key format and channel resolution are phase 22 design."
+    },
+    "notice_suppressions": {
+      "status": "deferred",
+      "phase": "9d/22",
+      "group": "Notices",
+      "reason": "dedupe_key format and channel resolution are phase 22 design."
+    },
+    "notice_templates": {
+      "status": "deferred",
+      "phase": "9d/22",
+      "group": "Notices",
+      "reason": "dedupe_key format and channel resolution are phase 22 design."
+    },
+    "notice_triggers": {
+      "status": "deferred",
+      "phase": "9d/22",
+      "group": "Notices",
+      "reason": "dedupe_key format and channel resolution are phase 22 design."
+    },
+    "oai_record_state": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "opac_branding": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "opac_domains": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "opac_settings": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "overdue_fine_policies": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "override_permissions": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "override_reasons": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "patron_accounts": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "patron_addresses": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_auth_providers": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_blocks": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_cards": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_categories": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_category_limits": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "patron_channel_preferences": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_contact_endpoints": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_households": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_identifiers": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_identities": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_list_items": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "patron_lists": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "patron_merges": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_messages": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_notes": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_number_counters": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_privacy_settings": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_reading_history": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "patron_registrations": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_relationships": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_sessions": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "patron_tags": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "patrons": {
+      "status": "created",
+      "basis": "skeleton",
+      "group": "Patrons",
+      "reason": "Created because a specified table foreign-keys to it. Columns are deliberately incomplete; see the model docblock."
+    },
+    "payment_methods": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "payment_terminals": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "plan_modules": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "plugin_grants": {
+      "status": "deferred",
+      "phase": "various",
+      "group": "Platform",
+      "reason": "Owned by the phase that first needs it; see §6."
+    },
+    "plugin_installations": {
+      "status": "legacy",
+      "group": "Platform",
+      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+    },
+    "plugin_versions": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "plugins": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "premis_events": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "reading_challenges": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "reading_history_policy": {
+      "status": "deferred",
+      "phase": "9c/14/32",
+      "group": "Patrons",
+      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+    },
+    "reading_positions": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "receipt_number_counters": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "receipts": {
+      "status": "deferred",
+      "phase": "9d/18",
+      "group": "Fees",
+      "reason": "The double-entry invariant is phase 18 design."
+    },
+    "reservations": {
+      "status": "dropped",
+      "group": "Dropped by the cutover",
+      "reason": "A 1.0 table the phase-20 cutover drops. Never created in lbr2."
+    },
+    "review_reports": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "reviews": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "role_permissions": {
+      "status": "legacy",
+      "group": "Platform",
+      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+    },
+    "roles": {
+      "status": "legacy",
+      "group": "Platform",
+      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+    },
+    "saved_searches": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "scim_tokens": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "search_index_state": {
+      "status": "deferred",
+      "phase": "26/27/86",
+      "group": "Search & analytics",
+      "reason": "Projections and the analytics schema."
+    },
+    "ser_bound_volumes": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "ser_issues": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "ser_pattern_exceptions": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "ser_patterns": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "ser_subscriptions": {
+      "status": "deferred",
+      "phase": "64-75",
+      "group": "Acquisitions / serials / ERM / ILL",
+      "reason": "M7, executed eleventh."
+    },
+    "service_points": {
+      "status": "deferred",
+      "phase": "various",
+      "group": "Platform",
+      "reason": "Owned by the phase that first needs it; see §6."
+    },
+    "shelving_locations": {
+      "status": "created",
+      "basis": "skeleton",
+      "group": "Platform",
+      "reason": "Created because a specified table foreign-keys to it. Columns are deliberately incomplete; see the model docblock."
+    },
+    "spaces": {
+      "status": "deferred",
+      "phase": "97-104",
+      "group": "Discovery & community",
+      "reason": "M12, executed last."
+    },
+    "staff_permission_overrides": {
+      "status": "deferred",
+      "phase": "various",
+      "group": "Platform",
+      "reason": "Owned by the phase that first needs it; see §6."
+    },
+    "staff_profiles": {
+      "status": "legacy",
+      "group": "Platform",
+      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+    },
+    "staff_role_grants": {
+      "status": "legacy",
+      "group": "Platform",
+      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+    },
+    "station_profiles": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "sync_client_changes": {
+      "status": "created",
+      "basis": "specified",
+      "group": "Platform",
+      "reason": "§3 or §2 gives it a full CREATE TABLE block."
+    },
+    "sync_devices": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "tenant_ai_settings": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "tenant_module_overrides": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "tenant_resource_limits": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "tenant_schema_state": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "tenant_settings": {
+      "status": "deferred",
+      "phase": "various",
+      "group": "Platform",
+      "reason": "Owned by the phase that first needs it; see §6."
+    },
+    "terms": {
+      "status": "deferred",
+      "phase": "9b/12-17",
+      "group": "Circulation",
+      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+    },
+    "webauthn_credentials": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "webhook_deliveries": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "webhook_endpoints": {
+      "status": "control-plane",
+      "group": "Control DB additions",
+      "reason": "A control-plane table. Not in a tenant database at all."
+    },
+    "work_cluster_overrides": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    },
+    "work_clusters": {
+      "status": "deferred",
+      "phase": "11-50",
+      "group": "Bibliographic",
+      "reason": "The projection, satellites and authority work of M1/M5."
+    }
+  }
+}

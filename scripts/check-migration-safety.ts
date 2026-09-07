@@ -13,11 +13,21 @@
 // the gate; a scrubber that stopped at the dollar-quote boundary reported that
 // second warning as the very violation it warns about.
 //
-//   1. CONCURRENTLY IN THE TRANSACTIONAL TRACK. `prisma migrate deploy` wraps
-//      each migration file in a transaction, and CREATE INDEX CONCURRENTLY
-//      cannot run inside one — it fails at apply time, on the tenant, halfway
-//      through a fan-out. Seven migrations say so in prose already. Index
-//      builds that must not hold a write lock belong in prisma/online/.
+//   1. CONCURRENTLY IN THE TRANSACTIONAL TRACK. A transactional migration is
+//      atomic because it OPENS ITS OWN BEGIN/COMMIT, and CREATE INDEX
+//      CONCURRENTLY cannot run inside one — it fails at apply time, on the
+//      tenant, halfway through a fan-out. Index builds that must not hold a
+//      write lock belong in prisma/online/.
+//
+//      The seven migrations that say so in prose give a DIFFERENT reason —
+//      "prisma migrate deploy wraps each file in a transaction" — and phase 9
+//      measured that to be false: Prisma 7.9.1 applied a file containing
+//      `CREATE TABLE …; SELECT 1/0;` and the table SURVIVED, with a
+//      `finished_at IS NULL` row poisoning every later deploy on that tenant.
+//      Those seven files are left as written, because Prisma checksums a
+//      migration and editing an applied one breaks every database that has run
+//      it — the same reason a bad migration is fixed with a NEW migration here.
+//      The rule stands; only its stated reason changes.
 //
 //   2. UNQUALIFIED FUNCTION CALLS IN PERSISTED EXPRESSIONS. An index
 //      expression, generated column, CHECK or DEFAULT is re-evaluated later,
@@ -95,6 +105,22 @@ interface BaselineEntry {
 }
 
 const PACKAGES = ['db-tenant', 'db-control'] as const;
+
+/**
+ * Every transactional migration FOLDER, as `packages/<pkg>/prisma/<dir>`.
+ *
+ * `migrations-v2` is the Libriant 2.0 baseline, which lives in its own folder
+ * because it targets its own Postgres schema (see
+ * `packages/db-tenant/prisma-v2.config.ts`). It was invisible to this gate for
+ * as long as the folder list was implicit — a 1,100-line migration, the largest
+ * in the repository, entirely ungated — which is the argument for naming the
+ * folders rather than assuming one.
+ */
+const MIGRATION_DIRS: ReadonlyArray<readonly [(typeof PACKAGES)[number], string]> = [
+  ['db-tenant', 'migrations'],
+  ['db-tenant', 'migrations-v2'],
+  ['db-control', 'migrations'],
+];
 
 interface Finding {
   readonly file: string;
@@ -216,8 +242,10 @@ function checkFile(
         sql,
         m.index,
         'concurrently-in-transaction',
-        'prisma migrate deploy wraps each migration file in a transaction, and CONCURRENTLY ' +
-          'cannot run inside one. Move this to prisma/online/.',
+        'a transactional migration opens its own BEGIN/COMMIT, and CONCURRENTLY cannot run ' +
+          'inside a transaction. Move this to prisma/online/. (Note: `prisma migrate deploy` ' +
+          'does NOT wrap a file for you — measured in phase 9 — which is why the baseline ' +
+          'wraps itself and why a mid-file failure otherwise leaves half a schema behind.)',
       );
     }
   }
@@ -309,8 +337,8 @@ function checkFile(
   }
 }
 
-for (const pkg of PACKAGES) {
-  const migrations = path.join(ROOT, 'packages', pkg, 'prisma', 'migrations');
+for (const [pkg, folder] of MIGRATION_DIRS) {
+  const migrations = path.join(ROOT, 'packages', pkg, 'prisma', folder);
   let entries: string[] = [];
   try {
     entries = readdirSync(migrations).filter((d) =>
@@ -326,12 +354,14 @@ for (const pkg of PACKAGES) {
     } catch {
       continue;
     }
-    checkFile(`packages/${pkg}/prisma/migrations/${dir}/migration.sql`, file, {
+    checkFile(`packages/${pkg}/prisma/${folder}/${dir}/migration.sql`, file, {
       online: false,
       idempotent: false,
     });
   }
+}
 
+for (const pkg of PACKAGES) {
   const online = path.join(ROOT, 'packages', pkg, 'prisma', 'online');
   let onlineFiles: string[] = [];
   try {
@@ -415,8 +445,8 @@ if (findingsToReport.length) {
   process.exit(1);
 }
 
-const counted = PACKAGES.map((p) => {
-  const dir = path.join(ROOT, 'packages', p, 'prisma', 'migrations');
+const counted = MIGRATION_DIRS.map((p) => {
+  const dir = path.join(ROOT, 'packages', p[0], 'prisma', p[1]);
   try {
     return readdirSync(dir).filter((d) => statSync(path.join(dir, d)).isDirectory()).length;
   } catch {
@@ -431,6 +461,17 @@ const onlineCount = PACKAGES.map((p) => {
     return 0;
   }
 }).reduce((a, b) => a + b, 0);
+
+// A gate that reports success having scanned nothing is worse than no gate, and
+// this one nearly did: adding the 2.0 folder made the count read 0 for a while
+// because the counter and the scanner disagreed about what they were iterating.
+if (counted === 0) {
+  console.error(
+    '✗ migration safety: scanned 0 migrations. Every folder in MIGRATION_DIRS is missing or ' +
+      'empty, so every rule above passed by never running.',
+  );
+  process.exit(1);
+}
 
 console.log(
   `migration safety check passed: ${counted} migration(s) and ${onlineCount} online script(s) ` +

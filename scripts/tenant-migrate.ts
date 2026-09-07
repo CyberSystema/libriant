@@ -45,7 +45,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { applyTenantRoleGrants, controlDb } from '@libriant/db-control';
-import { makeTenantPrismaClient } from '@libriant/db-tenant';
+import { makeTenantPrismaClient, withV2Schema } from '@libriant/db-tenant';
 import { die, isYes, log, parseArgs } from './_lib/cli.js';
 
 const execFileP = promisify(execFile);
@@ -355,15 +355,36 @@ type Outcome =
 
 async function migrateOne(t: Tenant, timeoutMs: number): Promise<Outcome> {
   try {
-    const { stdout, stderr } = await execFileP('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
+    // BOTH folders, and the per-tenant timeout covers the pair. The 2.0 baseline
+    // lives in its own Postgres schema with its own `_prisma_migrations`; a
+    // tenant that receives only the 1.0 folder is a database every 2.0 service
+    // fails against at its first query, and it would be reported here as a
+    // success. See `packages/db-tenant/src/v2.ts`.
+    const started = Date.now();
+    const one = await execFileP('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
       cwd: DB_TENANT_DIR,
       env: { ...process.env, TENANT_DATABASE_URL: t.dbUrl },
       maxBuffer: 16 * 1024 * 1024,
       timeout: timeoutMs,
       killSignal: 'SIGTERM',
     });
+    const two = await execFileP(
+      'pnpm',
+      ['exec', 'prisma', 'migrate', 'deploy', '--config', 'prisma-v2.config.ts'],
+      {
+        cwd: DB_TENANT_DIR,
+        env: { ...process.env, TENANT_DATABASE_URL: withV2Schema(t.dbUrl) },
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: Math.max(1_000, timeoutMs - (Date.now() - started)),
+        killSignal: 'SIGTERM',
+      },
+    );
+    const stdout = `${one.stdout}\n${two.stdout}`;
+    const stderr = `${one.stderr}\n${two.stderr}`;
     const out = `${stdout}\n${stderr}`;
-    if (/No pending migrations/.test(out)) {
+    // Both deploys must say so; one folder being up to date while the other
+    // applied something is not "up to date".
+    if ((out.match(/No pending migrations/g) ?? []).length >= 2) {
       return { ok: true, applied: 0, summary: 'up to date' };
     }
     const applied = (out.match(/└─\s*\d+/g) ?? []).length;
