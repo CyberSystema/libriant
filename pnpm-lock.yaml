@@ -328,6 +328,19 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
+  packages/marc:
+    dependencies:
+      '@libriant/shared':
+        specifier: workspace:*
+        version: link:../shared
+      fast-xml-parser:
+        specifier: ^5.11.0
+        version: 5.11.0
+    devDependencies:
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
   packages/shared:
     devDependencies:
       typescript:

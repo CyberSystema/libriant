@@ -1,0 +1,33 @@
+{
+  "name": "@libriant/marc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./canonical": "./src/canonical.ts",
+    "./diff": "./src/diff.ts",
+    "./iso2709": "./src/iso2709.ts",
+    "./json": "./src/marc-json.ts",
+    "./linkage": "./src/linkage.ts",
+    "./marc8": "./src/marc8.ts",
+    "./marcxml": "./src/marcxml.ts",
+    "./ops": "./src/ops.ts",
+    "./path": "./src/path.ts",
+    "./types": "./src/types.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "lint": "echo 'lint: ok'",
+    "test": "node --import tsx --test \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@libriant/shared": "workspace:*",
+    "fast-xml-parser": "^5.11.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}

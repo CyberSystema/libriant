@@ -298,8 +298,16 @@ jobs:
       # unable to fail a build. Kept as its own step rather than folded into
       # `pnpm test`, because @libriant/api's `test` script also runs the
       # integration project, which needs a database this job does not have.
-      - name: Web and design-system tests
-        run: pnpm --filter @libriant/web --filter @libriant/ui --filter @libriant/shared test
+      #
+      # `@libriant/marc` is here for the same reason and it is the load-bearing
+      # one: its `test` script is a glob, and `node --test` exits 0 when a glob
+      # matches nothing. A codec with no gate running it is a directory of
+      # plausible TypeScript, so the suite asserts its own size (below) and this
+      # line is what runs it.
+      - name: Web, design-system and codec tests
+        run: >-
+          pnpm --filter @libriant/web --filter @libriant/ui --filter @libriant/shared
+          --filter @libriant/marc test
 
   # The verify gate ran typecheck, lint, prettier, translations, assets, unit,
   # integration, migrations and the DR drill — and zero supply-chain checks.

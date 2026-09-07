@@ -28,6 +28,7 @@
     "check:permissions": "tsx scripts/check-permissions.ts",
     "check:tenant-db-urls": "tsx scripts/check-tenant-db-urls.ts",
     "check:openapi": "tsx --tsconfig apps/api/tsconfig.json scripts/check-openapi.ts",
+    "marc8:tables": "tsx scripts/gen-marc8-tables.ts",
     "check:schema-drift": "tsx scripts/check-schema-drift.ts",
     "check:image-size": "node scripts/check-image-size.mjs",
     "check:all": "pnpm check:translations && pnpm check:assets && pnpm check:pnpm-pins && pnpm check:supply-chain && pnpm check:legal && pnpm check:caddy && pnpm check:alerts && pnpm check:shared-imports && pnpm check:countries && pnpm check:greek-folding && pnpm check:currencies && pnpm check:migration-safety && pnpm check:permissions && pnpm check:tenant-db-urls && pnpm check:openapi && pnpm typecheck && pnpm lint",
