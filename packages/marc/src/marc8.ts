@@ -4,6 +4,7 @@ import {
   DEFAULT_G1,
   MARC8_SET,
   MARC8_SET_NAME,
+  escapeRunLength,
   readEscape,
   writeEscape,
   type Register,
@@ -140,9 +141,12 @@ export function decodeMarc8(
     if (b === ESCAPE) {
       const esc = readEscape(bytes, i);
       if (!esc) {
-        // A lone ESC in the data. One character lost, record kept.
+        // Not a designation this profile knows — a lone ESC, or one truncated at
+        // the end of a field. Skip the ESC and any intermediate bytes with it:
+        // skipping only the ESC left the intermediate (`(`, `$`) as literal text
+        // in the middle of the field.
         anomalies.add(ANOMALY.marc8UnmappedByte);
-        i += 1;
+        i += escapeRunLength(bytes, i);
         continue;
       }
       if (esc.register === 'G0') state.g0 = esc.set;
@@ -285,6 +289,37 @@ function encodeChar(ch: string, out: Emitted[]): void {
  * is also why the overwhelming majority of real MARC-8 records contain no ESC
  * byte anywhere. {@link writeEscape} exists for when the remaining tables land.
  */
+/**
+ * Compose the cluster's base with one of its marks and encode the rest as they
+ * are. Returns null when no pairing the table knows exists, or when a leftover
+ * mark has no byte.
+ *
+ * The leftovers keep the order they were given, which is the entire reason this
+ * takes an array rather than a string.
+ */
+function tryPartialComposition(cluster: readonly string[]): number[] | null {
+  const [base, ...marks] = cluster;
+  if (base === undefined || !marks.length) return null;
+  for (let k = 0; k < marks.length; k++) {
+    const candidate = (base + (marks[k] as string)).normalize('NFC');
+    const found = [...candidate].length === 1 ? REVERSE.get(candidate) : undefined;
+    if (!found) continue;
+    const leftover: number[] = [];
+    let encodable = true;
+    for (let j = 0; j < marks.length; j++) {
+      if (j === k) continue;
+      const mark = REVERSE.get(marks[j] as string);
+      if (!mark) {
+        encodable = false;
+        break;
+      }
+      leftover.push(mark.byte);
+    }
+    if (encodable) return [...leftover, found.byte];
+  }
+  return null;
+}
+
 export function encodeMarc8(text: string): Uint8Array {
   const chars = [...text];
   const bytes: number[] = [];
@@ -310,7 +345,26 @@ export function encodeMarc8(text: string): Uint8Array {
       continue;
     }
 
-    // 2. Otherwise piece by piece, over the cluster AS WRITTEN.
+    // 2. PARTIAL composition. `Ớ` is `O` + horn + acute: ANSEL has the acute and
+    //    it has `Ơ`, but it has no combining horn, so neither the whole cluster
+    //    nor its pieces encode. Compose the base with each following mark in
+    //    turn and keep the first pairing the table knows.
+    //
+    //    Attempted over the ORIGINAL mark order first, and only over an
+    //    NFD expansion when that fails. NFD canonically REORDERS marks, and
+    //    taking its order for the leftovers put them back in a different
+    //    sequence than they arrived in — one instability in 2,657 round-trips,
+    //    which is exactly the defect this whole path was added to fix, one level
+    //    along.
+    const partial =
+      tryPartialComposition(cluster) ??
+      (cluster.length === 1 ? tryPartialComposition([...text.normalize('NFD')]) : null);
+    if (partial) {
+      bytes.push(...partial);
+      continue;
+    }
+
+    // 3. Otherwise piece by piece, over the cluster AS WRITTEN.
     //
     //    As written, not normalized, and that is the load-bearing part. NFC
     //    canonically REORDERS marks of different combining class — `l` with a

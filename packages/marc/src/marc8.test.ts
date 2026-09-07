@@ -5,6 +5,7 @@ import { readIso2709Record } from './iso2709.js';
 import { canEncodeMarc8, decodeMarc8, encodeMarc8, newMarc8State } from './marc8.js';
 import { MARC8_SET, readEscape, writeEscape } from './marc8-sets.js';
 import { BASIC_LATIN, EXTENDED_LATIN, SUPPORTED_TABLES } from './marc8-tables.js';
+import { mulberry32 } from './__fixtures__/corpus.js';
 import { ANOMALY, MarcError, isDataField, subfieldValue } from './types.js';
 
 /**
@@ -152,6 +153,25 @@ test('check 3: every combining target is inert under NFD and NFC', () => {
     const mark = EXTENDED_LATIN.map.get(byte) as string;
     assert.equal(mark.normalize('NFD'), mark, `0x${byte.toString(16)} decomposes`);
     assert.equal(mark.normalize('NFC'), mark, `0x${byte.toString(16)} composes on its own`);
+  }
+});
+
+test('check 5: an uppercase Latin letter has its lowercase in the table too', () => {
+  // The check that closes the class rather than the two rows. `Ơ` and `Ư` were
+  // in ANSEL and `ơ` and `ư` were missing, so every Vietnamese lowercase horn
+  // was unencodable — and nothing noticed, because no other check looks across
+  // rows. `ı` is excluded: its uppercase `I` lives in Basic Latin, and `Ð` has
+  // no ANSEL lowercase.
+  const values = new Set(EXTENDED_LATIN.map.values());
+  const exempt = new Set(['ı', 'ß', 'ð', 'þ']);
+  for (const value of values) {
+    if (value.length !== 1 || exempt.has(value)) continue;
+    const lower = value.toLowerCase();
+    if (lower === value) continue;
+    assert.ok(
+      values.has(lower) || BASIC_LATIN.map.has(lower.charCodeAt(0)),
+      `${value} is in ANSEL but ${lower} is in neither table`,
+    );
   }
 });
 
@@ -352,14 +372,17 @@ test('encoding never REORDERS marks, only composes where the table needs it', ()
 });
 
 test('decode then encode is byte-identical for every encodable input', () => {
-  // A property, not an example: 60,000 random byte strings, every one that
-  // decodes cleanly and can be re-encoded must come back as the same bytes.
-  let checked = 0;
+  // A property over genuinely varied input. The first version drew its bytes
+  // from `(seed * K + k * K2) % 256`, which is periodic in `k`: it produced 76
+  // DISTINCT inputs out of 4,000 iterations, none longer than six bytes, and its
+  // count assertion passed anyway. A real PRNG, independent bytes, longer
+  // strings, and a floor on DISTINCT inputs rather than on iterations.
+  const rng = mulberry32(31337);
+  const seen = new Set<string>();
   let unencodable = 0;
-  for (let seed = 0; seed < 4000; seed++) {
-    // A deterministic pseudo-random string of bytes; no PRNG import needed.
-    const n = 1 + (seed % 12);
-    const b = new Uint8Array(n).map((_, k) => (seed * 2654435761 + k * 40503) % 256);
+  for (let i = 0; i < 60000; i++) {
+    const n = 1 + Math.floor(rng() * 20);
+    const b = new Uint8Array(n).map(() => Math.floor(rng() * 256));
     const first = decodeMarc8(b);
     if (first.anomalies.length) continue;
     let re: Uint8Array;
@@ -370,12 +393,52 @@ test('decode then encode is byte-identical for every encodable input', () => {
       continue;
     }
     assert.deepEqual([...re], [...b], `bytes changed for [${[...b]}]`);
-    checked += 1;
+    seen.add(b.join(','));
   }
+  // Most random byte strings decode with an anomaly (an unmapped byte) and are
+  // skipped, so the yield is low by construction — around 2,900 distinct clean
+  // inputs from 60,000 draws. The floor is on DISTINCT inputs because that is
+  // what the previous version got wrong.
   assert.ok(
-    checked > 200,
-    `only ${checked} cases exercised the property (${unencodable} unencodable)`,
+    seen.size > 2000,
+    `only ${seen.size} DISTINCT inputs reached the assertion (${unencodable} unencodable)`,
   );
+});
+
+test('precomposed horn letters encode, because ANSEL holds the byte', () => {
+  // `Ớ` is O + horn + acute. ANSEL has the acute and it has `Ơ`, but it has NO
+  // combining horn — so neither the whole cluster nor its pieces encode, and the
+  // encoder refused a character its own table contains. The base is composed
+  // with each following mark in turn, and the rest stay ordinary marks.
+  for (const [text, expected] of [
+    ['Ơ', [0xac]],
+    ['ơ', [0xbc]],
+    ['Ư', [0xad]],
+    ['ư', [0xbd]],
+    ['Ớ', [0xe2, 0xac]],
+    ['ờ', [0xe1, 0xbc]],
+    ['Ự', [0xf2, 0xad]],
+    ['ữ', [0xe4, 0xbd]],
+  ] as const) {
+    assert.deepEqual([...encodeMarc8(text)], [...expected], text);
+    assert.equal(decodeMarc8(encodeMarc8(text)).text.normalize('NFC'), text.normalize('NFC'));
+  }
+});
+
+test('a truncated escape does not leak its intermediate byte into the text', () => {
+  // `ESC (` at the end of a field is not an escape, but `(` is still structure.
+  // Skipping only the ESC left a literal `(` in the middle of the value.
+  const decoded = decodeMarc8(new Uint8Array([0x61, ESC, 0x28]));
+  assert.equal(decoded.text, 'a');
+  assert.ok(decoded.anomalies.includes(ANOMALY.marc8UnmappedByte));
+  // `ESC $ )` with nothing after it. (`ESC $ ) b` would be a VALID multibyte
+  // designation of set `b` into G1, which is why picking bytes at random for
+  // this test is wrong.)
+  assert.equal(decodeMarc8(new Uint8Array([0x61, ESC, 0x24, 0x29])).text, 'a');
+  // …and the valid four-byte form really does consume all four: `ESC $ ) b`
+  // designates Subscripts into G1, so the following 0x63 is still read through
+  // G0's Basic Latin and comes out as `c`.
+  assert.equal(decodeMarc8(new Uint8Array([0x61, ESC, 0x24, 0x29, 0x62, 0x63])).text, 'ac');
 });
 
 test('the structural decoder is byte-to-code-point, not CP1252', () => {

@@ -280,3 +280,72 @@ committed as tests because they take minutes rather than seconds: 20,000
 byte-mutated records through read-then-write (zero non-`MarcError` exceptions in
 either direction, which is the module's stated contract), and 20,000 generated
 single ops through apply-then-invert (zero failures).
+
+**Phase 7, review round.** A five-dimension adversarial review of the committed
+codec raised 33 candidate findings; 28 survived independent verification and all
+28 are fixed. They are worth listing because most are the same shape — a
+promise the module header made that the code did not keep — and because two of
+them corrupted data silently:
+
+- **A subfield delimiter inside a VALUE was emitted raw**, and the reader then
+  split one subfield into two, with no anomaly on either side. The MARC-8 branch
+  already refused those bytes; the default UTF-8 branch was the only path that
+  corrupted, so an exported record was not re-importable to itself and its
+  content hash changed without an edit. All three separator bytes are now
+  refused on write with `data-not-encodable`.
+- **`normalizeLinkage('repair')` broke `$6` pairs apart** — and it runs on every
+  `applyOps`. Given four fields sharing an occurrence number (two genuine pairs)
+  it reallocated field-wise, keeping one member of each pair and renumbering the
+  others: two correct pairs became four dangling links, which is the precise
+  invariant its own docstring claims to maintain. Reallocation is now per
+  partner set, and both policies end at the same invariant.
+- **`setTag` wrote the new tag during the resolve pass**, so every later op in
+  the same batch addressed a renumbered record — breaking the one rule a batch
+  has. It is now staged like deletes and moves, and it addresses a field by
+  INDEX rather than by path, because a path names a field by tag and could not
+  invert once the tag changed.
+- **`diff` reported "identical" for a record whose subfields were reordered**,
+  directly contradicting `contentHash`. Subfields are now aligned by content
+  with the same LCS the fields use, and a reorder is a `moved`.
+- **`readMarcXml` kept numeric character references as literal text**, so a
+  record from any of the many exporters that escape non-ASCII imported with
+  `&#x0391;` in its title. `htmlEntities: true`.
+- **The collection writer re-indented by splitting each record on newlines**,
+  injecting the indent into the middle of any value that contained one — a 505
+  contents note, which is where they live. Indentation now happens at
+  generation.
+- **`Ơ`'s lowercase `ơ` and `Ư`'s `ư` were missing from ANSEL**, so every
+  Vietnamese lowercase horn was unencodable. A new table check closes the class
+  rather than the two rows: an uppercase Latin letter must have its lowercase in
+  one of the two tables. And precomposed horn letters (`Ớ`, `ờ`, `Ự`, `ữ`) were
+  refused outright, because ANSEL has `Ơ` but no combining horn — the encoder
+  now composes the base with each following mark in turn, preserving the
+  original mark order, which a first attempt did not and which cost one
+  instability in 2,657 round-trips.
+
+Also fixed: a non-Latin-1 tag escaping as a bare `RangeError`; a leader
+overstating its length swallowing the following record (settled by cross-checking
+against the record's own directory); a truncated escape leaking its intermediate
+byte into the field text; `compact` leaving a collision intact; a bare `Error`
+from `allocateOccurrence`; `writeRange`/`readRange` disagreeing about padding so
+a fixed-field edit could not be undone; a character range past the end of a
+variable-length subfield being padded into existence instead of refused;
+`fromMarcJson` stringifying an object into a title and accepting a leader of any
+length; a `$6` repointed at a different tag classified as housekeeping; a
+one-subfield field that could never be classified `normalization-only`; and the
+move detection discarding its result whenever the moved field was also edited.
+
+Four of the review's findings were about the TESTS rather than the code, and are
+the ones most worth repeating elsewhere: four assertions were unconditionally
+true; the MARC-8 "property test over 60,000 random byte strings" drew from a
+generator periodic in its inner index and asserted on 76 distinct inputs, none
+longer than six bytes; and nothing asserted the suite's own size, although the
+package's `test` script is a glob and `node --test` exits 0 when a glob matches
+nothing. A `pretest` script now fails below five test files — from outside the
+glob's blind spot, which is the only place such a check can work.
+
+After the round: 111 package tests, and three fuzz harnesses re-run — 20,000
+byte-mutated records through read-then-write with zero non-`MarcError`
+exceptions, 200,000 random byte strings through MARC-8 decode-then-encode with
+11,222 encodable and **100 % byte-identical**, and 20,000 generated single ops
+through apply-then-invert with zero failures.

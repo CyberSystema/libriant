@@ -102,7 +102,10 @@ test('the writer escapes the five characters that would change the document', ()
   assert.ok(!xml.includes('<tag>'), 'a literal < would open an element');
   assert.ok(xml.includes('&amp;'));
   assert.ok(xml.includes('&lt;tag&gt;'));
-  assert.ok(!xml.includes('</record>\n  <'), 'the injected close tag did not take effect');
+  // The injected `</record>` must appear escaped and NOT as a real close tag:
+  // exactly one `</record>` in the document, at the end.
+  assert.ok(xml.includes('&lt;/record&gt;'), 'the injected close tag was escaped');
+  assert.equal(xml.split('</record>').length - 1, 1, 'exactly one real close tag');
   // …and it reads back as exactly what went in.
   const [back] = readMarcXml(`<collection>${xml}</collection>`);
   assert.equal(JSON.stringify(back!.record.fields), JSON.stringify(nasty.fields));
@@ -167,6 +170,84 @@ test('the exchange shape is Singer’s, not the compact stored one', () => {
       subfields: [{ a: 'Ο Ζορμπάς /' }, { c: 'Νίκος Καζαντζάκης.' }],
     },
   });
+});
+
+test('a value that is not text is refused, not stringified', () => {
+  // `String({})` is "[object Object]", and importing that as a title is worse
+  // than refusing the record.
+  for (const value of [{}, [], null]) {
+    assert.throws(
+      () =>
+        fromMarcJson({
+          leader: SAMPLE.leader,
+          fields: [{ '245': { ind1: '1', ind2: '0', subfields: [{ a: value }] } }],
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof MarcError);
+        assert.equal(err.code, 'marc-json-shape');
+        return true;
+      },
+      JSON.stringify(value),
+    );
+  }
+  // A number or a boolean is what a JSON encoder makes of a control number or a
+  // flag, and converting those is a kindness rather than a guess.
+  const ok = fromMarcJson({
+    leader: SAMPLE.leader,
+    fields: [{ '245': { ind1: '1', ind2: '0', subfields: [{ a: 12345 }] } }],
+  });
+  const first = ok.fields[0];
+  assert.ok(first && isDataField(first));
+  assert.deepEqual(first.s[0], { a: '12345' });
+});
+
+test('a short leader is repaired at the boundary, not left to look like an edit', () => {
+  const short = fromMarcJson({ leader: '00714cam', fields: [] });
+  assert.equal(short.leader.length, 24);
+  assert.equal(short.leader.slice(0, 8), '00714cam');
+});
+
+test('numeric character references are expanded, not kept as text', () => {
+  // A great many exporters escape non-ASCII, so a Greek title arrives as
+  // `&#x0391;`. Kept literal it is well-formed XML and a wrong record.
+  const [back] = readMarcXml(
+    `<record><leader>${SAMPLE.leader}</leader>` +
+      `<datafield tag="245" ind1="1" ind2="0">` +
+      `<subfield code="a">&#x0391;&#952;&#942;&#957;&#945; &amp; more</subfield>` +
+      `</datafield></record>`,
+  );
+  const f = back!.record.fields[0];
+  assert.ok(f && isDataField(f));
+  assert.equal(Object.values(f.s[0]!)[0], 'Αθήνα & more');
+});
+
+test('a multi-line value is not re-indented by the collection wrapper', () => {
+  // The writer used to indent a collection by splitting each serialized record
+  // on newlines, which injected the indent into the middle of any value that
+  // contained one — a 505 contents note, which is where they live.
+  const note = 'Line one\nLine two\nLine three';
+  const record: MarcRecord = {
+    leader: SAMPLE.leader,
+    fields: [{ t: '505', i: '0 ', s: [{ a: note }] }],
+  };
+  const [back] = readMarcXml(writeMarcXml([record, record]));
+  const f = back!.record.fields[0];
+  assert.ok(f && isDataField(f));
+  assert.equal(Object.values(f.s[0]!)[0], note);
+});
+
+test('a carriage return survives, because XML would otherwise normalise it away', () => {
+  const value = `CR${String.fromCharCode(13)}here`;
+  const record: MarcRecord = {
+    leader: SAMPLE.leader,
+    fields: [{ t: '500', i: '  ', s: [{ a: value }] }],
+  };
+  const xml = writeMarcXmlRecord(record);
+  assert.ok(xml.includes('&#13;'), 'a literal CR would be read back as a line feed');
+  const [back] = readMarcXml(`<collection>${xml}</collection>`);
+  const f = back!.record.fields[0];
+  assert.ok(f && isDataField(f));
+  assert.equal(Object.values(f.s[0]!)[0], value);
 });
 
 test('a collapsed field object is refused, because it has already lost data', () => {

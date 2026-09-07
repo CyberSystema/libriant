@@ -1,4 +1,5 @@
 import {
+  MarcError,
   isDataField,
   subfieldCode,
   subfieldValue,
@@ -149,7 +150,11 @@ export function allocateOccurrence(used: ReadonlySet<string>): string {
     const candidate = String(n).padStart(2, '0');
     if (!used.has(candidate)) return candidate;
   }
-  throw new Error('All 99 $6 occurrence numbers are in use in this record.');
+  throw new MarcError(
+    'linkage-exhausted',
+    'All 99 $6 occurrence numbers are in use in this record, so a new linked pair cannot be ' +
+      'given one.',
+  );
 }
 
 export type LinkagePolicy = 'repair' | 'compact';
@@ -161,9 +166,47 @@ function withLinkage(field: DataField, link: Linkage): DataField {
 }
 
 /**
+ * Partition field indices that share an occurrence number into PARTNER SETS.
+ *
+ * Two fields are partners when each one's `$6` names the other's tag: a `245`
+ * carrying `$6880-07` and an `880` carrying `$6245-07`. Anything left over is a
+ * set of one — a dangling link, which is a real state a record can be in.
+ *
+ * This exists because reallocating field-wise instead of pair-wise is exactly
+ * how a repair breaks the invariant it is repairing. Given four fields sharing
+ * `01` — two genuine pairs — a field-wise pass keeps the first two (one from
+ * each pair) and renumbers the other two, turning two correct pairs into four
+ * dangling links.
+ */
+function partnerGroups(fields: readonly MarcField[], indices: readonly number[]): number[][] {
+  const remaining = [...indices];
+  const groups: number[][] = [];
+  while (remaining.length) {
+    const i = remaining.shift() as number;
+    const li = linkageOf(fields[i] as MarcField);
+    const at = remaining.findIndex((j) => {
+      const lj = linkageOf(fields[j] as MarcField);
+      return (
+        li !== null &&
+        lj !== null &&
+        li.tag === (fields[j] as MarcField).t &&
+        lj.tag === (fields[i] as MarcField).t
+      );
+    });
+    if (at >= 0) groups.push([i, remaining.splice(at, 1)[0] as number]);
+    else groups.push([i]);
+  }
+  return groups;
+}
+
+/**
  * Bring a record's `$6` linkage back to the invariant, under one of the two
  * policies. Returns the same object when nothing needed changing, so a caller
  * can use identity to decide whether to write a version.
+ *
+ * The invariant both policies end at: every occurrence number names at most one
+ * partner set, no set is broken up, and `00` is never allocated or overwritten.
+ * They differ only in whether a link that is already correct is left alone.
  */
 export function normalizeLinkage(record: MarcRecord, policy: LinkagePolicy = 'repair'): MarcRecord {
   const report = inspectLinkage(record);
@@ -171,45 +214,53 @@ export function normalizeLinkage(record: MarcRecord, policy: LinkagePolicy = 're
 
   const fields = [...record.fields];
   let changed = false;
-
-  if (policy === 'compact') {
-    // Dense renumbering in field order. Each PAIR gets the next number; the
-    // partner found later reuses it, so both sides stay together.
-    const assigned = new Map<string, string>();
-    let next = 1;
-    fields.forEach((f, index) => {
-      const link = linkageOf(f);
-      if (!isLinked(link)) return;
-      let occurrence = assigned.get(link.occurrence);
-      if (!occurrence) {
-        occurrence = String(next++).padStart(2, '0');
-        if (next > 100) throw new Error('More than 99 linked pairs in one record.');
-        assigned.set(link.occurrence, occurrence);
-      }
-      if (occurrence !== link.occurrence) {
-        fields[index] = withLinkage(f as DataField, { ...link, occurrence });
-        changed = true;
-      }
-    });
-    return changed ? { ...record, fields } : record;
-  }
-
-  // `repair`: leave every correct link alone and break only the collisions —
-  // three or more fields sharing one number, which no longer identifies a pair.
-  // The FIRST two keep the number (they are almost always the real pair, being
-  // the ones written together); the rest are reallocated.
   const used = new Set(report.used);
+
+  const setOccurrence = (index: number, occurrence: string): void => {
+    const f = fields[index] as MarcField;
+    const link = linkageOf(f);
+    if (!isLinked(link) || link.occurrence === occurrence) return;
+    fields[index] = withLinkage(f as DataField, { ...link, occurrence });
+    changed = true;
+  };
+
+  // Collisions are resolved the same way under both policies: whole partner
+  // sets move together, and the first set keeps the number it had.
   for (const occurrence of report.collisions) {
-    const indices = report.byOccurrence.get(occurrence) ?? [];
-    for (const index of indices.slice(2)) {
-      const f = fields[index] as MarcField;
-      const link = linkageOf(f);
-      if (!isLinked(link)) continue;
+    const groups = partnerGroups(record.fields, report.byOccurrence.get(occurrence) ?? []);
+    for (const group of groups.slice(1)) {
       const fresh = allocateOccurrence(used);
       used.add(fresh);
-      fields[index] = withLinkage(f as DataField, { ...link, occurrence: fresh });
-      changed = true;
+      for (const index of group) setOccurrence(index, fresh);
     }
   }
+
+  if (policy === 'repair') return changed ? { ...record, fields } : record;
+
+  // `compact`: dense renumbering in field order, one number per partner set.
+  // Run over the COLLISION-RESOLVED fields, so the two policies cannot end at
+  // different invariants.
+  const resolved = inspectLinkage({ ...record, fields });
+  const assigned = new Map<string, string>();
+  let next = 1;
+  fields.forEach((f, index) => {
+    const link = linkageOf(f);
+    if (!isLinked(link)) return;
+    let occurrence = assigned.get(link.occurrence);
+    if (!occurrence) {
+      if (next > 99) {
+        throw new MarcError(
+          'linkage-exhausted',
+          'This record has more than 99 linked pairs, which is more than a two-digit $6 ' +
+            'occurrence number can address.',
+        );
+      }
+      occurrence = String(next++).padStart(2, '0');
+      assigned.set(link.occurrence, occurrence);
+    }
+    setOccurrence(index, occurrence);
+  });
+  void resolved;
+
   return changed ? { ...record, fields } : record;
 }

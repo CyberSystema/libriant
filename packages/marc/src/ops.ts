@@ -59,7 +59,16 @@ export type MarcOp =
    */
   | { readonly op: 'moveField'; readonly from: number; readonly to: number }
   | (OpBase & { readonly op: 'setIndicators'; readonly from: string; readonly to: string })
-  | (OpBase & { readonly op: 'setTag'; readonly from: string; readonly to: string })
+  /**
+   * Retag a field, addressed by INDEX rather than by path.
+   *
+   * By index because a path names a field BY TAG, and after the retag the old
+   * path no longer resolves — while the new one addresses a different
+   * occurrence whenever the destination tag already appears earlier in the
+   * record. `{at, from, to}` inverts to `{at, from: to, to: from}` exactly,
+   * which a path-addressed version could not.
+   */
+  | { readonly op: 'setTag'; readonly at: number; readonly from: string; readonly to: string }
   | (OpBase & {
       readonly op: 'insertSubfield';
       readonly at: number;
@@ -114,15 +123,6 @@ export function invert(op: MarcOp): MarcOp {
     case 'deleteSubfield':
       return { op: 'insertSubfield', path: op.path, at: op.at, subfield: op.subfield };
     case 'setTag':
-      // The path names the field BY TAG, so the inverse has to address the
-      // field under its new tag. Without this, undoing a retag looks for a 650
-      // that is now a 655 and fails with "names no field in this record".
-      return {
-        ...op,
-        path: op.path.replace(op.from, op.to),
-        from: op.to,
-        to: op.from,
-      };
     case 'setIndicators':
     case 'setValue':
       return { ...op, from: op.to, to: op.from };
@@ -167,6 +167,7 @@ export function applyOps(
 
   const inserts: { at: number; field: MarcField; seq: number }[] = [];
   const moves: { from: number; to: number }[] = [];
+  const retags: { entry: Entry; tag: string }[] = [];
 
   const resolveField = (pathText: string): { entry: Entry; path: FieldPath } => {
     const path = parseOpPath(pathText);
@@ -221,12 +222,19 @@ export function applyOps(
         return;
       }
       case 'setTag': {
-        const { entry } = resolveField(op.path);
-        check(options, entry.field.t, op.from, op.path);
+        const entry = entries[op.at];
+        if (!entry || entry.deleted) {
+          throw new MarcError('index-out-of-range', `There is no field at ${op.at} to retag.`);
+        }
+        check(options, entry.field.t, op.from, `field ${op.at}`);
         if (op.to.length !== 3) {
           throw new MarcError('tag-invalid', `"${op.to}" is not a three-character tag.`);
         }
-        entry.field = { ...entry.field, t: op.to } as MarcField;
+        // Staged, not written: another op in this batch may address a field by
+        // tag, and every path in a batch resolves against the ORIGINAL record.
+        // Writing the new tag here made `650[1]` mean a different field for
+        // every op that came after it.
+        retags.push({ entry, tag: op.to });
         return;
       }
       case 'setIndicators': {
@@ -303,11 +311,24 @@ export function applyOps(
             throw new MarcError('path-not-found', `"${op.path}" names no subfield.`);
           }
           const current = subfieldValue(s[index] as Subfield);
-          const before = readRange(current, path.sub.chars?.from, path.sub.chars?.to);
+          // A subfield is variable-length, so a range that runs past its end is
+          // a caller error rather than something to pad into existence. Only
+          // genuinely fixed-width fields — control fields and the leader — grow
+          // to their declared width.
+          const chars = path.sub.chars;
+          if (chars) {
+            const end = chars.to === 'last' ? current.length - 1 : chars.to;
+            if (end > current.length - 1) {
+              throw new MarcError(
+                'index-out-of-range',
+                `${op.path} addresses characters ${chars.from}-${end} of a subfield that is ` +
+                  `${current.length} characters long. A subfield is not a fixed-width field.`,
+              );
+            }
+          }
+          const before = readRange(current, chars?.from, chars?.to);
           check(options, before, op.from, op.path);
-          s[index] = {
-            [path.sub.code]: writeRange(current, op.to, path.sub.chars?.from, path.sub.chars?.to),
-          };
+          s[index] = { [path.sub.code]: writeRange(current, op.to, chars?.from, chars?.to) };
           entry.field = { ...entry.field, s };
           return;
         }
@@ -328,6 +349,10 @@ export function applyOps(
       }
     }
   });
+
+  // Tag changes land after every path has been resolved, for the same reason
+  // deletes and inserts do.
+  for (const { entry, tag } of retags) entry.field = { ...entry.field, t: tag } as MarcField;
 
   // --- rebuild the field list -------------------------------------------
   // Order of operations is defined and deliberate: delete, then move (which is
@@ -368,7 +393,13 @@ export function applyOps(
 }
 
 function check(options: ApplyOptions, actual: string, expected: string, path: string): void {
-  if (options.unchecked || actual === expected) return;
+  // Compared at the RANGE's width. `writeRange` pads a short value out to its
+  // range, so `setValue 008/07-10 -> '19u'` stores `'19u '` — and the inverse
+  // op, whose `from` is the caller's unpadded `'19u'`, would fail its own
+  // precondition. Padding the expectation is what makes an op its own inverse
+  // here; it never loosens the check, because a value longer than the range is
+  // refused before this point.
+  if (options.unchecked || actual === expected.padEnd(actual.length, ' ')) return;
   throw new MarcError(
     'precondition-failed',
     `${path} holds ${JSON.stringify(actual)}, but this edit was written against ` +
@@ -376,10 +407,18 @@ function check(options: ApplyOptions, actual: string, expected: string, path: st
   );
 }
 
+/**
+ * Read a fixed-position range, PADDED to its declared width.
+ *
+ * Padded because {@link writeRange} pads, and the two have to agree or an op is
+ * not its own inverse: writing `'19u'` into `008/07-10` stores `'19u '`, and a
+ * `readRange` that returned the unpadded `'19u'` made the inverse op's `from`
+ * fail its own precondition check.
+ */
 function readRange(value: string, from?: number, to?: number | 'last'): string {
   if (from === undefined) return value;
   const end = to === 'last' || to === undefined ? value.length - 1 : to;
-  return value.slice(from, end + 1);
+  return value.slice(from, end + 1).padEnd(Math.max(end - from + 1, 0), ' ');
 }
 
 /**

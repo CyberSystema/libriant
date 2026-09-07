@@ -128,6 +128,8 @@ export const EXTENDED_LATIN = table(
     [0xb8, 'ı'], // ı  LATIN SMALL LETTER DOTLESS I
     [0xb9, '£'], // £  POUND SIGN
     [0xba, 'ð'], // ð  LATIN SMALL LETTER ETH
+    [0xbc, 'ơ'], // ơ  LATIN SMALL LETTER O WITH HORN
+    [0xbd, 'ư'], // ư  LATIN SMALL LETTER U WITH HORN
     [0xc0, '°'], // °  DEGREE SIGN
     [0xc1, 'ℓ'], // ℓ  SCRIPT SMALL L
     [0xc2, '℗'], // ℗  SOUND RECORDING COPYRIGHT

@@ -56,7 +56,13 @@ const PARSER = new XMLParser({
   parseAttributeValue: false,
   // Fixed fields are position-significant. Trimming is what the 1.0 reader did.
   trimValues: false,
+  // Expand `&amp;` and friends…
   processEntities: true,
+  // …and `&#x0391;` / `&#913;`, which `processEntities` alone does NOT cover.
+  // Without this a record written by a system that escapes non-ASCII — which is
+  // how a great many exporters emit Greek — imports with the literal text
+  // `&#x0391;` in the title, silently, because it is well-formed XML either way.
+  htmlEntities: true,
 });
 
 type Node = Record<string, unknown> & { ':@'?: Record<string, string> };
@@ -212,7 +218,18 @@ function stripXmlIllegal(value: string): string {
  * it is what LC's own output does.
  */
 function escapeText(value: string): string {
-  return stripXmlIllegal(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return (
+    stripXmlIllegal(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      // A carriage return in element content is normalised to a line feed by
+      // every conforming XML parser, so a value holding one comes back changed —
+      // silently, and in a 505 contents note, which is exactly where multi-line
+      // values live. A numeric reference is the only spelling that survives, and
+      // it is what LC's own MARCXML output uses.
+      .replace(/\r/g, '&#13;')
+  );
 }
 
 /** Escape for a double-quoted attribute value. */
@@ -229,10 +246,18 @@ export type MarcXmlWriteOptions = {
   readonly pretty?: boolean;
 };
 
-/** Write one record as a `<record>` element. */
-export function writeMarcXmlRecord(record: MarcRecord, indent = ''): string {
+/**
+ * Write one record as a `<record>` element.
+ *
+ * `depth` shifts the whole record right, and it exists so that
+ * {@link writeMarcXml} never has to re-indent by splitting the result on
+ * newlines. It used to, and a subfield value containing a newline — a long 505
+ * contents note, which is where they live — had the collection's indent injected
+ * into the middle of the librarian's data.
+ */
+export function writeMarcXmlRecord(record: MarcRecord, indent = '', depth = 0): string {
   const nl = indent ? '\n' : '';
-  const pad = (n: number) => (indent ? indent.repeat(n) : '');
+  const pad = (n: number) => (indent ? indent.repeat(n + depth) : '');
   const out: string[] = [`${pad(0)}<record>`];
   out.push(`${pad(1)}<leader>${escapeText(record.leader)}</leader>`);
   for (const f of record.fields) {
@@ -276,14 +301,13 @@ export function writeMarcXml(
   if (opts.declaration !== false) parts.push(`<?xml version="1.0" encoding="UTF-8"?>`);
   if (wrap) parts.push(`<collection xmlns="${MARCXML_NAMESPACE}">`);
   for (const r of list) {
-    const body = writeMarcXmlRecord(r, indent);
     parts.push(
       wrap
-        ? body
-            .split('\n')
-            .map((line) => indent + line)
-            .join('\n')
-        : body.replace('<record>', `<record xmlns="${MARCXML_NAMESPACE}">`),
+        ? writeMarcXmlRecord(r, indent, 1)
+        : writeMarcXmlRecord(r, indent).replace(
+            '<record>',
+            `<record xmlns="${MARCXML_NAMESPACE}">`,
+          ),
     );
   }
   if (wrap) parts.push('</collection>');

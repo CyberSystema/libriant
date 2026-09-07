@@ -96,6 +96,10 @@ export function fromMarcJson(input: unknown): MarcRecord {
   if (typeof record.leader !== 'string') {
     throw new MarcError('marc-json-shape', 'A MARC-in-JSON record needs a "leader" string.');
   }
+  // A leader is 24 characters. Repaired at the boundary the way the ISO 2709 and
+  // MARCXML readers repair it, rather than left to surface later as eleven
+  // phantom leader changes on the record's first save.
+  const leader = record.leader.padEnd(24, ' ').slice(0, 24);
   if (!Array.isArray(record.fields)) {
     throw new MarcError('marc-json-shape', 'A MARC-in-JSON record needs a "fields" array.');
   }
@@ -122,12 +126,21 @@ export function fromMarcJson(input: unknown): MarcRecord {
       }
       const code = onlyKey(sf as object, 'subfield');
       const value = (sf as Record<string, unknown>)[code];
-      return { [code]: typeof value === 'string' ? value : String(value ?? '') };
+      if (typeof value === 'string') return { [code]: value };
+      // A number or a boolean is what a JSON encoder produces from a control
+      // number like 12345 or a flag; converting those is a kindness. Anything
+      // else — null, an array, an object — is a shape error, and `String()` on
+      // it would import the text "[object Object]" as a title.
+      if (typeof value === 'number' || typeof value === 'boolean') return { [code]: String(value) };
+      throw new MarcError(
+        'marc-json-shape',
+        `${tag} $${code} is ${value === null ? 'null' : typeof value}; a subfield value is text.`,
+      );
     });
     return { t: tag, i: `${ind(df.ind1)}${ind(df.ind2)}`, s };
   });
 
-  return { leader: record.leader, fields };
+  return { leader, fields };
 }
 
 /** The exchange shape as text. Pretty by default: these are read by people. */

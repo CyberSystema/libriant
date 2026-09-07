@@ -146,6 +146,22 @@ export function readEscape(bytes: Uint8Array, at: number): EscapeSequence | null
   return null;
 }
 
+/**
+ * How many bytes a sequence beginning at `at` occupies even though it is NOT a
+ * designation this profile knows.
+ *
+ * A truncated `ESC (` at the end of a field is not an escape, but its
+ * intermediate byte is still structure — and a caller that skipped only the ESC
+ * left a literal `(` in the middle of the decoded text. At least one byte, so a
+ * lone ESC still makes progress.
+ */
+export function escapeRunLength(bytes: Uint8Array, at: number): number {
+  let n = 1;
+  const intermediate = new Set([0x21, 0x24, 0x28, 0x29, 0x2c, 0x2d]);
+  while (intermediate.has(bytes[at + n] as number)) n += 1;
+  return n;
+}
+
 /** The bytes that designate `set` into `register`, in the canonical spelling. */
 export function writeEscape(register: Register, set: string): Uint8Array {
   if (register === 'G0' && set === MARC8_SET.basicLatin) {

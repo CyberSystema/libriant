@@ -162,7 +162,20 @@ export function splitIso2709(bytes: Uint8Array): Uint8Array[] {
     const declared = readUint(bytes, at, 5).value;
     let end = -1;
     if (Number.isFinite(declared) && declared >= 24 && at + declared <= bytes.length) {
-      if (bytes[at + declared - 1] === RECORD_TERMINATOR) end = at + declared;
+      // Trust the declared length when it lands on a terminator AND the
+      // record's own directory agrees with it.
+      //
+      // The terminator test alone is not enough: a leader that overstates its
+      // length by roughly one record lands on the NEXT record's terminator, and
+      // the two are silently swallowed into one. The directory test alone is not
+      // enough either, because a record's data may legitimately contain a 0x1D
+      // and the directory is then the only thing that knows where the record
+      // ends. Together they decide it — and when they disagree the terminator
+      // scan below is the fallback, which is what a reader with no better
+      // information can do.
+      const implied = impliedLength(bytes, at);
+      const landsOnTerminator = bytes[at + declared - 1] === RECORD_TERMINATOR;
+      if (landsOnTerminator && (implied < 0 || implied === declared)) end = at + declared;
     }
     if (end < 0) {
       for (let i = at; i < bytes.length; i++) {
@@ -182,6 +195,30 @@ export function splitIso2709(bytes: Uint8Array): Uint8Array[] {
     at = end;
   }
   return out;
+}
+
+/**
+ * The length a record's own directory implies: base address, plus the end of the
+ * last field, plus the record terminator.
+ *
+ * Returns -1 when the leader or the directory is too damaged to say. Used only
+ * to decide whether to believe Leader/00-04 when splitting a stream; the record
+ * reader itself works from the bytes it is given.
+ */
+function impliedLength(bytes: Uint8Array, at: number): number {
+  const base = readUint(bytes, at + LEADER.baseAddress[0], 5).value;
+  if (!Number.isFinite(base) || base < 25 || at + base > bytes.length) return -1;
+  const entries = Math.floor((base - 1 - 24) / entryWidth(DEFAULT_ENTRY_MAP));
+  if (entries < 1) return -1;
+  let furthest = 0;
+  for (let e = 0; e < entries; e++) {
+    const entry = at + 24 + e * entryWidth(DEFAULT_ENTRY_MAP);
+    const len = readUint(bytes, entry + 3, 4).value;
+    const start = readUint(bytes, entry + 7, 5).value;
+    if (!Number.isFinite(len) || !Number.isFinite(start)) return -1;
+    furthest = Math.max(furthest, start + len);
+  }
+  return base + furthest + 1;
 }
 
 /** Read every record in a stream. */
@@ -471,8 +508,29 @@ export function writeIso2709(record: MarcRecord, opts: WriteOptions = {}): Uint8
   const norm = opts.normalization;
   const text = (s: string): string =>
     norm === 'nfc' ? s.normalize('NFC') : norm === 'nfd' ? s.normalize('NFD') : s;
-  const encode = (s: string): Uint8Array =>
-    encoding === 'utf-8' ? encodeUtf8(text(s)) : encodeMarc8(text(s));
+  const encode = (value: string, where: string): Uint8Array => {
+    // A delimiter inside DATA is the one way this writer could produce a file
+    // that reads back as a different record — and it did: a 0x1F in a subfield
+    // value was emitted raw, and the reader then split one subfield into two,
+    // with no anomaly on either side. The MARC-8 branch already refused these
+    // bytes (`marc8-unencodable`); the UTF-8 branch was the only path that
+    // corrupted. 0x1E and 0x1D survive THIS reader, because it slices by
+    // directory length rather than scanning — but they split the field or the
+    // record in `yaz-marcdump` and in every scanning reader, so all three are
+    // refused rather than the one that is demonstrable in-house.
+    for (const ch of value) {
+      const code = ch.codePointAt(0) as number;
+      if (code === SUBFIELD_DELIMITER || code === FIELD_TERMINATOR || code === RECORD_TERMINATOR) {
+        throw new MarcError(
+          'data-not-encodable',
+          `${where} contains 0x${code.toString(16).toUpperCase()}, one of the three bytes that ` +
+            'separate fields and subfields. Binary MARC cannot carry it inside a value; export ' +
+            'this record as MARCXML.',
+        );
+      }
+    }
+    return encoding === 'utf-8' ? encodeUtf8(text(value)) : encodeMarc8(text(value));
+  };
 
   const bodies: Uint8Array[] = [];
   const directory: string[] = [];
@@ -482,9 +540,13 @@ export function writeIso2709(record: MarcRecord, opts: WriteOptions = {}): Uint8
     if (f.t.length !== 3) {
       throw new MarcError('tag-invalid', `A MARC tag must be three characters; got "${f.t}".`);
     }
+    // The tag is structure too. Without this it escaped as a bare RangeError
+    // from `encodeLatin1`, four frames down, while the indicators and the
+    // subfield codes beside it produced a typed MarcError.
+    assertStructural(f.t, `the tag "${f.t}"`);
     const chunks: Uint8Array[] = [];
     if ('v' in f) {
-      chunks.push(encode(f.v));
+      chunks.push(encode(f.v, `control field ${f.t}`));
     } else {
       const df = f as DataField;
       const indicators = df.i.padEnd(2, ' ').slice(0, 2);
@@ -506,7 +568,7 @@ export function writeIso2709(record: MarcRecord, opts: WriteOptions = {}): Uint8
         chunks.push(
           new Uint8Array([SUBFIELD_DELIMITER]),
           encodeLatin1(code),
-          encode(subfieldValue(sf)),
+          encode(subfieldValue(sf), `${f.t} $${code}`),
         );
       }
     }

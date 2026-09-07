@@ -1,4 +1,4 @@
-import { LINKAGE_SUBFIELD } from './linkage.js';
+import { LINKAGE_SUBFIELD, parseLinkage } from './linkage.js';
 import {
   LEADER,
   isDataField,
@@ -66,6 +66,12 @@ export type FieldChange = {
   readonly indicators?: { readonly from: string; readonly to: string };
   readonly subfields?: readonly SubfieldChange[];
   readonly value?: { readonly from: string; readonly to: string };
+  /**
+   * The field also changed POSITION. Separate from `kind` because a field can be
+   * moved and edited at once, and a `kind` that could only say one of the two
+   * discarded the move whenever both happened.
+   */
+  readonly moved?: boolean;
   /** What KIND of change this is, so a UI can hide the uninteresting ones. */
   readonly class: 'content' | 'normalization' | 'linkage';
 };
@@ -262,7 +268,15 @@ function diffField(
     const bv = isDataField(b) ? '' : b.v;
     if (av === bv) {
       return moved
-        ? { kind: 'moved', tag, occurrence, fromIndex: l.index, toIndex: r.index, class: 'content' }
+        ? {
+            kind: 'moved',
+            tag,
+            occurrence,
+            fromIndex: l.index,
+            toIndex: r.index,
+            moved: true,
+            class: 'content',
+          }
         : null;
     }
     return {
@@ -272,7 +286,8 @@ function diffField(
       fromIndex: l.index,
       toIndex: r.index,
       value: { from: av, to: bv },
-      class: classOf(av, bv, false),
+      ...(moved ? { moved: true } : {}),
+      class: classOf(av, bv),
     };
   }
 
@@ -280,18 +295,31 @@ function diffField(
   const subfields = diffSubfields(a.s, b.s);
   if (!indicators && !subfields.length) {
     return moved
-      ? { kind: 'moved', tag, occurrence, fromIndex: l.index, toIndex: r.index, class: 'content' }
+      ? {
+          kind: 'moved',
+          tag,
+          occurrence,
+          fromIndex: l.index,
+          toIndex: r.index,
+          moved: true,
+          class: 'content',
+        }
       : null;
   }
-  // Every subfield change is on `$6` and nothing else changed: this is the
-  // linkage normalizer's work, not a cataloguer's.
+  // Only the `$6` changed, and only its occurrence number: this is the linkage
+  // normalizer's work, not a cataloguer's. A `$6` whose LINKING TAG, script or
+  // orientation changed is a real edit — it repoints the field at a different
+  // partner — and classifying that as housekeeping would hide it from the
+  // version history.
   const linkageOnly =
-    !indicators && subfields.length > 0 && subfields.every((s) => s.code === LINKAGE_SUBFIELD);
+    !indicators &&
+    subfields.length > 0 &&
+    subfields.every((s) => s.code === LINKAGE_SUBFIELD && isOccurrenceOnly(s.from, s.to));
   const normalizationOnly =
     !indicators &&
     subfields.length > 0 &&
     subfields.every(
-      (s) => s.kind === 'changed' && classOf(s.from ?? '', s.to ?? '', false) === 'normalization',
+      (s) => s.kind === 'changed' && classOf(s.from ?? '', s.to ?? '') === 'normalization',
     );
 
   return {
@@ -302,35 +330,104 @@ function diffField(
     toIndex: r.index,
     ...(indicators ? { indicators } : {}),
     subfields,
+    ...(moved ? { moved: true } : {}),
     class: linkageOnly ? 'linkage' : normalizationOnly ? 'normalization' : 'content',
   };
 }
 
+/**
+ * Align two subfield lists by CONTENT, then diff, the same way fields are.
+ *
+ * Index alignment within a code was the same defect one level down: deleting the
+ * first of two `$x` reported an edit AND a deletion, because `$x[0]` "became"
+ * the old `$x[1]`. And comparing only per-code lists could not see a REORDER at
+ * all — `$a $b` and `$b $a` produced no changes, so `diff` said "identical"
+ * about a record `contentHash` calls different, which is the one thing a diff
+ * beside a version history must never do.
+ */
 function diffSubfields(a: readonly Subfield[], b: readonly Subfield[]): SubfieldChange[] {
+  type Item = { code: string; value: string; index: number };
+  const left: Item[] = a.map((s, index) => ({
+    code: subfieldCode(s),
+    value: subfieldValue(s),
+    index,
+  }));
+  const right: Item[] = b.map((s, index) => ({
+    code: subfieldCode(s),
+    value: subfieldValue(s),
+    index,
+  }));
+
+  const usedRight = new Set<number>();
+  const matched: { l: Item; r: Item; identical: boolean }[] = [];
+
+  // Identical (code, value) first, in order, so an untouched repeat matches
+  // itself and a deletion cannot cascade.
+  for (const l of left) {
+    const r = right.find(
+      (candidate) =>
+        !usedRight.has(candidate.index) && candidate.code === l.code && candidate.value === l.value,
+    );
+    if (r) {
+      usedRight.add(r.index);
+      matched.push({ l, r, identical: true });
+    }
+  }
+  // Then same-code leftovers, pairwise in order: those are edits.
+  const unmatchedLeft = left.filter((l) => !matched.some((m) => m.l === l));
+  for (const l of unmatchedLeft) {
+    const r = right.find(
+      (candidate) => !usedRight.has(candidate.index) && candidate.code === l.code,
+    );
+    if (r) {
+      usedRight.add(r.index);
+      matched.push({ l, r, identical: false });
+    }
+  }
+
+  matched.sort((x, y) => x.l.index - y.l.index);
+  const movedIndices = longestIncreasingSubsequence(matched.map((m) => m.r.index));
+  const occurrenceOf = (items: Item[], item: Item): number =>
+    items.filter((x) => x.code === item.code && x.index <= item.index).length;
+
   const out: SubfieldChange[] = [];
-  const codes = new Set([...a.map(subfieldCode), ...b.map(subfieldCode)]);
-  for (const code of [...codes].sort()) {
-    const left = a.filter((s) => subfieldCode(s) === code).map(subfieldValue);
-    const right = b.filter((s) => subfieldCode(s) === code).map(subfieldValue);
-    const shared = Math.min(left.length, right.length);
-    for (let i = 0; i < shared; i++) {
-      const from = left[i] as string;
-      const to = right[i] as string;
-      if (from !== to) out.push({ kind: 'changed', code, occurrence: i + 1, from, to });
+  matched.forEach((m, i) => {
+    if (!m.identical) {
+      out.push({
+        kind: 'changed',
+        code: m.l.code,
+        occurrence: occurrenceOf(left, m.l),
+        from: m.l.value,
+        to: m.r.value,
+      });
+      return;
     }
-    for (let i = shared; i < left.length; i++) {
-      out.push({ kind: 'removed', code, occurrence: i + 1, from: left[i] as string });
+    if (!movedIndices.has(i)) {
+      out.push({ kind: 'moved', code: m.l.code, occurrence: occurrenceOf(right, m.r) });
     }
-    for (let i = shared; i < right.length; i++) {
-      out.push({ kind: 'added', code, occurrence: i + 1, to: right[i] as string });
-    }
+  });
+  for (const l of left) {
+    if (matched.some((m) => m.l === l)) continue;
+    out.push({ kind: 'removed', code: l.code, occurrence: occurrenceOf(left, l), from: l.value });
+  }
+  for (const r of right) {
+    if (usedRight.has(r.index)) continue;
+    out.push({ kind: 'added', code: r.code, occurrence: occurrenceOf(right, r), to: r.value });
   }
   return out;
 }
 
+/** Whether a `$6` change moved only the occurrence number. */
+function isOccurrenceOnly(from?: string, to?: string): boolean {
+  if (from === undefined || to === undefined) return false;
+  const a = parseLinkage(from);
+  const b = parseLinkage(to);
+  if (!a || !b) return false;
+  return a.tag === b.tag && a.script === b.script && a.orientation === b.orientation;
+}
+
 /** A change that disappears under NFC is a normalization, not an edit. */
-function classOf(from: string, to: string, linkage: boolean): FieldChange['class'] {
-  if (linkage) return 'linkage';
+function classOf(from: string, to: string): FieldChange['class'] {
   if (from !== to && from.normalize('NFC') === to.normalize('NFC')) return 'normalization';
   return 'content';
 }
@@ -362,5 +459,31 @@ function similarity(a: MarcField, b: MarcField): number {
     }
   }
   const overlap = (2 * hits) / (left.length + right.length);
-  return a.i === b.i ? overlap : overlap * 0.9;
+  if (overlap > 0) return a.i === b.i ? overlap : overlap * 0.9;
+
+  // No subfield survived intact. Two same-tag data fields are still far more
+  // likely to be the same field edited than an unrelated removal and addition —
+  // and with a hard 0 they could never align, so a one-subfield field whose only
+  // subfield changed was reported as removed-plus-added and could never be
+  // classified `normalization-only`. Character overlap, scaled well below any
+  // real subfield match so it never outranks one.
+  return 0.4 * characterOverlap(left.join(' '), right.join(' '));
+}
+
+/** Shared-bigram ratio, in [0, 1]. Cheap, and enough to tell an edit from a swap. */
+function characterOverlap(a: string, b: string): number {
+  if (!a.length || !b.length) return a === b ? 1 : 0;
+  const grams = (text: string): string[] =>
+    Array.from({ length: Math.max(text.length - 1, 1) }, (_, i) => text.slice(i, i + 2));
+  const left = grams(a);
+  const rest = grams(b);
+  let hits = 0;
+  for (const g of left) {
+    const at = rest.indexOf(g);
+    if (at >= 0) {
+      rest.splice(at, 1);
+      hits += 1;
+    }
+  }
+  return (2 * hits) / (left.length + grams(b).length);
 }

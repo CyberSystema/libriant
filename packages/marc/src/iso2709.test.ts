@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { generateCorpus, emitRecord } from './__fixtures__/corpus.js';
 import { bytesEqual, decodeLatin1, encodeUtf8, concatBytes } from './bytes.js';
@@ -244,6 +245,74 @@ test('a single field too long for a 4-digit length is refused', () => {
   );
 });
 
+test('a delimiter inside a VALUE is refused, not emitted raw', () => {
+  // The one way this writer could produce a file that reads back as a different
+  // record, and it did: a 0x1F in a subfield value was emitted raw and the
+  // reader then split one subfield into two, with no anomaly on either side.
+  for (const [byte, name] of [
+    [0x1f, 'subfield delimiter'],
+    [0x1e, 'field terminator'],
+    [0x1d, 'record terminator'],
+  ] as const) {
+    const value = `x${String.fromCharCode(byte)}y`;
+    assert.throws(
+      () =>
+        writeIso2709({
+          leader: '00000nam a2200000 a 4500',
+          fields: [{ t: '245', i: '10', s: [{ a: value }] }],
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof MarcError, name);
+        assert.equal(err.code, 'data-not-encodable');
+        assert.match(err.message, /MARCXML/);
+        return true;
+      },
+      name,
+    );
+  }
+  // A control field value is guarded the same way.
+  assert.throws(
+    () =>
+      writeIso2709({
+        leader: '00000nam a2200000 a 4500',
+        fields: [{ t: '008', v: `a${String.fromCharCode(0x1f)}b` }],
+      }),
+    MarcError,
+  );
+});
+
+test('a tag that is not a single byte gets a MarcError, not a RangeError', () => {
+  assert.throws(
+    () =>
+      writeIso2709({
+        leader: '00000nam a2200000 a 4500',
+        fields: [{ t: 'Ζ45', i: '10', s: [{ a: 'x' }] }],
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof MarcError, 'the indicators and codes beside it already did this');
+      assert.equal(err.code, 'structure-not-encodable');
+      return true;
+    },
+  );
+});
+
+test('a leader that overstates its length does not swallow the next record', () => {
+  // The declared length lands on the SECOND record's terminator. Trusting it
+  // merges two records into one — silently, because the merged record's own
+  // length then looks wrong for an unrelated reason. The record's directory is
+  // what settles it.
+  const one = CORPUS.find((c) => !c.residue.length)!.bytes;
+  const two = CORPUS.filter((c) => !c.residue.length)[1]!.bytes;
+  const stream = concatBytes([one, two]);
+  const lying = new Uint8Array(stream);
+  const total = String(one.length + two.length).padStart(5, '0');
+  for (let i = 0; i < 5; i++) lying[i] = total.charCodeAt(i);
+
+  const records = readIso2709(lying);
+  assert.equal(records.length, 2, 'both records were found');
+  assert.ok(records[0]!.anomalies.some((a) => a.code === ANOMALY.leaderLengthWrong));
+});
+
 // ---------------------------------------------------------------------------
 // The property test — the phase's acceptance criterion
 // ---------------------------------------------------------------------------
@@ -374,9 +443,11 @@ test('control fields keep their exact bytes, spaces included', () => {
   assert.ok(f008 && isControlField(f008));
   // 008 is read by absolute position by every downstream consumer, so a reader
   // that trimmed it would shift every position after the first run of spaces.
+  // The exact source value, not a tautology about its own trim. The 1.0 reader
+  // returned a 38-character 008 for a 40-character source.
+  const source = CORPUS[0]!.fields.find((f) => f.tag === '008') as { value: string };
+  assert.equal(f008.v, source.value);
   assert.ok(f008.v.includes('    '), 'fixed-field padding must not be trimmed');
-  assert.equal(f008.v, f008.v.trimEnd() + f008.v.slice(f008.v.trimEnd().length));
-  assert.equal(f008.v.slice(0, 6), (CORPUS[0]!.fields[3] as { value: string }).value.slice(0, 6));
 });
 
 test('anomaly provenance does not survive a round-trip, and should not', () => {
@@ -395,9 +466,19 @@ test('anomaly provenance does not survive a round-trip, and should not', () => {
   assert.equal(content(first), content(second), 'the CONTENT is unchanged either way');
 });
 
-test('emitRecord and writeIso2709 are genuinely independent implementations', () => {
-  // If this ever fails because the fixture imported the codec, the property
-  // tests above stop being evidence.
+test('the corpus emitter imports nothing from the codec it is used to check', () => {
+  // If the fixture ever imports the serializer, every property test above stops
+  // being evidence and becomes a function compared with itself. Asserted against
+  // the file's own source, because no runtime check can see it.
+  const fixture = readFileSync(new URL('./__fixtures__/corpus.ts', import.meta.url), 'utf8');
+  const imports = [...fixture.matchAll(/^import[^;]*from '([^']+)'/gm)].map((m) => m[1]);
+  // `bytes.js` only — byte plumbing, not codec logic. The prose in that file
+  // NAMES iso2709.ts to explain the point, so this checks specifiers, not a
+  // substring of the whole file.
+  assert.deepEqual(imports, ['../bytes.js'], `the fixture imports ${imports.join(', ')}`);
+  assert.doesNotMatch(fixture, /\brequire\s*\(|\bimport\s*\(/, 'no dynamic import either');
+
+  // …and it really does produce a readable record.
   const source = readIso2709Record(
     emitRecord('00000nam a2200000 a 4500', [
       { tag: '001', value: 'abc' },

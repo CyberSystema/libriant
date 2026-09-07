@@ -8,6 +8,7 @@ import {
   normalizeLinkage,
   parseLinkage,
 } from './linkage.js';
+import * as opsModule from './ops.js';
 import { applyOps, invert, type MarcOp } from './ops.js';
 import { exists, formatMarcPath, get, getOne, parseMarcPath, parseOpPath } from './path.js';
 import { mulberry32 } from './__fixtures__/corpus.js';
@@ -151,6 +152,12 @@ test('every SINGLE op is exactly undone by its own inverse', () => {
         from: subfieldValue(sf),
         to: 'CHANGED',
       };
+    } else if (roll < 0.94 && isDataField(f) && f.s.length > 1) {
+      op = { op: 'deleteSubfield', path: `${f.t}[${occ}]`, at: 1, subfield: f.s[1]! };
+    } else if (roll < 0.97) {
+      // A retag into a tag the record ALREADY contains, which is the case a
+      // path-addressed setTag got wrong.
+      op = { op: 'setTag', at, from: f.t, to: '650' };
     } else if (isDataField(f)) {
       op = { op: 'insertSubfield', path: `${f.t}[${occ}]`, at: 0, subfield: { z: 'new' } };
     } else {
@@ -200,8 +207,11 @@ test('a batch is NOT undone by inverting its ops, and there is no API that prete
     JSON.stringify(before.fields),
     'if this ever starts passing, the batch semantics changed and the docs are wrong',
   );
-  // And the module exports no `invertAll` or `undo` that would invite it.
-  assert.equal((ops as unknown as { invertAll?: unknown }).invertAll, undefined);
+  // And the module really exports no `invertAll` or `undo` that would invite it.
+  // Asserted on the module NAMESPACE — the previous version asserted a property
+  // of the local `ops` array, which was unconditionally undefined.
+  assert.equal((opsModule as Record<string, unknown>).invertAll, undefined);
+  assert.equal((opsModule as Record<string, unknown>).undo, undefined);
 });
 
 test('a stale edit is refused rather than applied over somebody else', () => {
@@ -352,6 +362,80 @@ test('a collision is broken, and 00 is never allocated', () => {
   assert.equal(linkageOf(after.fields[1]!)?.occurrence, '01');
   assert.equal(linkageOf(after.fields[2]!)?.occurrence, '02', 'the third field is reallocated');
   assert.equal(linkageOf(after.fields[3]!)?.occurrence, '00', 'and 00 is left alone');
+});
+
+test('repair moves whole PAIRS, so it never creates a dangling link', () => {
+  // Four fields sharing `01` — two genuine pairs. A field-wise reallocation
+  // keeps one member of each pair and renumbers the other two, turning two
+  // correct pairs into four dangling links. This runs on EVERY applyOps.
+  const colliding: MarcRecord = {
+    leader: '00000nam a2200000 a 4500',
+    fields: [
+      { t: '245', i: '10', s: [{ 6: '880-01' }, { a: 'One' }] },
+      { t: '880', i: '10', s: [{ 6: '245-01' }, { a: 'Ένα' }] },
+      { t: '246', i: '30', s: [{ 6: '880-01' }, { a: 'Two' }] },
+      { t: '880', i: '30', s: [{ 6: '246-01' }, { a: 'Δύο' }] },
+    ],
+  };
+  const before = inspectLinkage(colliding);
+  assert.deepEqual(before.collisions, ['01']);
+  assert.equal(before.dangling.length, 0);
+
+  const after = normalizeLinkage(colliding, 'repair');
+  const report = inspectLinkage(after);
+  assert.equal(report.dangling.length, 0, 'no pair was broken up');
+  assert.deepEqual(report.collisions, [], 'and the collision is gone');
+  // Both members of each pair carry the same number.
+  assert.equal(linkageOf(after.fields[0]!)?.occurrence, linkageOf(after.fields[1]!)?.occurrence);
+  assert.equal(linkageOf(after.fields[2]!)?.occurrence, linkageOf(after.fields[3]!)?.occurrence);
+  assert.notEqual(linkageOf(after.fields[0]!)?.occurrence, linkageOf(after.fields[2]!)?.occurrence);
+
+  // …and `compact` ends at the same invariant, not a different one.
+  const compacted = inspectLinkage(normalizeLinkage(colliding, 'compact'));
+  assert.deepEqual(compacted.collisions, []);
+  assert.equal(compacted.dangling.length, 0);
+});
+
+test('a retag does not shift the fields later ops in the same batch address', () => {
+  // The tag change used to be written into the working record during the resolve
+  // pass, so `650[1]` meant a different field for every op after it — breaking
+  // the one rule the batch has.
+  const before = sample();
+  // In the ORIGINAL, `650[1]` is Crete at index 5. Had the retag of index 4
+  // been written before this op resolved, only two 650s would remain and
+  // `650[1]` would have been Novelists — so this `from` is what detects it.
+  const after = applyOps(before, [
+    { op: 'setTag', at: 4, from: '650', to: '655' },
+    { op: 'setValue', path: '650[1]$a[0]', from: 'Crete (Greece)', to: 'CHANGED' },
+  ]);
+  assert.equal(getOne(after, '655[0]$a'), 'Greek literature');
+  assert.equal(getOne(after, '650[0]$a'), 'CHANGED');
+  assert.equal(getOne(after, '650[1]$a'), 'Novelists, Greek');
+});
+
+test('a fixed-field value shorter than its range round-trips through its inverse', () => {
+  const before = sample();
+  const op: MarcOp = { op: 'setValue', path: '008[0]/07-10', from: '1946', to: '19u' };
+  const after = applyOps(before, [op]);
+  assert.equal(getOne(after, '008[0]/07-10'), '19u ', 'padded to the range width on write');
+  // …and the inverse's `from` must match the PADDED value, or it fails its own
+  // precondition and undo throws.
+  const back = applyOps(after, [invert(op)]);
+  assert.equal(getOne(back, '008[0]'), getOne(before, '008[0]'));
+});
+
+test('a character range past the end of a SUBFIELD is refused, not padded into being', () => {
+  // A subfield is variable-length. Growing one to fit a range would change the
+  // value the caller thought it was editing.
+  assert.throws(
+    () => applyOps(sample(), [{ op: 'setValue', path: '245[0]$a[0]/00-99', from: 'x', to: 'y' }]),
+    (err: unknown) => {
+      assert.ok(err instanceof MarcError);
+      assert.equal(err.code, 'index-out-of-range');
+      assert.match(err.message, /not a fixed-width field/);
+      return true;
+    },
+  );
 });
 
 test('allocation takes the lowest free number, not the next one up', () => {
