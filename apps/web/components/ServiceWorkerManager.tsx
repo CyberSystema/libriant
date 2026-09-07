@@ -1,6 +1,7 @@
 'use client';
 import * as React from 'react';
 import { registerServiceWorker } from '@/lib/offline';
+import { platformPort } from '@/lib/ports';
 
 /**
  * Registers the service worker (production only — a SW in dev fights HMR) and
@@ -24,14 +25,10 @@ export function ServiceWorkerManager({ offlineLabel }: { offlineLabel: string })
 
   React.useEffect(() => {
     if (process.env.NODE_ENV === 'production') registerServiceWorker();
-    const sync = () => setOffline(!navigator.onLine);
+    const platform = platformPort();
+    const sync = () => setOffline(!platform.isOnline());
     sync();
-    window.addEventListener('online', sync);
-    window.addEventListener('offline', sync);
-    return () => {
-      window.removeEventListener('online', sync);
-      window.removeEventListener('offline', sync);
-    };
+    return platform.onOnlineChange(sync);
   }, []);
 
   React.useEffect(() => {

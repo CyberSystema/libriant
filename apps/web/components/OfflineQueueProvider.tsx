@@ -21,6 +21,7 @@ import {
   type FailedAction,
   type QueuedAction,
 } from '@/lib/offline-queue';
+import { platformPort } from '@/lib/ports';
 
 type EnqueueInput = {
   idempotencyKey: string;
@@ -123,7 +124,7 @@ export function OfflineQueueProvider({
 
   const flush = React.useCallback(async () => {
     if (flushing.current) return;
-    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+    if (!platformPort().isOnline()) return;
     flushing.current = true;
     setSyncing(true);
     let synced = 0;
@@ -263,13 +264,15 @@ export function OfflineQueueProvider({
   React.useEffect(() => {
     void refresh();
     void flush();
-    const onOnline = () => void flush();
-    window.addEventListener('online', onOnline);
+    const platform = platformPort();
+    const unsubscribe = platform.onOnlineChange((online) => {
+      if (online) void flush();
+    });
     const timer = window.setInterval(() => {
-      if (navigator.onLine) void flush();
+      if (platform.isOnline()) void flush();
     }, 30_000);
     return () => {
-      window.removeEventListener('online', onOnline);
+      unsubscribe();
       window.clearInterval(timer);
     };
   }, [flush, refresh]);

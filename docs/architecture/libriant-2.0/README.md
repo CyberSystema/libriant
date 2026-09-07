@@ -88,3 +88,57 @@ check found it: five alert rules for metrics that were emitted and unalerted, a
 nobody since the app was first deployed, and the wiring for
 `renderScheduledJobMetrics` — exported, unit-tested and documented as being
 called by `worker.ts`, which never called it.
+
+**Phase 6 — the port boundary + public-API registry skeleton.** The master
+document's line is delivered as written: `DataPort` / `PlatformPort` /
+`PrintPort` in `@libriant/shared/ports`, `HttpDataPort` and its two siblings in
+`apps/web/lib/ports/`, `apps/api/src/public-api/registry.ts` with
+`defineEndpoint`, the `class-validator` → JSON Schema deriver, and `check:openapi`
+as the sixteenth gate against an empty registry. Four things are worth recording.
+
+- **The ESLint rule is wider than "no `fetch(` in a screen", and ships with no
+  exemptions.** It also refuses a hard-coded `/lbr-api` literal, `window.open`,
+  `navigator.clipboard`, `navigator.onLine` and the browser online/offline
+  events, because those are the same defect — a screen naming a host it will not
+  have on the Tauri client. Seventeen call sites were converted in the same
+  commit so the rule turns on at `error` with zero `eslint-disable` comments; a
+  rule that needs exemptions on day one is a rule nobody believes. This is NOT
+  the "extract the 1.0 screens" work the master document declines: every
+  conversion is a one-line substitution in a screen that phase 20 replaces.
+  Route handlers under `apps/web/app/api/` are excluded — they are servers that
+  happen to live under `app/`.
+- **`DataPort.upload` does not take a `FormData`.** `FormData` is an HTTP
+  encoding; a native host writing to a local replica has a filename and bytes.
+  It takes `{ file: { name, type, data }, fields? }` and `HttpDataPort` builds
+  the multipart body. Note that `packages/shared`'s tsconfig does NOT enforce
+  this — `@types/node` declares `FormData` globally, so `tsc` accepts the DOM
+  type there. It is a rule the reviewer keeps.
+- **The deriver cannot resolve `@ValidateNested` on its own**, so contract 4.9's
+  "JSON Schema derives from `class-validator`'s own `getMetadataStorage()`" is
+  true with one exception. The nested class comes from `@Type(() => X)`, which is
+  class-transformer metadata reachable only through the unexported deep path
+  `class-transformer/cjs/storage`. Rather than reach into a package's private
+  build, the deriver requires the class to be named at the endpoint and throws
+  without it. It throws on an unmapped validator for the same reason: a
+  published contract that understates what the server enforces is the failure
+  the gate exists to prevent.
+- **`check:openapi` must run as `tsx --tsconfig apps/api/tsconfig.json`**, with
+  `import 'reflect-metadata'` first. There is no `tsconfig.json` at the
+  repository root, so a plain `tsx` transpiles the DTOs with TC39 standard
+  decorators and they throw at class-definition time with `TypeError: Cannot
+read properties of undefined (reading 'constructor')` inside class-validator
+  — which reads like a library bug and is a transpiler-configuration bug. This
+  is the first gate that imports decorated classes; `check:permissions` and
+  `check:alerts` import plain modules and never hit it. The gate asserts both
+  conditions rather than trusting them, and declares no decorated classes of its
+  own, because `tsx` applies that tsconfig only to files its `include` covers.
+
+With no public endpoints until M6, the document comparison alone would be nearly
+vacuous — the phase-5 lesson. So the gate also proves the derived schema AGREES
+with `validateDto()` on fixture DTOs: every property the schema calls required
+is genuinely rejected when omitted, every optional one genuinely accepted, and
+an unknown key genuinely refused, which is what licenses
+`additionalProperties: false`. That check found two real defects in the deriver
+before it shipped — `@ValidateIf` being read as `@IsOptional` (both record
+`conditionalValidation`; only the latter carries `name: 'isOptional'`), and a
+truthiness test that made `@Equals(false)` throw.

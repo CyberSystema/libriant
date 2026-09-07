@@ -5,6 +5,7 @@ import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
 import { api } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
+import { dataPort } from '@/lib/ports';
 
 type Format = 'csv' | 'json' | 'xlsx' | 'sql';
 type Status = 'queued' | 'running' | 'completed' | 'failed';
@@ -159,7 +160,7 @@ export function ExportManager({
                       <td>
                         {e.status === 'completed' ? (
                           <a
-                            href={`/lbr-api/t/${slug}/exports/${e.id}/download`}
+                            href={dataPort().resourceUrl(`/t/${slug}/exports/${e.id}/download`)}
                             className="lbr-btn lbr-btn--secondary lbr-btn--sm"
                           >
                             {t('settings.export.download')}

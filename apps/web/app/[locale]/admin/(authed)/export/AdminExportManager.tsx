@@ -2,6 +2,7 @@
 import * as React from 'react';
 import { Button, Card, CardBody, CardHeader, useToast } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
+import { dataPort } from '@/lib/ports';
 
 type Format = 'csv' | 'json' | 'xlsx' | 'sql';
 type Scope = 'tenant' | 'control' | 'all';
@@ -204,7 +205,7 @@ export function AdminExportManager({
                       <td>
                         {e.status === 'completed' ? (
                           <a
-                            href={`/lbr-api/admin/exports/${e.id}/download`}
+                            href={dataPort().resourceUrl(`/admin/exports/${e.id}/download`)}
                             className="lbr-btn lbr-btn--secondary lbr-btn--sm"
                           >
                             Download

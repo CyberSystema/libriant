@@ -12,6 +12,7 @@ import {
   Input,
 } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
+import { platformPort } from '@/lib/ports';
 
 type FoundUser = {
   id: string;
@@ -231,10 +232,13 @@ export function AccountRecoveryClient() {
               <Button
                 variant="ghost"
                 onClick={() => {
-                  navigator.clipboard
-                    ?.writeText(link.url)
-                    .then(() => setNotice('Link copied.'))
-                    .catch(() => setError('Could not copy — select the text and copy by hand.'));
+                  void platformPort()
+                    .copyText(link.url)
+                    .then((ack) =>
+                      ack.ok
+                        ? setNotice('Link copied.')
+                        : setError('Could not copy — select the text and copy by hand.'),
+                    );
                 }}
               >
                 Copy link

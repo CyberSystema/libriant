@@ -159,6 +159,27 @@ jobs:
       - name: Tenant databases are opened with per-tenant credentials
         run: pnpm check:tenant-db-urls
 
+      # A published API document that does not describe the server is the
+      # defining flaw of every incumbent ILS — the spec is a separate artefact
+      # somebody updates, so it drifts. Here it is generated from
+      # `apps/api/src/public-api/registry.ts`, which is simultaneously the
+      # route's validation wiring and the OpenAPI source, and this step refuses
+      # a build where the generated and the committed documents differ.
+      #
+      # With no public routes yet (they arrive in M6) that comparison alone
+      # would be nearly vacuous, so the gate also proves the class-validator →
+      # JSON Schema deriver AGREES with `validateDto()` on fixture DTOs: every
+      # property the schema calls required is genuinely rejected when omitted,
+      # every optional one genuinely accepted, and an unknown key genuinely
+      # refused — which is what licenses `additionalProperties: false`.
+      #
+      # NOTE the `--tsconfig`: this is the first gate that imports decorated
+      # classes, there is no tsconfig.json at the repository root, and without
+      # it tsx emits TC39 decorators and the DTOs throw at class-definition
+      # time. The script's header carries the measured error.
+      - name: The published API contract is generated, not maintained
+        run: pnpm check:openapi
+
       # amtool is run against a COPY with the receiver placeholders substituted,
       # not against the file as committed.
       #

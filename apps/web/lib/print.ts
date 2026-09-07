@@ -1,50 +1,25 @@
-import { desktopBridge, type DesktopAck } from './desktop';
-
 /**
  * Print a Libriant document (a circulation receipt or a barcode label).
  *
- * One switch decides the path at click time:
- *   - **Desktop shell** — a SILENT job to the default printer via the audited
- *     `window.libriantDesktop.print` bridge (no OS dialog).
- *   - **Browser** — open the same-origin print route in a new tab; the route
- *     raises the browser's own print dialog once it has rendered.
+ * This module is now a thin front for `PrintPort` (`lib/ports/print-port.ts`).
+ * It used to hold both implementations as an `if (bridge)` inside one function
+ * — which worked, and was exactly the shape phase 6 exists to name: phase 34
+ * adds hand-rolled ESC/POS and ZPL, and M8 adds a Tauri host with no Next.js
+ * print route at all, so that if/else was on its way to four branches in a file
+ * every circulation screen imports.
  *
- * The print content itself is server-rendered by the `/print/...` routes, so
- * this helper only needs to build the path and pick the mechanism.
+ * Kept as a named function because `printDocument(target)` reads better at a
+ * click handler than `printPort().print(target)`, and because the three current
+ * callers (LoanActions, BookDetail, PrintTrigger) predate the port.
  */
+import type { PortAck } from '@libriant/shared/ports';
+import { printPort } from './ports';
 
-export type PrintKind = 'receipt' | 'label';
+export type { PrintKind, PrintTarget } from '@libriant/shared/ports';
+export { buildPrintPath } from './ports';
 
-export type PrintTarget = {
-  locale: string;
-  slug: string;
-  kind: PrintKind;
-  /** Loan id for a receipt, copy id for a label. */
-  id: string;
-  /** Required for a label — the copy's book id (there is no copy-by-id fetch). */
-  bookId?: string;
-};
-
-/** Build the same-origin print-route path for a document. */
-export function buildPrintPath(target: PrintTarget): string {
-  const { locale, slug, kind, id, bookId } = target;
-  if (kind === 'receipt') {
-    return `/${locale}/print/${slug}/receipt/${encodeURIComponent(id)}`;
-  }
-  const query = bookId ? `?book=${encodeURIComponent(bookId)}` : '';
-  return `/${locale}/print/${slug}/label/${encodeURIComponent(id)}${query}`;
-}
-
-export async function printDocument(target: PrintTarget): Promise<DesktopAck> {
-  const path = buildPrintPath(target);
-  const bridge = desktopBridge();
-  if (bridge) {
-    try {
-      return await bridge.print({ path });
-    } catch {
-      return { ok: false, reason: 'bridge-error' };
-    }
-  }
-  const opened = window.open(path, '_blank', 'noopener');
-  return opened ? { ok: true } : { ok: false, reason: 'popup-blocked' };
+export async function printDocument(
+  target: import('@libriant/shared/ports').PrintTarget,
+): Promise<PortAck> {
+  return printPort().print(target);
 }

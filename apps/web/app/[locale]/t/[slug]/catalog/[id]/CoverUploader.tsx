@@ -3,8 +3,9 @@ import * as React from 'react';
 import { Button, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { API_JOB_TIMEOUT_MS, ApiError, api } from '@/lib/api';
+import { API_JOB_TIMEOUT_MS } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
+import { dataPort } from '@/lib/ports';
 
 type Props = {
   slug: string;
@@ -33,20 +34,11 @@ export function CoverUploader({ slug, bookId, coverAssetRef, catalog, locale, on
     if (!file) return;
     setUploading(true);
     try {
-      const form = new FormData();
-      form.append('file', file, file.name);
-      const res = await fetch(`/lbr-api/t/${slug}/catalog/books/${bookId}/cover`, {
-        method: 'POST',
-        body: form,
-        credentials: 'include',
-        // Multipart bypasses `api()` and therefore its deadline; set one here.
-        signal: AbortSignal.timeout(API_JOB_TIMEOUT_MS),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new ApiError(res.status, body);
-      }
-      const json = (await res.json()) as { coverAssetRef: string };
+      const json = await dataPort().upload<{ coverAssetRef: string }>(
+        `/t/${slug}/catalog/books/${bookId}/cover`,
+        { file: { name: file.name, type: file.type, data: file } },
+        { timeoutMs: API_JOB_TIMEOUT_MS },
+      );
       onChange(json.coverAssetRef);
       toast.show({ severity: 'success', title: t('catalog.book.coverUploaded') });
     } catch (err) {
@@ -62,7 +54,7 @@ export function CoverUploader({ slug, bookId, coverAssetRef, catalog, locale, on
   async function remove() {
     setRemoving(true);
     try {
-      await api(`/t/${slug}/catalog/books/${bookId}/cover`, { method: 'DELETE' });
+      await dataPort().delete(`/t/${slug}/catalog/books/${bookId}/cover`);
       onChange(null);
       toast.show({ severity: 'success', title: t('catalog.book.coverRemoved') });
     } catch (err) {
@@ -75,7 +67,9 @@ export function CoverUploader({ slug, bookId, coverAssetRef, catalog, locale, on
     }
   }
 
-  const coverUrl = coverAssetRef ? `/lbr-api/t/${slug}/storage/${coverAssetRef}` : null;
+  const coverUrl = coverAssetRef
+    ? dataPort().resourceUrl(`/t/${slug}/storage/${coverAssetRef}`)
+    : null;
 
   return (
     <div

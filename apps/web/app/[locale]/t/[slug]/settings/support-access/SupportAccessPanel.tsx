@@ -13,6 +13,7 @@ import {
 import { createTranslator, type Catalog, type Locale } from '@libriant/i18n';
 import { api } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
+import { platformPort } from '@/lib/ports';
 
 type PendingKey = {
   id: string;
@@ -137,12 +138,12 @@ export function SupportAccessPanel({
 
   async function copyCode() {
     if (!revealedCode) return;
-    try {
-      await navigator.clipboard.writeText(revealedCode);
-      toast.show({ severity: 'success', title: t('support.grant.copied') });
-    } catch {
-      toast.show({ severity: 'warning', title: t('support.access.copyFailed') });
-    }
+    const ack = await platformPort().copyText(revealedCode);
+    toast.show(
+      ack.ok
+        ? { severity: 'success', title: t('support.grant.copied') }
+        : { severity: 'warning', title: t('support.access.copyFailed') },
+    );
   }
 
   const fmt = (iso: string) => new Date(iso).toLocaleString();

@@ -3,8 +3,9 @@ import * as React from 'react';
 import { Button, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { API_JOB_TIMEOUT_MS, ApiError, api } from '@/lib/api';
+import { API_JOB_TIMEOUT_MS } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
+import { dataPort } from '@/lib/ports';
 
 type Props = {
   slug: string;
@@ -34,23 +35,11 @@ export function PhotoUploader({ slug, memberId, photoAssetRef, catalog, locale, 
     if (!file) return;
     setUploading(true);
     try {
-      const form = new FormData();
-      form.append('file', file, file.name);
-      // We bypass `api()` here because multipart upload doesn't go through
-      // the JSON wrapper. The browser sets the right Content-Type with the
-      // boundary; we just hand off the FormData.
-      const res = await fetch(`/lbr-api/t/${slug}/members/${memberId}/photo`, {
-        method: 'POST',
-        body: form,
-        credentials: 'include',
-        // Multipart bypasses `api()` and therefore its deadline; set one here.
-        signal: AbortSignal.timeout(API_JOB_TIMEOUT_MS),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new ApiError(res.status, body);
-      }
-      const json = (await res.json()) as { photoAssetRef: string };
+      const json = await dataPort().upload<{ photoAssetRef: string }>(
+        `/t/${slug}/members/${memberId}/photo`,
+        { file: { name: file.name, type: file.type, data: file } },
+        { timeoutMs: API_JOB_TIMEOUT_MS },
+      );
       onChange(json.photoAssetRef);
       toast.show({ severity: 'success', title: t('members.detail.photoUploaded') });
     } catch (err) {
@@ -66,7 +55,7 @@ export function PhotoUploader({ slug, memberId, photoAssetRef, catalog, locale, 
   async function remove() {
     setRemoving(true);
     try {
-      await api(`/t/${slug}/members/${memberId}/photo`, { method: 'DELETE' });
+      await dataPort().delete(`/t/${slug}/members/${memberId}/photo`);
       onChange(null);
       toast.show({ severity: 'success', title: t('members.detail.photoRemoved') });
     } catch (err) {
@@ -82,7 +71,9 @@ export function PhotoUploader({ slug, memberId, photoAssetRef, catalog, locale, 
   // photoAssetRef is `members/<filename>`; the storage controller serves
   // it at `/t/:slug/storage/:resourceType/:filename`. We hit it through
   // the same-origin proxy so cookies travel.
-  const photoUrl = photoAssetRef ? `/lbr-api/t/${slug}/storage/${photoAssetRef}` : null;
+  const photoUrl = photoAssetRef
+    ? dataPort().resourceUrl(`/t/${slug}/storage/${photoAssetRef}`)
+    : null;
 
   return (
     <div

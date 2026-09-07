@@ -1,0 +1,79 @@
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "pattern": "^[^\\n]+$",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "subtitle": {
+      "type": "string"
+    },
+    "contactEmail": {
+      "type": "string",
+      "format": "email"
+    },
+    "publicationYear": {
+      "maximum": 2200,
+      "minimum": 1450,
+      "type": "integer"
+    },
+    "schema": {
+      "enum": [
+        "marc21",
+        "unimarc"
+      ]
+    },
+    "circulates": {
+      "type": "boolean"
+    },
+    "draft": {
+      "const": false
+    },
+    "acquiredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "subjects": {
+      "type": "array",
+      "maxItems": 10,
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "authors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "role": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "acquiredAt",
+    "authors",
+    "circulates",
+    "contactEmail",
+    "draft",
+    "publicationYear",
+    "schema",
+    "subjects",
+    "title"
+  ]
+}

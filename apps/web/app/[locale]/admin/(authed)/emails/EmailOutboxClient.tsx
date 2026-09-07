@@ -12,6 +12,7 @@ import {
   Input,
 } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
+import { platformPort } from '@/lib/ports';
 
 export type OutboxMessage = {
   id: string;
@@ -186,10 +187,13 @@ export function EmailOutboxClient({
               <Button
                 variant="ghost"
                 onClick={() => {
-                  navigator.clipboard
-                    ?.writeText(open.body)
-                    .then(() => setCopied(true))
-                    .catch(() => setError('Could not copy — select the text and copy by hand.'));
+                  void platformPort()
+                    .copyText(open.body)
+                    .then((ack) =>
+                      ack.ok
+                        ? setCopied(true)
+                        : setError('Could not copy — select the text and copy by hand.'),
+                    );
                 }}
               >
                 {copied ? 'Copied' : 'Copy body'}

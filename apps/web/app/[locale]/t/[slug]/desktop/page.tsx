@@ -7,6 +7,7 @@ import { requestCookieHeader } from '@/lib/session';
 import { api } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
 import { guessPlatformFromRequest, type DesktopPlatform } from '@/lib/desktop-server';
+import { dataPort } from '@/lib/ports';
 
 export const dynamic = 'force-dynamic';
 
@@ -86,7 +87,9 @@ export default async function DesktopPage(props: {
                 return (
                   <a
                     key={p}
-                    href={`/lbr-api/t/${params.slug}/desktop/download?platform=${p}`}
+                    href={dataPort().resourceUrl(
+                      `/t/${params.slug}/desktop/download?platform=${p}`,
+                    )}
                     className={`lbr-btn lbr-btn--${recommended ? 'primary' : 'secondary'} lbr-btn--md`}
                     download
                   >

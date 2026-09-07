@@ -4,8 +4,9 @@ import { useRouter } from 'next/navigation';
 import { Button, Card, CardBody, CardHeader, Input, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { API_JOB_TIMEOUT_MS, ApiError, api } from '@/lib/api';
+import { API_JOB_TIMEOUT_MS, api } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
+import { dataPort } from '@/lib/ports';
 
 const DEFAULT_SWATCH = '#1f6feb';
 
@@ -29,7 +30,7 @@ export function BrandingForm({
   const [logoRef, setLogoRef] = React.useState(brandLogoRef);
   const [busy, setBusy] = React.useState(false);
 
-  const logoUrl = logoRef ? `/lbr-api/t/${slug}/storage/${logoRef}` : null;
+  const logoUrl = logoRef ? dataPort().resourceUrl(`/t/${slug}/storage/${logoRef}`) : null;
 
   const fail = (err: unknown) =>
     toast.show({
@@ -56,17 +57,11 @@ export function BrandingForm({
     if (!file) return;
     setBusy(true);
     try {
-      const form = new FormData();
-      form.append('file', file, file.name);
-      const res = await fetch(`/lbr-api/t/${slug}/branding/logo`, {
-        method: 'POST',
-        body: form,
-        credentials: 'include',
-        // Multipart bypasses `api()` and therefore its deadline; set one here.
-        signal: AbortSignal.timeout(API_JOB_TIMEOUT_MS),
-      });
-      if (!res.ok) throw new ApiError(res.status, await res.json().catch(() => ({})));
-      const json = (await res.json()) as { brandLogoRef: string };
+      const json = await dataPort().upload<{ brandLogoRef: string }>(
+        `/t/${slug}/branding/logo`,
+        { file: { name: file.name, type: file.type, data: file } },
+        { timeoutMs: API_JOB_TIMEOUT_MS },
+      );
       setLogoRef(json.brandLogoRef);
       toast.show({ severity: 'success', title: t('settings.branding.logoUploaded') });
       router.refresh();
@@ -80,7 +75,7 @@ export function BrandingForm({
   async function removeLogo() {
     setBusy(true);
     try {
-      await api(`/t/${slug}/branding/logo`, { method: 'DELETE' });
+      await dataPort().delete(`/t/${slug}/branding/logo`);
       setLogoRef(null);
       toast.show({ severity: 'success', title: t('settings.branding.logoRemoved') });
       router.refresh();

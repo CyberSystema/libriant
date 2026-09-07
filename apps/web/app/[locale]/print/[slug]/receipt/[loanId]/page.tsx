@@ -11,6 +11,7 @@ import {
 import { loadCatalog } from '@/lib/locale-loader';
 import { currentSession, requestCookieHeader } from '@/lib/session';
 import { ApiError, api } from '@/lib/api';
+import { dataPort } from '@/lib/ports';
 
 export const dynamic = 'force-dynamic';
 
@@ -64,7 +65,7 @@ export default async function ReceiptPage(props: {
 
   const libraryName = session.tenant.name;
   const brandLogoUrl = session.tenant.brandLogoRef
-    ? `/lbr-api/t/${session.tenant.slug}/storage/${session.tenant.brandLogoRef}`
+    ? dataPort().resourceUrl(`/t/${session.tenant.slug}/storage/${session.tenant.brandLogoRef}`)
     : null;
   const isReturn = loan.status === 'returned';
   const outstanding = loan.fines.filter((f) => f.status === 'outstanding');

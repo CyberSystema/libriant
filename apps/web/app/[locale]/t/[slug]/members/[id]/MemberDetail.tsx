@@ -13,6 +13,7 @@ import { formatMoney } from '@/components/money';
 import { MemberForm, type MemberInitial } from '../new/MemberForm';
 import { PhotoUploader } from './PhotoUploader';
 import { AGE_OF_MAJORITY_YEARS, ageInCompletedYears, dsarStrings } from './dsar-strings';
+import { dataPort } from '@/lib/ports';
 
 type Status = 'active' | 'suspended' | 'archived';
 
@@ -115,7 +116,7 @@ export function MemberDetail({
    */
   const [exportOpen, setExportOpen] = React.useState(false);
   const dsar = dsarStrings(locale);
-  const exportHref = `/lbr-api/t/${slug}/members/${member.id}/data-export`;
+  const exportHref = dataPort().resourceUrl(`/t/${slug}/members/${member.id}/data-export`);
   /**
    * Derived from the date of birth already on this page — no extra request.
    *

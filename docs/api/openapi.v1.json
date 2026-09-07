@@ -1,0 +1,94 @@
+{
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "description": "OAuth 2.0 bearer token. Scopes are permission keys — see the permission model.",
+        "flows": {
+          "clientCredentials": {
+            "scopes": {
+              "admin.announcement.read": "admin.announcement.read",
+              "admin.audit.read": "admin.audit.read",
+              "admin.branding.manage": "admin.branding.manage",
+              "admin.desktop.download": "admin.desktop.download",
+              "admin.export.manage": "admin.export.manage",
+              "admin.identity.manage": "admin.identity.manage",
+              "admin.import.manage": "admin.import.manage",
+              "admin.legal.accept": "admin.legal.accept",
+              "admin.legal.read": "admin.legal.read",
+              "admin.library.edit": "admin.library.edit",
+              "admin.library.read": "admin.library.read",
+              "admin.plan.read": "admin.plan.read",
+              "admin.settings.edit": "admin.settings.edit",
+              "admin.settings.read": "admin.settings.read",
+              "admin.staff.manage": "admin.staff.manage",
+              "billing.manage": "billing.manage",
+              "billing.read": "billing.read",
+              "cat.bib.delete": "cat.bib.delete",
+              "cat.bib.read": "cat.bib.read",
+              "cat.bib.write": "cat.bib.write",
+              "cat.cover.write": "cat.cover.write",
+              "cat.file.delete": "cat.file.delete",
+              "cat.isbn.lookup": "cat.isbn.lookup",
+              "cat.item.delete": "cat.item.delete",
+              "cat.item.write": "cat.item.write",
+              "circ.fee.pay": "circ.fee.pay",
+              "circ.fee.read": "circ.fee.read",
+              "circ.fee.void": "circ.fee.void",
+              "circ.fee.waive": "circ.fee.waive",
+              "circ.hold.cancel": "circ.hold.cancel",
+              "circ.hold.edit": "circ.hold.edit",
+              "circ.hold.expire": "circ.hold.expire",
+              "circ.hold.fulfill": "circ.hold.fulfill",
+              "circ.hold.place": "circ.hold.place",
+              "circ.hold.read": "circ.hold.read",
+              "circ.loan.checkout": "circ.loan.checkout",
+              "circ.loan.edit": "circ.loan.edit",
+              "circ.loan.mark_lost": "circ.loan.mark_lost",
+              "circ.loan.read": "circ.loan.read",
+              "circ.loan.renew": "circ.loan.renew",
+              "circ.loan.return": "circ.loan.return",
+              "data.collection.manage": "data.collection.manage",
+              "data.collection.read": "data.collection.read",
+              "data.field.manage": "data.field.manage",
+              "data.field.read": "data.field.read",
+              "data.record.delete": "data.record.delete",
+              "data.record.read": "data.record.read",
+              "data.record.write": "data.record.write",
+              "patron.archive": "patron.archive",
+              "patron.erase": "patron.erase",
+              "patron.photo.write": "patron.photo.write",
+              "patron.pii.export": "patron.pii.export",
+              "patron.read": "patron.read",
+              "patron.status": "patron.status",
+              "patron.write": "patron.write",
+              "report.dashboard.read": "report.dashboard.read",
+              "support.key.manage": "support.key.manage",
+              "support.session.read": "support.session.read",
+              "support.session.revoke": "support.session.revoke"
+            },
+            "tokenUrl": "https://app.libriant.com/api/v1/oauth/token"
+          }
+        },
+        "type": "oauth2"
+      }
+    }
+  },
+  "info": {
+    "description": "The public REST API for a Libriant library. Every operation is scoped to one tenant by the credential presented; there is no cross-library endpoint.",
+    "license": {
+      "identifier": "LicenseRef-Libriant",
+      "name": "Proprietary"
+    },
+    "title": "Libriant API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {},
+  "servers": [
+    {
+      "description": "Libriant cloud.",
+      "url": "https://app.libriant.com/api"
+    }
+  ],
+  "tags": []
+}

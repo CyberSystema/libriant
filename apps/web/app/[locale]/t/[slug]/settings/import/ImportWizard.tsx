@@ -2,8 +2,9 @@
 import * as React from 'react';
 import { Banner, Button, Card, CardBody, CardHeader, EmptyState, FormError } from '@libriant/ui';
 import { createTranslator, type Catalog, type Locale } from '@libriant/i18n';
-import { API_JOB_TIMEOUT_MS, ApiError, api } from '@/lib/api';
+import { API_JOB_TIMEOUT_MS, api } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
+import { dataPort } from '@/lib/ports';
 
 // ---- shared shapes (mirror the API) ---------------------------------------
 export type FieldDef = { key: string; label: string; kind: string; required?: boolean };
@@ -129,31 +130,25 @@ export function ImportWizard({ catalog, locale, slug, entities, initialBatches }
     setError(null);
     const file = fileRef.current?.files?.[0];
     if (!file) return;
-    const form = new FormData();
-    form.set('entityKind', entityKind);
-    form.set('file', file);
+    const fields: Record<string, string> = { entityKind };
     const formEl = e.currentTarget as HTMLFormElement;
     const fd = new FormData(formEl);
     for (const k of ['format', 'encoding', 'delimiter']) {
       const v = fd.get(k);
-      if (typeof v === 'string' && v.length) form.set(k, v);
+      if (typeof v === 'string' && v.length) fields[k] = v;
     }
     // Unchecked checkboxes don't submit, so read the header toggle directly.
     const headerEl = formEl.elements.namedItem('hasHeader') as HTMLInputElement | null;
-    if (headerEl) form.set('hasHeader', headerEl.checked ? 'true' : 'false');
+    if (headerEl) fields.hasHeader = headerEl.checked ? 'true' : 'false';
     setBusy(true);
     try {
-      const res = await fetch(`/lbr-api${apiBase}`, {
-        method: 'POST',
-        body: form,
-        credentials: 'include',
-        // Multipart bypasses `api()`, so it bypassed its deadline too. A CSV
-        // upload can legitimately take a while; a wedged API must not leave
-        // the button spinning for undici's five minutes.
-        signal: AbortSignal.timeout(API_JOB_TIMEOUT_MS),
-      });
-      const body = (await res.json()) as DetailResponse & { message?: string };
-      if (!res.ok) throw new ApiError(res.status, body);
+      // A CSV upload can legitimately take a while, so it gets the job
+      // deadline rather than the 10s one a person is waiting on.
+      const body = await dataPort().upload<DetailResponse>(
+        apiBase,
+        { file: { name: file.name, type: file.type, data: file }, fields },
+        { timeoutMs: API_JOB_TIMEOUT_MS },
+      );
       openDetail(res2detail(body));
     } catch (err) {
       fail(err);
@@ -275,7 +270,7 @@ export function ImportWizard({ catalog, locale, slug, entities, initialBatches }
                 t={t}
                 batch={detail.batch}
                 issues={issues}
-                csvHref={`/lbr-api${apiBase}/${detail.batch.id}/errors.csv`}
+                csvHref={dataPort().resourceUrl(`${apiBase}/${detail.batch.id}/errors.csv`)}
                 onAgain={reset}
               />
             ) : (
@@ -287,7 +282,7 @@ export function ImportWizard({ catalog, locale, slug, entities, initialBatches }
                 dupMode={dupMode}
                 setDupMode={setDupMode}
                 issues={issues}
-                csvHref={`/lbr-api${apiBase}/${detail.batch.id}/errors.csv`}
+                csvHref={dataPort().resourceUrl(`${apiBase}/${detail.batch.id}/errors.csv`)}
                 busy={busy}
                 onValidate={() => run('validate')}
                 onCommit={() => run('commit')}

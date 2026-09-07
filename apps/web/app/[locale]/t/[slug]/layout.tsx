@@ -21,6 +21,7 @@ import { DesktopGate } from './DesktopGate';
 import { LogoutButton } from './LogoutButton';
 import { SidebarNav } from './SidebarNav';
 import { SystemModeTakeover } from './SystemModeTakeover';
+import { dataPort } from '@/lib/ports';
 
 /**
  * Every tenant-scoped page goes through here. Three jobs:
@@ -209,7 +210,7 @@ export default async function TenantLayout(props: {
   // the logo, if set, replaces the wordmark in the header.
   const brandColor = session?.tenant.brandColor ?? null;
   const brandLogoUrl = session?.tenant.brandLogoRef
-    ? `/lbr-api/t/${params.slug}/storage/${session.tenant.brandLogoRef}`
+    ? dataPort().resourceUrl(`/t/${params.slug}/storage/${session.tenant.brandLogoRef}`)
     : null;
   const shellStyle = brandColor
     ? ({ ['--color-primary']: brandColor } as CSSProperties)

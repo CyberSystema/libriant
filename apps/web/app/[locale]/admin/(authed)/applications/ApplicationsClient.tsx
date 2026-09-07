@@ -14,6 +14,7 @@ import {
 } from '@libriant/ui';
 import { findCountry } from '@libriant/shared/countries';
 import { ApiError, api } from '@/lib/api';
+import { dataPort } from '@/lib/ports';
 
 export type ApplicationStatus = 'new' | 'contacted' | 'accepted' | 'rejected';
 
@@ -157,7 +158,7 @@ export function ApplicationsClient({
             not a fetch: the CSV comes back as an attachment. */}
         <a
           className="lbr-btn lbr-btn--secondary lbr-btn--md"
-          href="/lbr-api/admin/applications.csv"
+          href={dataPort().resourceUrl('/admin/applications.csv')}
         >
           Download CSV
         </a>

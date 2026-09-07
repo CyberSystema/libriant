@@ -16,6 +16,7 @@
     "./library": "./src/library.ts",
     "./money": "./src/money.ts",
     "./permissions": "./src/permissions.ts",
+    "./ports": "./src/ports.ts",
     "./search": "./src/search.ts"
   },
   "scripts": {
