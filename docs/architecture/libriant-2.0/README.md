@@ -1819,3 +1819,318 @@ rank. The naive reading returns 499 ids from a 500-rule snapshot on every
 checkout, allocated on the hot path and rendered into an explain screen nobody
 could read. "Your branch rule beat the tenant default" is what the librarian
 asking _why is this due on the 19th_ actually wanted.
+
+## Phase 13 — the policy engine service
+
+Eighteen tables, two Nest modules' worth of service in one (`apps/api/src/policy`),
+a snapshot cache with three timescales and three fail postures, a simple-mode
+façade, `/circulation/explain`, a preview endpoint, `TenantClockService` and an
+ESLint block that stops circulation reading the clock. The two acceptance numbers
+were measured: a policy change reaches a second process in **16 ms** against a
+budget of 1,000, and resolution over a 500-rule snapshot is **p50 0.024 ms, p99
+0.042 ms** against a budget of 0.2.
+
+### The collation trap: phase 12 was right that it exists and wrong about the fix
+
+The phase-12 entry above says "phase 13's snapshot query **must** order by
+`id COLLATE "C"`". Phase 13 has no such query, and the reason is worth correcting
+in place rather than quietly not doing it.
+
+Measured, on the three collations this code actually meets:
+
+|                                                               | order of `R-default, ckv1a2b3c, r-default, r_default, rdefault` |
+| ------------------------------------------------------------- | --------------------------------------------------------------- |
+| production (ICU `el-GR`, from the compose file's initdb args) | `ckv1a2b3c, r_default, r-default, R-default, rdefault`          |
+| this machine's dev cluster (libc `en_US.UTF-8`)               | `ckv1a2b3c, CKV…, r_default, r-default, R-default, rdefault`    |
+| `compareRank` (UTF-16 code units, i.e. `C`)                   | `R-default, ckv1a2b3c, r-default, r_default, rdefault`          |
+
+Three collations, three different orders — and the sharpest part is that LOCAL
+and PRODUCTION disagree with each other, so a test that pinned the database's
+order and passed here would prove nothing about the library it shipped to.
+
+But the SQL order reaches no answer. `resolve.ts` filters into a fresh array and
+sorts it with `compareRank`, which is a TOTAL order on distinct ids, so the
+winner does not depend on the input order at all — asserted directly:
+reversing the array before sorting gives the same ranking. Prisma cannot express
+`COLLATE` in any case (`SortOrder` is `{asc, desc}`), so ordering in SQL would
+mean hand-writing `lbr2.`-qualified raw SQL for ten tables to buy an order
+nothing reads.
+
+So the fix is three things and none of them is the one phase 12 predicted. The
+snapshot loader has **no `orderBy`**, and says why. `circulation_rules_resolve_idx`
+— which §3 specifies as `(priority DESC, specificity DESC, id) WHERE enabled` —
+is **not created**: measured at the 500-rule acceptance size, the planner never
+chose it, and forcing it read **403 buffers against 5** for a sequential scan and
+sort, because a whole-table read through a btree is random-order heap access. And
+where SQL order does reach a human — the matrix listing, `/circulation/explain`'s
+neighbours, a phase-26 report — the query says `id COLLATE "C"` and
+`circulation_rules_listing_idx` serves it, because a UI that lists rules in a
+different order than the engine ranks them is the same bug wearing a different
+hat.
+
+The one thing that did NOT survive contact with measurement: generated cuids
+cannot diverge at all. The whole `[0-9a-z]` alphabet orders identically under all
+three, exhaustively. The trap is real for a seeded, imported or human-chosen id —
+`rule-default`, which this phase creates, is exactly one of those — and
+theoretical for anything Prisma generates.
+
+### `circulation_policy_version` is bumped by seventeen triggers, and each word is load-bearing
+
+§4.2 argues the changelog must be trigger-written because "a forgotten `emit()`
+silently breaks replicas and the index forever". Here it is worse. A forgotten
+bump means every pod keeps its cached snapshot; the thirty-second backstop
+re-reads the counter, sees no change, and keeps the stale cache — not for thirty
+seconds, **for ever**. The librarian edits the loan period, the screen says
+saved, and every checkout that week is priced by the old one.
+
+The surface a trigger has to cover is also larger than the changelog's: this
+phase's service, the simple-mode façade, a phase-30 importer, phase 19's
+copy-forward (PL/pgSQL, which never touches the application), a seed script, and
+a support engineer in `psql`.
+
+Four measurements settled the shape:
+
+**`FOR EACH STATEMENT`.** A 40-row `UPDATE` fires a row trigger 40 times and a
+statement trigger once — 40 dead tuples and 40× the WAL for one librarian's edit,
+counting ROWS TOUCHED rather than POLICY STATES. Asserted: a multi-row update
+moves the counter by exactly 1.
+
+**A statement trigger fires on zero affected rows**, so `UPDATE … WHERE id =
+'typo'` bumps the version. That is over-invalidation, and it is free to accept
+because the requirement is one-directional: a different policy state MUST get a
+different version, while a different version need not mean a different state. A
+spurious bump costs one snapshot rebuild.
+
+**`OR TRUNCATE` is in every one.** `TRUNCATE circulation_rules` emits ZERO change
+events — the changelog is row-level and cannot see a truncate — so without it the
+version would not move either and every pod would serve the deleted matrix for
+ever, fully populated and completely wrong. With it, every pod rebuilds and the
+resolver refuses to lend. Refusing is correct.
+
+**`version = version + 1` needs no lock of ours.** Two concurrent bumps from 1
+give **3, not 2**: Postgres's ReadCommitted UPDATE re-check re-fetches the newly
+committed row and re-evaluates the expression against it, the same mechanism that
+makes `SET balance = balance + 100` safe. A read-then-write in application code
+is what loses that update, and is the concrete reason the bump is not in a
+service. Asserted, along with the fact that a rollback takes the bump with it.
+
+`integer`, not `bigint`: Prisma maps `BigInt` to a JS `bigint` and
+`JSON.stringify({version: 1n})` **throws**, and this number lands in
+`loans.policy_snapshot jsonb` on every checkout. Not a timestamp either —
+`pg_catalog.now()` is TRANSACTION START time, so a long transaction that commits
+second stamps first and a cache doing "rebuild if stored > cached" never rebuilds
+again.
+
+### All sixteen new content tables are `@replicated`, and the `fees` argument inverts
+
+`fees` is excluded from the changelog because "the overdue-fine sweep touches
+every accruing fee every night, so a trigger here would be the single largest
+producer in the feed — and no consumer reads it yet". Every clause of that
+reverses. These tables are written by a librarian in an admin screen and the whole
+set changes less in a year than `fees` changes in a minute. Consumers exist
+today: `PolicySnapshot` is a CLOSED value whose fields map onto exactly these
+tables with nothing left over, so a device missing any one of them does not lend
+with a slightly wrong due date — §4.1 forbids failing open, so it raises
+`POLICY_NOT_IN_SNAPSHOT` and refuses to lend. And the asymmetry points the other
+way: turning a firehose off after a fleet has consumed it is expensive, but a
+fleet shipped WITHOUT policy replication cannot resolve offline at all and needs a
+fleet-wide re-seed rather than a one-line migration.
+
+Every one is `branch = false`, **including `circulation_rules`**, and that is a
+requirement rather than a shortcut. A rule has three branch columns and no single
+owning branch; setting `change_events.branch_id` from `owning_branch_id` would
+look tidy and would break floating collections and ILL, because a device at
+branch B checking out an item OWNED by branch A must match the rule scoped
+`owning_branch_id = 'A'`, and a branch-filtered consumer would never receive it.
+
+`circulation_policy_version` and `circulation_settings` are NOT replicated: the
+counter is bumped by every one of the seventeen triggers, so replicating it would
+emit two events for every policy edit.
+
+### The snapshot cache: three timescales, and a third posture no other cache here has
+
+`freshnessMs` (250 ms) bounds a LOST pub/sub message while Redis is healthy —
+without it the 1-second criterion is met on good days only. `ttlMs` (30 s) is
+§4.1's stated backstop and bounds staleness while Redis is down. `staleCeilingMs`
+(15 min) bounds staleness while the tenant database is down, past which the
+service **refuses**.
+
+That third posture is the one that needed arguing, because "never fails open"
+reads like "refuse whenever unsure":
+
+> A DEFAULT POLICY is a value no librarian ever wrote. The receipt in the
+> patron's hand then states a rule that is not this library's rule, and nothing
+> in the row distinguishes it from a real resolution.
+>
+> A STALE SNAPSHOT is a value the library DID write, which was in force at a real
+> identifiable instant. `RuleTrace.snapshotVersion` names which one and
+> `loans.policy_snapshot` freezes it into the row, so a loan priced by version 41
+> forty seconds after version 42 was published is exactly a loan taken forty
+> seconds earlier. The failure is LATENESS — bounded, observable, attributable.
+> The other is FABRICATION.
+
+So: holding a snapshot and unable to confirm it, serve and warn; holding nothing,
+refuse with a 503. The case the stale serve earns its keep in is the PARTIAL
+outage — pool exhaustion, a long lock, a three-second failover — where the write
+succeeds on retry and only the policy read had bad luck.
+
+**A missing version row is a refusal by name, not version 0.** Zero never
+changes, so a library whose counter row was gone would run for ever on a snapshot
+no bump could invalidate, on every pod, and nobody would find out. Note the
+deliberate asymmetry with `PermissionsService`, which resolves a missing Redis
+version key to `'0'` — safe there because it is only a cache-key discriminator
+and can never produce a wrong permission.
+
+### No second Redis connection, and the reason usually given for one is false here
+
+The standard advice is that a subscribed ioredis connection accepts only
+subscribe-family commands, so pub/sub needs its own socket. **Measured against
+the running container with the exact options `RedisService` uses**: ioredis 6
+defaults to `protocol: 3`, RESP3 has no restricted subscriber mode, and after
+`subscribe('lbr:policy:bump')` the same client returned `GET` → `v1` and
+`PUBLISH` → `1` and delivered its own message. So the subscription lives on the
+shared client and the process opens no new socket.
+
+The channel carries `lbr:` **literally**, because `keyPrefix` is applied only to
+arguments a command declares as keys and `PUBLISH`/`SUBSCRIBE` declare none.
+(`SPUBLISH` does declare one, so reaching for sharded pub/sub later would
+silently desynchronise publisher and subscriber.)
+
+**The announce happens AFTER the commit**, and the alternative is subtle enough
+to be worth stating. Publishing inside the transaction lets a subscriber react
+before the commit, read the PRE-CHANGE rows on its own connection, and cache them
+stamped with the NEW version — after which every freshness check agrees and the
+pod serves the old policy under the new number until the TTL, making
+`RuleTrace.snapshotVersion` a lie in exactly the case it exists for. Announcing
+after commit trades that for losing the notification if the process dies in
+between, which is what the backstop is for.
+
+### The wildcard guard is in the service, and the database genuinely cannot do it
+
+`circulation_rules_default_singleton` forbids a SECOND enabled wildcard and says
+nothing about removing the last one. A deferred `CONSTRAINT TRIGGER` counting the
+survivors at commit would close delete, disable and expire — but measured on PG
+16.15, `CREATE CONSTRAINT TRIGGER … AFTER TRUNCATE` is rejected outright (`FOR
+EACH ROW` is unsupported for TRUNCATE and `FOR EACH STATEMENT` is a syntax error
+there), so `TRUNCATE circulation_rules` would still empty the table. A guard that
+closes three doors of four, at commit time, with an error Prisma surfaces as a
+generic transaction failure, is not better than a typed refusal in the one
+service that owns the table.
+
+There are FOUR ways to retire the wildcard, not two, and all four are refused:
+delete, `enabled = false`, an `effective_to` in the past, and — the sharpest —
+an `effective_from` in the FUTURE, which satisfies both partial unique indexes,
+reads as perfectly configured in the editor, and makes every checkout until that
+date raise `NO_MATCHING_RULE`.
+
+The fourth door, `TRUNCATE`, is left to phase 16's `REVOKE TRUNCATE`, and the
+bump triggers mean that if anybody does truncate the table every pod rebuilds
+within a second and the desk refuses to lend rather than serving a matrix that no
+longer exists.
+
+### One message keyed on the input rather than on the constraint that fired
+
+A second wildcard violates `circulation_rules_scope_unique` FIRST — two wildcards
+have identical all-empty scopes, so `circulation_rules_default_singleton` never
+gets to report it. Keying the message on the constraint name told a librarian who
+had tried to add a second default rule that "another rule already covers exactly
+this combination of conditions": true, and not what they needed to hear. The test
+caught it, and the fix was to decide from the six selectors in the request.
+
+### Decisions worth their sentence
+
+**The enum labels are the TypeScript literals, camelCase and all** —
+`endOfPreviousOpenDay`, not `end_of_previous_open_day`. `loans.policy_snapshot`
+freezes these values verbatim, `fixtures/resolution-vectors.json` carries them to
+`cargo test`, and phase 77's Rust core reads both; a database label that differed
+would need a translation table maintained in two languages, and a translation
+table with one wrong row is a loan policy that silently becomes a different one.
+The snake_case gate reads the first quoted token of a column line — the column
+NAME — and never sees an enum label, so this costs nothing there.
+
+**Money is spelled `_cents` even though "cents" is wrong for JPY and KWD.**
+`check:schema-conventions` keys on `/_cents$/`, so a column named
+`amount_minor_units` would be invisible to BOTH halves of the money rule, and the
+first policy money column in the schema would be the one that escaped the gate
+money has a gate for.
+
+**One `currency` column per table, not one per amount**, and that is correct
+rather than tolerated: `@libriant/shared/money` refuses a currency mismatch on
+every operation, and every consumer of a hold policy adds `placement_fee` and
+`not_picked_up_fee` to one patron account — so a policy whose two fees are in
+different currencies is not a policy anyone can charge. One column makes it
+unrepresentable instead of unpayable.
+
+**Twelve `(value IS NULL) = (unit IS NULL)` CHECKs, one per duration pair.**
+`addDuration` ends `const step = period.unit === 'weeks' ? 7 : 1`, so a NULL unit
+is silently priced as DAYS and a two-hour reserve becomes a fortnight's loan —
+§4.1's "never fails open" defeated before the resolver runs. A Postgres
+`interval` would have made the pair atomic and cannot carry the civil/elapsed
+distinction (`'3 weeks'` normalises to `21 days`); a composite type would have
+worked and is `Unsupported` in Prisma.
+
+**`calendars` is keyed by BRANCH id in the snapshot.** `Calendar` carries a
+timezone and the table has no timezone column, because the zone belongs to the
+branch and one calendar legitimately serves several. A `Calendar` value is only
+meaningful once a branch has supplied the zone.
+
+**`circulation_settings`, not `tenant_settings`, and not a plan feature.**
+`EffectivePlanService.unlimitedPlan` rewrites every plan boolean to TRUE whenever
+`BILLING_ENABLED` is false — the configuration this product ships — so a
+plan-gated `circulation_rules_enabled` would be ON for every library, the exact
+inverse of §8 risk 6's "simple mode is the DEFAULT". `PlanGuard` also answers 402
+Payment Required, and a five-person school library that has not asked for a rules
+matrix has not failed to pay. `tenant_settings` stays deferred: phase 13 needs one
+boolean, not a cross-cutting singleton whose other columns belong to undesigned
+phases.
+
+**Turning the matrix OFF is refused while rules with conditions exist.** Simple
+mode shows one form describing the wildcard and no way to see the others — which
+would go on deciding loan periods and fines invisibly. Deleting them silently is
+worse: they are the library's configuration.
+
+**No metric, and that is a decision.** A refusal here stops a desk lending, which
+is the shape of thing that usually earns a counter. `check:alerts` enforces both
+directions, `SOURCES.api.files` would have to widen past `apps/api/src/platform`,
+and the worker builds snapshots too but serves its own `/metrics` — so a
+half-wired counter would under-report exactly the critical case while looking like
+coverage. All three postures log instead, at the severity each deserves. Phase 23
+owns the operations console and is where this belongs with an alert beside it.
+
+**No calendar seeder.** `packages/circ-policy` exports
+`greekCalendarExceptionsForYears`, and phase 13 does not call it. Phase 13's
+acceptance criteria mention calendars nowhere; §6 phase 23 owns "calendars/hours/
+exceptions UI". The seeded loan policy uses `closedDayHandling: 'keep'`, so a
+library with no calendar computes due dates without one and nothing refuses. A
+seeder that invented a Greek municipal library's opening hours for a school
+library that has none would be phase 23's job done badly and early.
+
+**A `defineMetric`-free phase still touched `docs/api/openapi.v1.json`**, because
+§4.5 makes OAuth scopes "a projection of permission keys, never a parallel
+vocabulary" — so adding `circ.policy.read` and `circ.policy.manage` to the catalog
+adds them to the published contract, and `check:openapi` fails until it does.
+
+**The census fixture gained a regenerator, and a whitespace collapse it needed
+all along.** `pg_get_constraintdef` pretty-prints anything with a `CASE` across
+several lines — `circulation_rules.specificity` has six and
+`loan_policies_profile_complete` has three — and the fixture is compared line by
+line, so one constraint arrived as eleven fragments, six of which were the string
+`ELSE 0`. The census now collapses whitespace per object, and `LBR_WRITE_CENSUS=1`
+rewrites the fixture and then fails the run, so a regeneration can never be
+mistaken for a pass. 144 lines became 287.
+
+### The trap that cost the most time, and is not in any file
+
+**There are two Postgres 16.15 clusters on this machine**, and `localhost:5432`
+is the Homebrew one while `docker exec libriant-postgres psql` reaches the
+container. Prisma, the app and the tests all use the Homebrew server; every
+`docker exec` verification query in this session was reading a different database
+and reported an empty schema for a migration that had applied perfectly. It is
+already in the memory file as a gotcha and it was still worth an hour, because
+the symptom — "the migration says it applied and the tables are not there" —
+looks exactly like a failed migration.
+
+It also matters for the collation finding above: the container was initdb'd
+`--locale-provider=icu --icu-locale=el-GR` (which is what production gets) and the
+Homebrew cluster is libc `en_US.UTF-8`, which is why the measurement above has
+three rows and not two.

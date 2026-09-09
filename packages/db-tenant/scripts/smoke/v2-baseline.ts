@@ -41,6 +41,26 @@ const TABLES: Readonly<Record<string, readonly string[]>> = {
   'v2-fees': ['fees'],
   'v2-platform': ['change_events', 'change_consumers', 'sync_client_changes', 'audit_log'],
   'v2-bib-projection': ['bib_records', 'bib_identifiers', 'bib_classifications', 'work_clusters'],
+  'v2-policy': [
+    'calendars',
+    'calendar_hours',
+    'calendar_exceptions',
+    'calendar_exception_hours',
+    'loan_policies',
+    'overdue_fine_policies',
+    'lost_item_fee_policies',
+    'hold_policies',
+    'hold_policy_pickup_branches',
+    'notice_policies',
+    'notice_policy_templates',
+    'fixed_due_date_sets',
+    'fixed_due_date_ranges',
+    'patron_categories',
+    'patron_category_limits',
+    'circulation_rules',
+    'circulation_policy_version',
+    'circulation_settings',
+  ],
 };
 
 const url = () => process.env.TENANT_DATABASE_URL ?? '';
@@ -62,6 +82,15 @@ async function tablesExistAndAreEmpty(moduleName: string): Promise<void> {
     if (table === 'iana_timezones') {
       if (n < 500) throw new Error(`${table} holds ${n} row(s); the tzdata seed did not run`);
       ok(`${table} exists, seeded with ${n} zones`);
+    } else if (table === 'circulation_policy_version' || table === 'circulation_settings') {
+      // Seeded by the phase-13 migration rather than by an application, and the
+      // difference matters: `PolicySnapshotService` treats a missing version row
+      // as a REFUSAL by name — not as version 0, which never changes and would
+      // pin every pod on a snapshot no bump could invalidate. Creating the rows
+      // in the migration makes that state unreachable for every tenant,
+      // including the ones phase 19's PL/pgSQL copy-forward creates.
+      if (n !== 1) throw new Error(`${table} holds ${n} row(s); it is a singleton`);
+      ok(`${table} exists with its one row`);
     } else {
       if (n !== 0) throw new Error(`${table} holds ${n} row(s); phase 9 creates no data`);
       ok(`${table} exists and is empty`);
@@ -103,9 +132,21 @@ export async function teardown(): Promise<void> {
     url(),
     `TRUNCATE marc_records, branches, shelving_locations, item_types, material_types,
               holdings_records, items, patrons, loans, fees, change_events,
-              change_consumers, sync_client_changes, bib_records, work_clusters
+              change_consumers, sync_client_changes, bib_records, work_clusters,
+              calendars, calendar_hours, calendar_exceptions, calendar_exception_hours,
+              loan_policies, overdue_fine_policies, lost_item_fee_policies, hold_policies,
+              hold_policy_pickup_branches, notice_policies, notice_policy_templates,
+              fixed_due_date_sets, fixed_due_date_ranges, patron_categories,
+              patron_category_limits, circulation_rules
      RESTART IDENTITY CASCADE`,
   );
+  // The two singletons are NOT truncated. They are seeded by the migration
+  // rather than by any application, and a smoke run that emptied them would
+  // leave the database in the one state `PolicySnapshotService` refuses to serve
+  // — and leave the NEXT run failing on a table that is supposed to hold exactly
+  // one row. The counter is reset instead, so a re-run starts where a fresh
+  // tenant does.
+  await v2Query(url(), `UPDATE circulation_policy_version SET version = 1 WHERE id = 1`);
 }
 
 const LOAN_COLUMNS =
@@ -429,6 +470,114 @@ export const v2Modules: SmokeModule[] = [
         'work_clusters is a skeleton and bib_records.work_cluster_id has no foreign key: ' +
           'phase 40 owns the clustering and the shape of cluster_key, which §5 says must carry ' +
           'an expression key beneath the work key or Zorba and its translation collapse into one.',
+      );
+    },
+    reset: teardown,
+  },
+  {
+    name: 'v2-policy',
+    describes: 'the rules matrix, the generated specificity, and the version counter',
+    async run() {
+      await tablesExistAndAreEmpty('v2-policy');
+
+      const version = async () =>
+        Number(
+          (
+            await v2Query<{ v: string }>(
+              url(),
+              `SELECT version::text AS v FROM circulation_policy_version WHERE id = 1`,
+            )
+          )[0]!.v,
+        );
+
+      await v2Query(
+        url(),
+        `INSERT INTO loan_policies (id, name, profile, period_value, period_unit, created_at, updated_at)
+         VALUES ('smk_lp', 'Standard', 'rolling', 14, 'days', pg_catalog.now(), pg_catalog.now());
+         INSERT INTO overdue_fine_policies (id, name, interval_value, interval_unit, amount_per_interval_cents, created_at, updated_at)
+         VALUES ('smk_fp', 'Fine', 1, 'days', 20, pg_catalog.now(), pg_catalog.now());
+         INSERT INTO lost_item_fee_policies (id, name, aged_to_lost_after_value, aged_to_lost_after_unit, created_at, updated_at)
+         VALUES ('smk_lf', 'Lost', 30, 'days', pg_catalog.now(), pg_catalog.now());
+         INSERT INTO hold_policies (id, name, hold_shelf_expiry_value, hold_shelf_expiry_unit, created_at, updated_at)
+         VALUES ('smk_hp', 'Holds', 7, 'days', pg_catalog.now(), pg_catalog.now());
+         INSERT INTO notice_policies (id, name, created_at, updated_at)
+         VALUES ('smk_np', 'Notices', pg_catalog.now(), pg_catalog.now())`,
+      );
+
+      const afterPolicies = await version();
+      if (afterPolicies < 6) {
+        throw new Error(`five policy inserts moved the version to ${afterPolicies}, expected 6`);
+      }
+      ok('every policy write bumps circulation_policy_version, from a trigger');
+
+      await v2Query(
+        url(),
+        `INSERT INTO circulation_rules (id, name, loan_policy_id, overdue_fine_policy_id,
+                                        lost_item_fee_policy_id, hold_policy_id, notice_policy_id,
+                                        created_at, updated_at)
+         VALUES ('smk_default', 'Library default', 'smk_lp', 'smk_fp', 'smk_lf', 'smk_hp', 'smk_np',
+                 pg_catalog.now(), pg_catalog.now())`,
+      );
+      const spec = await v2Query<{ s: number }>(
+        url(),
+        `SELECT specificity AS s FROM circulation_rules WHERE id = 'smk_default'`,
+      );
+      if (spec[0]!.s !== 0) throw new Error(`the wildcard rule has specificity ${spec[0]!.s}`);
+      ok('specificity is computed by the database — the tiebreak the whole matrix ranks on');
+
+      await expectSqlstate(
+        url(),
+        `INSERT INTO circulation_rules (id, name, loan_policy_id, overdue_fine_policy_id,
+                                        lost_item_fee_policy_id, hold_policy_id, notice_policy_id,
+                                        created_at, updated_at)
+         VALUES ('smk_second', 'Another default', 'smk_lp', 'smk_fp', 'smk_lf', 'smk_hp', 'smk_np',
+                 pg_catalog.now(), pg_catalog.now())`,
+        '23505',
+        'a library may have exactly one default rule',
+      );
+
+      await expectSqlstate(
+        url(),
+        `DELETE FROM loan_policies WHERE id = 'smk_lp'`,
+        '23503',
+        'a policy a rule still names cannot be deleted',
+      );
+
+      await expectSqlstate(
+        url(),
+        `INSERT INTO loan_policies (id, name, profile, period_value, created_at, updated_at)
+         VALUES ('smk_bad', 'No unit', 'rolling', 14, pg_catalog.now(), pg_catalog.now())`,
+        '23514',
+        'a duration value without its unit is refused — an unknown unit is priced as DAYS',
+      );
+
+      const before0 = await version();
+      await v2Query(url(), `UPDATE circulation_rules SET priority = 0 WHERE id = 'no-such-rule'`);
+      if ((await version()) !== before0 + 1) {
+        throw new Error('a statement affecting no rows did not bump the version');
+      }
+      note(
+        'a zero-row UPDATE bumps the version too. Deliberate over-invalidation: the correctness ' +
+          'requirement is one-directional — a different policy state MUST get a different ' +
+          'version, while a spurious bump costs one snapshot rebuild.',
+      );
+
+      await v2Query(
+        url(),
+        `INSERT INTO calendars (id, code, name, defined_from, defined_to, created_at, updated_at)
+         VALUES ('smk_cal', 'MAIN', 'Main', DATE '2026-01-01', DATE '2028-12-31',
+                 pg_catalog.now(), pg_catalog.now());
+         INSERT INTO calendar_hours (id, calendar_id, weekday, open_min, close_min)
+         VALUES ('smk_h1', 'smk_cal', 1, 480, 840), ('smk_h2', 'smk_cal', 1, 1020, 1260)`,
+      );
+      ok('the Greek split day fits: 08:00-14:00 and 17:00-21:00 on one weekday');
+
+      await expectSqlstate(
+        url(),
+        `INSERT INTO calendar_hours (id, calendar_id, weekday, open_min, close_min)
+         VALUES ('smk_h3', 'smk_cal', 1, 800, 900)`,
+        '23P01',
+        'overlapping opening hours are refused — "open until" must not depend on row order',
       );
     },
     reset: teardown,

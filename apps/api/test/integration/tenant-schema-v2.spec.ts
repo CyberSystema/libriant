@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -185,7 +185,15 @@ describe('the 2.0 baseline lands on a provisioned tenant', () => {
 
   it('matches the committed census of everything Prisma cannot express', async () => {
     const rows = await query<{ line: string }>(CENSUS_SQL);
-    const actual = rows.map((r) => r.line.replaceAll(`${V2_SCHEMA}.`, '')).sort();
+    // ONE LINE PER OBJECT, and the whitespace collapse is what makes that true.
+    // `pg_get_constraintdef` pretty-prints anything with a `CASE` across several
+    // lines — `circulation_rules.specificity` has six of them and
+    // `loan_policies_profile_complete` has three — and this file is compared
+    // line by line, so without the collapse one constraint arrives as eleven
+    // fragments, six of which are the string "ELSE 0".
+    const actual = rows
+      .map((r) => r.line.replaceAll(`${V2_SCHEMA}.`, '').replace(/\s+/g, ' ').trim())
+      .sort();
 
     expect(
       actual.length,
@@ -193,6 +201,21 @@ describe('the 2.0 baseline lands on a provisioned tenant', () => {
         'would otherwise produce an empty census matching an empty fixture, and this suite ' +
         'would pass having asserted nothing',
     ).toBeGreaterThanOrEqual(MIN_CENSUS_LINES);
+
+    // REGENERATION, and it lives here because the fixture has no other source of
+    // truth: it is `pg_get_*def` output from a really-provisioned tenant, which
+    // no script can produce without provisioning one. `LBR_WRITE_CENSUS=1` makes
+    // the round trip one command instead of pasting 300 lines out of a diff —
+    // and it still fails the run afterwards, so a regeneration can never be
+    // mistaken for a pass.
+    if (process.env.LBR_WRITE_CENSUS === '1') {
+      writeFileSync(FIXTURE, `${actual.join('\n')}\n`);
+      throw new Error(
+        `Wrote ${actual.length} census line(s) to ${FIXTURE}. Review the diff — every line is a ` +
+          'constraint, index or trigger somebody has to have decided on — then re-run without ' +
+          'LBR_WRITE_CENSUS.',
+      );
+    }
 
     const expected = readFileSync(FIXTURE, 'utf8').split('\n').filter(Boolean).sort();
     const missing = expected.filter((l) => !actual.includes(l));

@@ -1,3 +1,4 @@
+import { seedCirculationDefaults } from '../policy/circulation-defaults.js';
 import { Injectable, Logger } from '@nestjs/common';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -8,6 +9,7 @@ import {
   makeTenantPrismaClient,
   disconnectTenantClient,
   seedTenantDefaults,
+  makeTenantPrismaClientV2,
   withV2Schema,
 } from '@libriant/db-tenant';
 import {
@@ -335,6 +337,18 @@ export class TenantProvisioningService {
       await seedTenantDefaults(client);
     } finally {
       await disconnectTenantClient(client);
+    }
+
+    // The 2.0 half, in its own client because it is a different datamodel and a
+    // different Postgres schema. A library with no circulation rules cannot lend
+    // anything — `resolveCirculationPolicy` raises `NO_MATCHING_RULE` and the
+    // desk refuses, correctly and unhelpfully — so the wildcard rule is part of
+    // being provisioned rather than something an admin discovers they need.
+    const clientV2 = makeTenantPrismaClientV2({ databaseUrl: targetUrl });
+    try {
+      await seedCirculationDefaults(clientV2 as never, new Date());
+    } finally {
+      await clientV2.$disconnect();
     }
   }
 }

@@ -117,6 +117,22 @@ const PACKAGES: Pkg[] = [
         'A STORED generated column: amount + tax - paid - waived - written_off. Generated so ' +
         'that two code paths cannot compute a balance differently, which is the most damaging ' +
         'bug class available in a fee ledger.',
+      'ALTER TABLE "circulation_rules" DROP COLUMN "specificity";':
+        'A STORED generated column: the six selectors weighted 32/16/8/4/2/1, so a narrower rule ' +
+        'always outranks a vaguer one. Prisma has no generated-column concept. It is a column ' +
+        'rather than a service-side computation because `circulation_rules_default_singleton` is ' +
+        'a partial unique index `WHERE specificity = 0 AND enabled`, and an index predicate can ' +
+        'only read stored values — that index is the only thing standing between a library and ' +
+        'two enabled wildcard rules, a state in which `compareRank` decides the default rule of ' +
+        'the library by comparing two cuids.',
+      'DROP INDEX "circulation_rules_listing_idx";':
+        'Doubly inexpressible: `(priority DESC, specificity DESC, id COLLATE "C")` leads with the ' +
+        'generated column above, which is not a field of `CirculationRule`, and ends with a ' +
+        'per-index collation Prisma has no syntax for. It exists so the matrix editor and ' +
+        '`/circulation/explain` list rules in the order `compareRank` ranks them — that tiebreak ' +
+        'is UTF-16 code units while the tenant collation is ICU el-GR, measured to disagree ' +
+        '(`r_default` and `r-default` invert). Not the `WHERE enabled` resolve index §3 proposed, ' +
+        'which was measured harmful — 403 buffers against 5 — and deliberately does not exist.',
       'DROP INDEX "bib_records_search_trgm";':
         `${TRGM} Written \`public.gin_trgm_ops\` rather ` +
         'than bare: an operator class is resolved through `search_path` exactly as a function ' +

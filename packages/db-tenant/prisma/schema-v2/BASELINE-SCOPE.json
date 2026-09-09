@@ -295,23 +295,29 @@
       "group": "Search & analytics",
       "reason": "Projections and the analytics schema."
     },
+    "calendar_exception_hours": {
+      "status": "created",
+      "basis": "support",
+      "group": "(not in §3)",
+      "reason": "NOT A §3 TABLE. §3's Circulation line names `calendars`, `calendar_hours` and `calendar_exceptions` and stops, which leaves \"we open late on 24 December\" nowhere to live — an exception can only close a day, never re-open it on different hours. The alternative to a second table was a nullable `date` on `calendar_hours` beside its nullable `weekday`: a CHECK that exactly one is set, two partial indexes, and one relation read with two meanings. This costs one more join in a query that runs once per snapshot build and makes the wrong shape unrepresentable instead of merely constrained. Absence is again the encoding — an exception row with no children is a CLOSURE — and non-empty hours REPLACE the weekday's rather than merging with them, because \"we are shut on 25 December\" and \"we open late on the 24th\" are the same kind of statement and a merge cannot express the first. It carries its own no-overlap `EXCLUDE USING gist` for the reason `calendar_hours` does."
+    },
     "calendar_exceptions": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it once with no DDL. ONE CIVIL DATE, NOT A RANGE: a three-week August closure is 21 rows. That is the shape `CalendarException` has in `types.ts`, and it is what keeps `hoursOn(calendar, date)` a keyed lookup on a path that walks up to `ROLL_HORIZON_DAYS` = 45 candidate days per due date. It also makes uniqueness a plain unique index (`calendar_exceptions_one_per_date`) rather than an `EXCLUDE`: two exceptions on ONE date collide exactly, and `23505` says so at a fraction of the cost. `name` is stored because the resolution trace has to be able to answer \"why is this due on the 19th?\" with «Δεκαπενταύγουστος» rather than \"a closed day\", and `source` separates the seeder's regenerable `greek_public_holiday` rows from a librarian's own, which are never touched."
     },
     "calendar_hours": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it once with no DDL. ONE ROW PER INTERVAL, not per weekday, and that is the whole reason this is a table rather than two columns on `calendars`: the Greek split day (διακεκομμένο ωράριο) — 08:00–14:00 then 17:00–21:00 — is the ordinary shape of a municipal library here, and an open/close pair per weekday cannot hold it. `isOpenAt(14:30)` would answer open while the desk is shut, and \"end of the open day\" would come out 14:00 rather than 21:00. Minutes from local midnight rather than `time`, so every comparison in `circ-policy` is integer arithmetic — measured 415× cheaper than the `Intl` round trip it replaces — and so `close_min` can exceed 1440 for a desk that shuts after midnight, which `time` cannot express at all. A weekday with no rows is CLOSED all day; absence is the encoding, which is why there is no `closed boolean`. Overlapping intervals are refused by an `EXCLUDE USING gist`, because `hoursOn` returns stored order and `isOpenAt` takes the first interval containing the minute, so 08:00–14:00 overlapping 13:00–21:00 gives an \"open until\" that depends on row order."
     },
     "calendars": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it in one inventory line and gives no DDL, so every column is designed and the design is \"whatever `packages/circ-policy/src/types.ts` needs, and nothing else\" — phase 12 fixed that vocabulary against 630 golden vectors before there was a column to hold it. Two decisions are not obvious from the model. `defined_from`/`defined_to` are `date`, not `timestamptz(3)`: \"the calendar is defined through 31 December 2028\" is true in every zone, and storing it as an instant makes it true at 02:00 in one and 23:00 in another. And the range is BOUNDED on purpose — a resolver asked about a date past it raises `calendarNotDefinedFor` rather than assuming \"open, normal hours\", because assuming is how a library fines a patron for a day it was shut. There is deliberately NO timezone column: the zone is `branches.timezone`, a second copy is a second answer to \"what zone is this library in?\", and the copy that is wrong is the one nobody edits. This also gives `branches.calendar_id` the foreign key §3 left undecided, `ON DELETE RESTRICT`, because a branch whose calendar was deleted cannot compute a due date at all. Phase 23 owns the UI that fills these in."
     },
     "cancellation_reasons": {
       "status": "deferred",
@@ -362,16 +368,22 @@
       "reason": "The calendar model and the rules matrix are phases 12-13 design."
     },
     "circulation_policy_version": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it once in the Circulation line and gives no DDL; §4.1 supplies the design in one phrase — the snapshot is \"versioned by the trigger-maintained `circulation_policy_version` counter\". Trigger-maintained is the whole point, and the argument is sharper than the changelog's: a forgotten `emit()` breaks a replica, but a forgotten BUMP means every pod keeps its cached snapshot, the 30-second backstop re-reads the counter, sees no change and keeps the stale cache — not for thirty seconds but FOREVER. The librarian edits the loan period, the screen says saved, and every checkout that week uses the old one. Fourteen `AFTER … FOR EACH STATEMENT` triggers cover all six writers: this phase's service, the simple-mode façade, a phase-30 importer, phase 19's PL/pgSQL copy-forward, a seed script, and a support engineer in `psql`. `integer`, not `bigint` and not a timestamp: Prisma maps `BigInt` to a JS `bigint` and `JSON.stringify({version: 1n})` THROWS, and this number lands in `loans.policy_snapshot jsonb` on every checkout, while `now()` is TRANSACTION START time, so a long transaction that commits second stamps first and a \"rebuild if stored > cached\" cache never rebuilds again. The INTEGER `id` is allowed by rule 4 only alongside an unquoted `ALTER TABLE circulation_policy_version … CHECK (id = 1)`, written by hand because Prisma quotes and the gate's regex does not match a quoted table name."
     },
     "circulation_rules": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "specified",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 gives it a full CREATE TABLE and every clause of it is here, including both partial unique indexes, hand-written because Prisma cannot express them. TWO DEPARTURES, both deliberate. `specificity` is a GENERATED STORED column, which Prisma has no concept of, so it is absent from the datamodel and the drop `migrate diff` proposes on every run is allowlisted in `scripts/check-schema-drift.ts` beside `items.is_shelf_available` and `fees.outstanding_cents` — generated rather than computed in the service because it is the tiebreak the whole matrix ranks on, and two code paths computing it differently is the most damaging bug available here. And `circulation_rules_resolve_idx`, which §3 proposes as `(priority DESC, specificity DESC, id) WHERE enabled`, is NOT created: measured harmful, because at the 500-rule acceptance size on PG 16.15 the planner never chose it and forcing it read 403 buffers against 5 for the seq scan and sort, a whole-table read through a btree being random-order heap access. There is no `LIMIT 1` path for it to serve — `resolveCirculationPolicy` takes a whole `PolicySnapshot` and `resolve.ts` re-sorts in JS with `compareRank`, whose id tiebreak is UTF-16 code-unit order — so the SQL order reaches no answer and an `id` column here would only carry the ICU-el-GR-versus-code-unit divergence into a place nothing reads. The five policy foreign keys are `ON DELETE RESTRICT` so that deleting a named policy fails at the delete rather than as `POLICY_NOT_IN_SNAPSHOT` at one desk days later; `loans.applied_rule_id` deliberately has none, because a loan must keep pointing at the rule that priced it forever."
+    },
+    "circulation_settings": {
+      "status": "created",
+      "basis": "support",
+      "group": "(not in §3)",
+      "reason": "NOT A §3 TABLE, AND DELIBERATELY NOT `tenant_settings`. That one is named by §3's Platform line and stays `deferred / various` — \"owned by the phase that first needs it\" — because what phase 13 needs is ONE boolean, `circulation_rules_enabled`, not a cross-cutting settings singleton whose other columns belong to phases that have not been designed. Creating it here would mean inventing them, which is the guess this whole manifest exists to refuse, and it would hand every later phase a table it has to migrate rather than create. It also cannot be `public.tenant_settings`, the 1.0 table: phase 20 renames `public` to `v1_archive`, at which point a 2.0 service reading it is reading an archive. AND IT IS NOT A PLAN FEATURE. `EffectivePlanService.unlimitedPlan` rewrites every plan boolean to TRUE whenever `BILLING_ENABLED` is false, which is the configuration this product ships, so a plan-gated `circulation_rules_enabled` would be ON for every library — the exact inverse of §8 risk 6's \"simple mode is the DEFAULT\" — and `PlanGuard` answers 402 Payment Required, which a five-person school library that never asked for a rules matrix has not earned. If the matrix ever becomes sellable, the established two-layer shape is `tenant_settings.reservations_enabled` layered UNDER the plan capability: the plan key grants it and this column stays the switch."
     },
     "circulation_statistics": {
       "status": "deferred",
@@ -539,16 +551,16 @@
       "reason": "A 1.0 table the phase-20 cutover drops. Never created in lbr2."
     },
     "fixed_due_date_ranges": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it once and gives no DDL. All three of `from`, `to` and `due_date` are `date`: they are civil dates, true in every timezone, and the instant is composed at resolution time from the branch's zone and `due_time_of_day_min`. Overlaps within a set are refused by an `EXCLUDE USING gist` on a `daterange(from, to, '[]')` — THE ONE PLACE `btree_gist` earns the installation the baseline gave it, because two term ranges can overlap PARTIALLY (15 Sep–20 Jan against 10 Jan–15 Jun), which a unique index cannot see, and `computeDueDate` takes the FIRST covering range, so an overlap makes the due date depend on row order. A CHECK also refuses `due_date` before `from`, which is a loan that is overdue at checkout."
     },
     "fixed_due_date_sets": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it once and gives no DDL. The term-end model, which in Greece is a public-library case and not only an academic one, because school libraries run mid-September to mid-June. The table is a name and its ranges: a `fixed` loan policy names one set with `ON DELETE RESTRICT`, and a checkout on a date no range covers is `POLICY_ERROR.noFixedDueDateRange` — a refusal, because the alternative is a term loan silently reverting to a rolling one and nobody noticing until the books do not come back."
     },
     "floating_rules": {
       "status": "deferred",
@@ -563,10 +575,16 @@
       "reason": "The calendar model and the rules matrix are phases 12-13 design."
     },
     "hold_policies": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it once and gives no DDL. Phase 17 owns the queue, promotion, transit and the shelf; this table is the CONFIGURATION those behaviours read, and it lands four phases early because a `circulation_rules` row names a `hold_policy_id` and the resolver refuses a rule whose policy the snapshot does not hold. ONE `currency char(3)` for the table rather than one per amount, and that is correct rather than tolerated: `placement_fee_cents` and `not_picked_up_fee_cents` are added to ONE patron account, `@libriant/shared/money` refuses a currency mismatch on every operation, so a policy whose two fees are in different currencies is not a policy anybody can charge — one column makes it unrepresentable instead of unpayable, and a consortium billing in two currencies expresses it as two policies selected on `owning_branch_id`. `pickup_policy = 'explicitSet'` with an empty {@link HoldPolicyPickupBranch} set has NO SQL CHECK — it would have to count rows in another table — so the service refuses the combination and the snapshot loader treats it as a validation failure, because the silent reading of it is \"no pickup branches\", i.e. every hold uncollectable."
+    },
+    "hold_policy_pickup_branches": {
+      "status": "created",
+      "basis": "support",
+      "group": "(not in §3)",
+      "reason": "NOT A §3 TABLE: §3 names `hold_policies` and does not decompose it, so the branches an `explicitSet` policy allows collection at had nowhere to go. A CHILD TABLE rather than the `text[]` its two sibling vocabularies (`forgive_on`, `request_types`) get, and the difference is referential integrity — these are `branches.id` values, Postgres cannot foreign-key the elements of an array, and a deleted branch would leave a dangling id in every policy that named it, failing at the desk rather than at the delete. It carries a SURROGATE key rather than the composite `(hold_policy_id, branch_id)` its content suggests, because `change_events.entity_id` is one text column and `lbr2_write_change_event` takes one primary-key column name: a composite key cannot be replicated at all, and a device that rebuilt an `explicitSet` hold policy without its pickup branches would hold a policy under which no hold can be collected. The pair is still unique."
     },
     "hold_ratio_alerts": {
       "status": "deferred",
@@ -716,10 +734,10 @@
       "reason": "The calendar model and the rules matrix are phases 12-13 design."
     },
     "loan_policies": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it once and gives no DDL; every column is a field of `LoanPolicy` in `packages/circ-policy/src/types.ts`, which phase 12 fixed against 630 vectors. What was actually decided here is ENCODING. A `Duration` is TWO columns — `<field>_value integer` plus `<field>_unit` — and not a Postgres `interval`, because `'3 weeks'::interval` normalises to `21 days`, so the unit is UNRECOVERABLE on read, and the value is frozen verbatim into `loans.policy_snapshot` and into `fixtures/resolution-vectors.json`, which `cargo test` reads as a cross-language contract: a policy that came back in different units would no longer describe the loan it priced. `timestamptz + interval` is also evaluated in the SESSION TimeZone, which is Europe/Athens on the production host and UTC in a report pod. Every pair carries a named `<table>_<field>_pair` CHECK, hand-written because Prisma cannot express it, and the failure it exists for is `period_value = 14` with `period_unit` NULL: `addDuration` ends `const step = period.unit === 'weeks' ? 7 : 1`, so a NULL unit is silently priced in DAYS. `renewals_allowed` NULL is UNLIMITED and 0 is none — the sentinel INVERTS against 1.0, where `maxRenewals = 0` meant no renewals and `fineCapCents = 0` meant uncapped, so every crossing of that boundary needs an explicit `x === 0 ? null : x` or \"no cap\" becomes a cap of zero and every fine becomes €0.00."
     },
     "loans": {
       "status": "created",
@@ -728,10 +746,10 @@
       "reason": "§3 or §2 gives it a full CREATE TABLE block."
     },
     "lost_item_fee_policies": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it once and gives no DDL; the columns are `LostItemFeePolicy`'s. `fixed_amount_cents` is required when `charge_basis = 'fixedAmount'` and meaningless otherwise, and the CHECK in the migration says so — the alternative is a policy that charges NULL. The other half of that line is deliberately NOT a constraint: `replacementPrice` against an item with no price is `POLICY_ERROR.noReplacementPrice`, a resolver refusal at the moment of charging, because whether an item has a price is not a fact about the policy and a schema that tried to hold it would be constraining the wrong table. The refund columns are separate booleans for the replacement and the processing fee because libraries genuinely differ: the copy came back, so the replacement is refunded; the staff time spent chasing it was still spent."
     },
     "marc_batch_job_items": {
       "status": "deferred",
@@ -814,10 +832,16 @@
       "reason": "dedupe_key format and channel resolution are phase 22 design."
     },
     "notice_policies": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it in both the Circulation and the Notices inventory lines and gives no DDL for either. §4.4 is what makes it two tables and not three: \"Circulation owns `notice_policies`/`notice_triggers` configuration and template selection through the shared specificity resolver\", while the notification engine owns channels, quiet hours, digests and the renderer. This is the circulation half, and it is nearly empty on purpose — a name and its bindings, because the bindings in `notice_policy_templates` are the entire content. It lands now for `hold_policies`' reason: `circulation_rules.notice_policy_id` is `NOT NULL` and the resolver raises `POLICY_NOT_IN_SNAPSHOT` for a rule whose policy is missing."
+    },
+    "notice_policy_templates": {
+      "status": "created",
+      "basis": "support",
+      "group": "(not in §3)",
+      "reason": "NOT A §3 TABLE, AND DELIBERATELY NOT CALLED `notice_templates`. That name is taken: this manifest reserves it for phase 22's RENDERABLE template — subject, body, channel, `dedupe_key` — and it stays `deferred / 9d/22` here, because creating this row-selector under that name would force phase 22 to rename or overload the table it already owns. What this is, is the SELECTOR: this trigger, for this branch and this category, fires that template. `template_id` therefore carries NO foreign key — `notice_templates` does not exist until phase 22 and the resolver never dereferences the id, which is opaque in `NoticeTemplateBinding` — and that is honest rather than lax: it is the column phase 22 will constrain. THE SELECTOR WEIGHTS INVERT HERE, and it is the domain rather than an inconsistency: §4.1 gives a template branch 2 and category 1, the reverse of a circulation rule's category 32 and branch 8. A loan period is a property of WHO IS BORROWING — a child gets three weeks, a member of staff a term — while a notice is a property of WHO IS SENDING it, since the branch's name, address, hours and voice are in the text, so a library that rewrote its overdue letter for one branch means THAT letter even for a category with its own."
     },
     "notice_queue": {
       "status": "deferred",
@@ -867,10 +891,10 @@
       "reason": "M12, executed last."
     },
     "overdue_fine_policies": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it once and gives no DDL; the columns are `OverdueFinePolicy`'s, field for field. `count_closed_days = false` is the expensive setting and the one Greek libraries want: the accrual walks the CALENDAR, so a fine does not grow over Δεκαπενταύγουστος — which is why `calendars.defined_from` matters as much as `defined_to`, because an undefined day inside an overdue span has to be a refusal rather than a guess. `amount_per_interval_cents` is multiplied by an integer interval count and never rounded: `@libriant/shared/money`'s `multiplyRounded` is half-to-even, which is right for allocation and wrong for a rate, where €0.025 becomes €0.02. `suspension` is one nested object in `types.ts` and three nullable columns here under an all-or-nothing CHECK, because a JSONB suspension policy inserts half-written and then suspends a patron for `undefined` days. `forgive_on` IS an enum array — at most four values, a closed vocabulary, no referential integrity to keep — which is exactly the test `hold_policy_pickup_branches` fails, since it points at `branches` and Postgres cannot foreign-key the elements of an array."
     },
     "override_permissions": {
       "status": "deferred",
@@ -915,16 +939,16 @@
       "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
     },
     "patron_categories": {
-      "status": "deferred",
-      "phase": "9c/14/32",
+      "status": "created",
+      "basis": "skeleton",
       "group": "Patrons",
-      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+      "reason": "MOVED FORWARD ACROSS A MILESTONE BOUNDARY. It was `9c/14/32` because §3 lists it under Patrons and its record side belongs there; it is created now because the rules matrix's highest-weighted selector is `patron_category_id` — 32 against the branch's 8 — and a rule naming a category that does not exist is a rule that silently NEVER MATCHES. That is the failure `resolve.ts` structurally cannot see, because a non-matching selector is indistinguishable from a deliberate one, and the symptom is a wrong loan period rather than an error. Creating it here also gives `patrons.patron_category_id` the foreign key `40-circulation.prisma` promised to 9c. A GENUINE SKELETON, and the record side stays with phases 14 and 32: OPAC self-registration rules, guardian requirements under the Greek digital-consent age of 15, and card expiry are the hardest part of the patron schema and would be invented here with the least information. What is present is what the matrix and `PatronCategoryLimit` cannot do without — code, name, `min_age_years` for `BLOCK_CODE.ageRestriction`, and `can_be_proxy`, which is the one switch a rule cannot express."
     },
     "patron_category_limits": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it once, in the Circulation line rather than the Patrons one, and gives no DDL. KEYED ON `patron_category_id`, WITH NO `id` OF ITS OWN: `PatronCategoryLimit` in `types.ts` has no id field — the category IS the key — and keying on it makes one-limit-per-category structural rather than a unique index somebody can forget; `holdings_records` set the precedent with `record_id`. The distinction from `circulation_rules.max_loans_for_rule` is real and is the one librarians ask about: a RULE ceiling is \"at most 3 DVDs\", a CATEGORY ceiling is \"at most 20 items of any kind\", a child at the ceiling of one is not at the ceiling of the other, and `blocks.ts` evaluates them separately so the refusal at the desk can say which one it hit."
     },
     "patron_channel_preferences": {
       "status": "deferred",

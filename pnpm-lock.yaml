@@ -57,6 +57,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@libriant/circ-policy':
+        specifier: workspace:*
+        version: link:../../packages/circ-policy
       '@libriant/db-control':
         specifier: workspace:*
         version: link:../../packages/db-control

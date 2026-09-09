@@ -238,3 +238,166 @@ enum MarcChangeKind {
 
   @@map("marc_change_kind")
 }
+
+// -- Phase 13: the circulation policy vocabulary -------------------------------
+//
+// THE LABELS ARE THE TYPESCRIPT LITERALS, VERBATIM — `endOfPreviousOpenDay`, not
+// `end_of_previous_open_day`. Every other enum above is snake_case because its
+// literals are; these are camelCase because `packages/circ-policy/src/types.ts`
+// is.
+//
+// That file is the contract, and the contract has three readers that are not
+// this database: `loans.policy_snapshot jsonb` freezes these values verbatim at
+// checkout, `fixtures/resolution-vectors.json` carries them to `cargo test`, and
+// phase 77's Rust core reads both. A database label that differed from the JSON
+// literal would need a translation table maintained in TypeScript AND in Rust,
+// and a translation table with one wrong row is a loan policy that silently
+// becomes a different loan policy.
+//
+// The snake_case rule in `check:schema-conventions` reads the first quoted token
+// of a rendered column line — the column NAME — and never sees an enum label, so
+// this costs nothing there. The type NAMES stay snake_case, as everywhere else.
+
+/// Elapsed or civil. The distinction `Duration` exists to carry.
+///
+/// `minutes` and `hours` are ELAPSED — `duedate.ts` adds milliseconds, so a
+/// two-hour loan is two hours whatever the clocks do. `days`, `weeks` and
+/// `months` are CIVIL — the same wall-clock time on a later date in the branch's
+/// timezone, with a month-end clamp. Across a Greek DST boundary "24 hours" and
+/// "one day" are different instants, and which one a policy means is the whole
+/// of `circ-5`.
+///
+/// Stored as a PAIR of columns (`<field>_value`, `<field>_unit`) rather than a
+/// Postgres `interval`, because `interval` normalises `3 weeks` to `21 days` and
+/// `90 minutes` to `01:30:00` — the unit is unrecoverable on read, so the value
+/// frozen into `policy_snapshot` would no longer describe the policy that
+/// produced it.
+enum DurationUnit {
+  minutes
+  hours
+  days
+  weeks
+  months
+
+  @@map("duration_unit")
+}
+
+/// How a due date is arrived at.
+enum LoanProfile {
+  rolling
+  fixed
+  indefinite
+
+  @@map("loan_profile")
+}
+
+/// What happens when the computed due date lands on a day the branch is shut.
+enum ClosedDayHandling {
+  keep
+  endOfPreviousOpenDay
+  startOfNextOpenDay
+  endOfNextOpenDay
+  endOfCurrentOpenHours
+
+  @@map("closed_day_handling")
+}
+
+/// Whether the first partial interval is charged.
+enum FineChargeAt {
+  intervalEnd
+  intervalStart
+
+  @@map("fine_charge_at")
+}
+
+/// What a renewal measures from.
+enum RenewFrom {
+  currentDueDate
+  systemDate
+
+  @@map("renew_from")
+}
+
+/// What `noRenewalBefore` is measured against.
+enum RenewalCutoffBasis {
+  dueDate
+  now
+
+  @@map("renewal_cutoff_basis")
+}
+
+/// Events that write an accrued fine off.
+enum ForgiveTrigger {
+  renewal
+  claimedReturned
+  declaredLost
+  foundAfterLost
+
+  @@map("forgive_trigger")
+}
+
+/// What a lost item is billed at.
+enum LostItemFeeBasis {
+  replacementPrice
+  itemTypeDefault
+  fixedAmount
+  actualCost
+
+  @@map("lost_item_fee_basis")
+}
+
+/// The three request kinds §5 names for NCIP and SIP2.
+enum HoldRequestType {
+  page
+  hold
+  recall
+
+  @@map("hold_request_type")
+}
+
+/// May a patron hold a copy that is on the shelf?
+enum OnShelfHolds {
+  allow
+  deny
+  ifAnyUnavailable
+  ifAllUnavailable
+
+  @@map("on_shelf_holds")
+}
+
+/// May a patron name the copy?
+enum ItemLevelHolds {
+  allow
+  deny
+  force
+
+  @@map("item_level_holds")
+}
+
+/// Where a hold may be collected.
+enum HoldPickupPolicy {
+  any
+  owningBranch
+  patronHomeBranch
+  holdingBranch
+  explicitSet
+
+  @@map("hold_pickup_policy")
+}
+
+/// The seven circulation events a notice can hang off.
+///
+/// Named `notice_trigger_kind` rather than `notice_trigger` because §3 already
+/// has a TABLE called `notice_triggers`, which phase 22 owns. This is the enum
+/// on `notice_policy_templates.trigger`.
+enum NoticeTriggerKind {
+  checkout
+  checkin
+  dueSoon
+  overdue
+  holdAvailable
+  holdExpiring
+  feeCharged
+
+  @@map("notice_trigger_kind")
+}

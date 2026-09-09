@@ -29,8 +29,13 @@ model Patron {
   /// `el_GR.UTF-8` arrives with the minting service that needs it.
   patronNumber String? @map("patron_number")
 
-  /// No FK: `patron_categories` is deferred to 9c. The rules matrix keys on
-  /// this, so it is here rather than in the satellite set.
+  /// PHASE 13 GAVE THIS ITS FK. It used to say `patron_categories` was deferred
+  /// to 9c; the rules matrix keys on it, and a rule selecting on a category that
+  /// does not exist is a rule that silently never matches — a failure
+  /// `resolve.ts` cannot see, because a non-matching selector is
+  /// indistinguishable from a deliberate one. `ON DELETE RESTRICT`: a category
+  /// with members is not deletable, which is also what every rule naming it
+  /// needs.
   patronCategoryId String? @map("patron_category_id")
   homeBranchId     String? @map("home_branch_id")
 
@@ -38,7 +43,8 @@ model Patron {
   updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
   archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
 
-  loans Loan[]
+  loans    Loan[]
+  category PatronCategory? @relation(fields: [patronCategoryId], references: [id], onDelete: Restrict)
 
   @@index([patronCategoryId])
   @@map("patrons")

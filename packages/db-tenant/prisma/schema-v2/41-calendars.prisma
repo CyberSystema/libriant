@@ -1,0 +1,155 @@
+// ---------------------------------------------------------------------------
+// Calendars — when a branch is open, and therefore when a book is due
+// ---------------------------------------------------------------------------
+//
+// The storage form of `Calendar`, `DayHours`, `OpeningInterval` and
+// `CalendarException` in `packages/circ-policy/src/types.ts`. Phase 12 fixed
+// that vocabulary against 630 golden vectors; this schema's only job is to hold
+// it losslessly and hand it back.
+//
+// §3 names `calendars`, `calendar_hours` and `calendar_exceptions` in one
+// inventory line and gives no DDL for any of them, so every column here is
+// designed, and the design is "whatever `types.ts` needs, and nothing else".
+// Phase 23 owns the UI that fills them in.
+
+/// One branch's opening calendar.
+///
+/// `defined_from`/`defined_to` are the honest half of the model and the reason
+/// this table is not just a bag of hours. A calendar knows its own hours for a
+/// BOUNDED range of dates, and a resolver asked about a date outside it must
+/// REFUSE — `POLICY_ERROR.calendarNotDefinedFor` — rather than assume "open,
+/// normal hours". Assuming is how a library fines a patron for a day it was
+/// shut, and how a due date lands on Δεκαπενταύγουστος.
+///
+/// Both are `date`, not `timestamptz(3)`. A civil date has no instant: "the
+/// calendar is defined through 31 December 2028" is true in every timezone, and
+/// storing it as an instant would make it true at 02:00 in one zone and 23:00 in
+/// another. `check:schema-conventions`'s instant rule matches `TIMESTAMP(n)` and
+/// never fires on `DATE`, which is the right outcome for the right reason.
+///
+/// NO TIMEZONE COLUMN. `Calendar.timezone` in `types.ts` is filled from
+/// `branches.timezone` when the snapshot is built. A second copy here is a
+/// second answer to "what zone is this library in?", and the copy that is wrong
+/// is the one nobody edits. One calendar can also serve several branches
+/// (`branches.calendar_id`), which a timezone column would silently forbid.
+/// @replicated entity_kind=calendar
+model Calendar {
+  id   String @id @default(cuid())
+  code String
+  name String
+  /// Per-locale display names, as on `branches`.
+  nameI18n Json @default("{}") @db.JsonB @map("name_i18n")
+
+  /// Inclusive. The first civil date this calendar can answer for.
+  definedFrom DateTime @db.Date @map("defined_from")
+  /// Inclusive. The last. Past this the resolver refuses by name; extending it
+  /// is phase 23's job, and until then the seeder's horizon is the bound.
+  definedTo   DateTime @db.Date @map("defined_to")
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  hours      CalendarHour[]
+  exceptions CalendarException[]
+  branches   Branch[]
+
+  @@map("calendars")
+}
+
+/// One opening interval on one weekday. **One row per interval, not per day.**
+///
+/// THE GREEK SPLIT DAY (διακεκομμένο ωράριο) is why. 08:00–14:00 then
+/// 17:00–21:00 is the ordinary shape of a Greek municipal library, and a table
+/// with one `open`/`close` pair per weekday cannot hold it: `isOpenAt(14:30)`
+/// says open when the desk is shut, `nextOpen` from 14:30 cannot answer "17:00
+/// today", and "end of the open day" comes out as 14:00 or 23:59 rather than
+/// 21:00. Koha's and FOLIO's calendar UIs both fight this and every Greek
+/// library using them works around it.
+///
+/// MINUTES FROM LOCAL MIDNIGHT, not a `time`. Every comparison in `circ-policy`
+/// is then integer arithmetic — measured at 415× the cost of an `Intl` round
+/// trip if it were not — and `close` may legitimately EXCEED 1440 for a desk
+/// that shuts after midnight, which `time` cannot express at all.
+///
+/// Half-open `[open, close)`: a library that closes at 14:00 is shut AT 14:00.
+/// @replicated entity_kind=calendar_hour
+model CalendarHour {
+  id         String @id @default(cuid())
+  calendarId String @map("calendar_id")
+
+  /// 0 = Sunday, matching `Date.prototype.getUTCDay` and `circ-policy`'s
+  /// `weekdayOf`. A weekday with no rows is CLOSED all day — absence is the
+  /// encoding, which is why there is no `closed boolean`.
+  weekday   Int @db.SmallInt
+  /// Minutes from local midnight. 480 = 08:00.
+  openMin   Int @map("open_min")
+  /// Minutes from local midnight. 840 = 14:00. May exceed 1440.
+  closeMin  Int @map("close_min")
+
+  calendar Calendar @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+
+  @@index([calendarId, weekday])
+  @@map("calendar_hours")
+}
+
+/// A named exception to the weekly pattern, on one civil date.
+///
+/// `intervals` empty means CLOSED that day; non-empty REPLACES the weekday's
+/// hours and never merges with them, because "we open late on 24 December" and
+/// "we are shut on 25 December" are the same kind of statement and a merge
+/// cannot express the first. The intervals live in
+/// {@link CalendarExceptionHour}; a row here with no children is a closure.
+///
+/// ONE DATE, NOT A RANGE. A three-week August closure is 21 rows. That is the
+/// shape `CalendarException` in `types.ts` has, and it is the shape that makes
+/// `hoursOn(calendar, date)` a keyed lookup rather than a range search on the
+/// hot path — the resolver walks up to `ROLL_HORIZON_DAYS` = 45 candidate days
+/// per due date. It also makes the uniqueness below a plain unique index rather
+/// than an `EXCLUDE USING gist`: two exceptions on ONE date collide, and a
+/// unique index says so with `23505` at a fraction of the cost. `btree_gist` is
+/// installed and phase 23 may want it if exceptions ever become ranges; today
+/// there is nothing for it to do.
+/// @replicated entity_kind=calendar_exception
+model CalendarException {
+  id         String   @id @default(cuid())
+  calendarId String   @map("calendar_id")
+  date       DateTime @db.Date
+  /// Shown to a librarian and carried in the resolution trace, so the answer to
+  /// "why is this due on the 19th?" can say «Δεκαπενταύγουστος» rather than
+  /// "a closed day".
+  name       String
+  /// Where it came from. `greek_public_holiday` rows are regenerated by the
+  /// seeder when the horizon extends; a librarian's own row is never touched.
+  source     String   @default("manual")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3) @map("created_at")
+
+  calendar Calendar                @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  hours    CalendarExceptionHour[]
+
+  @@unique([calendarId, date], map: "calendar_exceptions_one_per_date")
+  @@map("calendar_exceptions")
+}
+
+/// The replacement hours for one exception date. Empty = closed.
+///
+/// A separate table from {@link CalendarHour} rather than a nullable `date` on
+/// it. The alternative — one `calendar_hours` table with a nullable `weekday`
+/// and a nullable `date` — needs a CHECK that exactly one is set, two partial
+/// indexes, and a query that reads both meanings out of one relation. Two
+/// tables cost one more join in a query that runs once per snapshot build and
+/// make the shape unrepresentable instead of merely constrained.
+/// @replicated entity_kind=calendar_exception_hour
+model CalendarExceptionHour {
+  id          String @id @default(cuid())
+  exceptionId String @map("exception_id")
+
+  openMin  Int @map("open_min")
+  closeMin Int @map("close_min")
+
+  exception CalendarException @relation(fields: [exceptionId], references: [id], onDelete: Cascade)
+
+  @@index([exceptionId])
+  @@map("calendar_exception_hours")
+}

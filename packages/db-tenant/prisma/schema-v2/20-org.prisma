@@ -74,11 +74,14 @@ model Branch {
   currency      String @default("EUR") @db.Char(3)
   defaultLocale String @default("el") @map("default_locale")
 
-  /// No `REFERENCES calendars(id)` yet: `calendars` is deferred to phase 9b
-  /// (see BASELINE-SCOPE.json), and §3 is the only id column in this block
-  /// written WITHOUT a REFERENCES clause, so whether it is a real FK is
-  /// undecided in the document. Adding the constraint later is `ADD CONSTRAINT`,
-  /// which is the cheap direction; guessing wrong now is not.
+  /// PHASE 13 CLOSED THIS. The docblock here used to say `calendars` was
+  /// deferred and that §3 leaves it undecided whether this is a real FK.
+  /// It is one, `ON DELETE RESTRICT`: a branch whose calendar has been deleted
+  /// cannot compute a due date at all — `circ-policy` raises
+  /// `CALENDAR_NOT_DEFINED_FOR` and the desk stops lending — so the delete must
+  /// fail at the delete rather than at the counter. Nullable still, because a
+  /// branch with no calendar is a branch that has not been configured yet, and
+  /// phase 23 owns the UI that configures it.
   calendarId String? @map("calendar_id")
 
   /// §3 writes this as `address_* text`, which is a glob and not SQL. These five
@@ -112,12 +115,14 @@ model Branch {
   archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
 
   tz           IanaTimezone @relation(fields: [timezone], references: [name], onDelete: Restrict)
+  calendar     Calendar?    @relation(fields: [calendarId], references: [id], onDelete: Restrict)
   parentBranch Branch?      @relation("BranchTree", fields: [parentBranchId], references: [id], onDelete: Restrict)
   childBranches Branch[]    @relation("BranchTree")
 
   shelvingLocations ShelvingLocation[]
   itemsOwned        Item[]             @relation("ItemOwningBranch")
   itemsCurrent      Item[]             @relation("ItemCurrentBranch")
+  holdPickupFor     HoldPolicyPickupBranch[]
 
   @@index([parentBranchId])
   @@map("branches")

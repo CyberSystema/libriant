@@ -122,6 +122,14 @@ export const PERMISSIONS: readonly PermissionDescriptor[] = [
   // desk without handing over the whole balance sheet.
   def('circ.fee.waive', 'circ', 'Waive a fee, up to a limit', 'limit'),
   def('circ.fee.void', 'circ', 'Void a fee, up to a limit', 'limit'),
+  // The rules matrix and the five policies behind it (2.0 phase 13). READ is
+  // separate from MANAGE because `/circulation/explain` — "why is this book due
+  // on the 19th?" — is a question a librarian at the desk has to be able to
+  // answer for a patron standing in front of them, and it is the question §6
+  // says Koha, Alma and FOLIO cannot answer at all. Handing over the ability to
+  // ANSWER it should not hand over the ability to change what the answer is.
+  def('circ.policy.read', 'circ', 'View circulation rules and why a loan was priced'),
+  def('circ.policy.manage', 'circ', 'Change circulation rules, policies and calendars'),
 
   // --- patrons ------------------------------------------------------------
   def('patron.read', 'patron', 'View patrons'),
@@ -289,6 +297,10 @@ const LIBRARIAN: readonly string[] = [
   'circ.hold.expire',
   'circ.hold.fulfill',
   'circ.fee.pay',
+  // Read, not manage. A librarian must be able to answer "why is this due on the
+  // 19th?"; changing what the answer is belongs to whoever is accountable for
+  // the library's policy.
+  'circ.policy.read',
   'patron.write',
   'patron.status',
   'patron.archive',
@@ -304,6 +316,7 @@ const ADMIN: readonly string[] = [
   'cat.file.delete',
   'circ.fee.waive',
   'circ.fee.void',
+  'circ.policy.manage',
   'patron.erase',
   'data.field.manage',
   'data.collection.manage',

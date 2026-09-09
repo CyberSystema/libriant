@@ -47,6 +47,8 @@
               "circ.loan.read": "circ.loan.read",
               "circ.loan.renew": "circ.loan.renew",
               "circ.loan.return": "circ.loan.return",
+              "circ.policy.manage": "circ.policy.manage",
+              "circ.policy.read": "circ.policy.read",
               "data.collection.manage": "data.collection.manage",
               "data.collection.read": "data.collection.read",
               "data.field.manage": "data.field.manage",

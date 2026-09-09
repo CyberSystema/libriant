@@ -1,0 +1,246 @@
+// ---------------------------------------------------------------------------
+// The rules matrix, the categories it selects on, and the version counter
+// ---------------------------------------------------------------------------
+
+/// A kind of borrower. `ResolveContext.patronCategoryId`'s domain.
+///
+/// The highest-weighted selector in the matrix — 32 against the branch's 8 —
+/// because a loan period is a property of WHO IS BORROWING. A child gets three
+/// weeks, a member of staff a term.
+///
+/// SKELETON, like `patrons` above it, and for the same reason: the record side
+/// of a category (its OPAC self-registration rules, its guardian requirements
+/// under the Greek digital-consent age of 15, its card expiry policy) is phases
+/// 14 and 32, and inventing those columns here would be inventing the hardest
+/// part of the patron schema with the least information. What is here is what
+/// the rules matrix and `PatronCategoryLimit` cannot do without.
+///
+/// This also gives `patrons.patron_category_id` its foreign key, which
+/// `40-circulation.prisma` promised to 9c. The FK is added here rather than
+/// deferred further because a rule selecting on a category that does not exist
+/// is a rule that silently never matches — the failure `resolve.ts` cannot see,
+/// because a non-matching selector is indistinguishable from a deliberate one.
+/// @replicated entity_kind=patron_category
+model PatronCategory {
+  id       String @id @default(cuid())
+  code     String
+  name     String
+  nameI18n Json   @default("{}") @db.JsonB @map("name_i18n")
+
+  /// Drives `BLOCK_CODE.ageRestriction` against `circulation_rules
+  /// .age_restriction_min_years`. NULL is "no minimum", not zero.
+  minAgeYears Int? @map("min_age_years")
+  /// Whether a member of this category may be a proxy borrower. Phase 14 owns
+  /// the relationship table; this is the switch a rule cannot express.
+  canBeProxy  Boolean @default(false) @map("can_be_proxy")
+
+  sortOrder Int @default(0) @map("sort_order")
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  patrons Patron[]
+  limit   PatronCategoryLimit?
+
+  @@map("patron_categories")
+}
+
+/// Ceilings that belong to a category rather than to one rule.
+///
+/// KEYED ON `patron_category_id`, WITH NO `id` OF ITS OWN. `PatronCategoryLimit`
+/// in `types.ts` has no id field — the category IS the key — and keying on it
+/// makes one-limit-per-category structural rather than a unique index somebody
+/// can forget. `holdings_records` sets the precedent with `record_id`.
+///
+/// The distinction from `circulation_rules.max_loans_for_rule` is real and is
+/// the one librarians ask about: a RULE ceiling is "at most 3 DVDs", a CATEGORY
+/// ceiling is "at most 20 items of any kind". A child at the ceiling of one is
+/// not at the ceiling of the other, and `blocks.ts` evaluates them separately so
+/// the refusal can say which.
+/// @replicated entity_kind=patron_category_limit
+model PatronCategoryLimit {
+  patronCategoryId String @id @map("patron_category_id")
+
+  /// NULL = unlimited, everywhere in this schema. See `LoanPolicy`'s docblock
+  /// for why 0 means something different and why 1.0's sentinel inverts.
+  maxLoans    Int? @map("max_loans")
+  maxHolds    Int? @map("max_holds")
+  maxOverdues Int? @map("max_overdues")
+
+  currency           String  @default("EUR") @db.Char(3)
+  maxFineBalanceCents BigInt? @map("max_fine_balance_cents")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(3) @map("updated_at")
+
+  category PatronCategory @relation(fields: [patronCategoryId], references: [id], onDelete: Cascade)
+
+  @@map("patron_category_limits")
+}
+
+/// The matrix. Six selectors in, five policies out, winner takes all.
+///
+/// §3 gives this table a full CREATE TABLE and every clause of it is here. The
+/// weights — category 32, item type 16, owning branch 8, shelving location 4,
+/// checkout branch 2, pickup branch 1 — encode the precedence Koha librarians
+/// already carry in their heads and are deliberately NOT configurable: a
+/// configurable precedence order makes every support conversation start from
+/// scratch.
+///
+/// `specificity` IS A GENERATED STORED COLUMN AND IS ABSENT FROM THIS MODEL.
+/// Prisma has no generated-column concept, so the datamodel cannot hold it and
+/// `migrate diff` proposes dropping it on every run; the drop is allowlisted in
+/// `scripts/check-schema-drift.ts` with the same reasoning as
+/// `items.is_shelf_available` and `fees.outstanding_cents`. It is generated
+/// rather than computed in the service because it is the tiebreak the whole
+/// matrix ranks on, and two code paths computing it differently is the most
+/// damaging bug available here.
+///
+/// NO `circulation_rules_resolve_idx`. §3 proposes
+/// `(priority DESC, specificity DESC, id) WHERE enabled`, and it is measured
+/// harmful: at the 500-rule acceptance size on PG 16.15 the planner never chose
+/// it, and forced it read **403 buffers against 5** for the seq scan and sort,
+/// because a whole-table read through a btree is random-order heap access. There
+/// is no `LIMIT 1` path to serve either — `resolveCirculationPolicy` takes a
+/// whole `PolicySnapshot`, and `resolve.ts` re-sorts it in JS with
+/// `compareRank`, whose id tiebreak is UTF-16 code-unit order. So the SQL order
+/// reaches no answer, and an `id` column in an index here would only carry the
+/// ICU-versus-code-unit divergence into a place nothing reads. See the phase-13
+/// entry in `docs/architecture/libriant-2.0/README.md`.
+///
+/// FIVE FOREIGN KEYS WITH `ON DELETE RESTRICT`, and no foreign keys from
+/// `loans`. A rule may not name a policy that has been deleted — the resolver
+/// would raise `POLICY_NOT_IN_SNAPSHOT` at one desk, for one context, days
+/// later — so the delete fails at the delete. A LOAN, by contrast, must keep
+/// pointing at the rule that priced it forever, which is why
+/// `loans.applied_rule_id` deliberately has none.
+/// @replicated entity_kind=circulation_rule
+model CirculationRule {
+  id    String  @id @default(cuid())
+  name  String
+  notes String?
+
+  // -- SELECTORS. NULL = wildcard, in weight order. --------------------------
+  patronCategoryId   String? @map("patron_category_id")
+  itemTypeId         String? @map("item_type_id")
+  owningBranchId     String? @map("owning_branch_id")
+  shelvingLocationId String? @map("shelving_location_id")
+  checkoutBranchId   String? @map("checkout_branch_id")
+  pickupBranchId     String? @map("pickup_branch_id")
+
+  // -- PAYLOAD. Winner takes all — no per-field merge across rules, ever. -----
+  loanPolicyId        String @map("loan_policy_id")
+  overdueFinePolicyId String @map("overdue_fine_policy_id")
+  lostItemFeePolicyId String @map("lost_item_fee_policy_id")
+  holdPolicyId        String @map("hold_policy_id")
+  noticePolicyId      String @map("notice_policy_id")
+
+  /// Rule-scoped ceilings. NULL means "this rule sets none", not zero.
+  maxLoansForRule        Int? @map("max_loans_for_rule")
+  maxHoldsForRule        Int? @map("max_holds_for_rule")
+  ageRestrictionMinYears Int? @map("age_restriction_min_years")
+
+  /// Higher wins first. The escape hatch for a one-off exception, and the only
+  /// thing that beats specificity.
+  priority Int     @default(0)
+  enabled  Boolean @default(true)
+
+  /// Inclusive-from, exclusive-to, both nullable for "always".
+  effectiveFrom DateTime? @db.Timestamptz(3) @map("effective_from")
+  effectiveTo   DateTime? @db.Timestamptz(3) @map("effective_to")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(3) @map("updated_at")
+
+  loanPolicy        LoanPolicy        @relation(fields: [loanPolicyId], references: [id], onDelete: Restrict)
+  overdueFinePolicy OverdueFinePolicy @relation(fields: [overdueFinePolicyId], references: [id], onDelete: Restrict)
+  lostItemFeePolicy LostItemFeePolicy @relation(fields: [lostItemFeePolicyId], references: [id], onDelete: Restrict)
+  holdPolicy        HoldPolicy        @relation(fields: [holdPolicyId], references: [id], onDelete: Restrict)
+  noticePolicy      NoticePolicy      @relation(fields: [noticePolicyId], references: [id], onDelete: Restrict)
+
+  @@map("circulation_rules")
+}
+
+/// The counter every pod watches. One row, `id = 1`.
+///
+/// §4.1: the snapshot is "versioned by the trigger-maintained
+/// `circulation_policy_version` counter". Trigger-maintained is the whole
+/// design, and the argument is §4.2's, only sharper. A forgotten `emit()` breaks
+/// a replica; a forgotten BUMP means every pod keeps its cached snapshot, the
+/// 30-second backstop re-reads the counter, sees no change, and keeps the stale
+/// cache — not for thirty seconds but FOREVER. The librarian edits the loan
+/// period, the screen says saved, and every checkout that week uses the old one.
+///
+/// The surface a trigger has to cover is larger than the changelog's, not
+/// smaller: this phase's service, the simple-mode façade, a phase-30 importer,
+/// phase 19's copy-forward (PL/pgSQL, which never touches the application), a
+/// seed script, and a support engineer in `psql`. Fourteen `AFTER … FOR EACH
+/// STATEMENT` triggers cover all six.
+///
+/// `integer`, not `bigint` and not a timestamp. Prisma maps `BigInt` to a JS
+/// `bigint` and `JSON.stringify({version: 1n})` THROWS — and this number lands
+/// in `loans.policy_snapshot jsonb` on every checkout. Against a timestamp:
+/// `pg_catalog.now()` is TRANSACTION START time, so a long transaction that
+/// commits second stamps first and a cache doing "rebuild if stored > cached"
+/// never rebuilds again; `clock_timestamp()` fixes the order and reintroduces
+/// collisions; and both move BACKWARDS on an NTP step or a restored snapshot. A
+/// counter cannot, and needs no clock — which is also the point of
+/// `TenantClockService`.
+///
+/// `version = version + 1` is safe under ReadCommitted without any lock of ours.
+/// Measured: two concurrent bumps from 1 give 3, not 2, because Postgres's
+/// UPDATE re-check re-fetches the newly committed row and re-evaluates the
+/// expression against it. The read-then-write an application-side bump would do
+/// is what loses the update.
+///
+/// `id` is an INTEGER, which `check:schema-conventions` allows only alongside an
+/// unquoted `ALTER TABLE circulation_policy_version … CHECK (id = 1)` — written
+/// by hand in the migration, because Prisma quotes and the gate's regex does not
+/// match a quoted table name.
+model CirculationPolicyVersion {
+  id      Int @id @default(1)
+  version Int @default(1)
+
+  updatedAt DateTime @default(now()) @db.Timestamptz(3) @map("updated_at")
+
+  @@map("circulation_policy_version")
+}
+
+/// The switches circulation owns. One row, `id = 1`.
+///
+/// NOT a general `lbr2.tenant_settings`. That table is `deferred / various` in
+/// `BASELINE-SCOPE.json` — "owned by the phase that first needs it" — and what
+/// phase 13 needs is one boolean, not a cross-cutting settings singleton whose
+/// other forty columns belong to phases that have not been designed. Inventing
+/// them here would repeat the mistake `patrons`' docblock refuses to make.
+///
+/// It also cannot be `public.tenant_settings`, the 1.0 table. Phase 20 renames
+/// `public` to `v1_archive`, at which point a 2.0 service reading it is reading
+/// an archive.
+///
+/// AND IT IS NOT A PLAN FEATURE. `EffectivePlanService.unlimitedPlan` rewrites
+/// every plan boolean to TRUE whenever `BILLING_ENABLED` is false, which is the
+/// configuration this product ships — so a plan-gated
+/// `circulation_rules_enabled` would be ON for every library, the exact inverse
+/// of §8 risk 6's "simple mode is the DEFAULT". `PlanGuard` also answers 402
+/// Payment Required, and a five-person school library that has not asked for a
+/// rules matrix has not failed to pay. If the matrix ever becomes sellable, the
+/// established two-layer shape is `tenant_settings.reservations_enabled`
+/// "layered UNDER the plan's `reservations_enabled` capability" — a plan key
+/// grants the capability and this column stays the switch.
+model CirculationSetting {
+  id Int @id @default(1)
+
+  /// OFF by default. Off means the settings form writes the wildcard rule and
+  /// nothing else, and the matrix editor does not exist. On means the matrix.
+  /// It is read from the cached snapshot, so it costs no query on the read path
+  /// — but a WRITE that depends on it re-reads it inside its own transaction,
+  /// because a write gate served from a 30-second cache accepts matrix edits
+  /// into a library that has just turned the matrix off.
+  circulationRulesEnabled Boolean @default(false) @map("circulation_rules_enabled")
+
+  updatedAt DateTime @default(now()) @db.Timestamptz(3) @map("updated_at")
+
+  @@map("circulation_settings")
+}

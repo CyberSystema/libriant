@@ -1,0 +1,430 @@
+// ---------------------------------------------------------------------------
+// The five policies a circulation rule names
+// ---------------------------------------------------------------------------
+//
+// `packages/circ-policy/src/types.ts` is the column spec for this whole file and
+// says so in its own header. Every column below is a field of `LoanPolicy`,
+// `OverdueFinePolicy`, `LostItemFeePolicy`, `HoldPolicy` or `NoticePolicy`, and
+// the loader in `apps/api/src/policy` reconstructs those objects field for field.
+// Nothing here is invented; where a decision had to be made it is about ENCODING,
+// and the three that recur are recorded once here rather than fifteen times
+// below.
+//
+// -- A `Duration` IS TWO COLUMNS: `<field>_value integer` + `<field>_unit`. -----
+//
+// Not a Postgres `interval`, for four reasons and any one of them is enough.
+// `'3 weeks'::interval` normalises to `21 days` and `'90 minutes'::interval` to
+// `01:30:00`, so the unit is UNRECOVERABLE on read — and the value is frozen
+// verbatim into `loans.policy_snapshot` and into
+// `fixtures/resolution-vectors.json`, which `cargo test` reads as a
+// cross-language contract, so a policy that came back with a different unit
+// would no longer describe the loan it priced. `interval` also collapses the
+// civil/elapsed line `circ-policy` draws (minutes and hours are elapsed
+// milliseconds; days, weeks and months are civil arithmetic in the branch's
+// zone), `timestamptz + interval` is evaluated in the SESSION TimeZone — which
+// on the production host is Europe/Athens and in a report pod is UTC, i.e.
+// `circ-5` reintroduced at the storage layer — and Prisma 7.9.1 has no
+// `Interval` native type at all, so the column would be `Unsupported` and
+// unreadable by the client.
+//
+// Not one JSONB per duration either: `{"value": 14}` and
+// `{"value": 14, "unit": "fortnights"}` both insert cleanly, and `addDuration`
+// ends `const step = period.unit === 'weeks' ? 7 : 1`, so an unknown unit is
+// silently priced as DAYS. §4.1's "never fails open" would be defeated before
+// the resolver ran.
+//
+// The pair's failure mode is `value` set with `unit` NULL, and every pair
+// carries a named CHECK — `<table>_<field>_pair` — so the error names the field.
+// Those CHECKs are hand-written in the migration; Prisma cannot express them.
+//
+// -- MONEY IS `*_cents BIGINT` PLUS ONE `currency CHAR(3)` PER TABLE. ----------
+//
+// `_cents` is deliberate even though "cents" is wrong for JPY (exponent 0) and
+// KWD (3): `check:schema-conventions` keys on `/_cents$/`, so a column named
+// `amount_minor_units` would be invisible to BOTH halves of the money rule — no
+// BIGINT check, no currency pairing — and the first policy money column in the
+// schema would be the one that escaped the gate money has a gate for.
+// `@libriant/shared/currencies` is what says how many minor units a currency
+// has, and it already says it for `fees.amount_cents`.
+//
+// ONE currency column per table, not one per amount, and that is correct rather
+// than merely tolerated. `@libriant/shared/money` refuses a currency mismatch on
+// every operation, and every consumer of a hold policy adds `placement_fee` and
+// `not_picked_up_fee` to ONE patron account — so a policy whose two fees are in
+// different currencies is not a policy anyone can charge. One column makes it
+// unrepresentable instead of unpayable. A consortium billing in two currencies
+// expresses it as two policies selected by two rules on `owning_branch_id`,
+// which is what `branches.currency` and the rules matrix are for.
+//
+// -- THE STRING UNIONS ARE POSTGRES ENUMS, labelled as the TS literals. --------
+//
+// The `enum_in`-is-only-STABLE argument that made `items.is_shelf_available` a
+// generated column does NOT transfer: it is about a planner proving a PARTIAL
+// INDEX PREDICATE against a parameterised query, and none of these ten unions is
+// ever a query predicate. These tables are read WHOLE, a few hundred rows, once
+// per snapshot build, and then cached in-process. There is no partial index here
+// and no planner decision to lose.
+
+/// How the due date is computed. `LoanPolicy` in `types.ts`.
+///
+/// `rolling` adds {@link period} to the checkout instant; `fixed` takes the date
+/// from a {@link FixedDueDateSet} — the "everything is due at the end of term"
+/// model, which in Greece is a public-library case too because school libraries
+/// run mid-September to mid-June; `indefinite` has no due date at all, for a
+/// staff reference loan or a departmental deposit.
+///
+/// `renewals_allowed` NULL is UNLIMITED and 0 is "renewable: false said twice" —
+/// the sentinel inverts against 1.0, where `maxRenewals = 0` meant no renewals
+/// and `fineCapCents = 0` meant UNCAPPED. Every crossing of that boundary needs
+/// an explicit `x === 0 ? null : x`, because a silent copy turns "no cap" into
+/// "a cap of zero", i.e. every fine becomes €0.00.
+/// @replicated entity_kind=loan_policy
+model LoanPolicy {
+  id       String  @id @default(cuid())
+  name     String
+  notes    String?
+  loanable Boolean @default(true)
+
+  profile           LoanProfile   @default(rolling)
+  periodValue       Int?          @map("period_value")
+  periodUnit        DurationUnit? @map("period_unit")
+  fixedDueDateSetId String?       @map("fixed_due_date_set_id")
+
+  /// Minutes from local midnight, like every other time-of-day in this schema.
+  /// NULL keeps the checkout's own time of day, which is what 1.0 does.
+  dueTimeOfDayMin Int? @map("due_time_of_day_min")
+
+  closedDayHandling      ClosedDayHandling @default(keep) @map("closed_day_handling")
+  openingTimeOffsetValue Int?              @map("opening_time_offset_value")
+  openingTimeOffsetUnit  DurationUnit?     @map("opening_time_offset_unit")
+
+  maxPeriodValue Int?          @map("max_period_value")
+  maxPeriodUnit  DurationUnit? @map("max_period_unit")
+
+  renewable                 Boolean            @default(true)
+  /// NULL = unlimited. 0 = none. See the docblock.
+  renewalsAllowed           Int?               @map("renewals_allowed")
+  renewalPeriodValue        Int?               @map("renewal_period_value")
+  renewalPeriodUnit         DurationUnit?      @map("renewal_period_unit")
+  renewFrom                 RenewFrom          @default(currentDueDate) @map("renew_from")
+  noRenewalBeforeValue      Int?               @map("no_renewal_before_value")
+  noRenewalBeforeUnit       DurationUnit?      @map("no_renewal_before_unit")
+  noRenewalBeforeRelativeTo RenewalCutoffBasis @default(dueDate) @map("no_renewal_before_relative_to")
+
+  renewWithOutstandingHolds        Boolean       @default(true) @map("renew_with_outstanding_holds")
+  altCheckoutPeriodWithHoldsValue  Int?          @map("alt_checkout_period_with_holds_value")
+  altCheckoutPeriodWithHoldsUnit   DurationUnit? @map("alt_checkout_period_with_holds_unit")
+  altRenewalPeriodWithHoldsValue   Int?          @map("alt_renewal_period_with_holds_value")
+  altRenewalPeriodWithHoldsUnit    DurationUnit? @map("alt_renewal_period_with_holds_unit")
+
+  itemLimitForPolicy Int? @map("item_limit_for_policy")
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  fixedDueDateSet FixedDueDateSet?  @relation(fields: [fixedDueDateSetId], references: [id], onDelete: Restrict)
+  rules           CirculationRule[]
+
+  @@map("loan_policies")
+}
+
+/// What an overdue costs. `OverdueFinePolicy` in `types.ts`.
+///
+/// `count_closed_days = false` is the expensive setting and the one Greek
+/// libraries want: it means the accrual walks the CALENDAR, so a fine does not
+/// grow over Δεκαπενταύγουστος. It also means the calendar must be defined for
+/// every day of the overdue span, which is why {@link Calendar.definedFrom}
+/// matters as much as `definedTo`.
+///
+/// `suspension` is a nested object in `types.ts` and three nullable columns
+/// here, guarded by an all-or-nothing CHECK. JSONB was the alternative and loses
+/// the same way a JSONB duration does: a half-written suspension policy inserts
+/// cleanly and then suspends a patron for `undefined` days.
+/// @replicated entity_kind=overdue_fine_policy
+model OverdueFinePolicy {
+  id    String  @id @default(cuid())
+  name  String
+  notes String?
+
+  /// ISO 4217. One per table — see the file header.
+  currency String @default("EUR") @db.Char(3)
+
+  intervalValue Int          @map("interval_value")
+  intervalUnit  DurationUnit @map("interval_unit")
+  /// The rate. Multiplied by an INTEGER interval count and never rounded —
+  /// `@libriant/shared/money`'s `multiplyRounded` is half-to-even, which is
+  /// right for allocation and wrong for a rate (€0.025 becomes €0.02).
+  amountPerIntervalCents BigInt @map("amount_per_interval_cents")
+
+  chargeAt FineChargeAt @default(intervalEnd) @map("charge_at")
+
+  gracePeriodValue     Int?          @map("grace_period_value")
+  gracePeriodUnit      DurationUnit? @map("grace_period_unit")
+  graceSuppressesNotice Boolean      @default(true) @map("grace_suppresses_notice")
+
+  countClosedDays Boolean @default(true) @map("count_closed_days")
+
+  maximumFineCents      BigInt? @map("maximum_fine_cents")
+  minimumFineCents      BigInt? @map("minimum_fine_cents")
+  capAtReplacementCost  Boolean @default(false) @map("cap_at_replacement_cost")
+
+  /// A Postgres enum ARRAY. `forgive_on` is a set of at most four values with a
+  /// closed vocabulary and no referential integrity to keep; a child table would
+  /// be four rows and a join to answer "is `renewal` in this set?". Contrast
+  /// {@link HoldPolicyPickupBranch}, which points at `branches` and therefore
+  /// cannot be an array.
+  forgiveOn ForgiveTrigger[] @default([]) @map("forgive_on")
+
+  /// All three or none of the three — see the docblock.
+  suspensionDaysPerOverdueDay Int?     @map("suspension_days_per_overdue_day")
+  suspensionMaxDays           Int?     @map("suspension_max_days")
+  suspensionResetOnReturn     Boolean? @map("suspension_reset_on_return")
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  rules CirculationRule[]
+
+  @@map("overdue_fine_policies")
+}
+
+/// What a lost copy costs. `LostItemFeePolicy` in `types.ts`.
+/// @replicated entity_kind=lost_item_fee_policy
+model LostItemFeePolicy {
+  id    String  @id @default(cuid())
+  name  String
+  notes String?
+
+  currency String @default("EUR") @db.Char(3)
+
+  chargeBasis     LostItemFeeBasis @default(replacementPrice) @map("charge_basis")
+  /// Required when `charge_basis = 'fixedAmount'`, meaningless otherwise; the
+  /// CHECK in the migration says so. `replacementPrice` on an item with no price
+  /// is `POLICY_ERROR.noReplacementPrice`, which is a resolver refusal and not a
+  /// schema problem.
+  fixedAmountCents   BigInt? @map("fixed_amount_cents")
+  processingFeeCents BigInt  @default(0) @map("processing_fee_cents")
+
+  agedToLostAfterValue Int          @map("aged_to_lost_after_value")
+  agedToLostAfterUnit  DurationUnit @map("aged_to_lost_after_unit")
+
+  refundReplacementOnReturn  Boolean       @default(true) @map("refund_replacement_on_return")
+  refundProcessingFeeOnReturn Boolean      @default(false) @map("refund_processing_fee_on_return")
+  refundWindowValue          Int?          @map("refund_window_value")
+  refundWindowUnit           DurationUnit? @map("refund_window_unit")
+
+  stopOverdueAccrualOnLost Boolean @default(true) @map("stop_overdue_accrual_on_lost")
+  chargeOverdueUpToLost    Boolean @default(true) @map("charge_overdue_up_to_lost")
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  rules CirculationRule[]
+
+  @@map("lost_item_fee_policies")
+}
+
+/// Who may hold what, and where they collect it. `HoldPolicy` in `types.ts`.
+///
+/// Phase 17 owns the queue, promotion, transit and the shelf. This table is the
+/// CONFIGURATION those behaviours read, and it lands now because a
+/// `circulation_rules` row names a `hold_policy_id` and the resolver refuses a
+/// rule whose policy the snapshot does not hold.
+/// @replicated entity_kind=hold_policy
+model HoldPolicy {
+  id    String  @id @default(cuid())
+  name  String
+  notes String?
+
+  currency String @default("EUR") @db.Char(3)
+
+  holdsAllowed Boolean @default(true) @map("holds_allowed")
+  /// A closed three-value vocabulary, so an enum array. §5 needs all three for
+  /// NCIP and SIP2.
+  requestTypes HoldRequestType[] @default([hold]) @map("request_types")
+
+  onShelfHolds   OnShelfHolds   @default(allow) @map("on_shelf_holds")
+  itemLevelHolds ItemLevelHolds @default(allow) @map("item_level_holds")
+
+  maxHoldsPerRecord Int? @map("max_holds_per_record")
+  maxHoldsTotal     Int? @map("max_holds_total")
+
+  /// `explicitSet` reads {@link HoldPolicyPickupBranch}; every other value
+  /// ignores it. The CHECK cannot be written in SQL (it would have to count
+  /// rows in another table), so the service refuses the combination and the
+  /// snapshot loader treats an empty set under `explicitSet` as a validation
+  /// failure rather than "no pickup branches", which would silently make every
+  /// hold uncollectable.
+  pickupPolicy HoldPickupPolicy @default(any) @map("pickup_policy")
+
+  holdShelfExpiryValue    Int          @map("hold_shelf_expiry_value")
+  holdShelfExpiryUnit     DurationUnit @map("hold_shelf_expiry_unit")
+  shelfExpiryUsesCalendar Boolean      @default(true) @map("shelf_expiry_uses_calendar")
+
+  unfilledRequestExpiryValue Int?          @map("unfilled_request_expiry_value")
+  unfilledRequestExpiryUnit  DurationUnit? @map("unfilled_request_expiry_unit")
+
+  suspensionAllowed  Boolean       @default(true) @map("suspension_allowed")
+  maxSuspensionValue Int?          @map("max_suspension_value")
+  maxSuspensionUnit  DurationUnit? @map("max_suspension_unit")
+
+  placementFeeCents   BigInt? @map("placement_fee_cents")
+  notPickedUpFeeCents BigInt? @map("not_picked_up_fee_cents")
+
+  transitAllowed Boolean @default(true) @map("transit_allowed")
+  maxTransitDays Int?    @map("max_transit_days")
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  pickupBranches HoldPolicyPickupBranch[]
+  rules          CirculationRule[]
+
+  @@map("hold_policies")
+}
+
+/// The branches an `explicitSet` hold policy allows collection at.
+///
+/// A CHILD TABLE, not the `text[]` its two sibling arrays get. The difference is
+/// referential integrity: `forgive_on` and `request_types` are closed
+/// vocabularies the database already knows, whereas these are `branches.id`
+/// values, and Postgres cannot foreign-key the elements of an array. A deleted
+/// branch would leave a dangling id in every policy that named it and the hold
+/// would fail at the desk rather than at the delete.
+/// @replicated entity_kind=hold_policy_pickup_branch
+model HoldPolicyPickupBranch {
+  /// A surrogate key rather than the composite `(hold_policy_id, branch_id)`
+  /// this table's content would suggest. `change_events.entity_id` is one text
+  /// column and `lbr2_write_change_event` takes one primary-key column name, so
+  /// a composite key cannot be replicated at all — and a device that rebuilt an
+  /// `explicitSet` hold policy without its pickup branches would hold a policy
+  /// under which no hold can be collected. The pair is still unique, below.
+  id           String @id @default(cuid())
+  holdPolicyId String @map("hold_policy_id")
+  branchId     String @map("branch_id")
+
+  holdPolicy HoldPolicy @relation(fields: [holdPolicyId], references: [id], onDelete: Cascade)
+  branch     Branch     @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@unique([holdPolicyId, branchId], map: "hold_policy_pickup_branches_pair")
+  @@index([branchId])
+  @@map("hold_policy_pickup_branches")
+}
+
+/// A named set of notice bindings. `NoticePolicy` in `types.ts`.
+///
+/// §4.4 splits this cleanly and the split is why there are two tables and not
+/// three: "Circulation owns `notice_policies`/`notice_triggers` configuration
+/// and template selection through the shared specificity resolver", while the
+/// notification engine owns channels, quiet hours, digests and the renderer.
+/// This is the circulation half.
+/// @replicated entity_kind=notice_policy
+model NoticePolicy {
+  id    String  @id @default(cuid())
+  name  String
+  notes String?
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  templates NoticePolicyTemplate[]
+  rules     CirculationRule[]
+
+  @@map("notice_policies")
+}
+
+/// One binding: this trigger, for this branch and category, fires this template.
+///
+/// NOT `notice_templates`. That name is taken: `BASELINE-SCOPE.json` reserves it
+/// for phase 22's RENDERABLE template — subject, body, channel, `dedupe_key` —
+/// and this is the SELECTOR that points at one. Creating this under that name
+/// would force phase 22 to rename or overload the table it already owns.
+///
+/// `template_id` therefore carries NO foreign key. `notice_templates` does not
+/// exist until phase 22, the resolver never dereferences the id (it is opaque in
+/// `NoticeTemplateBinding`), and this is honest rather than lax: it is the column
+/// phase 22 will constrain.
+///
+/// THE WEIGHTS INVERT HERE, and that is the domain rather than an inconsistency.
+/// §4.1 gives a template branch 2 and category 1 — the reverse of a circulation
+/// rule's category 32, branch 8. A loan period is a property of WHO IS
+/// BORROWING: a child gets three weeks, a member of staff a term. A notice is a
+/// property of WHO IS SENDING it — the branch's name, address, hours and voice
+/// are in the text — so a library that has rewritten its overdue letter for one
+/// branch means THAT letter, even for a category with its own.
+/// @replicated entity_kind=notice_policy_template
+model NoticePolicyTemplate {
+  id             String            @id @default(cuid())
+  noticePolicyId String            @map("notice_policy_id")
+  trigger        NoticeTriggerKind
+  /// Opaque until phase 22. See the docblock.
+  templateId     String            @map("template_id")
+
+  /// NULL = wildcard, exactly as a rule selector.
+  branchId         String? @map("branch_id")
+  patronCategoryId String? @map("patron_category_id")
+
+  /// How far before (or after) the trigger instant the notice fires. NULL is
+  /// "at the trigger".
+  offsetValue Int?          @map("offset_value")
+  offsetUnit  DurationUnit? @map("offset_unit")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3) @map("created_at")
+
+  noticePolicy NoticePolicy @relation(fields: [noticePolicyId], references: [id], onDelete: Cascade)
+
+  @@index([noticePolicyId, trigger])
+  @@map("notice_policy_templates")
+}
+
+/// The term-end model. `FixedDueDateSet` in `types.ts`.
+///
+/// A `fixed` loan policy names one of these, and a checkout on a date no range
+/// covers is `POLICY_ERROR.noFixedDueDateRange` — a refusal, because the
+/// alternative is a term loan silently becoming a rolling one.
+/// @replicated entity_kind=fixed_due_date_set
+model FixedDueDateSet {
+  id    String  @id @default(cuid())
+  name  String
+  notes String?
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  ranges       FixedDueDateRange[]
+  loanPolicies LoanPolicy[]
+
+  @@map("fixed_due_date_sets")
+}
+
+/// "A checkout between `from` and `to` is due on `due_date`."
+///
+/// All three are `date`: they are civil dates, true in every timezone, and the
+/// instant is composed at resolution time from the branch's zone and
+/// `due_time_of_day_min`. Overlapping ranges within one set are refused by an
+/// `EXCLUDE USING gist` on a `daterange` — the one place in this schema where
+/// `btree_gist` earns its installation, because two ranges genuinely can overlap
+/// partially and a unique index cannot see that.
+/// @replicated entity_kind=fixed_due_date_range
+model FixedDueDateRange {
+  id    String   @id @default(cuid())
+  setId String   @map("set_id")
+  /// Inclusive.
+  from  DateTime @db.Date
+  /// Inclusive.
+  to    DateTime @db.Date
+  dueDate DateTime @db.Date @map("due_date")
+  /// Minutes from local midnight. NULL keeps the loan policy's own time.
+  dueTimeOfDayMin Int? @map("due_time_of_day_min")
+
+  set FixedDueDateSet @relation(fields: [setId], references: [id], onDelete: Cascade)
+
+  @@index([setId])
+  @@map("fixed_due_date_ranges")
+}
