@@ -204,10 +204,10 @@
       "reason": "A 1.0 table the phase-20 cutover drops. Never created in lbr2."
     },
     "bib_classifications": {
-      "status": "deferred",
-      "phase": "11-50",
+      "status": "created",
+      "basis": "invented",
       "group": "Bibliographic",
-      "reason": "The projection, satellites and authority work of M1/M5."
+      "reason": "§3 names it once and gives it no DDL. Designed from §5’s line that the product does \"number parsing and sort-key generation, not the licensed schedules\": the stored sort key is the point, because tenant databases are el_GR.UTF-8 and a non-ASCII key reorders under that collation. Phase 36 owns the schemes and the settings UI; phase 11a extracts 050/060/080/082/084 only."
     },
     "bib_duplicate_candidates": {
       "status": "deferred",
@@ -228,10 +228,10 @@
       "reason": "The projection, satellites and authority work of M1/M5."
     },
     "bib_identifiers": {
-      "status": "deferred",
-      "phase": "11-50",
+      "status": "created",
+      "basis": "invented",
       "group": "Bibliographic",
-      "reason": "The projection, satellites and authority work of M1/M5."
+      "reason": "§3 names it once in an inventory list and gives it no DDL; only `value_norm` is forced, by name, at §5. The rest is designed from §5’s one-line requirement — \"ISBN/ISSN/ISMN/DOI/EAN-13, check-digit validated. None is a uniqueness constraint.\" There is deliberately NO unique index: §3 says the 1.0 ISBN constraint \"would refuse the exact catalogues this product exists to import\", and an identifier that fails its check digit is STORED and flagged so a cataloguer has a queue rather than a silent loss."
     },
     "bib_record_aliases": {
       "status": "deferred",
@@ -240,10 +240,10 @@
       "reason": "The projection, satellites and authority work of M1/M5."
     },
     "bib_records": {
-      "status": "deferred",
-      "phase": "11-50",
+      "status": "created",
+      "basis": "specified",
       "group": "Bibliographic",
-      "reason": "The projection, satellites and authority work of M1/M5."
+      "reason": "§3 gives it a full CREATE TABLE. Every column is present, but six of them are NOT the projector's — item_count, available_count, suppressed_from_opac, custom_fields, legacy_json and cover_asset_ref have no MARC source, and an ON CONFLICT DO UPDATE that assigned the excluded row wholesale would destroy all six on every single-subfield edit. BibProjectionService lists the projector-owned columns explicitly and an integration test asserts the six survive an edit."
     },
     "bib_search_projection": {
       "status": "deferred",
@@ -1286,10 +1286,10 @@
       "reason": "The projection, satellites and authority work of M1/M5."
     },
     "work_clusters": {
-      "status": "deferred",
-      "phase": "11-50",
+      "status": "created",
+      "basis": "skeleton",
       "group": "Bibliographic",
-      "reason": "The projection, satellites and authority work of M1/M5."
+      "reason": "Created ONLY because §3 writes bib_records.work_cluster_id with a REFERENCES clause. An id and its timestamps, nothing else. Phase 40 owns clustering, and §5 already fixes the hard part of its design — cluster_key must carry an EXPRESSION key beneath the work key or the Greek original and the English translation of Zorba collapse into one cluster. Inventing that six phases early, with nothing to test it against, is the guess this program avoids. Every work_cluster_id is NULL until then and the FK is deliberately not created."
     }
   }
 }

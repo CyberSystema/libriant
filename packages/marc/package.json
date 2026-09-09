@@ -19,9 +19,11 @@
     "./marcxml": "./src/marcxml.ts",
     "./ops": "./src/ops.ts",
     "./path": "./src/path.ts",
+    "./projection": "./src/bib-projection.ts",
     "./rules": "./src/rules.ts",
     "./templates": "./src/templates.ts",
     "./types": "./src/types.ts",
+    "./test-corpus": "./src/__fixtures__/corpus.ts",
     "./validate": "./src/validate.ts"
   },
   "scripts": {

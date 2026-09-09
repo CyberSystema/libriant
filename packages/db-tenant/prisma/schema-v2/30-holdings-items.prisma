@@ -13,14 +13,25 @@
 /// items DDL (which IS fully specified) wrong. `check:schema-conventions`
 /// exempts it by name with this reason rather than by relaxing the rule.
 ///
-/// Everything else here is the minimum an item can hang off. The 852/853-855/
-/// 863-868 compressed-holdings statement machinery, the mandatory holdings 008
-/// (retention, completeness and lending policy — which is what an ILL partner
-/// actually reads), and `bib_id` back-linking all belong to phase 11.
+/// Everything else here is the minimum an item can hang off. `bib_id` landed in
+/// phase 11a, as this docblock promised. The 852/853-855/863-868 compressed-
+/// holdings statement machinery and the mandatory holdings 008 (retention,
+/// completeness and lending policy — which is what an ILL partner actually
+/// reads) are still phase 84's.
 /// @replicated entity_kind=holdings_record
 model HoldingsRecord {
   /// Not `id`. See the docblock — the name is forced by the items DDL.
   recordId String @id @default(cuid()) @map("record_id")
+
+  /// Which bibliographic record this holding is OF.
+  ///
+  /// Added in phase 11a because the phase-9 docblock above says it belongs
+  /// here, and its absence until now was a real gap: a holdings record was
+  /// reachable only through the items hanging off it, so "what does this
+  /// library hold of this title?" had no answer. §5 gives the 852/853-855/
+  /// 863-868 compressed-holdings statement and the mandatory holdings 008 to
+  /// phase 84; this is only the link.
+  bibId String @map("bib_id")
 
   branchId String @map("branch_id")
 
@@ -29,8 +40,17 @@ model HoldingsRecord {
   archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
 
   items Item[]
+  bib   MarcRecord @relation(fields: [bibId], references: [id], onDelete: Restrict)
 
   @@index([branchId])
+  /// The lookup "what does this library hold of this title?" — the question a
+  /// record page asks on every view. NOT unique: a branch legitimately holds
+  /// one title in more than one MFHD (reference and stacks, large-print beside
+  /// ordinary, a serial whose bound volumes and current issues carry different
+  /// 852 $b), and with no shelving location or call number on this table yet
+  /// the constraint could not be written correctly even if it were wanted. See
+  /// the migration.
+  @@index([bibId, branchId], map: "holdings_records_bib_branch_idx")
   @@map("holdings_records")
 }
 

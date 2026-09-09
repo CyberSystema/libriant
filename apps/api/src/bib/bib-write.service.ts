@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import {
   applyOps,
@@ -14,19 +15,8 @@ import {
   type MarcRecord,
   type ValidationIssue,
 } from '@libriant/marc';
-import type { TenantPrismaClientV2 } from '@libriant/db-tenant';
+import type { TxV2 } from '../tenancy/tenant-tx-v2.js';
 
-/**
- * The client Prisma hands an interactive transaction.
- *
- * Structurally the full client minus the connection-lifecycle methods, and NOT
- * assignable to `TenantPrismaClientV2` — so helpers that must work both inside
- * and outside a transaction take this narrower type.
- */
-type TxV2 = Omit<
-  TenantPrismaClientV2,
-  '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
->;
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
@@ -34,6 +24,7 @@ import type { TenantActor } from '../tenancy/tenant-actor.js';
 import { changeActorOf, setChangeActor } from '../tenancy/tenant-actor-guc.js';
 import { acquireLocks, lockKey } from '../platform/locks.js';
 import { stamp005 } from './marc-005.js';
+import { BibProjectionService } from './bib-projection.service.js';
 
 /**
  * The single `write()`.
@@ -161,10 +152,40 @@ function recordStatusCode(kind: 'create' | 'edit' | 'delete'): string {
   return kind === 'create' ? 'n' : kind === 'delete' ? 'd' : 'c';
 }
 
-/** The leader with /05 set, and the bytes §2 says a writer always emits. */
-function leaderForWrite(leader: string, kind: 'create' | 'edit' | 'delete'): string {
+/**
+ * The leader with /05 set, and the bytes §2 says a writer always emits.
+ *
+ * ## /09, and why it was a real defect
+ *
+ * This function used to leave Leader/09 — the character coding scheme — exactly
+ * as it arrived, while `writeIso2709` forces it from the EXPORT encoding
+ * ("Set from the EXPORT, never copied from the source", iso2709.ts). Nothing
+ * noticed while every record was typed into the editor, because a record created
+ * here carries `charset_code = 'a'` and a leader whose /09 the caller happened
+ * to send as `'a'` too.
+ *
+ * Phase 11b makes it reachable and measurable. A Greek ABEKT or Aleph export
+ * declares MARC-8 with `/09 = ' '`. Stored unchanged, that leader disagrees with
+ * `marc_records.charset_code`, which is `'a'`; and `canonicalLeader` keeps
+ * positions 5..11, so /09 is INSIDE the hash. Measured on the real codec:
+ *
+ *     stored          contentHash c28e3d69cc9bc8b0…
+ *     export→re-parse contentHash fd682577fc5ef1f2…   NOT EQUAL
+ *
+ * — for exactly the files this product exists to import. So the stored leader's
+ * /09 is set from the charset the record is STORED in, which is UTF-8 for every
+ * record this build writes, and the original byte survives where every other
+ * original leader byte survives: in `source_blob`.
+ */
+function leaderForWrite(
+  leader: string,
+  kind: 'create' | 'edit' | 'delete',
+  charsetCode = 'a',
+): string {
   const b = leader.padEnd(24, ' ').slice(0, 24).split('');
   b[5] = recordStatusCode(kind);
+  // The stored encoding, not the source's. See the docblock.
+  b[9] = charsetCode;
   // §2, "on write": always emit /10='2', /11='2', /20-23='4500'. /00-04 and
   // /12-16 are recomputed by the serializer, which is the only place that knows
   // the byte length; storing them is meaningless and they are zeroed in the
@@ -178,11 +199,84 @@ function leaderForWrite(leader: string, kind: 'create' | 'edit' | 'delete'): str
   return b.join('');
 }
 
+/**
+ * SHA-256 of the source bytes, for `marc_record_contents.source_blob_sha256`.
+ *
+ * `node:crypto` rather than `contentHash` from `@libriant/marc`: that one hashes
+ * the CANONICAL JSON of a parsed record excluding 005, which is a different fact
+ * about a different object. This is a checksum of the bytes as they arrived, so
+ * that a library can prove years later that what it holds is what it was sent.
+ * `packages/marc` cannot use `node:crypto` at all (its tsconfig is `types: []`),
+ * which is why this lives here.
+ */
+const sha256 = (bytes: Uint8Array): Uint8Array => createHash('sha256').update(bytes).digest();
+
+/**
+ * Turn Prisma's unique-violation into the 409 a caller can act on.
+ *
+ * Returns `null` when the error is anything else, so the caller rethrows the
+ * original rather than swallowing it — a catch that turned every failure into a
+ * 409 would hide the next real bug on this path.
+ */
+function duplicateControlNumber(err: unknown, controlNumber?: string): ConflictException | null {
+  const e = err as { code?: string; meta?: unknown; message?: string };
+  if (e?.code !== 'P2002') return null;
+  // The WHOLE meta, not `meta.target`. Prisma 7 with a driver adapter reports
+  // the constraint at `meta.driverAdapterError.cause.constraint.fields` and
+  // leaves `target` undefined — measured — so a check against one path is a
+  // check that silently stops working on a client upgrade. The message is a
+  // second net for the same reason.
+  const evidence = `${JSON.stringify(e.meta ?? '')} ${e.message ?? ''}`;
+  if (!evidence.includes('control_number')) return null;
+  return new ConflictException({
+    statusCode: 409,
+    error: 'Conflict',
+    code: 'catalog.duplicateControlNumber',
+    message:
+      `This library already holds a record with control number ${JSON.stringify(controlNumber ?? '')}. ` +
+      'A record number is unique per kind, so the same file cannot be loaded twice without ' +
+      'overlay rules — which are phase 30.',
+    controlNumber: controlNumber ?? null,
+  });
+}
+
+/** The value of a control field, or null. */
+function controlValueOf(record: MarcRecord, tag: string): string | null {
+  const f = record.fields.find((x) => x.t === tag && 'v' in x);
+  const v = f && 'v' in f ? f.v.trim() : '';
+  return v.length > 0 ? v : null;
+}
+
+/** A leader position, or null when it is a space — the MARC "not specified". */
+const leaderCode = (leader: string, at: number): string | null => {
+  const c = leader[at];
+  return c === undefined || c === ' ' ? null : c;
+};
+
+/**
+ * The three type columns `marc_records` has held open since phase 9.
+ *
+ * `record_type_code` (Leader/06), `bib_level_code` (Leader/07) and
+ * `encoding_level` (Leader/17) had no writer at all — which made
+ * `marc_records_type_idx ON (kind, record_type_code, bib_level_code)` an index
+ * over two permanently NULL columns. They are pure functions of the leader, so
+ * there is no reason for them to be null except that nothing had ever put a real
+ * record in. Phase 11b does.
+ */
+function typeCodesOf(leader: string) {
+  return {
+    recordTypeCode: leaderCode(leader, 6),
+    bibLevelCode: leaderCode(leader, 7),
+    encodingLevel: leaderCode(leader, 17),
+  };
+}
+
 @Injectable()
 export class BibWriteService {
   constructor(
     @Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService,
     @Inject(TenantAuditService) private readonly audit: TenantAuditService,
+    @Inject(BibProjectionService) private readonly projection: BibProjectionService,
   ) {}
 
   /**
@@ -328,6 +422,29 @@ export class BibWriteService {
       kind?: 'bibliographic' | 'authority' | 'holdings' | 'classification';
       schema?: 'marc21' | 'unimarc';
       controlNumber?: string;
+      /**
+       * Where this record came from, when it came from bytes.
+       *
+       * PURELY ADDITIVE, and omitted by the editor — which is why the defaults
+       * below still say `manual`. It is the first writer these seven columns
+       * have had since phase 9 created them, and it is the whole reason
+       * `?fidelity=source` can promise anything: without a blob there are no
+       * original bytes to serve, and the promise would be a fallback dressed up
+       * as a guarantee.
+       *
+       * `sourceBlobSha256` is deliberately NOT a parameter. It is computed here
+       * from the blob, so the two cannot disagree — a caller that passed a hash
+       * of something else would produce a row whose own checksum is a lie, and
+       * nothing downstream could tell.
+       */
+      source?: {
+        format: 'iso2709' | 'marcxml' | 'marc_json';
+        encoding: string;
+        normalization: string;
+        blob: Uint8Array;
+        roundtrips: boolean;
+        anomalies: readonly unknown[];
+      };
     },
   ): Promise<WriteResult> {
     const client = this.tenantPrisma.getClientV2(tenant);
@@ -342,67 +459,119 @@ export class BibWriteService {
     // the stored JSONB and in every export, which is why the test asserts the
     // stored bytes rather than the hash.
     const normalised = toNfc(input.record);
+    // `charsetCode` is 'a' for everything this build stores: the document is
+    // JSONB and JSONB is Unicode. It is threaded through rather than hard-coded
+    // at both ends so the stored leader and the stored column cannot disagree —
+    // which they did until phase 11b, invisibly, for every MARC-8 import.
+    const charsetCode = 'a';
     const stamped = stamp005(
-      { ...normalised, leader: leaderForWrite(normalised.leader, 'create') },
+      { ...normalised, leader: leaderForWrite(normalised.leader, 'create', charsetCode) },
       now.getTime(),
     );
     const definition = this.schemaFor(stamped, kind, schema);
     const validation = validateDelta(null, stamped, definition);
     const hash = Buffer.from(await contentHash(stamped));
+    // Computed HERE, from the blob, rather than accepted from the caller: a
+    // checksum a caller supplies is a checksum of whatever the caller hashed,
+    // and a row whose own checksum is a lie is undetectable afterwards.
+    const sourceHash = input.source ? Buffer.from(sha256(input.source.blob)) : null;
 
-    const created = await client.$transaction(
-      async (tx) => {
-        await setChangeActor(tx, changeActorOf(actor));
-        const row = await tx.marcRecord.create({
-          data: {
-            kind,
-            schema,
-            status: 'complete',
-            leader: stamped.leader,
-            contentHash: hash,
-            currentVersion: 1,
-            recordStatusCode: recordStatusCode('create'),
-            charsetCode: 'a',
-            controlNumber: input.controlNumber ?? null,
-            // 008/00-05 is derived from created_at and NEVER rewritten after
-            // this moment — every "titles added this year" statistic and the ISO
-            // 2789 return depend on it.
-            dateEntered: yymmdd(now),
-            needsReview: validation.blocking.length > 0,
-            createdByUserId: actor.userId,
-            updatedByUserId: actor.userId,
-            createdAt: now,
-            updatedAt: now,
-          },
-          select: { id: true, publicNo: true, rowVersion: true },
-        });
-        await tx.marcRecordContent.create({
-          data: {
-            recordId: row.id,
-            content: stamped.fields as never,
-            sourceFormat: 'manual',
-            sourceRoundtrips: true,
-            updatedAt: now,
-          },
-        });
-        await tx.marcRecordVersion.create({
-          data: {
-            recordId: row.id,
-            version: 1,
-            leader: stamped.leader,
-            content: stamped.fields as never,
-            contentHash: hash,
-            changeKind: 'create',
-            changedTags: stamped.fields.map((f) => f.t),
-            actorKind: actor.actorType,
-            actorId: actor.actorId,
-            createdAt: now,
-          },
-        });
-        return row;
-      },
-      { isolationLevel: 'ReadCommitted' },
-    );
+    const created = await client
+      .$transaction(
+        async (tx) => {
+          await setChangeActor(tx, changeActorOf(actor));
+          const row = await tx.marcRecord.create({
+            data: {
+              kind,
+              schema,
+              status: 'complete',
+              leader: stamped.leader,
+              contentHash: hash,
+              currentVersion: 1,
+              recordStatusCode: recordStatusCode('create'),
+              charsetCode,
+              // Leader/06, /07 and /17. Three columns phase 9 created and nothing
+              // has ever written — which left `marc_records_type_idx ON (kind,
+              // record_type_code, bib_level_code)` an index over two permanently
+              // NULL columns. They are pure functions of the leader; the only
+              // reason they were null is that nothing had put a real record in.
+              ...typeCodesOf(stamped.leader),
+              controlNumber: input.controlNumber ?? null,
+              // 003, the agency whose number 001 is. Meaningless without it: an
+              // OCLC number and a local accession number are both digits, and
+              // phase 44's OCLC normalization cannot tell them apart otherwise.
+              controlNumberSource: controlValueOf(stamped, '003'),
+              // 008/00-05 is derived from created_at and NEVER rewritten after
+              // this moment — every "titles added this year" statistic and the ISO
+              // 2789 return depend on it.
+              dateEntered: yymmdd(now),
+              needsReview: validation.blocking.length > 0,
+              createdByUserId: actor.userId,
+              updatedByUserId: actor.userId,
+              createdAt: now,
+              updatedAt: now,
+            },
+            select: { id: true, publicNo: true, rowVersion: true },
+          });
+          await tx.marcRecordContent.create({
+            data: {
+              recordId: row.id,
+              content: stamped.fields as never,
+              // `manual` when nobody said otherwise, which is the editor. The
+              // provenance block is what an ingest passes; see the input type.
+              sourceFormat: input.source?.format ?? 'manual',
+              sourceEncoding: input.source?.encoding ?? null,
+              sourceNormalization: input.source?.normalization ?? null,
+              sourceBlob: input.source ? Buffer.from(input.source.blob) : null,
+              sourceBlobSha256: sourceHash,
+              // TRUE for a typed record, because there are no source bytes to fail
+              // to reproduce. False is a fact about an importer, measured at
+              // ingest and never recomputed.
+              sourceRoundtrips: input.source?.roundtrips ?? true,
+              anomalies: (input.source?.anomalies ?? []) as never,
+              updatedAt: now,
+            },
+          });
+          await tx.marcRecordVersion.create({
+            data: {
+              recordId: row.id,
+              version: 1,
+              leader: stamped.leader,
+              content: stamped.fields as never,
+              contentHash: hash,
+              changeKind: 'create',
+              changedTags: stamped.fields.map((f) => f.t),
+              actorKind: actor.actorType,
+              actorId: actor.actorId,
+              createdAt: now,
+            },
+          });
+
+          // The projection, on the CREATE path too.
+          //
+          // Worth saying out loud because an earlier draft of this method had the
+          // hook only in `writeCore`, and nothing failed: a newly catalogued
+          // record simply did not exist for the OPAC, for facets, for browse or
+          // for any report until somebody happened to edit it. Every test passed,
+          // because every test that looked at a projection created its record and
+          // then edited it.
+          await this.projection.project(tx, { recordId: row.id, kind, record: stamped, now });
+
+          return row;
+        },
+        { isolationLevel: 'ReadCommitted' },
+      )
+      .catch((err: unknown) => {
+        // A duplicate 001 is a CONFLICT, not a server error.
+        //
+        // `marc_records_control_number_unique_active ON (kind, control_number)
+        // WHERE control_number IS NOT NULL AND deleted_at IS NULL` is a deliberate
+        // constraint, and until phase 11b nothing hit it: the editor mints no 001.
+        // An ingest hits it the moment a library loads a file it already loaded,
+        // which is the single most common thing that happens to an import — and it
+        // escaped as a 500 with a support code, telling the librarian nothing.
+        throw duplicateControlNumber(err, input.controlNumber) ?? err;
+      });
 
     await this.audit.record(tenant, actor, {
       action: 'catalog.record.created',
@@ -604,12 +773,18 @@ export class BibWriteService {
           });
         }
 
-        // 9. THE PROJECTION HOOK. §2 requires the relational projection to be
-        //    recomputed "inside the same transaction as every write". Phase 11
-        //    owns it; this is where it goes. Left as an explicit no-op rather
-        //    than omitted, so phase 11 fills a hole instead of restructuring the
-        //    method — and so the requirement is visible to anyone reading this.
-        await this.projectInTransaction(tx, recordId);
+        // 9. THE PROJECTION. §2 requires it to be recomputed "inside the same
+        //    transaction as every write", so that a record and its projection
+        //    can never be observed disagreeing. Here, not after the commit:
+        //    a projection written afterwards is a second transaction that can
+        //    fail on its own, and the window between them is exactly long
+        //    enough for the OPAC to render the previous title.
+        //
+        //    Unconditional, including when the verdict is `identical`. A save
+        //    that changed nothing still re-derives the projection, which is what
+        //    makes a re-save the manual repair for a record the projector has
+        //    since learned to read better.
+        await this.projection.project(tx, { recordId, kind: row.kind, record: stamped, now });
 
         return {
           version: nextVersion,
@@ -646,17 +821,6 @@ export class BibWriteService {
       needsReview: outcome.validation.after.issues.length > 0,
     };
   }
-  /**
-   * Phase 11's projection, deliberately empty.
-   *
-   * See step 9 in `write()`. When phase 11 lands, `bib_records` and its
-   * satellites are written HERE — inside the same transaction, so a record and
-   * its projection can never be observed disagreeing.
-   */
-  private async projectInTransaction(_tx: TxV2, _recordId: string): Promise<void> {
-    // Intentionally empty until phase 11.
-  }
-
   /**
    * Every version of a record, newest first.
    *

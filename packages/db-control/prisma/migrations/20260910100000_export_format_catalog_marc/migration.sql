@@ -1,0 +1,27 @@
+-- `catalog_marc`: the catalogue as MARC, as a value of the format enum.
+--
+-- §6 phase 11 says "streamed `catalog_marc` export FORMAT", and a format is what
+-- this is: one new value on `ExportFormat`, one branch in the export worker, and
+-- everything else inherited — the `export_jobs` row, the single-slot queue, the
+-- disk guard's 2 GiB reserve, the four-hour deadline, `purgeJobArtifacts`, the
+-- 24-hour TTL and both download routes. The alternative considered and rejected
+-- was a live `GET /catalog/export.mrc`, which would have inherited none of them
+-- and would have become the second long-lived response in a process whose
+-- shutdown drain is twenty seconds.
+--
+-- ONE VALUE, NOT TWO. A MARCXML sibling was argued for on the grounds that ISO
+-- 2709 refuses records MARCXML accepts — which is true, and is why the artifact
+-- carries `oversize.xml` for exactly those records. A Postgres enum value is
+-- effectively unremovable, §6 names one format, and one is enough.
+--
+-- ALONE IN ITS OWN MIGRATION, deliberately. Before PostgreSQL 12 a new enum
+-- value could not be used in the transaction that added it, and while 16 relaxes
+-- that for most cases, the rule still bites when the value is used by a query
+-- planned in the same transaction. Keeping the ALTER by itself means no later
+-- statement in this file can ever be the one that trips it.
+--
+-- `prisma migrate deploy` does NOT wrap a migration file in a transaction, and
+-- `ALTER TYPE … ADD VALUE` is not transactional in the way the rest of this
+-- repo's migrations are, so this file deliberately does NOT open one.
+
+ALTER TYPE "ExportFormat" ADD VALUE IF NOT EXISTS 'catalog_marc';

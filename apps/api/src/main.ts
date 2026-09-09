@@ -121,6 +121,18 @@ async function bootstrap() {
  * same download anyway AND take a mid-write checkout with it. The thing worth
  * protecting is the write, and 20s is many times what any write here needs.
  *
+ * RE-EXAMINED IN PHASE 11B, and the sentence above stays true. The catalogue
+ * MARC export could have been a live `GET /catalog/export.mrc` streaming a
+ * 250,000-record file, which would have been a second exception — and a worse
+ * one, because unlike the installer it is COMPUTED: a severed export is minutes
+ * of serialization thrown away, not a re-clickable download of an immutable
+ * artefact. It is a `catalog_marc` export job on the export queue instead, which
+ * runs in the worker under its own four-hour budget and lands in a file the
+ * librarian downloads afterwards. The MARC INGEST is bounded for the same
+ * reason: `CATALOG_INGEST_MAX_RECORDS` is 1,000 because 1,000 records is ~2.5s
+ * of measured database floor, so an ingest in flight when a deploy lands
+ * finishes inside this drain.
+ *
  * Mirrors worker.ts's SHUTDOWN_DEADLINE_MS (25s under a 60s grace).
  */
 const SHUTDOWN_DEADLINE_MS = 20_000;

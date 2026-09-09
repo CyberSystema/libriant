@@ -21,6 +21,7 @@
   "export.formats.json": "JSON",
   "export.formats.xlsx": "Excel (.xlsx)",
   "export.formats.sql": "SQL dump",
+  "export.formats.catalog_marc": "Catalogue as MARC (zip)",
   "export.create": "Create export",
   "export.started": "Export started — it'll be ready shortly.",
   "export.listTitle": "Recent exports",

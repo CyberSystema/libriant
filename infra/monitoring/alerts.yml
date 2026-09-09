@@ -397,6 +397,51 @@ groups:
             `[scheduled] started` naming it, and BullMQ's job schedulers under
             the `lbr-bull` prefix.
 
+      - alert: LibriantCatalogProjectionDrift
+        # `bib_records` is what the OPAC, facets, browse and every report read;
+        # `marc_records` is what the catalogue actually says. When they disagree
+        # the library is showing patrons something it does not hold.
+        #
+        # This CANNOT be a race. The projection is written inside the same
+        # transaction as the record, proved by an integration test that refuses a
+        # write and asserts the projection did not move. So a non-zero value has
+        # exactly two causes, and both need a person: the PROJECTOR changed in a
+        # deploy and nobody re-ran it, or a write path wrote a record without its
+        # projection.
+        #
+        # `> 0`, with no tolerance band. One drifted record is one record whose
+        # public catalogue entry is wrong, and the fleet-wide expected value is
+        # zero — there is no steady-state noise for a threshold to sit above.
+        #
+        # 1h rather than immediately: the sweep is daily, so the series only
+        # moves once a day and a `for` shorter than the scrape jitter buys
+        # nothing.
+        #
+        # REPAIRING DOES NOT CLEAR THIS PAGE, and that is worth knowing before
+        # 03:00 rather than during it. The series is served from the worker's
+        # in-memory record of the last sweep; `pnpm catalog:verify --repair` is a
+        # separate process that writes tenant databases and touches nothing in
+        # the worker. So the value stands until the next nightly run — up to 24
+        # hours. Confirm a repair worked by running `pnpm catalog:verify` with no
+        # flag, which exits 0 when nothing drifts, and silence this alert for the
+        # interval rather than waiting on it.
+        expr: libriant_catalog_projection_drift_total > 0
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $value }} bibliographic projection(s) disagree with their record'
+          description: >-
+            The nightly catalog-projection-verify sweep re-derived every
+            bibliographic record and found projections that do not match.
+            `libriant_catalog_projection_scanned_total` is the denominator: a
+            count close to it means the projector changed in a deploy, and a
+            handful means a write path lost one. The worker log names the first
+            twenty with the columns that differ. Repair with
+            `pnpm catalog:verify --repair` after establishing which it is —
+            the sweep itself never writes. This series does not move until the
+            next nightly sweep, so verify the repair with `pnpm catalog:verify`
+            (exit 0 = clean) rather than by watching the alert.
+
   # ───────────────────────────────────────────────────────────────────────────
   # The alerts about the alerting, and about the backups.
   #

@@ -117,6 +117,10 @@ const PACKAGES: Pkg[] = [
         'A STORED generated column: amount + tax - paid - waived - written_off. Generated so ' +
         'that two code paths cannot compute a balance differently, which is the most damaging ' +
         'bug class available in a fee ledger.',
+      'DROP INDEX "bib_records_search_trgm";':
+        `${TRGM} Written \`public.gin_trgm_ops\` rather ` +
+        'than bare: an operator class is resolved through `search_path` exactly as a function ' +
+        'is, and phase 20 relocates pg_trgm out of `public`.',
       'DROP SEQUENCE "record_version_seq";':
         'A bare sequence shared by `marc_records.row_version` and `change_events.row_version`, ' +
         'so a device replica can order a catalogue change against a circulation change. Prisma ' +
@@ -216,6 +220,45 @@ for (const pkg of PACKAGES) {
   if (pkg.urlEnv) env[pkg.urlEnv] = pkgUrl;
 
   if (pkg.mode === 'deploy') {
+    // RESET THE NAMESPACE FIRST, so this gate is repeatable against one shadow
+    // database.
+    //
+    // `migrate deploy` is a no-op on a database that already has the ledger, so
+    // without this the second run of the gate reuses whatever the FIRST run left
+    // — and the first run left it damaged. `--from-migrations` (the 1.0 and
+    // control-plane entries above and below) resets the shadow database by
+    // dropping and recreating the extensions, and `bib_records_search_trgm` is
+    // the first object in `lbr2` that depends on one, so `DROP EXTENSION
+    // pg_trgm` CASCADEs it away while leaving every table and the ledger intact.
+    // Run two then reported "allowlisted drift no longer occurs — remove it",
+    // telling the operator to delete a correct entry. Reproduced
+    // deterministically; CI never saw it only because it creates the shadow
+    // database fresh each job.
+    //
+    // A shadow database is disposable by definition, which is what makes
+    // dropping the schema the right answer rather than a heavy one.
+    //
+    // `prisma db execute --stdin` rather than a `pg` client, because this file
+    // is loaded as CJS by tsx and top-level `await` does not compile there — and
+    // rather than `--url`, which Prisma 7 refuses once a config file is loaded.
+    // The config supplies the datasource, so the reset lands on exactly the
+    // database the deploy below will use.
+    const namespace = (pkg.urlSuffix ?? '').replace(/^\?schema=/, '') || 'public';
+    try {
+      execFileSync('pnpm', ['exec', 'prisma', 'db', 'execute', ...extra, '--stdin'], {
+        cwd,
+        env,
+        input: `DROP SCHEMA IF EXISTS "${namespace}" CASCADE;`,
+        encoding: 'utf8',
+      });
+    } catch (err) {
+      const e = err as { stdout?: string; stderr?: string; message: string };
+      fail(
+        `${pkg.dir} (${pkg.schema}): could not reset the shadow namespace — ` +
+          `${(e.stderr || e.stdout || e.message).trim().slice(0, 400)}`,
+      );
+      continue;
+    }
     // Build the "what the migrations produce" side by actually deploying them.
     try {
       execFileSync('pnpm', ['exec', 'prisma', 'migrate', 'deploy', ...extra], {

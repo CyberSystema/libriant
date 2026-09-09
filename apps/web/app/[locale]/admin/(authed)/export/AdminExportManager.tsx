@@ -4,7 +4,7 @@ import { Button, Card, CardBody, CardHeader, useToast } from '@libriant/ui';
 import { ApiError, api } from '@/lib/api';
 import { dataPort } from '@/lib/ports';
 
-type Format = 'csv' | 'json' | 'xlsx' | 'sql';
+type Format = 'csv' | 'json' | 'xlsx' | 'sql' | 'catalog_marc';
 type Scope = 'tenant' | 'control' | 'all';
 type Status = 'queued' | 'running' | 'completed' | 'failed';
 
@@ -24,13 +24,23 @@ export type ExportJobView = {
 
 export type TenantLite = { id: string; slug: string; name: string };
 
-const FORMATS: Format[] = ['csv', 'json', 'xlsx', 'sql'];
+const FORMATS: Format[] = ['csv', 'json', 'xlsx', 'sql', 'catalog_marc'];
 const FORMAT_LABEL: Record<Format, string> = {
   csv: 'CSV (zip)',
   json: 'JSON',
   xlsx: 'Excel (.xlsx)',
   sql: 'SQL dump',
+  catalog_marc: 'Catalogue as MARC (zip)',
 };
+
+/**
+ * Formats that only make sense for one library.
+ *
+ * `catalog_marc` exports a CATALOGUE, and the control database has none — the
+ * API refuses it at scope `control` and `all` before the job row exists, so
+ * offering it here would present a value this admin's own API rejects.
+ */
+const TENANT_ONLY: ReadonlySet<Format> = new Set<Format>(['catalog_marc']);
 
 function fmtBytes(n: number | null): string {
   if (!n) return '—';
@@ -114,7 +124,15 @@ export function AdminExportManager({
               <span style={{ fontSize: 'var(--fs-sm)', fontWeight: 500 }}>Scope</span>
               <select
                 value={scope}
-                onChange={(e) => setScope(e.currentTarget.value as Scope)}
+                onChange={(e) => {
+                  const next = e.currentTarget.value as Scope;
+                  setScope(next);
+                  // A tenant-only format left selected while the scope moves to
+                  // `control` would submit a combination the API refuses. The
+                  // option disappears from the list either way; this is what
+                  // stops the STATE from surviving behind it.
+                  if (next !== 'tenant' && TENANT_ONLY.has(format)) setFormat('xlsx');
+                }}
                 className="lbr-input"
               >
                 <option value="tenant">A specific library</option>
@@ -148,7 +166,7 @@ export function AdminExportManager({
                 onChange={(e) => setFormat(e.currentTarget.value as Format)}
                 className="lbr-input"
               >
-                {FORMATS.map((f) => (
+                {FORMATS.filter((f) => scope === 'tenant' || !TENANT_ONLY.has(f)).map((f) => (
                   <option key={f} value={f}>
                     {FORMAT_LABEL[f]}
                   </option>

@@ -1013,3 +1013,598 @@ worth knowing: a fixture that wants an already-lapsed lock must backdate
 every sixty seconds; auditing all of them would write ten permanent rows per
 record per session to record that somebody left a tab open. `heartbeat_count` is
 what makes "first beat" answerable without a second read.
+
+---
+
+## Phase 11a — the relational projection
+
+The first half of phase 11: "Pure, total projector". The serialization endpoints
+(`GET /catalog/bib/:id.(mrc|xml|json)`, `?fidelity=source`, the streamed
+`catalog_marc` export) are 11b. `bib_records`, `bib_identifiers`,
+`bib_classifications` and `work_clusters` are now `created` in
+BASELINE-SCOPE.json — twenty-two tables.
+
+Three of those four have no DDL anywhere in the plan of record. §3 gives
+`bib_records` a full `CREATE TABLE`; it names the two satellites once each in an
+inventory list with no columns at all, and `work_clusters` exists only because
+`bib_records.work_cluster_id` is written with a `REFERENCES` clause. What that
+meant in practice is recorded per table in `BASELINE-SCOPE.json` as
+`specified` / `invented` / `skeleton`, and in the model docblocks.
+
+### The defect the phase existed to make impossible, found by writing it
+
+**Six columns of `bib_records` are not the projector's** — `item_count`,
+`available_count`, `suppressed_from_opac`, `custom_fields`, `cover_asset_ref`
+and `legacy_json` — and `material_type_id` and `work_cluster_id` make eight
+that the phase-11a service must never write on update. An `INSERT … ON CONFLICT
+DO UPDATE` that assigned the excluded row wholesale would destroy all eight on
+every single-subfield edit: zero the OPAC availability of every record a
+cataloguer touched, un-suppress records staff had hidden, and throw away the only
+copy of the 1.0 row, which is unreconstructible once `v1_archive` is dropped.
+
+The defence is structural rather than remembered. `ownedColumns()` builds ONE
+object holding exactly the projector-owned columns, and the same object is spread
+into the create and passed as the whole of the update; the eight are not in it and
+there is no second object an update could accidentally use. `NOT_THE_PROJECTORS`
+is exported so a test can assert the classification rather than restate it, and
+`bib-projection.spec.ts` sets all eight by hand, edits the title, and asserts they
+survive.
+
+### The create path had no projection at all, and nothing failed
+
+Phase 10 left `projectInTransaction` as an explicit empty method and called it
+from `writeCore` only. `create()` does not go through `writeCore` — it writes its
+own three rows — so a newly catalogued record would have had no projection until
+somebody happened to edit it: invisible to the OPAC, to facets, to browse and to
+every report. No test would have caught it, because a test that wants to look at
+a projection naturally creates a record and then edits it. Both paths are wired
+now and the create case is the first assertion in the integration spec.
+
+### The projector is TOTAL, and that is the whole design
+
+It never refuses a record and never throws. A librarian's typo must not be able
+to abort a 50,000-record import halfway through, so every judgement the projector
+declines to make lands in `projection_anomalies` — thirteen codes, each with the
+tag and a sentence addressed to a cataloguer. That column is **invented**: §3 does
+not have it, and a queue with no table is a queue that does not exist.
+
+Two consequences worth stating. A record with no 245 gets the sentinel title
+`[Untitled]` and an anomaly, not a failed import. And an ISBN that fails its own
+check digit is **stored with `valid = false`** — the 1.0 `normalizeIsbn13`
+accepts that value (measured `{ok: true}`) because it only tests the shape, so a
+wrong ISBN entered the catalogue looking right; refusing it instead would make
+the cataloguer delete the ISBN to get their work saved.
+
+`packages/shared/src/identifiers` is new and hand-rolled for ISBN-10/13, ISSN,
+ISMN (including the older printed `M…` form), EAN-13 and DOI. **None is a
+uniqueness constraint** and there is deliberately no unique index: §3 records that
+the 1.0 `books_isbn13_unique_active` "would refuse the exact catalogues this
+product exists to import", because a set and its volumes, a reprint, and endemic
+publisher ISBN reuse in small Greek presses all legitimately share one. A
+duplicate is a merge offer at phase 39. The v2 smoke asserts the absence directly,
+because a "helpful" migration adding it back is a one-line change with no other
+symptom.
+
+### Two things deliberately NOT constrained, asserted so they stay that way
+
+The identifier unique above, and **`holdings_records (bib_id, branch_id)`**. An
+earlier draft of the migration made the second one unique. It is wrong for the
+same reason: a branch legitimately holds one title in more than one MFHD —
+reference and stacks, large-print beside ordinary, a serial whose bound volumes
+and current issues carry different 852 `$b` — and with no shelving location or
+call number on that table yet (phase 15) the constraint could not even be written
+correctly. A plain composite index answers the same lookup.
+
+`holdings_records.bib_id` itself lands here because the phase-9 docblock said it
+would. It is `NOT NULL` with no default and no backfill, which is only safe
+because `lbr2` holds no rows in any database — the copy-forward is phase 19 — and
+the ALTER fails loudly rather than inventing a bib if that is ever untrue.
+
+### The sort key is computed in the projector, not the service
+
+An earlier draft left `sortKey: ''` on the theory that the service owned the
+`@libriant/shared/callnumber` dependency. That was simply false — `packages/marc`
+already imports `foldGreek` from the same package — and the real argument runs the
+other way: a sort key produced beside the value it sorts cannot be produced by a
+different rule than the comparison. The `local` scheme is the one that matters
+here, because it transliterates, so `ΠΑΙΔ 823 ΚΑΖ` files where a Greek librarian
+expects it rather than after every Latin call number in the catalogue. Every key
+is pure ASCII and fixed width — the `perf-13` trap, since tenant databases are
+`el_GR.UTF-8` and a non-ASCII key reorders under that collation.
+
+### The non-filing indicator counts RAW characters, and a comment said so
+
+MARC 21 defines 245 indicator 2 as the number of characters at the start of the
+field to be disregarded, counted in the field **as transcribed** — spaces and
+diacritics included. The projector applied the skip to the display title, which
+has already been through `tidy()` and therefore has its runs of whitespace
+collapsed. So a `$a` of `"Ο  κόσμος"` — a double space, which real catalogues
+are full of — carrying a correct ind2 of 3 lost three characters from the
+nine-character collapsed form:
+
+    sortTitle "οσμοσ" instead of "κοσμοσ", plus a spurious
+    `nonfiling-indicator-disagrees` on top of it
+
+so the book filed under sigma and the review queue filled with records that were
+catalogued correctly. The comment that sat on that line named exactly the trap
+the code walked into: "Folding first would collapse whitespace and move the
+offsets." Both the slice and the article detector now work on the untidied `$a`,
+with `tidy` applied afterwards, and the length guard leads with `n > 0` so that a
+245 with a `$b` and no `$a` — malformed but common — does not raise
+`nonfiling-indicator-too-long` on an ordinary indicator of 0.
+
+### `bib_records` is NOT `@replicated`
+
+The projection is DERIVED from `marc_records`, which is replicated. A second
+change event for the same edit would make every consumer process it twice and
+could not be ordered against the first. `check:changelog-coverage` still reports
+nine and nine, and the v2 smoke asserts that writing a projection produces no
+event — because adding the annotation by reflex is one word with no other symptom.
+
+### The TOAST claim, measured with the right instrument
+
+§2's argument for the 1:1 document split is that "nothing that scans reads the
+document… TOAST keeps fat JSONB off the heap page **provided nothing selects
+it**". `bib_records` has fat columns of its own — `summary` and `search_text` —
+so the same discipline has to hold here, and `bib-projection-toast.spec.ts`
+measures it.
+
+**The obvious instrument is wrong.** Measured against a 300-row fixture:
+
+    real SELECT projecting the fat column   → toast blocks 300
+    EXPLAIN (ANALYZE, BUFFERS) of the SAME  → "Buffers: shared hit=185",
+                                               and no TOAST line at all
+
+TOAST fetches happen during output-tuple formation, outside the executor's buffer
+accounting, so an EXPLAIN-based test reports zero for a query performing three
+hundred reads and passes on the exact regression it exists to catch.
+`pg_statio_user_tables` counts them because it counts the buffer manager.
+
+The fixture is forced rather than catalogued, and that is itself a finding:
+records created through the API do NOT reach TOAST, because the projector clamps
+`summary` to 2,000 characters and `search_text` to 8,000 and both columns are
+`SET COMPRESSION lz4`, so real prose compresses under the threshold and stays
+inline. A realistic fixture would measure zero for both queries and assert
+nothing. The rows are incompressible `md5()` noise and a guard refuses to let the
+suite proceed if they did not get there.
+
+### `catalog-verify`, and why a transactional projection still needs one
+
+It cannot drift by racing — the projection commits with the record, which the
+integration spec proves by refusing a write and asserting the projection did not
+move. It drifts because the **projector changes**: a rule is corrected, a subfield
+starts being read, a fold is fixed, and from that deploy every record written
+before the change disagrees with every record written after it.
+
+That is not hypothetical. This phase produced one such change while it was being
+written — the sort-key fix above — and the verifier found it: eight of nine
+records in a test tenant, `stale: classifications`, repaired by
+`pnpm catalog:verify --repair` and clean on re-run.
+
+**The nightly job never writes.** Same rule as the fee ledger's reconciliation
+(risk 7): a sweep that silently repairs drift also silently hides the change that
+caused it. `--repair` lives in the CLI, behind a person, and re-derives through
+the same `BibProjectionService` the write path uses so a repaired row and a
+freshly written one cannot differ.
+
+`libriant_catalog_projection_drift_total` is a second series alongside
+`libriant_worker_job_count{sweep="catalog-projection-verify",count="drift"}`,
+which already carries the number. It has a reason: that gauge is `alert: false`
+on the argument that no single threshold means the same thing across twelve
+handlers, and drift here is not a handler statistic — it is the OPAC serving
+something the record does not say. `LibriantCatalogProjectionDrift` fires at `> 0`
+with no tolerance band, because the fleet-wide expected value is zero.
+
+### One bug the verifier found in itself
+
+Its first run reported three of nine records drifted on `projectionAnomalies`,
+all three of them the records that had a non-empty array. **`jsonb` does not
+preserve key order** — it stores keys sorted by length and then bytewise — so a
+`{code, tag, message}` written by the projector comes back as
+`{tag, code, message}` and `JSON.stringify` differs on every record with an
+anomaly. The comparison now reads the three fields by name. Any future comparison
+of a stored `jsonb` against a freshly computed object has the same trap.
+
+### What an adversarial review found after the phase was green
+
+Six lenses over the diff, every finding independently verified by a second pass
+that was told to refute it. Twenty survived; the ones that changed code are here,
+because each is a defect the phase's own tests were green over.
+
+**A qualifier in `020 $a` made a good ISBN unfindable.** `strip()` removed only
+whitespace and hyphens, so the ordinary MARC form `978-0-306-40615-7 (pbk.)`
+normalised to `9780306406157(PBK.)` and was flagged `valid = false`. Both halves
+hurt: `bib_identifiers_lookup_idx` is on `(scheme, value_norm)`, so the record
+could not be found by its own ISBN, and the "these records have an impossible
+ISBN" queue filled with records whose ISBN is perfectly good. A qualified ISBN-10
+also lost its 13-digit upgrade, so the same book catalogued once with a qualifier
+and once without produced two non-matching `value_norm` values — degrading the
+duplicate signal phase 39 reads. MARC 21 gained `020 $q` for this in 2013;
+everything catalogued before then, which is most of an ABEKT or Aleph export,
+puts it in `$a`. The test named _"a qualifier in the source does not defeat the
+check"_ asserted only hyphens and spaces.
+
+**`024 7#` is not a DOI.** Indicator 1 = 7 means "source specified in `$2`", and
+the registry behind it holds `uri`, `urn`, `istc`, `iswc`, `sici`, `hdl` and
+more. Every non-DOI `024 7#` was stored under `scheme = 'doi'` and flagged
+invalid against the DOI shape test — mislabelling the identifier _and_ filling
+the queue with it. `$2` now decides, and a value this version does not
+understand is **not stored**, with `identifier-unknown-scheme` saying so:
+guessing a scheme is what makes a good ISWC look like a broken DOI.
+
+**Truncation manufactured lone surrogates.** Every cap cut with `String.slice`
+on code-unit offsets, so an astral character straddling the boundary left an
+unpaired high surrogate. Measured against a real tenant database: node-postgres
+sends `'A\uD800B'` and reads back `'A\uFFFDB'`, because Postgres `text` is UTF-8
+and an unpaired surrogate has no encoding. The consequence is worse than a
+mangled character — such a record would be reported drifted on **every** nightly
+verify for ever, and `--repair` could not fix it, because the repair writes the
+surrogate again and the database rewrites it again. `cut()` now stops at a code
+point and `sanitize()` substitutes U+FFFD, which is what the database stores
+anyway.
+
+**An empty `sort_title` was reachable.** `foldGreek` strips combining marks, so a
+245 `$a` that is one — present in the semantic corpus and in real broken imports
+— folded to `''`, which is the one state the column's own docblock names as
+unacceptable: it files the record ahead of the entire catalogue. The sentinel is
+now the floor, with `sort-key-underivable` so the fallback is visible.
+
+**`catalog:verify --repair` could revert a save.** It read the document in one
+statement and wrote the projection in a separate transaction, so a cataloguer who
+saved between the two had their edit's projection overwritten by one derived from
+the previous document — and the CLI reported it repaired. The read is now inside
+the transaction and behind `pg_advisory_xact_lock('bib:<id>')`, the same key
+`writeCore` takes.
+
+**The CLI aborted the fan-out on the first tenant with no sealed credential.**
+`runtimeDbUrl(t)` was evaluated one line above the `try`, so its deliberate
+fail-closed throw escaped the loop instead of counting as one unreachable
+library — the exact failure every sweep in `apps/api/src/jobs` is written to
+avoid.
+
+**`check:schema-drift` was not idempotent.** `bib_records_search_trgm` is the
+first object in `lbr2` that depends on an extension, and the 1.0 entry's
+`--from-migrations` replay resets the shadow database by dropping and recreating
+`pg_trgm` — CASCADE-dropping that index while leaving every table and the
+`_prisma_migrations` ledger intact. `migrate deploy` is then a no-op, so the
+second run of the gate against the same shadow database failed with _"allowlisted
+drift no longer occurs — remove it"_, telling the operator to delete a correct
+entry. CI never saw it because it creates the shadow database fresh. The deploy
+mode now drops its namespace first; three consecutive runs against one shadow
+database pass.
+
+**The test everything cited as proof of same-transaction atomicity proved
+nothing.** It refused a write with a stale `expectedContentHash` and asserted the
+projection had not moved — but `writeCore` rejects a stale hash at step 2, before
+the CAS, before the content write, and before `project()` is called at all. It
+would have passed on an implementation that wrote the projection after the
+commit. The real test drives the service inside a transaction that then throws,
+having first read the projection back _inside_ that transaction to prove it was
+written, and asserts the deliberately corrupted row is still corrupt. The 409
+case is kept, renamed for what it actually proves.
+
+**Four tests could not fail.** The fuzz corpus's coverage guard counted the
+labels `generateSemanticCorpus` stamps by index rather than anything the records
+contained, so it was a tautology that would have passed with every residue
+returning the same clean record; it now counts distinct projections and asserts
+the RIGHT anomaly per residue, which is what the fixture's own docblock says the
+declared residue is for. _"A single-date record gets no end year"_ used a fixture
+whose 008/11-14 is blank, so `year()` returned null before the guard was
+consulted — it passed with the guard deleted, measured; it now uses `9999`, the
+value real records carry. The call-number test asserted `typeof === 'string'` and
+its premise was wrong (an unparsed number gets 96 zeros, not an empty key, and
+that is correct — a fixed-width key is the whole point). And the drift verifier,
+which stands behind the page and the repair CLI, had **no test of any kind**.
+
+### Decisions worth their sentence
+
+**`public.gin_trgm_ops`, qualified.** An operator class is resolved through
+`search_path` exactly as a function is, so a bare `gin_trgm_ops` is the same time
+bomb `20260825200000_qualify_immutable_unaccent` defused once in 1.0. `public`
+rather than `extensions` because that is where the 2.0 baseline puts its
+extensions; phase 20 relocates them and risk 3 already commits that phase to
+recreating every affected index fully qualified.
+
+**The migration creates `pg_trgm` itself.** It is created by the 1.0 init and
+every tenant runs both tracks until phase 20 — but repeating it makes the 2.0
+track applicable to a database that has only ever seen it, which is what the
+phase-19 upgrade fixture and every probe database are.
+
+**No `material_type_id` mapping.** The obvious one — `carrier_type_code` onto
+`material_types.code` — is a guess: RDA carriers are `nc`, `cr`, `sd`; a library's
+material types are `book`, `dvd`, `περιοδικό`. Nothing joins them until
+`material_types` grows a carrier column, which is phase 15's.
+
+**The satellites are deleted and re-inserted, not diffed.** They have no natural
+key — deliberately, since none of these is a uniqueness constraint — so a
+diff-and-patch would have to invent one. Both hold a handful of rows per record
+and the projector owns every row in them.
+
+**`TxV2` moved to `apps/api/src/tenancy/tenant-tx-v2.ts`.** Phase 11a gave it a
+second user, and two copies of an `Omit<…>` list is one place for them to
+disagree — with the symptom being a helper that silently cannot be called from
+inside a transaction, which is the only place these helpers are ever correct.
+
+---
+
+## Phase 11b — MARC comes back out
+
+The second half of phase 11: `GET /catalog/bib/:id.(mrc|xml|json)`,
+`?fidelity=source`, a MARC-native ingest that stores the original bytes, and the
+streamed `catalog_marc` export. With it the sentence on the marketing site —
+"MARC goes into Libriant, it does not come out" — stops being true, which was
+the point of the phase.
+
+The acceptance criterion is met end to end and measured: **10,000 conforming ISO
+2709 records ingested through the API, exported by the real `catalog_marc` export
+job, unzipped, re-split, and every one re-parses to an identical record with a
+matching canonical hash; `catalog-verify` reports zero drift over all 10,000.**
+78 seconds, in `catalog-serialize.spec.ts`.
+
+### "Identical records" has three meanings and only one is owed
+
+This is the trap the whole phase turns on, and every one of three independently
+written designs got it wrong before it was measured.
+
+**Byte identity is not owed on the derived path and is not achievable** — 0 of
+2,000, measured. `create()` runs `stamp005`, which replaces any 005 with the
+transaction timestamp, and `leaderForWrite`, which sets /05; `writeIso2709` then
+recomputes /00-04 and /12-16 and forces /09, /10, /11 and /20-23. Every one of
+those is REQUIRED by §2's leader write rules. A test asserting byte identity here
+would be asserting that the writer violates the standard.
+
+Byte identity IS owed, exactly, for an unedited imported record at
+`?fidelity=source`. Those are §2's two distinct promises and they are not
+interchangeable.
+
+So the assertions are `diff(withoutStamp(in), withoutStamp(out)) === 'identical'`
+and `contentHash(stored) === contentHash(re-parsed)` — and the second of those
+was FALSE until this phase fixed the defect below.
+
+### Leader/09 was stored as the source claimed, not as the store holds
+
+`leaderForWrite` set /05, /10, /11 and /20-23 and left /09 alone. `writeIso2709`
+forces /09 from the export encoding — "set from the EXPORT, never copied from the
+source", which is the rule that stops a UTF-8 record going out declared as
+MARC-8 and arriving as mojibake. And `canonicalLeader` keeps positions 5..11, so
+**/09 is inside the content hash.**
+
+A Greek ABEKT or Aleph export declares MARC-8 with `/09 = ' '`. Measured on the
+real codec:
+
+    stored          contentHash c28e3d69cc9bc8b0…
+    export→re-parse contentHash fd682577fc5ef1f2…   NOT EQUAL
+
+— for exactly the files this product exists to import. `marc_records.charset_code`
+was already hard-coded `'a'` and had been disagreeing with the stored leader
+since phase 10. The fix is one line and the phase could not have passed without
+it; the original byte survives where every other original leader byte survives,
+in `source_blob`.
+
+### The ingest is synchronous and bounded, and that is the shape phase 11 owes
+
+`POST /t/:slug/catalog/bib/ingest`, raw `application/marc`, at most 4 MiB and
+1,000 records, with a 12-second deadline checked between records. Bigger files
+are chunked by the caller; `pnpm catalog:import` does it with `splitIso2709` —
+the codec's own splitter, the same function the server uses — so a boundary never
+falls inside a record.
+
+**It calls `BibWriteService.create()` once per record**, unchanged. A bulk writer
+would be 2.2× faster (measured: 1.17 ms/record batched ten to a transaction
+against 2.54 ms per-record) and would silently reproduce the exact defect phase
+11a shipped and fixed — a record with no projection, invisible to the OPAC, with
+every test green. That is not a trade worth 1.4 ms.
+
+One transaction per record is also the failure model this route needs: a file
+with one bad record loads the other 999 and the response says which one failed
+and why.
+
+Why not a queue: the worker process has **no Nest DI container** — `NestFactory`
+appears only in `main.ts`, and `import-worker.ts` hand-builds a v1 client — so a
+queued ingest could not call `create()` without standing up a second construction
+site for the projection tuple. And phases 30, 35 and 37 each bring a bulk MARC
+path with their own progress and resume semantics; building one here means
+building it twice.
+
+1,000 records is calibrated against `SHUTDOWN_DEADLINE_MS` (20 s), so an ingest
+in flight when a deploy lands finishes inside the drain and this route never
+becomes a second named exception to a rule `GET /t/:slug/desktop/download` is
+currently the only one of.
+
+### `?fidelity=source` refuses rather than falls back, in four distinguishable ways
+
+`never-stored` (typed, not imported), `edited` (`writeCore` NULLs the blob on
+every edit BY DESIGN — after an edit the promise is round-trip idempotence, not
+byte identity; `source_format` survives, which is what tells the two apart),
+`format-mismatch` (the bytes are MARCXML and `.mrc` was asked for — the answer
+names the extension that would work rather than transcoding, because transcoded
+bytes are by definition not the original ones).
+
+A silent fallback to a fresh serialization would have been the one wrong answer
+nobody can detect.
+
+### Seven dead columns now have a writer, and four more were derived
+
+`source_format`, `source_encoding`, `source_normalization`, `source_blob`,
+`source_blob_sha256`, `source_roundtrips` and `anomalies` had existed since phase
+9 with no writer at all. The ingest fills every one:
+
+- `source_roundtrips` is MEASURED — `bytesEqual(writeIso2709(parsed), slice)` —
+  on the RAW parse, before NFC and before the 005 stamp. After either it would
+  read `false` for every record in every file and the column would carry no
+  information. Measured on the phase-7 corpus: 86 % of records round-trip
+  byte-for-byte, 100 % of the conforming ones.
+- `source_blob_sha256` is computed by the SERVICE from the blob, never accepted
+  from a caller: a row whose own checksum is a lie is undetectable afterwards.
+  The integration test has Postgres recompute it.
+- `source_normalization` is `nfc` | `nfd` | `mixed`, classified from what
+  arrived. `mixed` is a real answer — a record with an NFC title and an NFD
+  subject heading exists.
+- `source_encoding` records `marc-8+lossy` when the decoder substituted U+FFFD,
+  which is the only durable answer to "why does this record have replacement
+  characters in it".
+
+And `record_type_code` (Leader/06), `bib_level_code` (Leader/07),
+`encoding_level` (Leader/17) and `control_number_source` (003), which left
+`marc_records_type_idx ON (kind, record_type_code, bib_level_code)` an index over
+two permanently NULL columns.
+
+`kind` is derived from Leader/06 rather than defaulting to bibliographic. A .mrc
+file routinely carries authority and holdings records beside the bibs, and
+storing one as bibliographic is worse than refusing it: the projector
+short-circuits on kind, so a mislabelled authority record would get a
+BIBLIOGRAPHIC projection and appear in the OPAC as a book called "Καζαντζάκης,
+Νίκος". They are refused instead, one line each in the result array, because this
+build ships no authority definition until phase 45.
+
+### A duplicate 001 was a 500
+
+`marc_records_control_number_unique_active` is a deliberate constraint that
+nothing could hit while the only writer was the editor, which mints no 001. An
+ingest hits it the moment a library loads a file it already loaded — the single
+most common thing that happens to an import — and it escaped as a 500 with a
+support code. It is a 409 with `catalog.duplicateControlNumber` now.
+
+Worth recording HOW it is detected: Prisma 7 with a driver adapter puts the
+constraint at `meta.driverAdapterError.cause.constraint.fields` and leaves
+`meta.target` UNDEFINED — measured. A check against `meta.target` compiles,
+passes review and never fires.
+
+### The export is a `catalog_marc` FORMAT, not a route
+
+§6 says "streamed `catalog_marc` export format", and a format is what it is: one
+new value on the existing `ExportFormat` enum plus one branch in the export
+worker, inheriting the `export_jobs` row, the concurrency-1 queue, `ExportRunGuard`'s
+2 GiB reserve and four-hour deadline, `purgeJobArtifacts`, the 24-hour TTL and
+both download routes. A live `GET /catalog/export.mrc` was the alternative and
+would have inherited none of them, in a process whose shutdown drain is twenty
+seconds.
+
+It ships as a **zip**: `catalogue.mrc`, `manifest.json`, and `oversize.xml` when
+there is something in it. `writeIso2709` refuses rather than corrupts — a field
+over 9,999 bytes (a multi-volume 505 contents note reaches that), a record over
+99,999, a separator byte inside a value — and each message names MARCXML as the
+answer, which is true. A refused record goes to the XML and the manifest accounts
+for every record the walk saw, because a catalogue export that silently contained
+fewer records than the catalogue is the worst thing this code could do: the
+library discovers it years later, in another system, with no way to tell which
+records were lost. `total = inCatalogueMrc + inOversizeXml`, always.
+
+Three things it deliberately does NOT reuse:
+
+**`BufferedWriter`.** It is a STRING buffer — `private buf = ''`, `this.buf += s`
+— which is right for CSV and destroys ISO 2709: appending bytes to a JS string
+decodes them as UTF-8 with replacement characters, so the leader's own /00-04
+byte count stops matching the bytes that follow it and the file parses as one
+corrupt record. `ByteWriter` is the same 64 KiB write-behind over `Buffer`.
+
+**`withTableReader` / `createRowStreamer`.** Both enumerate
+`schemaname = 'public'`, quote a single unqualified identifier, and redact by 1.0
+table name, so `lbr2` is invisible to them. The keyset walk from
+`bib-projection-verify.ts` is used instead.
+
+**`assertExportSizeSane`.** It estimates from `pg_class` filtered to
+`nspname = 'public'`, so for a catalogue living entirely in `lbr2` it would report
+zero and `assertRoomFor(0)` would wave an export onto a nearly full disk.
+
+### No metric, and that is a decision
+
+A refusal counter was considered and rejected. The authoritative account is
+`manifest.json` inside the artifact the librarian is already holding; a second
+surface would be a fleet-wide Prometheus series that pages an operator about one
+library's 505 note, at a rate of a handful of exports a year. A `console.warn`
+puts the fact in the operator log, where a pattern across libraries would show.
+
+### Holdings auto-creation: deferred to phase 15, and it is unimplementable here
+
+§6 names it under BOTH phase 11 and phase 15 ("Items, holdings, call numbers…
+holdings auto-creation"), so the deferral is a citation rather than a divergence.
+Three measured reasons make it the only honest answer:
+
+1. There is **no item service in `lbr2`** — nothing anywhere creates an `Item`
+   row — so there is no first-item event to hook. Auto-creation means "create a
+   default holdings record when the first item arrives".
+2. `holdings_records.branch_id` is NOT NULL with a foreign key, and **tenant
+   provisioning seeds no branch**. There is nothing to attach a holdings record
+   to.
+3. 11a deliberately refused a `(bib_id, branch_id)` unique — a branch
+   legitimately holds one title in more than one MFHD — so there is nothing to
+   upsert on either.
+
+11a landed the `bib_id` link that makes it possible. Phase 15 owns the rest.
+
+### Open questions answered here, so a later phase does not answer them differently
+
+**`date_entered` means "added to THIS database", not "added to this library's
+stock".** `create()` writes `yymmdd(now)` and never rewrites it, and §6 phase 19
+sets 008/00-05 from `created_at` for the copy-forward too. The consequence is
+real and accepted: a 50-year-old catalogue migrated on one afternoon reports
+those titles as accessioned that year. The alternative — trusting the source
+record's own 008/00-05 — makes the ISO 2789 return depend on data the library did
+not produce and cannot correct.
+
+**A MARC-8 record this build cannot decode is STORED, not refused.** The decoder
+ships Basic Latin and ANSEL only, so a Greek or Cyrillic MARC-8 record decodes to
+U+FFFD with a `marc8-unsupported-charset` anomaly. Refusing would make a Greek
+library's ABEKT file unloadable until the code tables ship, which is the opposite
+of this product's purpose. Storing means `source_blob` is the surviving truth and
+`?fidelity=source` is that record's only correct representation — which is
+recoverable, and recorded in `source_encoding` as `marc-8+lossy`.
+
+**`max_books` does not govern the 2.0 catalogue.** It counts `public.books` via
+`@RequiresQuota`, which no `/catalog/bib` route carries. Deciding this now rather
+than at phase 30 matters, because adding the check later would break every
+library that had already imported.
+
+**MARC-8 is not offered as an EXPORT encoding**, for the same reason: this build
+would raise `marc8-unencodable` on the majority of a Greek catalogue. UTF-8 with
+Leader/09 = 'a' is the only honest ISO 2709 this build can write.
+
+### Decisions worth their sentence
+
+**`source_blob` got `SET COMPRESSION lz4` in its own migration, before the first
+ingest.** `ALTER … SET COMPRESSION` does not rewrite existing rows, so 11b — the
+column's first writer ever — was the last moment it was free rather than a
+`VACUUM FULL` over a 5M-record table.
+
+**`Idempotency-Key` is REQUIRED on the ingest**, unlike every other mutation on
+this controller. `marc_records_control_number_unique_active` only constrains
+records that HAVE an 001, so a file of records without one has no uniqueness at
+all and a retry after a socket timeout would duplicate every record in the chunk.
+`pnpm catalog:import` derives the key from the chunk's own sha256, so two
+different chunks cannot collide and a retry of the same chunk is exactly what
+should replay — the interceptor does not look at the body, so nothing else would
+notice.
+
+**A chunk whose last record has no terminator is refused WHOLE.**
+`splitIso2709` tolerates an exporter that omits the final terminator, which real
+ones do; that tolerance means a file cut at an arbitrary byte offset yields a
+truncated last record that parses into something plausible and stores silently.
+The library would hold half a book.
+
+**The `.mrc`/`.xml`/`.json` routes are declared BEFORE the plain `GET :id`.**
+`:id` compiles to `([^/]+)` and matches `abc.mrc`, so the order is load-bearing;
+`@Get(':id([^.]+)')` was the alternative and throws at boot on path-to-regexp 8.
+The integration test asserts the `Content-Type` of `.mrc` for exactly this reason.
+
+**The plain `GET :id` closes a hole phase 10 shipped.** `PATCH` requires
+`expectedContentHash` and there was no way to obtain one except the response to a
+write you had just made. `source.hasSourceBlob` on it is a boolean computed as
+`source_blob IS NOT NULL` IN SQL — the blob is never selected, because this is
+the hot read that would have defeated the 1:1 split it inherited.
+
+**`EXPORT_FORMATS` and the `ExportFormat` enum now have a test that they agree.**
+They are two hand-maintained copies of one fact and the drift is silent in the
+worst direction: a value the database accepts and the DTO refuses is a 400 saying
+the format must be one of a list the format is on.
+
+**`@libriant/marc/test-corpus` is now a package export.** Three phases outside
+`packages/marc` need the only MARC corpus this repo has — 11b's acceptance, 19's
+upgrade fixture, 35's coverage report — and a five-level relative import into
+another package's `src/__fixtures__` is worse in every way except tidiness.
+
+**The zip reader in `test/integration/unzip.ts` is hand-rolled.** The repo writes
+zips and had never needed to read one; adding a dependency for one function is
+the trade `check:supply-chain` exists to make deliberate, and the central
+directory is forty lines of documented structure. `inflateRawSync` is the
+primitive, and it is Node's.

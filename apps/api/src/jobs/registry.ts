@@ -10,6 +10,7 @@ import { sendMemberNotifications } from './member-notifications.job.js';
 import { sweepStaleStorageTemps } from './storage-temp-cleanup.job.js';
 import { recomputeStorageUsage } from './storage-usage-recompute.job.js';
 import { sweepRetention } from './retention.job.js';
+import { CATALOG_VERIFY_JOB, verifyCatalogProjections } from './catalog-verify.job.js';
 import type { ScheduledJob } from './jobs.types.js';
 
 /**
@@ -137,5 +138,20 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     // Takes the ctx for the runner's warm Redis client (StorageService's
     // EffectivePlanService dependency).
     handler: (ctx) => recomputeStorageUsage(ctx),
+  },
+  {
+    // 24h, and it is the heaviest sweep here: it re-projects every
+    // bibliographic record in the fleet. Daily is not a compromise but the
+    // right cadence — the projection is written inside the write transaction,
+    // so it cannot drift by racing; the only thing that introduces drift is a
+    // DEPLOY that changes the projector, and running hourly would re-read every
+    // catalogue twenty-four times to find, on twenty-three of them, nothing.
+    //
+    // It never writes. Same rule as the ledger reconciliation (risk 7): a sweep
+    // that silently repairs drift also silently hides the change that caused
+    // it. Repair is `pnpm catalog:verify --repair`, run by a person.
+    name: CATALOG_VERIFY_JOB,
+    intervalMs: 24 * 60 * 60_000,
+    handler: () => verifyCatalogProjections(),
   },
 ];

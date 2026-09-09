@@ -11,9 +11,12 @@ import {
   Patch,
   Post,
   Query,
+  Req,
+  Res,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { validateDto } from '../auth/validate-dto.js';
 import { TenantCtx, type TenantContext } from '../tenancy/tenant-context.js';
 import { TenantActor } from '../tenancy/tenant-actor.js';
@@ -32,10 +35,24 @@ import {
   toMarcRecord,
 } from './bib.dto.js';
 import { BibLockService } from './bib-lock.service.js';
+import { BibReadService } from './bib-read.service.js';
+import { BibIngestService } from './bib-ingest.service.js';
+import {
+  contentTypeForSourceFormat,
+  marcWriteToHttp,
+  serializeRecord,
+  type SerializationFormat,
+} from './bib-serialize.js';
+import { CATALOG_INGEST_MAX_BYTES } from './bib.constants.js';
 
 /**
- * The MARC store's write surface.
+ * The MARC store: records in, records out.
  *
+ *   GET   /t/:slug/catalog/bib/:id.mrc              — ISO 2709
+ *   GET   /t/:slug/catalog/bib/:id.xml              — MARCXML
+ *   GET   /t/:slug/catalog/bib/:id.json             — MARC-in-JSON
+ *   GET   /t/:slug/catalog/bib/:id                  — the record and its metadata
+ *   POST  /t/:slug/catalog/bib/ingest               — a chunk of raw MARC
  *   POST  /t/:slug/catalog/bib                      — create
  *   PATCH /t/:slug/catalog/bib/:id                  — apply ops
  *   GET   /t/:slug/catalog/bib/:id/versions         — history
@@ -46,10 +63,18 @@ import { BibLockService } from './bib-lock.service.js';
  *   POST   /t/:slug/catalog/bib/:id/lock/heartbeat  — keep it alive
  *   DELETE /t/:slug/catalog/bib/:id/lock            — give it back
  *
- * NOT here, and deliberately: reading a record as `.mrc` / `.xml` / `.json`,
- * `?fidelity=source`, and the streamed export. §6 gives all of those to phase
- * 11 together with the projection, and building a read surface now would mean
- * building it twice.
+ * ROUTE ORDER IS LOad-BEARING. `:id` compiles to `([^/]+)`, which matches
+ * `abc123.mrc` and captures the dot — so a plain `@Get(':id')` declared first
+ * would shadow all three suffixed routes and serve JSON metadata for a `.mrc`
+ * request. The four GETs below are declared longest-pattern-first for that
+ * reason and must stay that way. (`@Get(':id([^.]+)')` was the other option and
+ * throws at boot on path-to-regexp 8.)
+ *
+ * The whole-catalogue export is NOT here: it is a `catalog_marc` value of the
+ * existing `ExportFormat`, produced by the export worker, so that it inherits
+ * the job row, the single-slot queue, the disk guard, the four-hour deadline and
+ * the retention sweep rather than becoming a second unbounded long-lived
+ * response beside the desktop installer download.
  *
  * PERMISSIONS. Three keys, all of which already exist — phase 10 adds none.
  * `cat.bib.read` for the history, the diff and reading the lock holder;
@@ -75,7 +100,184 @@ export class BibController {
   constructor(
     @Inject(BibWriteService) private readonly svc: BibWriteService,
     @Inject(BibLockService) private readonly locks: BibLockService,
+    @Inject(BibReadService) private readonly reads: BibReadService,
+    @Inject(BibIngestService) private readonly ingestSvc: BibIngestService,
   ) {}
+
+  /**
+   * Write a serialized record onto the response.
+   *
+   * `@Res()` and not a returned value, because the Express adapter does
+   * `isObject(body) ? res.json(body) : res.send(String(body))` — a returned
+   * `Buffer` is an object, so it would go out as `{"type":"Buffer","data":[…]}`
+   * with `Content-Type: application/json`, silently, and look like a working
+   * route in every smoke test.
+   *
+   * THE HEADERS ARE SET LAST, once the bytes are in hand. Everything that can
+   * fail — the record missing, the source bytes absent, the writer refusing a
+   * record it cannot encode — fails before a byte or a header is committed, so
+   * `HttpExceptionFilter` (which always answers `res.status(…).json(body)`) can
+   * do its job instead of writing JSON onto a response already promised as MARC.
+   */
+  private async send(
+    tenant: TenantContext,
+    id: string,
+    format: SerializationFormat,
+    fidelity: string | undefined,
+    res: Response,
+  ): Promise<void> {
+    if (fidelity !== undefined && fidelity !== 'source' && fidelity !== 'normalized') {
+      throw new BadRequestException(
+        '`fidelity` must be `source` (the original bytes of an imported record) or `normalized` (the default).',
+      );
+    }
+
+    let bytes: Uint8Array;
+    let contentType: string;
+    if (fidelity === 'source') {
+      const blob = await this.reads.readSourceBlob(tenant, id, format);
+      bytes = blob.bytes;
+      contentType = contentTypeForSourceFormat(blob.sourceFormat);
+      if (blob.sha256) res.setHeader('Content-Digest', `sha-256=:${blob.sha256}:`);
+    } else {
+      const found = await this.reads.read(tenant, id);
+      try {
+        const out = serializeRecord(found.record, format);
+        bytes = out.bytes;
+        contentType = out.contentType;
+      } catch (err) {
+        throw marcWriteToHttp(err, format);
+      }
+    }
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', String(bytes.length));
+    res.setHeader('Content-Disposition', `attachment; filename="${id}.${format}"`);
+    // A catalogue record is not secret, but it is tenant data and an
+    // intermediary has no business holding it.
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.send(Buffer.from(bytes));
+  }
+
+  /**
+   * The record as ISO 2709 — the format every other ILS in the world loads.
+   *
+   * `?fidelity=source` serves the ORIGINAL BYTES of an imported record, exactly,
+   * or refuses with a reason. See `BibReadService.readSourceBlob`: it never
+   * falls back to a fresh serialization, because a re-derivation that merely
+   * looks similar is the one wrong answer nobody can detect.
+   */
+  @RequirePermission('cat.bib.read')
+  @Get(':id.mrc')
+  async readMrc(
+    @TenantCtx() tenant: TenantContext,
+    @Param('id') id: string,
+    @Query('fidelity') fidelity: string | undefined,
+    @Res() res: Response,
+  ) {
+    await this.send(tenant, id, 'mrc', fidelity, res);
+  }
+
+  /** The record as MARCXML — the format with no size ceiling. */
+  @RequirePermission('cat.bib.read')
+  @Get(':id.xml')
+  async readXml(
+    @TenantCtx() tenant: TenantContext,
+    @Param('id') id: string,
+    @Query('fidelity') fidelity: string | undefined,
+    @Res() res: Response,
+  ) {
+    await this.send(tenant, id, 'xml', fidelity, res);
+  }
+
+  /**
+   * The record as MARC-in-JSON.
+   *
+   * Ross Singer's shape, not the `{t, i, s}` the store holds — that one is a
+   * storage decision (at 5M records the key names are ~15 % of the JSONB) and
+   * §5 says it is "interchange only… never appears in a public API response".
+   */
+  @RequirePermission('cat.bib.read')
+  @Get(':id.json')
+  async readJson(
+    @TenantCtx() tenant: TenantContext,
+    @Param('id') id: string,
+    @Query('fidelity') fidelity: string | undefined,
+    @Res() res: Response,
+  ) {
+    await this.send(tenant, id, 'json', fidelity, res);
+  }
+
+  /**
+   * The record, its metadata and its provenance.
+   *
+   * Phase 10 shipped `PATCH :id` with `expectedContentHash` as a compare-and-swap
+   * precondition and no way to obtain that hash: the only sources were the
+   * response to a write you had just made, or the version list. So an editor
+   * that lost its page could not save. This closes that.
+   *
+   * `source.hasSourceBlob` is a BOOLEAN computed as `source_blob IS NOT NULL` in
+   * SQL. The blob itself is never selected here — the 1:1 table split exists to
+   * keep it out of `SELECT *` forever, and this is the hot read that would have
+   * defeated it.
+   */
+  @RequirePermission('cat.bib.read')
+  @Get(':id')
+  async read(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
+    return this.reads.read(tenant, id);
+  }
+
+  /**
+   * A chunk of raw MARC, written through the ordinary create path.
+   *
+   * `application/marc` bytes, not multipart and not JSON: a MARC file is bytes,
+   * and base64 in a JSON envelope would cost a third of the body for nothing.
+   *
+   * BOUNDED — see `bib.constants.ts`, where every number is measured against
+   * `SHUTDOWN_DEADLINE_MS`. A bigger file is chunked by the caller, which
+   * `pnpm catalog:import` does with the codec's own splitter so a boundary never
+   * falls inside a record.
+   *
+   * `Idempotency-Key` is REQUIRED here, unlike everywhere else on this
+   * controller. `marc_records_control_number_unique_active` only constrains
+   * records that HAVE an 001, so a file of records without one has no uniqueness
+   * at all and a client retry after a socket timeout would silently duplicate
+   * every record in the chunk. The key is the only defence, so its absence is a
+   * 400 rather than a shrug.
+   */
+  @RequirePermission('cat.bib.write')
+  @Post('ingest')
+  @HttpCode(200)
+  @UseInterceptors(IdempotencyInterceptor)
+  async ingest(
+    @TenantCtx() tenant: TenantContext,
+    @TenantActor() actor: TenantActor,
+    @Req() req: Request,
+  ) {
+    if (!req.header('idempotency-key')) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'catalog.ingestNeedsIdempotencyKey',
+        message:
+          'Send an Idempotency-Key header. Records without an 001 have no uniqueness constraint, ' +
+          'so a retried chunk would be loaded twice with nothing to notice it.',
+      });
+    }
+    const body = req.body as unknown;
+    if (!Buffer.isBuffer(body)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        error: 'Bad Request',
+        code: 'catalog.ingestNotMarc',
+        message:
+          'Send raw ISO 2709 bytes with Content-Type: application/marc. ' +
+          `The body may be up to ${CATALOG_INGEST_MAX_BYTES} bytes.`,
+      });
+    }
+    return this.ingestSvc.ingestIso2709(tenant, actor, body);
+  }
 
   @RequirePermission('cat.bib.write')
   @Post()

@@ -333,14 +333,40 @@ describe('the acceptance behaviours, in the only place they can be true', () => 
     // `SET default_toast_compression='pglz'` writes a pglz row and
     // attcompression stays empty. So the durable, assertable property is the
     // per-column setting, not `SHOW default_toast_compression`.
-    const rows = await query<{ n: string }>(
-      `SELECT pg_catalog.count(*)::text AS n
+    //
+    // The NAMES rather than a count, changed in phase 11a. A bare number said
+    // nothing about which column had lost its setting, and it also silently
+    // counted `bib_records_search_trgm.search_text` — an INDEX column, which
+    // inherits `attcompression` from the table column it indexes. That is
+    // genuine catalogue state and the census fixture records it; it is just not
+    // one of the decisions this test is about, so `relkind = 'r'` excludes it
+    // here and the census keeps it.
+    const rows = await query<{ col: string }>(
+      `SELECT c.relname || '.' || a.attname AS col
          FROM pg_catalog.pg_attribute a
          JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = '${V2_SCHEMA}' AND a.attcompression = 'l'`,
+        WHERE n.nspname = '${V2_SCHEMA}' AND a.attcompression = 'l' AND c.relkind = 'r'
+        ORDER BY col`,
     );
-    expect(Number(rows[0]!.n)).toBe(6);
+    expect(rows.map((r) => r.col)).toEqual([
+      // Phase 11a. `summary` is a 520 note, `search_text` the union of every
+      // indexed subfield, and both sit on the table a catalogue list reads —
+      // see bib-projection-toast.spec.ts for what selecting either costs.
+      'bib_records.projection_anomalies',
+      'bib_records.search_text',
+      'bib_records.summary',
+      'change_events.payload',
+      'loans.policy_snapshot',
+      'marc_record_contents.anomalies',
+      'marc_record_contents.content',
+      // Phase 11b. The last column in the MARC store to get a durable setting,
+      // and it had to be 11b because `ALTER … SET COMPRESSION` does not rewrite
+      // existing rows and 11b's ingest is this column's first writer ever.
+      'marc_record_contents.source_blob',
+      'marc_record_versions.content',
+      'sync_client_changes.response_json',
+    ]);
   });
 
   it('guards the branch hierarchy against cycles and keeps depth true', async () => {

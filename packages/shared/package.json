@@ -12,6 +12,7 @@
     "./currencies": "./src/currencies.ts",
     "./features": "./src/features.ts",
     "./greek": "./src/greek.ts",
+    "./identifiers": "./src/identifiers/index.ts",
     "./legal": "./src/legal.ts",
     "./library": "./src/library.ts",
     "./money": "./src/money.ts",

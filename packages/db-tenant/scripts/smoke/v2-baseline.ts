@@ -40,6 +40,7 @@ const TABLES: Readonly<Record<string, readonly string[]>> = {
   'v2-circulation': ['patrons', 'loans'],
   'v2-fees': ['fees'],
   'v2-platform': ['change_events', 'change_consumers', 'sync_client_changes', 'audit_log'],
+  'v2-bib-projection': ['bib_records', 'bib_identifiers', 'bib_classifications', 'work_clusters'],
 };
 
 const url = () => process.env.TENANT_DATABASE_URL ?? '';
@@ -83,8 +84,8 @@ async function seedMinimalChain(): Promise<void> {
        VALUES ('smk_m', 1, 'bibliographic', 'marc21', 'complete',
                pg_catalog.rpad('x', 24, 'x'),
                pg_catalog.decode(pg_catalog.repeat('ab', 32), 'hex'), 'n', pg_catalog.now());
-     INSERT INTO holdings_records (record_id, branch_id, updated_at)
-       VALUES ('smk_h', 'smk_b', pg_catalog.now());
+     INSERT INTO holdings_records (record_id, bib_id, branch_id, updated_at)
+       VALUES ('smk_h', 'smk_m', 'smk_b', pg_catalog.now());
      INSERT INTO items (id, holdings_record_id, bib_id, item_type_id, owning_branch_id,
                         current_branch_id, permanent_location_id, barcode_norm, created_at, updated_at)
        VALUES ('smk_i', 'smk_h', 'smk_m', 'smk_it', 'smk_b', 'smk_b', 'smk_sl', 'bc1',
@@ -102,7 +103,7 @@ export async function teardown(): Promise<void> {
     url(),
     `TRUNCATE marc_records, branches, shelving_locations, item_types, material_types,
               holdings_records, items, patrons, loans, fees, change_events,
-              change_consumers, sync_client_changes
+              change_consumers, sync_client_changes, bib_records, work_clusters
      RESTART IDENTITY CASCADE`,
   );
 }
@@ -337,6 +338,97 @@ export const v2Modules: SmokeModule[] = [
       note(
         'change_events.actor_kind is `system` here: a trigger cannot see who is logged in, and ' +
           'the request-scoped settings that carry the actor are phase 10 work.',
+      );
+    },
+    reset: teardown,
+  },
+  {
+    name: 'v2-bib-projection',
+    describes: 'the projection cascade, and the two constraints that must NOT exist',
+    async run() {
+      await tablesExistAndAreEmpty('v2-bib-projection');
+      await seedMinimalChain();
+
+      await v2Query(
+        url(),
+        `INSERT INTO bib_records (bib_id, title, sort_title, match_key, search_text,
+                                  created_at, updated_at)
+           VALUES ('smk_m', 'Βίος και πολιτεία', 'βιος και πολιτεια', 'k', 'βιος',
+                   pg_catalog.now(), pg_catalog.now());
+         INSERT INTO bib_identifiers (id, bib_id, scheme, value, value_norm, source_tag)
+           VALUES ('smk_id1', 'smk_m', 'isbn', '978-0-306-40615-7', '9780306406157', '020');
+         INSERT INTO bib_classifications (id, bib_id, scheme, value, sort_key, source_tag)
+           VALUES ('smk_c1', 'smk_m', 'ddc', '889.332', '889.332000', '082')`,
+      );
+
+      // NOT replicated, and this is the assertion that keeps it that way. The
+      // projection is DERIVED from `marc_records`, which IS replicated; a second
+      // event for the same edit would make every consumer process it twice and
+      // could not be ordered against the first. `gen-changelog-triggers.mjs`
+      // reads `@replicated` out of the datamodel, so adding the annotation by
+      // reflex is a one-word change with no other symptom.
+      const derived = await v2Query<{ n: string }>(
+        url(),
+        `SELECT pg_catalog.count(*)::text AS n FROM change_events
+          WHERE entity_kind IN ('bib_record', 'bib_identifier', 'bib_classification')`,
+      );
+      if (Number(derived[0]!.n) !== 0) {
+        throw new Error(
+          `the projection emitted ${derived[0]!.n} change event(s); it is derived from ` +
+            'marc_records and must emit none',
+        );
+      }
+      ok('writing a projection emits no change event — it is derived, not replicated');
+
+      // §5, in one sentence: "None is a uniqueness constraint." §3 says why —
+      // a set and its volumes, a reprint, and endemic publisher ISBN reuse in
+      // small Greek presses all legitimately share an ISBN, and the 1.0
+      // `books_isbn13_unique_active` "would refuse the exact catalogues this
+      // product exists to import". A duplicate is a merge OFFER at phase 39.
+      await v2Query(
+        url(),
+        `INSERT INTO bib_identifiers (id, bib_id, scheme, value, value_norm, source_tag)
+           VALUES ('smk_id2', 'smk_m', 'isbn', '9780306406157', '9780306406157', '020')`,
+      );
+      ok('two records may carry the same ISBN — there is no unique index, deliberately');
+
+      // The other constraint that must not exist. A branch legitimately holds
+      // one title in more than one MFHD: reference and stacks, large-print
+      // beside ordinary, a serial whose bound volumes and current issues carry
+      // different 852 $b. An earlier draft of the phase-11 migration had this
+      // unique; it is asserted absent so it cannot come back by reflex.
+      await v2Query(
+        url(),
+        `INSERT INTO holdings_records (record_id, bib_id, branch_id, updated_at)
+           VALUES ('smk_h2', 'smk_m', 'smk_b', pg_catalog.now())`,
+      );
+      ok('a branch may hold one title in two MFHD records — no unique on (bib, branch)');
+
+      // The cascade. If this is ever RESTRICT or SET NULL, an OPAC keeps
+      // serving a record page for a bib that no longer exists — from the
+      // projection, which is the only table it reads.
+      await v2Query(url(), `DELETE FROM items WHERE id = 'smk_i'`);
+      await v2Query(url(), `DELETE FROM holdings_records WHERE bib_id = 'smk_m'`);
+      await v2Query(url(), `DELETE FROM marc_records WHERE id = 'smk_m'`);
+      const left = await v2Query<{ b: string; i: string; c: string }>(
+        url(),
+        `SELECT (SELECT pg_catalog.count(*) FROM bib_records)::text AS b,
+                (SELECT pg_catalog.count(*) FROM bib_identifiers)::text AS i,
+                (SELECT pg_catalog.count(*) FROM bib_classifications)::text AS c`,
+      );
+      const { b, i, c } = left[0]!;
+      if (b !== '0' || i !== '0' || c !== '0') {
+        throw new Error(
+          `deleting the MARC record left ${b} projection(s), ${i} identifier(s), ` +
+            `${c} classification(s) behind`,
+        );
+      }
+      ok('deleting the record cascades through the projection and both satellites');
+
+      note(
+        'work_clusters is a skeleton and bib_records.work_cluster_id has no foreign key: ' +
+          'phase 40 owns the clustering and the shape of cluster_key, which §5 says must carry ' +
+          'an expression key beneath the work key or Zorba and its translation collapse into one.',
       );
     },
     reset: teardown,

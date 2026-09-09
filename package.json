@@ -54,6 +54,8 @@
     "tenant:create": "tsx scripts/tenant-create.ts",
     "tenant:migrate": "tsx scripts/tenant-migrate.ts",
     "tenant:online": "tsx scripts/tenant-online.ts",
+    "catalog:verify": "tsx scripts/catalog-verify.ts",
+    "catalog:import": "tsx scripts/catalog-import.ts",
     "seed:v1-fixture": "tsx scripts/seed-v1-fixture.ts",
     "tenant:relocate": "tsx scripts/tenant-relocate.ts",
     "tenant:rotate-db-creds": "tsx scripts/tenant-rotate-db-creds.ts",

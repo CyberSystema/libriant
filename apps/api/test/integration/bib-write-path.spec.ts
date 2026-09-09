@@ -31,7 +31,6 @@ declareBillingPosture(
 let app: NestExpressApplication;
 const tag = randomBytes(4).toString('hex');
 let slug = '';
-let tenantId = '';
 let dbUrl = '';
 let owner = '';
 
@@ -144,7 +143,6 @@ beforeAll(async () => {
   slug = `bib-${tag}`;
   owner = await signup(slug);
   const t = await controlDb.tenant.findUnique({ where: { slug } });
-  tenantId = t!.id;
   dbUrl = t!.dbUrl;
 }, 240_000);
 
@@ -617,4 +615,78 @@ describe('the API refuses what it cannot mean', () => {
       .send({ expectedContentHash: mine.contentHash, ops: RETITLE('Cross tenant') })
       .expect(404);
   }, 120_000);
+});
+
+describe('two phase-10 defects phase 11b made reachable', () => {
+  it('refuses a duplicate 001 with a 409, not a 500', async () => {
+    // `marc_records_control_number_unique_active ON (kind, control_number)
+    // WHERE control_number IS NOT NULL AND deleted_at IS NULL` is a deliberate
+    // constraint that nothing could hit while the only writer was the editor,
+    // which mints no 001. An ingest hits it the moment a library loads a file it
+    // already loaded — the single most common thing that happens to an import —
+    // and it escaped as a 500 with a support code, telling the librarian nothing.
+    const cn = `dup-${Math.random().toString(36).slice(2, 10)}`;
+    const first = await request(app.getHttpServer())
+      .post(`/t/${slug}/catalog/bib`)
+      .set('Cookie', owner)
+      .send({ ...BASE_RECORD, controlNumber: cn })
+      .expect(201);
+    expect(first.body.recordId).toBeTruthy();
+
+    const second = await request(app.getHttpServer())
+      .post(`/t/${slug}/catalog/bib`)
+      .set('Cookie', owner)
+      .send({ ...BASE_RECORD, controlNumber: cn })
+      .expect(409);
+    expect(second.body.code).toBe('catalog.duplicateControlNumber');
+    expect(second.body.controlNumber).toBe(cn);
+  });
+
+  it('stores Leader/09 as the charset the record is IN, not the one it claimed', async () => {
+    // A Greek ABEKT or Aleph export declares MARC-8 with /09 = ' '. Stored
+    // unchanged, that leader disagreed with `marc_records.charset_code` (always
+    // 'a') and — because `canonicalLeader` keeps positions 5..11 — put /09
+    // INSIDE the hash, so `contentHash(stored)` and `contentHash(export
+    // re-parsed)` differed for every such record. `writeIso2709` forces 'a' on
+    // the way out; `leaderForWrite` now agrees on the way in.
+    const created = await createRecord({
+      ...BASE_RECORD,
+      leader: '00000nam  2200000   4500',
+    });
+    expect(created.record.leader[9]).toBe('a');
+
+    const [row] = await sql<{ leader: string; charset_code: string }>(
+      `SELECT leader, charset_code FROM lbr2.marc_records WHERE id = $1`,
+      [created.recordId],
+    );
+    expect(row!.leader[9]).toBe('a');
+    expect(row!.charset_code).toBe('a');
+  });
+
+  it('derives the type codes from the leader, and 003 from the record', async () => {
+    // Three columns phase 9 created that nothing had ever written, which left
+    // `marc_records_type_idx ON (kind, record_type_code, bib_level_code)` an
+    // index over two permanently NULL columns.
+    const created = await createRecord({
+      leader: '00000nam a2200000 a 4500',
+      fields: [{ t: '003', v: 'GR-AtEKT' }, ...BASE_RECORD.fields],
+    });
+    const [row] = await sql<{
+      record_type_code: string;
+      bib_level_code: string;
+      encoding_level: string | null;
+      control_number_source: string;
+    }>(
+      `SELECT record_type_code, bib_level_code, encoding_level, control_number_source
+         FROM lbr2.marc_records WHERE id = $1`,
+      [created.recordId],
+    );
+    expect(row!.record_type_code).toBe('a');
+    expect(row!.bib_level_code).toBe('m');
+    // Leader/17 is a space in this fixture — "full level" — and a space is MARC's
+    // "not specified", so it is stored as NULL rather than as a space nothing
+    // can query for.
+    expect(row!.encoding_level).toBeNull();
+    expect(row!.control_number_source).toBe('GR-AtEKT');
+  });
 });

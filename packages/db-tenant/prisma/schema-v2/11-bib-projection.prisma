@@ -1,0 +1,249 @@
+// ---------------------------------------------------------------------------
+// The relational projection — what everything except the editor reads
+// ---------------------------------------------------------------------------
+//
+// §2's whole argument for storing a MARC record as one JSONB document rests on
+// this table existing: "nothing that scans reads the document. Facets, reports,
+// OPAC and OpenSearch read the relational projection." A 5M-record catalogue can
+// be browsed, faceted and reported on without a single TOAST read, because the
+// columns a list needs are narrow and the document is somewhere else.
+//
+// Recomputed by a pure function INSIDE the same transaction as every write
+// (§2:54), so a record and its projection can never be observed disagreeing.
+
+/// The projection of one MARC bibliographic record.
+///
+/// Every column of §3's CREATE TABLE, and the split that matters is not visible
+/// in the DDL: **six of them are not the projector's**.
+///
+/// `item_count` and `available_count` are counts over `items`;
+/// `suppressed_from_opac` is staff state; `custom_fields` is tenant-defined;
+/// `legacy_json` is phase 19's copy-forward provenance, written once and
+/// unreconstructible after `v1_archive` is dropped; `cover_asset_ref` comes from
+/// an upload. An `INSERT … ON CONFLICT DO UPDATE` that assigned the excluded row
+/// wholesale would destroy all six on every single-subfield edit — zeroing the
+/// OPAC availability of every record a cataloguer touches, and failing no test
+/// unless one is written for it. `BibProjectionService` lists the projector-owned
+/// columns explicitly for exactly that reason, and an integration test asserts
+/// the six survive an edit.
+///
+/// NOT `@replicated`. The projection is DERIVED from `marc_records`, which is
+/// replicated; emitting a second change event for the same edit would make every
+/// consumer process it twice and could not be ordered against the first.
+model BibRecord {
+  /// Not a cuid of its own: the projection IS the record, seen relationally.
+  bibId String @id @map("bib_id")
+
+  /// NOT NULL, so the projector substitutes a sentinel and records an anomaly
+  /// rather than throwing. A record with no 245 exists in every real import.
+  title String
+  /// 245 indicator 2 — how many leading characters do not file.
+  titleNonfilingSkip Int    @default(0) @db.SmallInt @map("title_nonfiling_skip")
+  /// Greek-folded, after the skip. NOT NULL: an empty sort key files the record
+  /// ahead of the entire catalogue.
+  sortTitle          String @map("sort_title")
+
+  statementOfResp  String? @map("statement_of_resp")
+  mainEntryDisplay String? @map("main_entry_display")
+  /// Folded, not NACO-normalized — see the divergence note in the phase-11a
+  /// README entry. Headings at least match each other.
+  mainEntryNorm    String? @map("main_entry_norm")
+
+  edition          String?
+  publisher        String?
+  publicationPlace String? @map("publication_place")
+  publicationYear    Int? @db.SmallInt @map("publication_year")
+  /// Only set when 008/06 means a RANGE. Copying 008/11-14 unconditionally makes
+  /// every monograph look like a multi-year set, because a great many records
+  /// carry `9999` or a repeat of the first date there.
+  publicationYearEnd Int? @db.SmallInt @map("publication_year_end")
+
+  /// ISO 639-2/B. Greek is `gre`; `ell` is the terminology variant and is WRONG
+  /// for MARC.
+  languageCode  String?  @db.Char(3) @map("language_code")
+  languageCodes String[] @default([]) @db.Char(3) @map("language_codes")
+  /// MARC country codes are TWO or three letters, space-padded — `gr` is Greece.
+  /// `char(3)` ignores trailing spaces in comparison, so the trimmed form is the
+  /// same value to every query.
+  countryCode   String?  @db.Char(3) @map("country_code")
+
+  /// Left NULL by the projector AND by the phase-11a service: it is a foreign
+  /// key into a tenant's own `material_types` rows, which a pure function cannot
+  /// know and which nothing yet relates to a carrier code.
+  ///
+  /// The obvious mapping — `carrier_type_code` onto `material_types.code` — is a
+  /// guess. RDA carriers are `nc`, `cr`, `sd`; a library's material types are
+  /// `book`, `dvd`, `περιοδικό`. Nothing joins them until `material_types` grows
+  /// a carrier column, which is phase 15's, so this stays NULL and the service
+  /// never touches it on update.
+  materialTypeId String? @map("material_type_id")
+
+  /// RDA 336/337/338. An AACR2 record has none of them and is not deficient.
+  contentTypeCode String? @map("content_type_code")
+  mediaTypeCode   String? @map("media_type_code")
+  carrierTypeCode String? @map("carrier_type_code")
+
+  extent              String?
+  physicalDescription String? @map("physical_description")
+  seriesStatement     String? @map("series_statement")
+  summary             String?
+
+  /// Phase 40's. NULL for every record until then, and no FK yet — see the
+  /// `WorkCluster` docblock.
+  workClusterId String? @map("work_cluster_id")
+
+  /// NOT NULL, and phase 39's to define. A dull placeholder until then: the
+  /// column cannot be null and nothing reads it, so the cheapest honest thing is
+  /// a stable string that is obviously not a merge decision.
+  matchKey String @map("match_key")
+
+  /// Greek-folded (final sigma!). The fold is the phase-1 fix: `'ΠΟΛΙΣ'
+  /// .toLowerCase()` ends in U+03C2 while a typist types U+03C3, so an
+  /// uppercase-catalogued Greek record — the norm in Greek exports — could not
+  /// be found at all. Backed by a GIN trigram index.
+  searchText String @map("search_text")
+
+  /// The browse-list form: the name WITHOUT dates, so "Καζαντζάκης, Νίκος,
+  /// 1883-1957." and "Καζαντζάκης, Νίκος." are one browse entry.
+  browseAuthor String? @map("browse_author")
+
+  /// What the projector could not make sense of: `{code, tag, message}` each.
+  ///
+  /// INVENTED — §3's `bib_records` does not have this column, and it is added
+  /// because the projector's central design decision creates the need. The
+  /// projector is TOTAL: it never refuses a record, because a librarian's typo
+  /// must not abort a 50,000-record import halfway through. Every judgement it
+  /// declines to make therefore has to land somewhere a human can act on, and a
+  /// queue with no table is a queue that does not exist.
+  ///
+  /// Almost always `[]` — five bytes, inline. A hostile record reaches about
+  /// 1.5 KB, which is why this belongs in the same never-select-in-a-list
+  /// discipline as `summary` and `search_text`.
+  ///
+  /// The wording of a message is part of the value, so changing the projector's
+  /// phrasing shows up as projection drift in `catalog-verify`. That is the
+  /// correct behaviour, not noise: a projector that changed and was not re-run
+  /// is precisely what that job exists to find.
+  projectionAnomalies Json @default("[]") @db.JsonB @map("projection_anomalies")
+
+  // -- NOT the projector's. See the model docblock. --------------------------
+  coverAssetRef      String?  @map("cover_asset_ref")
+  customFields       Json     @default("{}") @db.JsonB @map("custom_fields")
+  suppressedFromOpac Boolean  @default(false) @map("suppressed_from_opac")
+  itemCount          Int      @default(0) @map("item_count")
+  availableCount     Int      @default(0) @map("available_count")
+  /// The 1.0 flat row, verbatim, for provenance. Phase 19 writes it once and it
+  /// is unreconstructible after `v1_archive` is dropped.
+  legacyJson         Json?    @db.JsonB @map("legacy_json")
+
+  createdAt DateTime @db.Timestamptz(3) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(3) @map("updated_at")
+
+  record          MarcRecord           @relation(fields: [bibId], references: [id], onDelete: Cascade)
+  identifiers     BibIdentifier[]
+  classifications BibClassification[]
+
+  @@index([sortTitle, bibId], map: "bib_records_sort_title_idx")
+  @@index([publicationYear], map: "bib_records_year_idx")
+  @@map("bib_records")
+}
+
+/// An identifier a record carries: ISBN, ISSN, ISMN, DOI, EAN.
+///
+/// NO DDL EXISTS. §3 names this table once in an inventory list, and §5 makes
+/// one incidental reference — "canonical digits in `bib_identifiers.value_norm`"
+/// — which is the only column forced by name. The rest is designed here from
+/// §5's one-line requirement: "ISBN/ISSN/ISMN/DOI/EAN-13, check-digit validated.
+/// **None is a uniqueness constraint.**"
+///
+/// That last sentence is the whole shape. §3 explains it: the 1.0 ISBN
+/// constraint "would refuse the exact catalogues this product exists to import",
+/// because a set and its volumes, a reprint, and endemic publisher ISBN reuse in
+/// small Greek presses all legitimately share one. So there is NO unique index
+/// here, deliberately — a duplicate is a `bib_duplicate_candidates` row and a
+/// merge offer at phase 39, never a refused import.
+model BibIdentifier {
+  id    String @id @default(cuid())
+  bibId String @map("bib_id")
+
+  /// `isbn` | `issn` | `ismn` | `doi` | `ean`. Plain text rather than an enum:
+  /// phase 44 adds OCLC and LCCN normalizers, and a database enum would need a
+  /// migration for each.
+  scheme String
+  /// As transcribed, qualifiers and all — `9780306406157 (pbk.)`.
+  value  String
+  /// Canonical digits. FORCED BY NAME at §5. An ISBN-10 that passes its own
+  /// check digit is stored here in its 13-digit form so the catalogue has one
+  /// spelling to match on; one that FAILS keeps its own digits, because
+  /// upgrading it would manufacture a number the record does not contain.
+  valueNorm String @map("value_norm")
+
+  /// Whether the check digit agrees. FALSE IS STORED — see the model docblock.
+  /// This is the column a "these 40 records have an impossible ISBN" queue reads.
+  valid Boolean @default(true)
+  /// 020 $z, 022 $y/$z — an identifier the record itself marks as superseded.
+  /// Kept because it is how a patron searching an old citation finds the record,
+  /// and it must never be treated as authoritative.
+  cancelled Boolean @default(false)
+
+  /// Which tag it came from, so a cataloguer can find it in the editor.
+  sourceTag String @map("source_tag")
+
+  bib BibRecord @relation(fields: [bibId], references: [bibId], onDelete: Cascade)
+
+  @@index([bibId])
+  /// The lookup an ISBN search does. NOT unique — see the model docblock.
+  @@index([scheme, valueNorm], map: "bib_identifiers_lookup_idx")
+  @@map("bib_identifiers")
+}
+
+/// A classification number a record carries: 050 LCC, 060 NLM, 080 UDC, 082 DDC,
+/// 084 local.
+///
+/// NO DDL EXISTS either; designed here from §5's phase-44 line, which says the
+/// product does "number parsing and **sort-key generation**, not the licensed
+/// schedules". The sort key is the point: `@libriant/shared/callnumber` already
+/// produces a pure-ASCII fixed-width key for all six schemes, and it must be
+/// stored rather than computed at query time because tenant databases are
+/// created `el_GR.UTF-8` and a non-ASCII sort key reorders under that collation.
+model BibClassification {
+  id    String @id @default(cuid())
+  bibId String @map("bib_id")
+
+  /// `lcc` | `ddc` | `udc` | `nlm` | `local`.
+  scheme String
+  value  String
+  /// PURE ASCII, fixed width, zero-padded. Shelf order must be byte-identical in
+  /// Postgres, in the browser and in the offline inventory wand.
+  sortKey String @map("sort_key")
+
+  sourceTag String @map("source_tag")
+
+  bib BibRecord @relation(fields: [bibId], references: [bibId], onDelete: Cascade)
+
+  @@index([bibId])
+  @@index([scheme, sortKey], map: "bib_classifications_shelf_idx")
+  @@map("bib_classifications")
+}
+
+/// A work, in the IFLA LRM sense — the thing that has translations and editions.
+///
+/// SKELETON. Created only because `bib_records.work_cluster_id` names it and §3
+/// writes that column with a `REFERENCES work_clusters(id)`. Phase 40 owns the
+/// clustering itself, and §5's IFLA LRM line already fixes the hard part of its
+/// design — `cluster_key` must include 240 $l/$s/$k and 008/35-37 with an
+/// EXPRESSION key beneath the work key, "otherwise the Greek original and the
+/// English translation of *Zorba* collapse into one cluster". Inventing that key
+/// now, six phases early and with nothing to test it against, is exactly the
+/// guess this program avoids.
+///
+/// So: an id and its timestamps. Every `work_cluster_id` is NULL until phase 40,
+/// and the foreign key is deliberately NOT created — see the migration.
+model WorkCluster {
+  id String @id @default(cuid())
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(3) @map("updated_at")
+
+  @@map("work_clusters")
+}

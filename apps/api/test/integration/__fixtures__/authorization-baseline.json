@@ -1,5 +1,5 @@
 {
-  "$comment": "What RolesGuard decided, frozen the day PermissionGuard replaced it. One entry per tenant-scoped route: the library roles that could reach it. Extracted mechanically from the @Roles/@StaffWrite decorators, not written by hand. authorization-matrix.spec.ts enumerates the LIVE Nest router and asserts the permission model reaches the same verdict for every route and every role. This file is history: it does not change because a permission moved. It changes only when a route is added or removed, and then only to record that the route exists \u2014 a DIFFERENT verdict for an existing route is a behaviour change and has to be argued for, not edited in.",
+  "$comment": "What RolesGuard decided, frozen the day PermissionGuard replaced it. One entry per tenant-scoped route: the library roles that could reach it. Extracted mechanically from the @Roles/@StaffWrite decorators, not written by hand. authorization-matrix.spec.ts enumerates the LIVE Nest router and asserts the permission model reaches the same verdict for every route and every role. This file is history: it does not change because a permission moved. It changes only when a route is added or removed, and then only to record that the route exists — a DIFFERENT verdict for an existing route is a behaviour change and has to be argued for, not edited in.",
   "roles": ["owner", "admin", "librarian", "volunteer"],
   "routes": {
     "DELETE t/:slug/branding/logo": ["admin", "owner"],
@@ -26,6 +26,10 @@
     "GET t/:slug/billing/plans": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/catalog/authors": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/catalog/authors/:id": ["admin", "librarian", "owner", "volunteer"],
+    "GET t/:slug/catalog/bib/:id": ["admin", "librarian", "owner", "volunteer"],
+    "GET t/:slug/catalog/bib/:id.json": ["admin", "librarian", "owner", "volunteer"],
+    "GET t/:slug/catalog/bib/:id.mrc": ["admin", "librarian", "owner", "volunteer"],
+    "GET t/:slug/catalog/bib/:id.xml": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/catalog/bib/:id/lock": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/catalog/bib/:id/versions": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/catalog/bib/:id/versions/:from/diff": ["admin", "librarian", "owner", "volunteer"],
@@ -110,6 +114,7 @@
     "POST t/:slug/catalog/bib/:id/lock": ["admin", "librarian", "owner"],
     "POST t/:slug/catalog/bib/:id/lock/heartbeat": ["admin", "librarian", "owner"],
     "POST t/:slug/catalog/bib/:id/restore": ["admin", "librarian", "owner"],
+    "POST t/:slug/catalog/bib/ingest": ["admin", "librarian", "owner"],
     "POST t/:slug/catalog/books": ["admin", "librarian", "owner"],
     "POST t/:slug/catalog/books/:bookId/copies": ["admin", "librarian", "owner"],
     "POST t/:slug/catalog/books/:id/cover": ["admin", "librarian", "owner"],

@@ -16,6 +16,7 @@ import type { ExportFormat, ExportJob } from '@libriant/db-control';
 import { TENANT_RUNTIME_SELECT, runtimeDbUrl } from '../tenancy/tenant-db-url.js';
 import { loadEnv } from '../config/env.js';
 import { EXPORT_MAX_RUNTIME_MS } from './export.constants.js';
+import { catalogManifest, withCatalogSource, writeCatalogMarc } from './catalog-marc.js';
 
 const execFileP = promisify(execFile);
 const oneLine = (s: string) => s.split('\n').slice(0, 4).join(' ').slice(0, 500);
@@ -384,7 +385,14 @@ async function generate(
   const baseName = `libriant-${scopeLabel}-${stamp}`;
   const multi = targets.length > 1;
   // CSV is inherently one-file-per-table, and multi-DB always bundles → zip.
-  const needsZip = job.format === 'csv' || multi;
+  //
+  // `catalog_marc` too, and for a reason worth stating: the artifact is
+  // `catalogue.mrc` PLUS a `manifest.json` that accounts for every record the
+  // walk saw, PLUS an `oversize.xml` when ISO 2709 refused any. A bare .mrc
+  // would be a catalogue export that silently contains fewer records than the
+  // catalogue, which the library would discover years later in another system
+  // with no way to tell which ones were lost.
+  const needsZip = job.format === 'csv' || job.format === 'catalog_marc' || multi;
 
   await ctx.setProgress(0, targets.length);
 
@@ -430,6 +438,45 @@ async function generate(
     for (const f of tempFiles) await fs.rm(f, { force: true }).catch(() => {});
   }
 }
+
+/**
+ * How much disk a catalogue export will need, from the schema it actually reads.
+ *
+ * `pg_total_relation_size('lbr2.marc_record_contents')` is the stored size of
+ * the documents INCLUDING their TOAST, which is the closest cheap proxy for the
+ * serialized output — a MARC record's JSONB and its ISO 2709 bytes are within a
+ * small factor of each other, and the factor is absorbed by
+ * {@link CATALOG_SPOOL_MULTIPLIER}.
+ *
+ * Returns 0 rather than throwing when the schema is absent: a 1.0 tenant that
+ * has not been migrated has no catalogue to export, and the walk will find no
+ * rows and produce an empty artifact with an honest manifest.
+ */
+async function estimateCatalogBytes(dbUrl: string): Promise<number> {
+  const client = new PgClient({ connectionString: dbUrl, connectionTimeoutMillis: 15_000 });
+  await client.connect();
+  try {
+    const r = await client.query<{ bytes: string }>(
+      `SELECT COALESCE(
+                pg_catalog.pg_total_relation_size(
+                  pg_catalog.to_regclass('lbr2.marc_record_contents')), 0)::text AS bytes`,
+    );
+    return Number(r.rows[0]?.bytes ?? 0);
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+/**
+ * Headroom over the estimate for a catalogue export: 4, not the shared 2.
+ *
+ * The artifact is the .mrc plus, transiently, the uncompressed spool files the
+ * archiver reads — and the estimate is of COMPRESSED lz4 JSONB while the output
+ * is uncompressed MARC. Measured on the phase-7 corpus, stored-to-serialized
+ * runs about 2.6x; 4 leaves room above that rather than exactly at it, because
+ * the failure this number prevents is a full volume.
+ */
+const CATALOG_SPOOL_MULTIPLIER = 4;
 
 /** Single target, non-CSV → one standalone file. */
 async function produceSingleFile(
@@ -484,6 +531,59 @@ async function addTargetToArchive(
         archive.file(tmp, { name: `${folder}${shape.name}.csv` });
       }
     });
+    return;
+  }
+  if (format === 'catalog_marc') {
+    // The catalogue, not the database. See catalog-marc.ts for why this cannot
+    // reuse withTableReader (it enumerates schemaname='public' and quotes a
+    // single unqualified identifier, so `lbr2` is invisible to it).
+    const mrcTmp = path.join(tmpDir, `${jobId}-${target.label}.mrc`);
+    const xmlTmp = path.join(tmpDir, `${jobId}-${target.label}-oversize.xml`);
+    const manifestTmp = path.join(tmpDir, `${jobId}-${target.label}-manifest.json`);
+    tempFiles.push(mrcTmp, xmlTmp, manifestTmp);
+    // The SAME guard class, the same four-hour deadline and the same 2 GiB
+    // reserve every other format runs under — a catalogue export with limits of
+    // its own would be the one export that can fill the volume.
+    //
+    // Its ROOM CHECK is not the shared one, and that is not an oversight.
+    // `assertExportSizeSane` estimates from `pg_class` filtered to
+    // `nspname = 'public'`, so for a catalogue that lives entirely in `lbr2` it
+    // would report zero and `assertRoomFor(0)` would wave through an export onto
+    // a nearly full disk. `estimateCatalogBytes` asks the right schema.
+    const guard = new ExportRunGuard(spoolDir(), Date.now() + EXPORT_MAX_RUNTIME_MS);
+    await guard.assertRoomFor(
+      (await estimateCatalogBytes(target.dbUrl)) * CATALOG_SPOOL_MULTIPLIER,
+    );
+    const result = await withCatalogSource(target.dbUrl, (source) =>
+      writeCatalogMarc({
+        source,
+        mrcPath: mrcTmp,
+        xmlPath: xmlTmp,
+        assertHealthy: () => guard.assertStillHealthy(),
+      }),
+    );
+    await fs.writeFile(manifestTmp, catalogManifest(result, new Date().toISOString()), 'utf8');
+    if (result.refused > 0) {
+      // The AUTHORITATIVE account is `manifest.json` inside the artifact, which
+      // names every refused record and why. This line exists so the fact is also
+      // in the operator's log, where a pattern across libraries would show — a
+      // hundred `field-too-long` refusals in one week is a cataloguing practice
+      // question, not an export bug.
+      //
+      // Deliberately NOT a Prometheus counter. This happens when a librarian
+      // clicks Export, at most a handful of times a year, and its full detail is
+      // in the file they are already holding; a fleet-wide series would page an
+      // operator about one library's 505 note.
+      console.warn(
+        `[export] ${jobId} catalog_marc: ${result.refused} of ${result.total} record(s) ` +
+          `could not be written as ISO 2709 and are in oversize.xml as MARCXML`,
+      );
+    }
+    archive.file(mrcTmp, { name: `${folder}catalogue.mrc` });
+    archive.file(manifestTmp, { name: `${folder}manifest.json` });
+    // Only when there is something in it — an empty oversize.xml would invite
+    // exactly the reading it exists to prevent.
+    if (result.refused > 0) archive.file(xmlTmp, { name: `${folder}oversize.xml` });
     return;
   }
   if (format === 'json') {

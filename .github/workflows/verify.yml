@@ -730,10 +730,10 @@ jobs:
         env:
           TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
 
-      # Seven modules: the 1.0 workflow against `public`, and six 2.0 modules
+      # Eight modules: the 1.0 workflow against `public`, and seven 2.0 modules
       # against `lbr2`. The runner continues past a failure, so one broken
-      # invariant reports itself rather than hiding the other six.
-      - name: Run tenant smoke test (1.0 workflow + the six 2.0 baseline modules)
+      # invariant reports itself rather than hiding the other seven.
+      - name: Run tenant smoke test (1.0 workflow + the seven 2.0 modules)
         run: pnpm tenant:smoke
         env:
           TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo

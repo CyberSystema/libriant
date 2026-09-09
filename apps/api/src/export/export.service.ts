@@ -70,6 +70,7 @@ export class ExportService {
     userId: string,
     format: ExportFormat,
   ): Promise<ExportJob> {
+    assertFormatAllowedForScope(format, 'tenant');
     // Per-tenant cap (export-new-No-per-tenant-cap): the export worker runs at
     // concurrency 1 platform-wide, so a single tenant must not be able to flood
     // the queue and starve everyone else. At most one in-flight export per
@@ -117,6 +118,7 @@ export class ExportService {
     requester: ExportRequester,
     input: { format: ExportFormat; scope: ExportScope; tenantId?: string },
   ): Promise<ExportJob> {
+    assertFormatAllowedForScope(input.format, input.scope);
     let tenant: (TenantRuntimeRow & { slug: string }) | null = null;
     let consent: ExportConsent | null = null;
     if (input.scope === 'tenant') {
@@ -190,5 +192,27 @@ export class ExportService {
     const job = await controlDb.exportJob.findUnique({ where: { id } });
     if (!job) throw new NotFoundException('Export not found.');
     return job;
+  }
+}
+
+/**
+ * Not every format makes sense at every scope.
+ *
+ * `catalog_marc` exports a LIBRARY'S CATALOGUE, and there is no catalogue in the
+ * control database — it holds tenants, plans, sessions and the export ledger.
+ * Asked for at scope `control` or `all`, the walk would find `lbr2` absent and
+ * produce an empty archive with a manifest saying zero records, which reads as
+ * "your catalogue is empty" rather than "you asked the wrong question".
+ *
+ * The same shape `dumpSql` already uses to refuse pg_dump against the control
+ * database (EXP-004), and refused HERE — before the job row exists — so the
+ * caller gets a 400 they can act on rather than a failed job to investigate.
+ */
+function assertFormatAllowedForScope(format: ExportFormat, scope: ExportScope): void {
+  if (format === 'catalog_marc' && scope !== 'tenant') {
+    throw new BadRequestException(
+      'catalog_marc exports one library’s catalogue, and the control database has no ' +
+        'catalogue in it. Choose scope "tenant", or use sql for a whole-database dump.',
+    );
   }
 }

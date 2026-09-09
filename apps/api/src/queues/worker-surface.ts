@@ -1,5 +1,6 @@
 import { renderOutboxCensus } from '../email/outbox-census.js';
 import { renderScheduledJobMetrics } from '../jobs/scheduled-jobs.runner.js';
+import { CATALOG_VERIFY_COUNTS, CATALOG_VERIFY_JOB } from '../jobs/catalog-verify.job.js';
 import { metricHeader, metricLine } from '../observability/metrics.registry.js';
 import type { TenantPoolPlan } from '../platform/tenant-pool-budget.js';
 import { WORKER_CONSUMERS, type ConsumerHandle, type QueueConsumer } from './consumers.js';
@@ -168,6 +169,44 @@ export function renderWorkerMetrics(input: {
     renderScheduledJobMetrics(
       jobResults(states) as Parameters<typeof renderScheduledJobMetrics>[0],
     ),
+    ...renderCatalogProjectionMetrics(jobResults(states)),
   ];
   return lines.join('\n');
+}
+
+/**
+ * Projection drift, lifted out of the nightly verify's counters.
+ *
+ * `libriant_worker_job_count{sweep="catalog-projection-verify",count="drift"}`
+ * already carries this number, so a second series needs a reason. It has one:
+ * that gauge is declared `alert: false` on the argument that no single threshold
+ * means the same thing across twelve different handlers, and drift here is not a
+ * handler statistic — it is the OPAC serving something the record does not say.
+ * That deserves a rule of its own, and a rule needs a series whose meaning does
+ * not depend on a label value.
+ *
+ * The HEADERS are emitted unconditionally and the SAMPLES only after a run. A
+ * gauge that reported 0 before the sweep had ever executed would read as
+ * "verified, nothing wrong" during exactly the window in which nothing has been
+ * verified; absent data leaves the alert without an opinion, which is the honest
+ * state.
+ */
+function renderCatalogProjectionMetrics(results: Record<string, unknown>): string[] {
+  // Every string here comes from `catalog-verify.job.ts`. Three literals used to
+  // have to agree by hand — the registry name, the handler's `counts` keys and
+  // these lookups — and renaming any of them silently deleted the only series
+  // `LibriantCatalogProjectionDrift` reads.
+  const run = results[CATALOG_VERIFY_JOB] as { counts?: Record<string, number> } | undefined;
+  const counts = run?.counts;
+  // `metric` is typed as the registry's own union rather than `string`, so a
+  // metric name that is not declared is a compile error here — the same
+  // guarantee `metricLine` gives every other block in this file.
+  const sample = (metric: Parameters<typeof metricLine>[0], key: string) =>
+    counts && typeof counts[key] === 'number' ? [metricLine(metric, counts[key])] : [];
+  return [
+    ...metricHeader('libriant_catalog_projection_drift_total'),
+    ...sample('libriant_catalog_projection_drift_total', CATALOG_VERIFY_COUNTS.drift),
+    ...metricHeader('libriant_catalog_projection_scanned_total'),
+    ...sample('libriant_catalog_projection_scanned_total', CATALOG_VERIFY_COUNTS.scanned),
+  ];
 }

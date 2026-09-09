@@ -94,6 +94,11 @@ model MarcRecord {
   items    Item[]
   /// At most one, and it is advisory: nothing in the write path reads it.
   lock     MarcRecordLock?
+  /// The relational projection, recomputed inside the same transaction as every
+  /// write. Everything except the editor reads THIS, never the document.
+  bib      BibRecord?
+  /// What this library holds of this title, one row per branch.
+  holdings HoldingsRecord[]
 
   @@index([kind, status, updatedAt(sort: Desc), id(sort: Desc)])
   @@index([kind, recordTypeCode, bibLevelCode], map: "marc_records_type_idx")
@@ -119,6 +124,12 @@ model MarcRecordContent {
   /// exactly what arrived. NULLed on first edit, because after an edit the
   /// promise is round-trip idempotence, not byte identity, and keeping stale
   /// bytes would let `?fidelity=source` serve a record that no longer exists.
+  ///
+  /// `SET COMPRESSION lz4`, in migration 20260910090000 rather than here —
+  /// Prisma has no compression concept, so the census fixture is what asserts
+  /// it. It had to land in phase 11b specifically: `ALTER … SET COMPRESSION`
+  /// does not rewrite existing rows, and 11b's MARC ingest is the first writer
+  /// this column has ever had.
   sourceBlob       Bytes?  @map("source_blob")
   sourceBlobSha256 Bytes?  @map("source_blob_sha256")
   /// Whether `serialize(parse(blob)) === blob` held at import. Recorded rather

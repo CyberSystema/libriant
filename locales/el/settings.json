@@ -21,6 +21,7 @@
   "export.formats.json": "JSON",
   "export.formats.xlsx": "Excel (.xlsx)",
   "export.formats.sql": "SQL dump",
+  "export.formats.catalog_marc": "Κατάλογος σε MARC (zip)",
   "export.create": "Δημιουργία εξαγωγής",
   "export.started": "Η εξαγωγή ξεκίνησε — θα είναι έτοιμη σύντομα.",
   "export.listTitle": "Πρόσφατες εξαγωγές",

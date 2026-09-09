@@ -1,3 +1,18 @@
+/**
+ * EXPORTED as `@libriant/marc/test-corpus`, deliberately.
+ *
+ * This is a test fixture and it is on the package's public surface anyway,
+ * because it is the only MARC corpus this repo has and three phases outside
+ * `packages/marc` need it: phase 11b's acceptance criterion loads 10,000 records
+ * through the API, phase 19's upgrade fixture needs a catalogue to copy forward,
+ * and phase 35's migration adapters need something to measure coverage against.
+ * The alternative was a five-level relative import into another package's
+ * `src/__fixtures__`, which is worse in every way except tidiness.
+ *
+ * It shares no code with the codec — a test asserts its import list — which is
+ * what makes "two independent ISO 2709 implementations agree" evidence rather
+ * than a tautology.
+ */
 import { concatBytes, encodeUtf8 } from '../bytes.js';
 
 /**

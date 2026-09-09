@@ -7,7 +7,7 @@ import { api } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
 import { dataPort } from '@/lib/ports';
 
-type Format = 'csv' | 'json' | 'xlsx' | 'sql';
+type Format = 'csv' | 'json' | 'xlsx' | 'sql' | 'catalog_marc';
 type Status = 'queued' | 'running' | 'completed' | 'failed';
 
 export type ExportJobView = {
@@ -23,7 +23,10 @@ export type ExportJobView = {
   createdAt: string;
 };
 
-const FORMATS: Format[] = ['csv', 'json', 'xlsx', 'sql'];
+// `catalog_marc` last: it is the odd one out. The four before it are dumps of
+// the whole database in a general format; this one is the CATALOGUE, as MARC,
+// which is the file another library system can actually read.
+const FORMATS: Format[] = ['csv', 'json', 'xlsx', 'sql', 'catalog_marc'];
 
 function fmtBytes(n: number | null): string {
   if (!n) return '—';

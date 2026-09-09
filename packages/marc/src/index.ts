@@ -56,6 +56,13 @@ export {
   type ShippedProfile,
 } from './definitions.js';
 export * from './linkage.js';
+/**
+ * The relational projector (phase 11a). Pure and TOTAL: it never throws and
+ * never refuses a record, because a librarian's typo must not be able to abort a
+ * 50,000-record import halfway through. What it cannot make sense of comes back
+ * as a `ProjectionAnomaly` beside a usable projection.
+ */
+export * from './bib-projection.js';
 export {
   canEncodeMarc8,
   decodeMarc8,

@@ -304,6 +304,21 @@ export const METRICS = [
     why: 'One series per handler-defined counter name, so no single threshold means the same thing across jobs. The run-level verdict those counters produce is libriant_worker_job_last_ok, which is alerted; this is the detail an operator reads after the page.',
   }),
   defineMetric({
+    name: 'libriant_catalog_projection_drift_total',
+    help: 'Bibliographic records whose relational projection disagrees with the record it is derived from, at the last nightly verify.',
+    type: 'gauge',
+    source: 'worker',
+    alert: true,
+  }),
+  defineMetric({
+    name: 'libriant_catalog_projection_scanned_total',
+    help: 'Bibliographic records re-projected by the last nightly verify.',
+    type: 'gauge',
+    source: 'worker',
+    alert: false,
+    why: 'The denominator. It is what makes a drift count readable — 12 of 12 is a projector change, 12 of 400,000 is a lost write — and a threshold on the total size of the fleet catalogue would page on a successful import.',
+  }),
+  defineMetric({
     name: 'libriant_email_outbox_rows',
     help: 'E-mail outbox rows by status.',
     type: 'gauge',

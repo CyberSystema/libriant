@@ -663,6 +663,17 @@ enum ExportFormat {
   json // one JSON file: { table: rows }
   xlsx // one Excel workbook, a sheet per table
   sql // pg_dump (full-fidelity, restorable)
+  /// The catalogue as MARC (phase 11b), tenant scope only.
+  ///
+  /// Unlike the four above it is not a dump of the database — it is one
+  /// bibliographic record per ISO 2709 record, which is what a union catalogue,
+  /// a migration off this product, or another ILS can actually read. It ships as
+  /// a zip because a catalogue export that silently omitted the records the
+  /// binary format cannot carry would be a lie by omission: the archive holds
+  /// `catalogue.mrc`, a `manifest.json` accounting for every record, and, when
+  /// there are any, an `oversize.xml` carrying the refused ones in MARCXML,
+  /// which has none of ISO 2709's ceilings.
+  catalog_marc
 }
 
 enum ExportScope {
