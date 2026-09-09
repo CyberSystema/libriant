@@ -1,0 +1,428 @@
+// ---------------------------------------------------------------------------
+// Patrons — the record side
+// ---------------------------------------------------------------------------
+//
+// §3 splits the twenty patron tables in two. This file is the RECORD side, which
+// it assigns to Circulation: what the library knows about a borrower and how it
+// reaches them. The IDENTITY side — `patron_identities`, `patron_sessions`,
+// `patron_auth_providers`, `patron_registrations`, `patron_privacy_settings`,
+// `patron_contact_endpoints`, `patron_channel_preferences`,
+// `patron_households` — is phase 32, where a patron can log into the OPAC, and
+// stays deferred. A borrower who has never had an account is the ordinary case
+// and has to remain expressible.
+//
+// §3 gives DDL for exactly ONE thing in this file — `patron_blocks`' partial
+// unique index — so everything else is designed, and the arguments are in the
+// docblocks rather than here.
+
+/// The number on the card. One row per year, per library.
+///
+/// §6 phase 14: "number minting (`UPDATE … RETURNING`, never `max()+1`)". The
+/// prohibition has a measurement behind it: `perf-04` recorded that 1.0 used to
+/// pull every member number for the year into Node and take the max — 47 ms and
+/// ~190 MB of RSS churn per create on a 100,000-member tenant, which made a
+/// roster import O(n²) and unfinishable. That is the first thing a new customer
+/// does.
+///
+/// Measured here, on this shape: 25 clients × 40 mints gave 1,000 distinct,
+/// contiguous sequences, zero duplicates, zero deadlocks, zero rollbacks. A
+/// single-row counter CANNOT deadlock — deadlock needs two lockables taken in
+/// two orders, and there is one.
+///
+/// TWO THINGS THE MEASUREMENT ALSO SAID, both of which the service obeys:
+/// minting INSIDE the enrolment transaction is still correct and 23.7× slower
+/// (187 ms against 7.9 ms with a 5 ms transaction body), because the row lock is
+/// then held for the whole transaction and every enrolment in the library
+/// queues behind the slowest one; and minting inside a REPEATABLE READ
+/// transaction fails 94.8% of the time with `40001 could not serialize access
+/// due to concurrent update`.
+///
+/// Seeded LAZILY rather than by the migration, because the seed value is
+/// per-tenant data (`max(patron_number)` for the year) that a schema migration
+/// has no business computing.
+model PatronNumberCounter {
+  /// The `YYYY` in `M-YYYY-NNNNNN`.
+  year Int @id
+  /// Last sequence handed out. The next caller gets `next_seq + 1`.
+  nextSeq Int @map("next_seq")
+
+  @@map("patron_number_counters")
+}
+
+/// A physical card, or the barcode standing in for one.
+///
+/// A SATELLITE TABLE, where 1.0 had no concept at all. The first thing a library
+/// with a lost-card policy needs is a second row: the old barcode must keep
+/// resolving — so the desk can say "this card was reported lost on the 3rd"
+/// rather than "unknown barcode" — while the new one becomes the live card. One
+/// inline column cannot express that, and 1.0 therefore cannot.
+///
+/// `barcode_norm` is what is indexed and what a scanner matches against, and it
+/// is a STORED column rather than an expression for the reason
+/// `@libriant/shared/greek` exists: the normalisation is the TypeScript one, and
+/// Postgres cannot reproduce it inside an index.
+/// @replicated entity_kind=patron_card
+model PatronCard {
+  id       String @id @default(cuid())
+  patronId String @map("patron_id")
+
+  /// As printed. Kept verbatim so a card can be reprinted exactly.
+  barcode String
+  /// Upper-cased, trimmed, with the characters a scanner adds stripped. THE
+  /// lookup key, and unique across the library among live cards.
+  barcodeNorm String @map("barcode_norm")
+
+  status PatronCardStatus @default(active)
+  /// Set when a card is reported lost or replaced, so "when did this stop
+  /// working?" is answerable from the row rather than from the audit log.
+  retiredAt     DateTime? @db.Timestamptz(3) @map("retired_at")
+  retiredReason String?   @map("retired_reason")
+
+  issuedAt  DateTime  @default(now()) @db.Timestamptz(3) @map("issued_at")
+  expiresAt DateTime? @db.Timestamptz(3) @map("expires_at")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(3) @map("updated_at")
+
+  patron Patron @relation(fields: [patronId], references: [id], onDelete: Cascade)
+
+  @@index([patronId])
+  /// THE DESK SCAN, declared here as well as created in the migration. A plain,
+  /// non-partial index is something Prisma CAN express, so leaving it only in
+  /// raw SQL makes `migrate diff` propose dropping it on every run for ever —
+  /// and allowlisting that drop would put a false "the datamodel cannot hold
+  /// it" in a file whose whole premise is that the list stays true.
+  /// `marc_record_versions_hash_idx` sets the precedent: raw SQL AND a
+  /// declaration. A PREDICATE hides an index from the diff; an operator class
+  /// does not.
+  @@index([barcodeNorm], map: "patron_cards_barcode_idx")
+  @@map("patron_cards")
+}
+
+/// A number some other institution gave this person.
+///
+/// Kept OUT of `patrons` deliberately. An ΑΦΜ, an ΑΜΚΑ and a student number are
+/// three different disclosures with three different retention arguments, and a
+/// library that collects one has not thereby collected the others. As columns
+/// they would be three nullable fields nobody could audit; as rows they are a
+/// list a subject-access bundle can render and an erase can delete.
+///
+/// `value_norm` is what is unique; `value` is what was typed.
+/// @replicated entity_kind=patron_identifier
+model PatronIdentifier {
+  id       String @id @default(cuid())
+  patronId String @map("patron_id")
+
+  scheme PatronIdentifierScheme
+  /// Only for `scheme = 'other'`. The label the library uses for it.
+  schemeLabel String? @map("scheme_label")
+
+  value     String
+  valueNorm String @map("value_norm")
+
+  /// Whether a member of staff has seen the document. A library that lends on an
+  /// unverified ΑΔΤ has made a choice, and it should be a visible one.
+  verifiedAt     DateTime? @db.Timestamptz(3) @map("verified_at")
+  verifiedByUserId String? @map("verified_by_user_id")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3) @map("created_at")
+
+  patron Patron @relation(fields: [patronId], references: [id], onDelete: Cascade)
+
+  @@index([patronId])
+  /// One live value per (patron, scheme). A person has one ΑΦΜ; two rows means
+  /// one of them is wrong, and finding out at erase time is too late.
+  @@unique([patronId, scheme, valueNorm], map: "patron_identifiers_one_per_scheme")
+  /// Finding the patron FROM the identifier — the academic self-service case,
+  /// where a student number is what the reader knows. Same shape as
+  /// `bib_identifiers_lookup_idx`, and declared for the same reason.
+  @@index([scheme, valueNorm], map: "patron_identifiers_lookup_idx")
+  @@map("patron_identifiers")
+}
+
+/// Where the library posts an overdue notice.
+///
+/// Rows rather than 1.0's five inline columns, because a student has a term-time
+/// address and a home address and the notice has to reach the one they are at.
+/// 1.0 holds exactly one and a library with a student population works around it
+/// in the free-text notes field.
+/// @replicated entity_kind=patron_address
+model PatronAddress {
+  id       String @id @default(cuid())
+  patronId String @map("patron_id")
+
+  kind PatronAddressKind @default(home)
+  /// Exactly one address per patron may be primary, and that is enforced by a
+  /// partial unique index rather than by the service — the service is what would
+  /// forget.
+  isPrimary Boolean @default(false) @map("is_primary")
+
+  line1      String?
+  line2      String?
+  city       String?
+  region     String?
+  postalCode String? @map("postal_code")
+  /// ISO-3166 alpha-2, defaulting to GR as everywhere in this codebase.
+  country String? @default("GR")
+
+  /// Set when a notice comes back undeliverable. Feeds
+  /// `PatronBlockCode.address_unconfirmed`, which is the block a library needs
+  /// before it posts a fourth letter to a house nobody lives in.
+  undeliverableAt     DateTime? @db.Timestamptz(3) @map("undeliverable_at")
+  undeliverableReason String?   @map("undeliverable_reason")
+
+  validFrom DateTime? @db.Date @map("valid_from")
+  validTo   DateTime? @db.Date @map("valid_to")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(3) @map("updated_at")
+
+  patron Patron @relation(fields: [patronId], references: [id], onDelete: Cascade)
+
+  @@index([patronId])
+  @@map("patron_addresses")
+}
+
+/// One patron standing to another.
+///
+/// DIRECTIONAL: the row reads `from` IS THE `kind` OF `to` — a guardian row is
+/// `from = the parent, to = the child, kind = guardian`. The alternative, a
+/// symmetric pair, needs two rows kept in step and gives no answer to "who is
+/// the adult here?", which is the only question the guardian case asks.
+///
+/// The `guardian` kind is the one with legal weight. Greek L.4624/2019 art. 21
+/// sets the digital-consent age at 15, and phase 33 builds the double opt-in
+/// that needs this row to exist first. THIS PHASE STORES THE RELATIONSHIP AND
+/// ASSERTS NOTHING ABOUT CONSENT — `confirmed_at` is here so phase 33 has
+/// somewhere to write, and phase 14 never sets it.
+/// @replicated entity_kind=patron_relationship
+model PatronRelationship {
+  id           String                 @id @default(cuid())
+  fromPatronId String                 @map("from_patron_id")
+  toPatronId   String                 @map("to_patron_id")
+  kind         PatronRelationshipKind
+
+  /// Whether the proxy may collect holds and take items out. A guardian
+  /// relationship is not automatically a borrowing right, and conflating them is
+  /// how a library lends a fourteen-year-old's reserved book to an estranged
+  /// parent.
+  canBorrow Boolean @default(false) @map("can_borrow")
+
+  /// Phase 33's. NULL here always.
+  confirmedAt DateTime? @db.Timestamptz(3) @map("confirmed_at")
+
+  startsAt DateTime? @db.Timestamptz(3) @map("starts_at")
+  endsAt   DateTime? @db.Timestamptz(3) @map("ends_at")
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(3) @map("updated_at")
+
+  from Patron @relation("RelationshipFrom", fields: [fromPatronId], references: [id], onDelete: Cascade)
+  to   Patron @relation("RelationshipTo", fields: [toPatronId], references: [id], onDelete: Cascade)
+
+  @@index([fromPatronId])
+  @@index([toPatronId])
+  @@map("patron_relationships")
+}
+
+/// A stored reason this patron may not borrow.
+///
+/// THE ONE TABLE §3 GIVES DDL FOR, and the index is the whole design:
+///
+///     CREATE UNIQUE INDEX patron_blocks_one_auto_per_code ON patron_blocks
+///       (patron_id, code) WHERE auto_generated AND cleared_at IS NULL;
+///
+/// "so block recalculation is an `INSERT … ON CONFLICT DO UPDATE` and a sweep
+/// racing a desk transaction settles in Postgres instead of aborting the
+/// librarian's checkout — the DATA-1 lesson applied to blocks."
+///
+/// Measured at 25 sweeps against one patron, 20 desk transactions each:
+///
+///   advisory lock + ON CONFLICT      desk 20/20   sweeps 500/500   0 duplicates
+///   advisory lock + DELETE-then-INSERT  desk 20/20   sweeps 272/500 (228 × 23505)
+///   FOR UPDATE   + DELETE-then-INSERT   desk  0/20   ZERO loans written
+///
+/// The third row is the finding worth carrying forward: the DESK's
+/// `SELECT … FOR UPDATE` on the patron is itself the poison. Every genuine block
+/// INSERT runs the `patron_id` foreign-key check, which takes a `FOR KEY SHARE`
+/// tuple lock on the patron row; that lock and the desk's `FOR UPDATE` deadlock
+/// (`40P01`), and twenty librarians' checkouts are destroyed. An advisory lock
+/// does not participate in the FK row-lock graph at all, which is why
+/// `platform/locks.ts` is the mechanism and a row lock is not. If a row lock is
+/// ever genuinely wanted on `patrons`, it must be `FOR NO KEY UPDATE`.
+///
+/// Also measured: `ON CONFLICT DO UPDATE` raises `40001` at REPEATABLE READ and
+/// the desk aborts 15/15. Every writer here pins `ReadCommitted`.
+///
+/// Two semantics fall out of the predicate and both are deliberate. A CLEARED
+/// row does not conflict, so block history accumulates rather than being
+/// overwritten. And a MANUAL block coexists with an auto block on the same code,
+/// so a sweep structurally cannot clobber a librarian's own decision.
+/// @replicated entity_kind=patron_block
+model PatronBlock {
+  id       String          @id @default(cuid())
+  patronId String          @map("patron_id")
+  code     PatronBlockCode
+
+  /// Shown to the librarian at the desk. For a `manual` block this is the whole
+  /// content of the decision, so it is required for that code and optional for
+  /// the computed ones, which can say it themselves.
+  reason String?
+
+  /// Whether a sweep owns this row. The partial unique is scoped to
+  /// `auto_generated`, so the sweep can never touch a librarian's block and a
+  /// librarian can never be surprised by one vanishing.
+  autoGenerated Boolean @default(false) @map("auto_generated")
+
+  /// What the sweep observed, so the desk can say "4 items over 30 days" rather
+  /// than "too many overdues". JSON because the shape differs per code and a
+  /// column per code would be seven nullable columns, six of them always null.
+  observed Json @default("{}") @db.JsonB
+
+  /// `block` stops the transaction; `warn` shows and lets it proceed. The same
+  /// two words `circ-policy`'s `Block.severity` uses, because they end up in the
+  /// same list on the same screen.
+  severity String @default("block")
+
+  placedAt       DateTime  @default(now()) @db.Timestamptz(3) @map("placed_at")
+  placedByUserId String?   @map("placed_by_user_id")
+  /// NULL while the block stands. Set rather than deleted, so "why could this
+  /// person not borrow last Tuesday?" stays answerable.
+  clearedAt       DateTime? @db.Timestamptz(3) @map("cleared_at")
+  clearedByUserId String?   @map("cleared_by_user_id")
+  clearedReason   String?   @map("cleared_reason")
+
+  patron Patron @relation(fields: [patronId], references: [id], onDelete: Cascade)
+
+  @@index([patronId])
+  @@map("patron_blocks")
+}
+
+/// Something to tell somebody next time this patron is looked up.
+///
+/// Distinct from {@link PatronNote}, and the distinction is whether it INTERRUPTS.
+/// A message is shown at the desk and dismissed; a note is filed and read when
+/// somebody goes looking. Collapsing them gives a screen that either interrupts
+/// on everything or on nothing.
+/// @replicated entity_kind=patron_message
+model PatronMessage {
+  id       String                @id @default(cuid())
+  patronId String                @map("patron_id")
+  audience PatronMessageAudience @default(staff)
+
+  body String
+
+  /// Once acknowledged it stops interrupting. Kept rather than deleted, because
+  /// "was this person told?" is the question the message exists to answer.
+  acknowledgedAt     DateTime? @db.Timestamptz(3) @map("acknowledged_at")
+  acknowledgedByUserId String? @map("acknowledged_by_user_id")
+
+  createdAt       DateTime @default(now()) @db.Timestamptz(3) @map("created_at")
+  createdByUserId String?  @map("created_by_user_id")
+
+  patron Patron @relation(fields: [patronId], references: [id], onDelete: Cascade)
+
+  @@index([patronId])
+  @@map("patron_messages")
+}
+
+/// A dated, attributed note on a patron's record.
+///
+/// `patrons.staff_notes` survives beside this on purpose: a one-line "prefers
+/// large print" is not a dated, attributed note, and forcing it to be one is how
+/// a field stops being used and the information moves into the name.
+/// @replicated entity_kind=patron_note
+model PatronNote {
+  id       String @id @default(cuid())
+  patronId String @map("patron_id")
+
+  body String
+
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  createdByUserId String?   @map("created_by_user_id")
+  updatedAt       DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt      DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  patron Patron @relation(fields: [patronId], references: [id], onDelete: Cascade)
+
+  @@index([patronId])
+  @@map("patron_notes")
+}
+
+/// One merge, recorded.
+///
+/// `patrons.merged_into_id` is what a card scan follows; this is what a
+/// librarian reads when they ask why. Both are needed and neither substitutes
+/// for the other — the 1.0 author dedup recorded its survivor ONLY in
+/// `audit_log.afterJson`, with no column, so a stale author id resolves to
+/// nothing to this day. That is the failure `merged_into_id` prevents; this
+/// table is the failure an audit row prevents, which is not knowing what was
+/// moved.
+///
+/// `carried` holds the counts — cards, identifiers, addresses, loans, fees — so
+/// a merge that silently dropped something is visible without re-deriving it
+/// from the audit log.
+/// @replicated entity_kind=patron_merge
+model PatronMerge {
+  id String @id @default(cuid())
+
+  /// The record that lost. Its `merged_into_id` points at the survivor.
+  loserPatronId String @map("loser_patron_id")
+  /// The record that kept its id, and therefore its permalinks.
+  survivorPatronId String @map("survivor_patron_id")
+
+  /// What moved. `{"cards": 2, "identifiers": 1, "loans": 47, …}`.
+  carried Json @default("{}") @db.JsonB
+  /// What could not move because it would have collided — a duplicate card
+  /// barcode, the same ΑΦΜ on both records. Retired rather than deleted, and
+  /// named here so the librarian can see it happened.
+  collided Json @default("{}") @db.JsonB
+
+  reason String?
+
+  mergedAt       DateTime @default(now()) @db.Timestamptz(3) @map("merged_at")
+  mergedByUserId String?  @map("merged_by_user_id")
+
+  loser    Patron @relation("MergeLoser", fields: [loserPatronId], references: [id], onDelete: Restrict)
+  survivor Patron @relation("MergeSurvivor", fields: [survivorPatronId], references: [id], onDelete: Restrict)
+
+  @@index([survivorPatronId])
+  /// A record can lose a merge only once. A second row for the same loser means
+  /// either the merge ran twice or the record was un-merged and re-merged, and
+  /// both are things somebody has to look at.
+  @@unique([loserPatronId], map: "patron_merges_one_per_loser")
+  @@map("patron_merges")
+}
+
+/// What this library does with a borrowing history once the book comes back.
+///
+/// §3: "Reading history is anonymised on return by default. `reading_history_policy
+/// .mode` defaults to `anonymised`, school libraries to `none` … This is an
+/// IFLA/NISO professional obligation and a Greek DPA answer, and it is a DEFAULT
+/// rather than a setting someone forgot to turn on."
+///
+/// A SINGLETON, `id = 1`, like `circulation_settings`. §3 words it as one policy
+/// for the library, and a per-branch reading-history policy would mean a patron's
+/// history is anonymised or not depending on which desk they walked up to.
+///
+/// PHASE 14 STORES IT AND NOTHING READS IT AT RETURN TIME, because there is no
+/// return path yet — phase 16 builds `apps/api/src/circulation`, and §3 puts the
+/// null-and-stamp "in the same transaction as the return". A phase-14
+/// anonymisation would have no caller. The per-patron opt-in
+/// (`patron_privacy_settings.keep_loan_history`) is identity side, phase 32.
+model ReadingHistoryPolicy {
+  id Int @id @default(1)
+
+  /// `anonymised` for everyone; a school library's provisioning sets `none`.
+  mode ReadingHistoryMode @default(anonymised)
+
+  /// How long a KEPT history survives, for a library that has turned it on. NULL
+  /// is "until the patron asks", which is the only honest default for a setting
+  /// whose whole point is that the patron chose it.
+  retainMonths Int? @map("retain_months")
+
+  updatedAt       DateTime @default(now()) @db.Timestamptz(3) @map("updated_at")
+  updatedByUserId String?  @map("updated_by_user_id")
+
+  @@map("reading_history_policy")
+}

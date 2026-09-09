@@ -4,30 +4,96 @@
 
 /// A borrower.
 ///
-/// SKELETON, and the emptiest one in the baseline. §3 mentions `patrons` nine
-/// times and every mention is about BEHAVIOUR — anonymisation on return, merge
-/// resolving through one hop, number minting via `UPDATE … RETURNING` rather
-/// than `max()+1` — and none is about a column. Its PK is forced by
-/// `loans.patron_id text REFERENCES patrons(id) ON DELETE RESTRICT`.
+/// PHASE 14 FILLED THIS IN. The baseline left it the emptiest skeleton in the
+/// tree — §3 mentions `patrons` nine times and every mention is about BEHAVIOUR
+/// (anonymisation on return, merge resolving through one hop, number minting via
+/// `UPDATE … RETURNING` rather than `max()+1`) and none is about a column — on
+/// the argument that a patron record is where GDPR, the Greek digital-consent
+/// age of 15 and the DSAR bundle all land, and inventing its shape a dozen
+/// phases early would be inventing the hardest part of the schema with the least
+/// information. Phase 14 is the phase that has that information.
 ///
-/// The eight satellite tables phase 14 calls "the baseline tables"
-/// (`patron_identifiers`, `patron_addresses`, `patron_relationships`,
-/// `patron_blocks`, `patron_messages`, `patron_notes`, `patron_merges`,
-/// `patron_number_counters`) are deferred to 9c with the phase-14 service, for
-/// the same reason: a patron record is where GDPR, the Greek digital-consent age
-/// of 15, guardian double opt-in and the DSAR bundle all land, and inventing its
-/// shape a dozen phases before any of that is designed would be inventing the
-/// hardest part of the schema with the least information.
+/// The columns are 1.0's `members`, which is not a shortcut: those are the
+/// fields this product already collects from Greek libraries, and a 2.0 patron
+/// that held different ones would make phase 19's copy-forward lossy for no
+/// reason. What is NEW is `merged_into_id`, `expires_at`, `erased_at`'s
+/// promotion to a first-class column, and the fact that the address, the card
+/// and the identifiers have moved OUT into satellite tables — 1.0 holds exactly
+/// one address inline and cannot record a second card, which is the first thing
+/// a library with a lost-card replacement policy needs.
 ///
-/// What is here is only what `loans` cannot do without.
+/// THE IDENTITY SIDE IS NOT HERE. §3 splits the twenty patron tables into a
+/// record side (this phase) and an identity side — `patron_identities`,
+/// `patron_sessions`, `patron_auth_providers`, `patron_registrations`,
+/// `patron_privacy_settings`, `patron_contact_endpoints`,
+/// `patron_channel_preferences`, `patron_households` — which is phase 32, where
+/// a patron can log in to the OPAC. A borrower who has never had an account is
+/// the normal case and must stay expressible.
 /// @replicated entity_kind=patron
 model Patron {
   id String @id @default(cuid())
 
-  /// Minted by phase 14, not by this schema. Unique among non-archived rows;
-  /// the `text_pattern_ops` index that makes `LIKE 'M-2026-%'` work under
-  /// `el_GR.UTF-8` arrives with the minting service that needs it.
+  /// `M-2026-000001`. Unique among non-archived rows, and served by TWO indexes
+  /// that cannot be one — see the migration, which measures why.
+  ///
+  /// Nullable, because a patron created by a bulk import may not have one yet
+  /// and a fast-add at the desk should not block on minting. `mintPatronNumber`
+  /// fills it; nothing else may.
   patronNumber String? @map("patron_number")
+
+  fullName String  @map("full_name")
+  /// Folded and lowercased by `@libriant/shared/greek`. What every list sorts
+  /// by, and the reason it is a stored column rather than an expression: the
+  /// fold is the one in TypeScript, not one Postgres could reproduce.
+  sortName String  @map("sort_name")
+  /// Name + number + email + phone, folded, for the trigram index.
+  searchText String @map("search_text")
+
+  /// `citext`, as in 1.0: a library that types `Α.Παπαδοπουλου@…` and one that
+  /// types `a.papadopoulou@…` mean the same patron.
+  email String? @db.Citext
+  phone String?
+  /// A civil date, so `@db.Date`. A birthday is the same day everywhere, and
+  /// `ageRestrictionMinYears` in the rules matrix reads it.
+  dateOfBirth DateTime? @db.Date @map("date_of_birth")
+
+  photoAssetRef String? @map("photo_asset_ref")
+
+  status PatronStatus @default(active)
+  /// When the borrowing right lapses. NULL is "does not expire", which is what a
+  /// public library's ordinary adult member gets; a student card that expires
+  /// with the academic year is the case this exists for. Phase 16 reads it —
+  /// this phase only stores it, because there is no checkout to block yet.
+  expiresAt DateTime? @db.Timestamptz(3) @map("expires_at")
+
+  /// Visible to staff, never to the patron. 1.0's `staffNotes`, kept inline
+  /// rather than folded into `patron_notes` because a one-line "prefers large
+  /// print" is not a dated, attributed note and forcing it to be one is how a
+  /// field stops being used.
+  staffNotes String? @map("staff_notes")
+
+  joinedAt     DateTime @default(now()) @db.Timestamptz(3) @map("joined_at")
+  customFields Json     @default("{}") @db.JsonB @map("custom_fields")
+
+  /// Set when this record LOSES a merge. The survivor keeps its own id, so every
+  /// loan, fee, hold and audit target pointing at the loser still resolves —
+  /// `marc_records.merged_into_id` uses the identical wording for the identical
+  /// reason.
+  ///
+  /// IT IS ALWAYS ONE HOP. When A is merged into C, every row that pointed at A
+  /// is re-pointed to C in the same transaction, and a deferred constraint
+  /// trigger refuses the commit otherwise. That is not tidiness: measured, a
+  /// chain does not make the card scan SLOW — a one-hop lookup is a fixed 12
+  /// buffers whatever the depth — it makes it silently WRONG, returning a patron
+  /// who is themselves merged away. The desk then charges the loan to a record
+  /// with no cards, no blocks and a balance nobody sees.
+  mergedIntoId String? @map("merged_into_id")
+
+  /// GDPR Art. 17. When non-NULL every direct identifier above has been
+  /// overwritten and the row exists ONLY to keep the loan and fee foreign keys
+  /// resolvable. NEVER re-populate an erased row: restoring identifiers undoes
+  /// an exercised erasure right.
+  erasedAt DateTime? @db.Timestamptz(3) @map("erased_at")
 
   /// PHASE 13 GAVE THIS ITS FK. It used to say `patron_categories` was deferred
   /// to 9c; the rules matrix keys on it, and a rule selecting on a category that
@@ -46,7 +112,28 @@ model Patron {
   loans    Loan[]
   category PatronCategory? @relation(fields: [patronCategoryId], references: [id], onDelete: Restrict)
 
+  /// `ON DELETE RESTRICT`, not the `SET NULL` `marc_records` uses. Silently
+  /// clearing a loser's pointer when the survivor is deleted would strand a card
+  /// that then resolves to a record with no history — which is the failure the
+  /// column exists to prevent, arriving by a different door.
+  mergedInto Patron? @relation("PatronMerge", fields: [mergedIntoId], references: [id], onDelete: Restrict)
+  mergedFrom Patron[]    @relation("PatronMerge")
+
+  cards         PatronCard[]
+  identifiers   PatronIdentifier[]
+  addresses     PatronAddress[]
+  blocks        PatronBlock[]
+  messages      PatronMessage[]
+  notes         PatronNote[]
+  relationsFrom PatronRelationship[] @relation("RelationshipFrom")
+  relationsTo   PatronRelationship[] @relation("RelationshipTo")
+  mergesAsLoser    PatronMerge[] @relation("MergeLoser")
+  mergesAsSurvivor PatronMerge[] @relation("MergeSurvivor")
+
   @@index([patronCategoryId])
+  @@index([sortName, id], map: "patrons_sort_name_id_idx")
+  @@index([status])
+  @@index([email])
   @@map("patrons")
 }
 

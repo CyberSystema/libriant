@@ -2134,3 +2134,260 @@ It also matters for the collation finding above: the container was initdb'd
 `--locale-provider=icu --icu-locale=el-GR` (which is what production gets) and the
 Homebrew cluster is libc `en_US.UTF-8`, which is why the measurement above has
 three rows and not two.
+
+## Phase 14 — Patrons 2.0
+
+Ten new tables plus the columns the baseline left off `patrons`, `apps/api/src/patrons`,
+two permission keys, a `v2-patrons` smoke module, and a coverage map that stands
+in for a gate nineteen phases away. The two hardest acceptance criteria were
+settled by measurement before a line was written, and both measurements are in
+the code.
+
+### The block race, and the finding that was not in the phase line
+
+§3 says `patron_blocks` gets the analogue of `fines_one_outstanding_per_loan`
+"so block recalculation is an `INSERT … ON CONFLICT DO UPDATE` and a sweep racing
+a desk transaction settles in Postgres instead of aborting the librarian's
+checkout". Measured, 25 concurrent sweeps against one patron while a desk
+transaction holds it, 20 iterations per row:
+
+| desk lock           | recompute            | desk     | sweeps  | loans | dupes |
+| ------------------- | -------------------- | -------- | ------- | ----- | ----- |
+| advisory            | `ON CONFLICT`        | 20/20    | 500/500 | 20    | 0     |
+| advisory            | `DELETE`+`INSERT`    | 20/20    | 272/500 | 20    | 0     |
+| `FOR UPDATE`        | `DELETE`+`INSERT`    | **0/20** | 20/500  | **0** | 0     |
+| `FOR UPDATE`        | `ON CONFLICT` (cold) | **0/20** | 476/500 | **0** | 0     |
+| `FOR NO KEY UPDATE` | `ON CONFLICT`        | 20/20    | 500/500 | 20    | 0     |
+
+Two separate things live in that table and §3's sentence conflates them. The
+INDEX is what makes duplication impossible — `dupes = 0` in every row, including
+the `DELETE`+`INSERT` one. The `ON CONFLICT` is what makes the librarian's
+transaction survive.
+
+**The finding the phase line does not contain is that the desk's
+`SELECT … FOR UPDATE` is itself the poison.** `patron_blocks.patron_id`
+references `patrons`, so every genuine block INSERT runs the FK check, which
+takes a `FOR KEY SHARE` tuple lock on the patron row — and that lock plus a desk
+`FOR UPDATE` on the same row deadlock. Twenty librarians' checkouts destroyed,
+`loans_written = 0`. An advisory lock does not participate in the FK row-lock
+graph at all, which is a direct vindication of `platform/locks.ts` and a rule
+worth stating for every later phase: **the patron desk pin is
+`pg_advisory_xact_lock`; if a row lock is ever genuinely wanted on `patrons` it
+must be `FOR NO KEY UPDATE`.**
+
+Two more that shape the code. At REPEATABLE READ, `ON CONFLICT DO UPDATE` onto a
+concurrently-updated row raises `40001` and the desk aborts 15/15, so every
+writer pins `ReadCommitted` explicitly. And the `ON CONFLICT` inference is
+unforgiving in a way that reports every mistake identically: the clause must
+IMPLY the index predicate, so dropping the `WHERE` is `42P10`, weakening it to
+`WHERE auto_generated` is `42P10`, and
+`ON CONFLICT ON CONSTRAINT patron_blocks_one_auto_per_code` is `42704`, because a
+partial unique INDEX is not a CONSTRAINT and can never be named that way.
+
+The suite reproduces the whole thing: **desk committed, 0/25 sweep failures.**
+
+### One hop needs a trigger AND sorted locks — neither alone
+
+The database refuses a chain through `lbr2_patrons_merge_one_hop`, a deferred
+constraint trigger with TWO clauses. Clause (a) — "my survivor must be terminal"
+— never fires on the transaction that CREATES the chain: when A is merged into C
+it is A's row that changes, A's survivor C is terminal, and the row that is now
+wrong is B, which nobody touched. Clause (b) catches B.
+
+That is not enough. 60 concurrent pairs where T1 merges B into A while T2 merges
+A into C:
+
+```
+trigger only, no locks    59 of 60 chains formed
+trigger + sorted locks     0 of 60
+SERIALIZABLE               0 of 60, and a 40001 on one side of every pair
+```
+
+Each transaction's deferred check passes on a snapshot that cannot see the
+other's uncommitted row. The locks are sufficient because any two merges that
+could form a chain necessarily share the middle patron — B→A and A→C both name A
+— so patron-keyed locks always serialise them. And they must be SORTED: two
+operators merging the same pair in opposite directions gave `{40P01: 8, 23514: 4,
+committed: 12}` in caller order against `{23514: 12, committed: 12}` through
+`orderLocks`. Sorting converts a random deadlock into a deterministic refusal the
+librarian can be shown.
+
+**What a chain costs is not latency.** Measured on 200,000 patrons with a
+deliberately built 10-deep chain: the one-hop lookup is a fixed 12 buffers and
+0.026 ms whatever the depth, and on the chained record it returns `p00000102`
+where the survivor is `p00000111`. A chain does not make the card scan slow — it
+makes it silently WRONG, and the desk then charges the loan to a record with no
+cards, no blocks and a balance nobody sees. That is the argument for enforcing
+the invariant on the write side rather than making every reader recursive, and it
+is why the desk query is a two-join `LEFT JOIN` and not a `WITH RECURSIVE`.
+
+The trigger REFUSES rather than repairs. Silently re-pointing the stranded row
+would hide the merge-service bug that left it behind — §8's reasoning about the
+ledger drift job alerting instead of self-healing, applied here.
+
+### perf-13, and the index that phase 13's precedent would have got wrong
+
+The acceptance line asks for "`patrons_number_pattern_idx` with
+`text_pattern_ops`". Measured on 50,000 rows where the prefix selects 10%:
+
+| collation          | plain btree                       | `text_pattern_ops`    |
+| ------------------ | --------------------------------- | --------------------- |
+| C                  | Bitmap Index Scan, 21 idx buffers | same                  |
+| libc `en_US.UTF-8` | **Seq Scan, 319**                 | Bitmap Index Scan, 21 |
+| libc `el_GR.UTF-8` | **Seq Scan, 319**                 | Bitmap Index Scan, 21 |
+| ICU `el-GR`        | **Seq Scan, 319**                 | Bitmap Index Scan, 21 |
+
+With `enable_seqscan = off` the three non-C databases STILL seq-scan: there is no
+index path at all, not a costing preference.
+
+**Phase 13's `COLLATE "C"` precedent is the wrong thing to copy here, and it took
+a measurement to see it.** As the only index on the column, `COLLATE "C"` serves
+`LIKE 'M-2026-%'` and **seq-scans `patron_number = $1`** — 49,999 rows removed by
+filter — because the equality's collation comes from the column and does not
+match the index's. `text_pattern_ops` serves both: it carries the ordinary
+`=(text,text)` at btree strategy 3, checked in `pg_amop`. So there is no third
+index for equality.
+
+There are still TWO indexes and they cannot be one. Uniqueness must be PARTIAL
+(`WHERE archived_at IS NULL`) so an archived card's number is re-issuable, but
+the counter seed must SEE archived numbers — an archived patron keeps the number
+printed on their card — and a partial index's predicate is not implied by an
+unqualified query: Seq Scan at 337 buffers against 21. So the pattern index is
+separate and deliberately not partial.
+
+A correction the phase line carries and this entry does not: **the tenant
+collation is no longer `el_GR.UTF-8`.** `docker-compose.prod.yml` now initdb's
+`--locale-provider=icu --icu-locale=el-GR --locale=C.UTF-8`, so `datcollate`
+reads `C.UTF-8` and a guard grepping for `el_GR` gets a false negative. The
+behaviour is identical — any non-C collation defeats a plain btree — so the test
+asserts "not C" rather than a literal, which is what keeps it true after the next
+locale change.
+
+One hard boundary found while measuring: `text_pattern_ops` REFUSES a
+non-deterministic collation outright ("nondeterministic collations are not
+supported for operator class"), and so does `LIKE`. A case-insensitive patron
+number or barcode is not merely slower here, it is unimplementable with the index
+the desk scan depends on — which is why `patron_cards.barcode_norm` is
+upper-cased and has a CHECK saying so.
+
+### Minting: correct, and two ways to make it slow
+
+25 clients × 40 mints gave 1,000 distinct contiguous sequences — zero duplicates,
+zero gaps, zero deadlocks, zero rollbacks. A single-row counter cannot deadlock:
+that needs two lockables acquired in two orders, and there is one.
+
+Both failure modes are about WHERE it runs, not whether it works. Minting inside
+a 5 ms transaction body is 23.7× slower (187 ms against 7.9 ms, 134 tps against
+3,163) because the counter's row lock is then held for the whole transaction and
+every enrolment queues behind the slowest one. Minting inside a REPEATABLE READ
+transaction fails 94.8% of the time with `40001`. So `mintPatronNumber` takes the
+bare client rather than a `TxV2`, and the signature is the thing that refuses.
+
+The number is also WIDER than 1.0's. 1.0 pads to four digits as a MINIMUM, so a
+library past 9,999 gets `M-2026-10000` and the column stops sorting numerically
+for ever. Widening later renumbers nobody and leaves a mixed-width column, so it
+had to be now: six digits, fixed width.
+
+### Balances are rows, and the negative assertion is the test
+
+§6 asks that "balances sum per currency". Phase 18 owns the ledger and nothing
+writes `lbr2.fees` yet, so what phase 14 owes is the SHAPE — and the shape is
+`SELECT currency, SUM(outstanding_cents) … GROUP BY currency`, a set of rows and
+never a scalar. A patron with €774, £640 and $710 has three balances; the
+currency-blind version returns **2124**, which is a number of nothing, and the
+suite asserts it as a negative so the API can never be able to produce it.
+
+`fees.patron_id` carries NO foreign key until phase 9d, so nothing at the
+database level catches a merge that forgets the fees: the money simply points at
+a record nobody looks at and vanishes from the survivor's balance. Until that FK
+exists, the suite's `orphaned_money = 0` assertion IS the constraint.
+
+### `check:dsar-coverage` does not exist, and that is a problem phase 14 owns
+
+§5's compliance row promises it "makes it structurally impossible for a new
+patron-referencing table to escape the subject-access bundle", and assigns it to
+phases 33 and 96. Phase 14 takes the number of patron-referencing tables in
+`lbr2` from ONE — `loans.patron_id` — to eleven.
+
+A gate written at phase 33 protects tables twelve onward. It cannot
+retroactively catch a table phase 14 forgot; it can only freeze the forgetting,
+because it will be written against whatever coverage map exists then and will
+bless whatever this phase happened to do.
+
+So `patron-data-map.ts` is the thing a later gate consumes: every table with a
+patron column, a verdict of `in_bundle` / `excluded` / `pending`, and a required
+reason on the last two — the property `check:schema-conventions` already
+establishes, that "an entry that stops matching anything FAILS". Three tests hold
+it honest today: every `lbr2` table with a patron column is in the map, every
+non-`in_bundle` entry has a reason, and every entry claiming to exist really
+does. At phase 33 the gate is about forty lines.
+
+The `excluded` verdicts are decisions and read as such. `audit_log` is out
+because it is the record of what STAFF did, which the library needs precisely in
+order to show that an erasure was carried out — erasing the evidence of an
+erasure is the one deletion Article 17 cannot mean. `change_events` is out
+because §5's cascade to device replicas is phase 78 and there is no fleet to
+cascade to, which is recorded so the obligation is inherited rather than the
+omission.
+
+### Three things the database and the tests found in the code
+
+**A deterministic block id was a bug.** `pb_<patron>_<code>` reads well and would
+collide on the PRIMARY KEY the first time a block was cleared and came back —
+which the `ON CONFLICT` does NOT catch, because it infers the partial unique and
+not the pkey. The sweep would have started failing with `23505` the first time a
+librarian lifted a block. The id is generated server-side.
+
+**Card collisions in the merge were dead code.** Eleven lines carefully retired a
+loser's card when the survivor already held that barcode — and
+`patron_cards_barcode_unique_live` is LIBRARY-WIDE, not per patron, so two live
+cards never share a barcode and the state was unreachable. The test that tried to
+construct it was refused by the index, which is how it was found. Identifiers and
+primary addresses are the opposite case: their uniques are scoped per patron, so
+two records for one person legitimately hold the same ΑΦΜ — which is precisely
+what a duplicate record IS — and those collisions are real and resolved before
+the move.
+
+**`patrons_number_unique_active` already existed.** The baseline created it in
+phase 9, before anything minted a number, and the migration was written with both
+indexes; Postgres refused the second with `42P07`.
+
+### Decisions worth their sentence
+
+**`archived` is not a `PatronStatus`.** 1.0's enum has it, and it is doing two
+jobs — a status AND the soft-delete column — which lets a row be
+`status = 'active'` with `archived_at` set, a state no screen can render
+honestly. `archived_at` is the archive; the enum holds the choices a librarian
+actually makes. `expired` is absent for a different reason: a status that has to
+be swept nightly to stay true is wrong every night until the sweep runs, so it is
+derived from `expires_at`.
+
+**Cards, identifiers and addresses moved OUT of the row.** 1.0 holds one address
+inline and cannot record a second card at all, which is the first thing a library
+with a lost-card policy needs. And an ΑΦΜ, an ΑΜΚΑ and a student number are three
+different disclosures with three different retention arguments; as columns they
+would be three nullable fields nobody could audit, and as rows they are a list a
+bundle can render and an erase can delete.
+
+**`patrons.staff_notes` survives beside `patron_notes`.** A one-line "prefers
+large print" is not a dated, attributed note, and forcing it to be one is how a
+field stops being used and the information moves into the name.
+
+**`patron_relationships` is directional.** The row reads `from` IS THE `kind` OF
+`to`. A symmetric pair needs two rows kept in step and gives no answer to "who is
+the adult here?", which is the only question the guardian case asks. Phase 33
+owns the Greek digital-consent age of 15 and the double opt-in; `confirmed_at` is
+here so it has somewhere to write, and phase 14 never sets it.
+
+**`reading_history_policy` is created and never read.** §3 puts the
+null-and-stamp "in the same transaction as the return", phase 16 owns that
+transaction, and a phase-14 anonymisation would have no caller. What phase 14
+owes is that the default exists on day one — `anonymised`, inserted by the
+migration — because §3's "a DEFAULT rather than a setting someone forgot to turn
+on" is only true if the row is there for every tenant, including the ones phase
+19's PL/pgSQL creates.
+
+**The smoke test caught the fill-out.** `seedMinimalChain` inserted a patron with
+`(id, updated_at)` because `patrons` was a skeleton; three NOT NULL columns later
+it broke seven modules at once. A table that stops being a skeleton breaks every
+fixture that relied on it being one, and the fixture is where you find out.

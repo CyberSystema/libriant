@@ -401,3 +401,167 @@ enum NoticeTriggerKind {
 
   @@map("notice_trigger_kind")
 }
+
+// -- Phase 14: patrons ---------------------------------------------------------
+
+/// Whether a person may borrow, and why not.
+///
+/// 1.0's `MemberStatus` is `active | suspended | archived`, and `archived` there
+/// is doing two jobs: it is a status AND it is the soft-delete `archivedAt`
+/// column. Keeping both would let a row be `status = 'active'` with
+/// `archived_at` set, which is a state no screen can render honestly. So
+/// `archived` is NOT a status here — `archived_at` is the archive — and the
+/// values that remain are the ones a librarian actually chooses between.
+///
+/// `expired` is derived from `expires_at` rather than stored, and is absent for
+/// that reason: a status column that has to be swept nightly to stay true is a
+/// column that is wrong every night until the sweep runs. Phase 16 compares the
+/// instant.
+enum PatronStatus {
+  active
+  /// A librarian's decision, with a reason in `patron_blocks`. Distinct from a
+  /// BLOCK: a suspended patron is suspended for everything, whereas a block is
+  /// per-reason and can be cleared one at a time.
+  suspended
+  /// The person asked to leave, or the library closed the account. Keeps the
+  /// history; stops the borrowing.
+  closed
+
+  @@map("patron_status")
+}
+
+/// What a card is for, and whether it still opens the door.
+enum PatronCardStatus {
+  active
+  /// Reported gone. The number stays on the row so a found card can be
+  /// recognised as the one that was lost, rather than as an unknown barcode.
+  lost
+  stolen
+  /// Superseded by a replacement. The commonest reason a patron has two rows.
+  replaced
+  expired
+
+  @@map("patron_card_status")
+}
+
+/// The external identifier schemes a Greek library actually meets.
+///
+/// DELIBERATELY SHORT. §5 gives no list, and every value here is one a library
+/// can point at on a document. `national_id` (ΑΔΤ), `tax_id` (ΑΦΜ) and
+/// `amka` (the Greek social-security number) are the three a municipal library
+/// is allowed to ask for; `student_id`, `staff_id` and `library_card` cover the
+/// academic and consortium cases; `other` carries a label in `scheme_label` so
+/// a library is never blocked on us adding a value.
+///
+/// AMKA IS SPECIAL-CATEGORY-ADJACENT under Greek law and is here so it can be
+/// found and erased, not so it can be collected casually — `patron_identifiers`
+/// is in the subject-access bundle for exactly this reason.
+enum PatronIdentifierScheme {
+  national_id
+  tax_id
+  amka
+  passport
+  student_id
+  staff_id
+  library_card
+  other
+
+  @@map("patron_identifier_scheme")
+}
+
+/// Which address, when a patron has more than one.
+enum PatronAddressKind {
+  home
+  postal
+  work
+  /// Where a student actually sleeps in term time, which is the address an
+  /// overdue notice has to reach.
+  term_time
+  other
+
+  @@map("patron_address_kind")
+}
+
+/// How one patron stands to another.
+///
+/// Directional: the row means `from` IS THE `kind` OF `to`. `guardian` is the
+/// one with legal weight — Greek L.4624/2019 art. 21 sets the digital-consent
+/// age at 15, and phase 33 builds the double opt-in that needs this row to
+/// already exist. Phase 14 stores the relationship and asserts nothing about
+/// consent.
+enum PatronRelationshipKind {
+  guardian
+  /// May borrow on the other's behalf. Distinct from `guardian`: an adult child
+  /// collecting books for a housebound parent is a proxy and not a guardian.
+  proxy
+  household
+  /// The academic case — a department or research group standing behind a
+  /// reader.
+  sponsor
+
+  @@map("patron_relationship_kind")
+}
+
+/// Why a patron is blocked, and by whom.
+///
+/// TWO VOCABULARIES MEET HERE and the distinction is the whole design.
+/// `packages/circ-policy`'s `BLOCK_CODE` is COMPUTED — `evaluateBlocks` derives
+/// `TOO_MANY_LOANS` from the state and the policy every time it is asked, and
+/// stores nothing. These are the STORED ones: a reason that outlives the
+/// request, that a librarian can see on the patron's screen, and that a nightly
+/// sweep maintains.
+///
+/// The three that overlap (`too_many_overdues`, `fine_limit_exceeded`,
+/// `card_expired`) are the ones a library wants to SEE before the patron reaches
+/// the desk, so the sweep materialises them; the resolver still computes its own
+/// answer at checkout and the two agree because both read the same policy. The
+/// rest have no computed equivalent at all.
+enum PatronBlockCode {
+  /// A librarian's own. `patron_blocks.reason` carries the sentence.
+  manual
+  too_many_overdues
+  fine_limit_exceeded
+  card_expired
+  /// A notice came back undeliverable. A library that keeps posting to a dead
+  /// address is a library that never gets its books back.
+  address_unconfirmed
+  /// The person has not returned a long-overdue item and the library has stopped
+  /// lending pending a conversation.
+  items_long_overdue
+  lost_card
+
+  @@map("patron_block_code")
+}
+
+/// Whether a message has been seen, and by whom it was meant to be seen.
+enum PatronMessageAudience {
+  /// Shown to staff at the desk when the patron is looked up.
+  staff
+  /// Shown to the patron in the OPAC. Phase 32 renders it; phase 14 stores it,
+  /// because a message a library writes today should not have to be re-typed
+  /// when the OPAC ships.
+  patron
+
+  @@map("patron_message_audience")
+}
+
+/// What the library does with a borrowing history once the book comes back.
+///
+/// §3: "Reading history is anonymised on return by default … This is an
+/// IFLA/NISO professional obligation and a Greek DPA answer, and it is a DEFAULT
+/// rather than a setting someone forgot to turn on."
+///
+/// `none` is not weaker than `anonymised`, it is stronger: it means the loan row
+/// keeps no patron link even for the duration of the loan's statistics window.
+/// School libraries default to it because a fourteen-year-old's reading is the
+/// most sensitive list in the building.
+enum ReadingHistoryMode {
+  /// The link is severed on return. The statistical buckets survive.
+  anonymised
+  /// Kept, because the patron asked. Phase 32 owns the asking.
+  kept
+  /// Never linked.
+  none
+
+  @@map("reading_history_mode")
+}

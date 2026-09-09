@@ -41,6 +41,18 @@ const TABLES: Readonly<Record<string, readonly string[]>> = {
   'v2-fees': ['fees'],
   'v2-platform': ['change_events', 'change_consumers', 'sync_client_changes', 'audit_log'],
   'v2-bib-projection': ['bib_records', 'bib_identifiers', 'bib_classifications', 'work_clusters'],
+  'v2-patrons': [
+    'patron_number_counters',
+    'patron_cards',
+    'patron_identifiers',
+    'patron_addresses',
+    'patron_relationships',
+    'patron_blocks',
+    'patron_messages',
+    'patron_notes',
+    'patron_merges',
+    'reading_history_policy',
+  ],
   'v2-policy': [
     'calendars',
     'calendar_hours',
@@ -82,7 +94,11 @@ async function tablesExistAndAreEmpty(moduleName: string): Promise<void> {
     if (table === 'iana_timezones') {
       if (n < 500) throw new Error(`${table} holds ${n} row(s); the tzdata seed did not run`);
       ok(`${table} exists, seeded with ${n} zones`);
-    } else if (table === 'circulation_policy_version' || table === 'circulation_settings') {
+    } else if (
+      table === 'circulation_policy_version' ||
+      table === 'circulation_settings' ||
+      table === 'reading_history_policy'
+    ) {
       // Seeded by the phase-13 migration rather than by an application, and the
       // difference matters: `PolicySnapshotService` treats a missing version row
       // as a REFUSAL by name — not as version 0, which never changes and would
@@ -119,7 +135,13 @@ async function seedMinimalChain(): Promise<void> {
                         current_branch_id, permanent_location_id, barcode_norm, created_at, updated_at)
        VALUES ('smk_i', 'smk_h', 'smk_m', 'smk_it', 'smk_b', 'smk_b', 'smk_sl', 'bc1',
                pg_catalog.now(), pg_catalog.now());
-     INSERT INTO patrons (id, updated_at) VALUES ('smk_p', pg_catalog.now());`,
+     -- The three NOT NULL columns phase 14 added when it filled the skeleton in.
+     -- This seed used to name id and updated_at only, and the smoke test is what
+     -- noticed: a table that stops being a skeleton breaks every fixture that
+     -- relied on it being one. (No backticks in here -- the whole statement is a
+     -- JS template literal, and one would end it mid-comment.)
+     INSERT INTO patrons (id, full_name, sort_name, search_text, updated_at)
+     VALUES ('smk_p', 'Smoke Patron', 'smoke patron', 'smoke patron', pg_catalog.now());`,
   );
 }
 
@@ -137,7 +159,9 @@ export async function teardown(): Promise<void> {
               loan_policies, overdue_fine_policies, lost_item_fee_policies, hold_policies,
               hold_policy_pickup_branches, notice_policies, notice_policy_templates,
               fixed_due_date_sets, fixed_due_date_ranges, patron_categories,
-              patron_category_limits, circulation_rules
+              patron_category_limits, circulation_rules,
+              patron_number_counters, patron_cards, patron_identifiers, patron_addresses,
+              patron_relationships, patron_blocks, patron_messages, patron_notes, patron_merges
      RESTART IDENTITY CASCADE`,
   );
   // The two singletons are NOT truncated. They are seeded by the migration
@@ -147,6 +171,7 @@ export async function teardown(): Promise<void> {
   // one row. The counter is reset instead, so a re-run starts where a fresh
   // tenant does.
   await v2Query(url(), `UPDATE circulation_policy_version SET version = 1 WHERE id = 1`);
+  await v2Query(url(), `UPDATE reading_history_policy SET mode = 'anonymised' WHERE id = 1`);
 }
 
 const LOAN_COLUMNS =
@@ -579,6 +604,141 @@ export const v2Modules: SmokeModule[] = [
         '23P01',
         'overlapping opening hours are refused — "open until" must not depend on row order',
       );
+    },
+    reset: teardown,
+  },
+  {
+    name: 'v2-patrons',
+    describes: 'the one-hop merge invariant and the block upsert that lets a desk survive a sweep',
+    async run() {
+      await tablesExistAndAreEmpty('v2-patrons');
+      await seedMinimalChain();
+
+      const mk = (id: string, name: string) =>
+        v2Query(
+          url(),
+          `INSERT INTO patrons (id, full_name, sort_name, search_text, created_at, updated_at)
+           VALUES ('${id}', '${name}', '${name.toLowerCase()}', '${name.toLowerCase()}',
+                   pg_catalog.now(), pg_catalog.now())`,
+        );
+      await mk('smk_pa', 'A');
+      await mk('smk_pb', 'B');
+      await mk('smk_pc', 'C');
+
+      await v2Query(url(), `UPDATE patrons SET merged_into_id = 'smk_pa' WHERE id = 'smk_pb'`);
+      ok('a plain merge is accepted');
+
+      await expectSqlstate(
+        url(),
+        `UPDATE patrons SET merged_into_id = 'smk_pc' WHERE id = 'smk_pa'`,
+        '23514',
+        'a merge that would leave B pointing at a merged-away A is REFUSED at commit',
+      );
+
+      // The legal form: both statements, one transaction, judged together by the
+      // deferred trigger. Order does not matter, which is the point of deferral.
+      await v2Query(
+        url(),
+        `BEGIN;
+         UPDATE patrons SET merged_into_id = 'smk_pc' WHERE id = 'smk_pa';
+         UPDATE patrons SET merged_into_id = 'smk_pc' WHERE merged_into_id = 'smk_pa' AND id <> 'smk_pc';
+         COMMIT`,
+      );
+      const chain = await v2Query<{ into: string | null }>(
+        url(),
+        `SELECT merged_into_id AS into FROM patrons WHERE id = 'smk_pb'`,
+      );
+      if (chain[0]!.into !== 'smk_pc') {
+        throw new Error(`B points at ${chain[0]!.into}, not at the survivor`);
+      }
+      ok('re-pointing the stranded row in the same transaction is accepted — one hop, always');
+
+      await expectSqlstate(
+        url(),
+        `UPDATE patrons SET merged_into_id = id WHERE id = 'smk_pc'`,
+        '23514',
+        'a record cannot be merged into itself',
+      );
+
+      // The block upsert, with the exact ON CONFLICT the service issues.
+      const upsert = (reason: string) =>
+        v2Query(
+          url(),
+          `INSERT INTO patron_blocks
+             (id, patron_id, code, reason, auto_generated, observed, severity, placed_at)
+           VALUES (pg_catalog.gen_random_uuid()::text, 'smk_pc', 'too_many_overdues', '${reason}',
+                   true, '{}'::jsonb, 'block', pg_catalog.now())
+           ON CONFLICT (patron_id, code) WHERE auto_generated AND cleared_at IS NULL
+           DO UPDATE SET reason = EXCLUDED.reason`,
+        );
+      await upsert('first');
+      await upsert('second');
+      const blocks = await v2Query<{ n: string; reason: string }>(
+        url(),
+        `SELECT pg_catalog.count(*)::text AS n, pg_catalog.max(reason) AS reason
+           FROM patron_blocks WHERE patron_id = 'smk_pc' AND auto_generated AND cleared_at IS NULL`,
+      );
+      if (blocks[0]!.n !== '1' || blocks[0]!.reason !== 'second') {
+        throw new Error(
+          `the recompute produced ${blocks[0]!.n} row(s), reason ${blocks[0]!.reason}`,
+        );
+      }
+      ok('a repeated recompute UPDATES the one row rather than duplicating or failing');
+
+      await expectSqlstate(
+        url(),
+        `INSERT INTO patron_blocks (id, patron_id, code, auto_generated, severity, placed_at)
+         VALUES ('smk_b_bad', 'smk_pc', 'too_many_overdues', true, 'block', pg_catalog.now())`,
+        '23505',
+        'a second live auto block on the same code is refused by the partial unique',
+      );
+
+      await v2Query(
+        url(),
+        `INSERT INTO patron_blocks (id, patron_id, code, reason, auto_generated, severity, placed_at)
+         VALUES ('smk_b_man', 'smk_pc', 'too_many_overdues', 'librarian said so', false, 'block',
+                 pg_catalog.now())`,
+      );
+      note(
+        'a MANUAL block coexists with the auto one on the same code: the partial unique is scoped ' +
+          "to auto_generated, so a sweep structurally cannot clobber a librarian's decision.",
+      );
+
+      await expectSqlstate(
+        url(),
+        `INSERT INTO patron_blocks (id, patron_id, code, auto_generated, severity, placed_at)
+         VALUES ('smk_b_nr', 'smk_pc', 'manual', false, 'block', pg_catalog.now())`,
+        '23514',
+        'a manual block with no reason is refused — nobody could review it',
+      );
+
+      await v2Query(
+        url(),
+        `INSERT INTO patron_cards (id, patron_id, barcode, barcode_norm, issued_at, created_at, updated_at)
+         VALUES ('smk_c1', 'smk_pc', 'CARD-1', 'CARD-1', pg_catalog.now(), pg_catalog.now(), pg_catalog.now())`,
+      );
+      await expectSqlstate(
+        url(),
+        `INSERT INTO patron_cards (id, patron_id, barcode, barcode_norm, issued_at, created_at, updated_at)
+         VALUES ('smk_c2', 'smk_pa', 'CARD-1', 'CARD-1', pg_catalog.now(), pg_catalog.now(), pg_catalog.now())`,
+        '23505',
+        'one live card per barcode, library-wide — a barcode that resolves to two people is a loan charged to the wrong one',
+      );
+
+      const idx = await v2Query<{ def: string }>(
+        url(),
+        `SELECT indexdef AS def FROM pg_catalog.pg_indexes
+          WHERE schemaname = 'lbr2' AND indexname = 'patrons_number_pattern_idx'`,
+      );
+      if (!idx[0]?.def.includes('text_pattern_ops')) {
+        throw new Error('patrons_number_pattern_idx is not a text_pattern_ops index');
+      }
+      if (idx[0].def.includes('WHERE')) {
+        throw new Error(
+          'patrons_number_pattern_idx is partial; the counter seed needs archived rows',
+        );
+      }
+      ok('patrons_number_pattern_idx is text_pattern_ops and not partial (perf-13)');
     },
     reset: teardown,
   },

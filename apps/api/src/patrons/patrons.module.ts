@@ -1,0 +1,27 @@
+import { Module } from '@nestjs/common';
+import { PolicyModule } from '../policy/policy.module.js';
+import { TenantModule } from '../tenancy/tenant.module.js';
+import { PatronBlocksService } from './patron-blocks.service.js';
+import { PatronMergeService } from './patron-merge.service.js';
+import { PatronsController } from './patrons.controller.js';
+import { PatronsService } from './patrons.service.js';
+
+/**
+ * The record side of a patron (2.0 phase 14).
+ *
+ * `PolicyModule` for `TenantClockService`: §6 phase 13 made it the seam through
+ * which circulation reads the clock, and a patron number's year is a civil year
+ * in the library's own zone rather than the pod's.
+ *
+ * `PatronBlocksService` is exported because phase 16's checkout has to see the
+ * blocks in the same transaction as the loan it is about to refuse, and phase 22
+ * has to notice one appearing. `PatronsService` is exported for the card scan,
+ * which is the first statement of every circulation transaction.
+ */
+@Module({
+  imports: [TenantModule, PolicyModule],
+  providers: [PatronsService, PatronMergeService, PatronBlocksService],
+  controllers: [PatronsController],
+  exports: [PatronsService, PatronMergeService, PatronBlocksService],
+})
+export class PatronsModule {}

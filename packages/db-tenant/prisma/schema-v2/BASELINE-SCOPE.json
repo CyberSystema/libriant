@@ -915,10 +915,10 @@
       "reason": "The double-entry invariant is phase 18 design."
     },
     "patron_addresses": {
-      "status": "deferred",
-      "phase": "9c/14/32",
+      "status": "created",
+      "basis": "invented",
       "group": "Patrons",
-      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+      "reason": "§3 names it in the record-side inventory line and gives no DDL. ROWS RATHER THAN 1.0'S FIVE INLINE COLUMNS, and the case that forces it is ordinary: a student has a term-time address and a home address, and the overdue notice has to reach the one they are at. 1.0 holds exactly one, so a library with a student population keeps the second in the free-text notes field, where nothing can post to it and no notice can find it. Exactly one address per patron may be primary and that is `patron_addresses_one_primary`, a partial unique on `WHERE is_primary` rather than a rule in the service, because the service is what forgets when a second write path arrives — an import, a merge, phase 32's self-service edit. `undeliverable_at` is the column with consequences: it feeds `PatronBlockCode.address_unconfirmed`, which is the block a library needs before it posts a fourth letter to a house nobody lives in, and it is a stamped instant rather than a boolean so \"since when?\" is answerable. `valid_from`/`valid_to` are `@db.Date` because a tenancy runs from a civil date in every zone."
     },
     "patron_auth_providers": {
       "status": "deferred",
@@ -927,16 +927,16 @@
       "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
     },
     "patron_blocks": {
-      "status": "deferred",
-      "phase": "9c/14/32",
+      "status": "created",
+      "basis": "invented",
       "group": "Patrons",
-      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+      "reason": "THE ONE TABLE IN THIS PHASE §3 WRITES SQL FOR, AND STILL NOT `specified`: what :423-426 gives is a `CREATE UNIQUE INDEX`, not a `CREATE TABLE`. Four columns are named by its predicate — `patron_id`, `code`, `auto_generated`, `cleared_at` — and the severity, the reason, the `observed` JSON and both actor columns are designed, so `invented` is the honest label and the one line the document does give is here character for character. It is the DATA-1 lesson applied to blocks: recalculation is an `INSERT … ON CONFLICT DO UPDATE` so a sweep racing a desk transaction settles in Postgres instead of aborting the librarian's checkout. Measured, 25 concurrent recomputes against one patron while a desk transaction holds it, 20 iterations: advisory lock + `ON CONFLICT` gave desk 20/20 and sweeps 500/500 with zero duplicates; advisory lock + DELETE-then-INSERT gave sweeps 272/500 (228 × 23505); and `SELECT … FOR UPDATE` + DELETE-INSERT destroyed the desk — 0/20, ZERO loans written. That third row is the finding worth carrying forward: every genuine block INSERT runs the `patron_id` foreign-key check, which takes a `FOR KEY SHARE` tuple lock on the patron row, and that lock plus the desk's `FOR UPDATE` deadlock at `40P01`. An advisory lock does not participate in the FK row-lock graph at all, which is why `platform/locks.ts` is the mechanism; a row lock on `patrons`, if one is ever genuinely wanted, must be `FOR NO KEY UPDATE`. The `ON CONFLICT` clause repeats the predicate word for word because inference requires it to IMPLY the index predicate and reports every mistake as the same unhelpful `42P10` — `ON CONFLICT (patron_id, code)` alone is `42P10`, and naming it as a constraint is `42704`, since a partial unique INDEX is not a CONSTRAINT. Two semantics fall out of that predicate and both are deliberate: a CLEARED row does not conflict, so block history accumulates instead of being overwritten, and a MANUAL block coexists with an auto block on the same code, so a sweep structurally cannot clobber a librarian's own decision."
     },
     "patron_cards": {
-      "status": "deferred",
-      "phase": "9c/14/32",
+      "status": "created",
+      "basis": "invented",
       "group": "Patrons",
-      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+      "reason": "§3 names it in the record-side inventory line and gives no DDL. A SATELLITE TABLE WHERE 1.0 HAS NO CONCEPT AT ALL, and the second row is the entire point: a library with a lost-card policy needs the old barcode to keep resolving — so the desk says \"this card was reported lost on the 3rd\" rather than \"unknown barcode\" — while the new one becomes live, and an inline column on `patrons` cannot hold two. Hence two indexes on `barcode_norm`: `patron_cards_barcode_unique_live` is partial on `retired_at IS NULL`, and `patron_cards_barcode_idx` is deliberately NOT partial, because it serves THE DESK SCAN — the one query in this phase that runs on every circulation transaction — and a retired barcode must still resolve. The predicate is on `retired_at` rather than on `status` for the reason `items.is_shelf_available` is a generated column: Prisma emits `status = CAST($1::text AS patron_card_status)` and `enum_in` is only STABLE, so the planner can never prove an enum-predicate partial index. `barcode_norm` is a STORED column rather than an expression index because the normalisation is `@libriant/shared/greek`'s fold, which Postgres cannot reproduce inside an index, and `patron_cards_retired_pair` refuses `status = 'lost'` with a NULL `retired_at`, which is a card the live unique index would still treat as active."
     },
     "patron_categories": {
       "status": "created",
@@ -969,10 +969,10 @@
       "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
     },
     "patron_identifiers": {
-      "status": "deferred",
-      "phase": "9c/14/32",
+      "status": "created",
+      "basis": "invented",
       "group": "Patrons",
-      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+      "reason": "§3 names it in the record-side inventory line and gives no DDL, and §5 gives no scheme list either, so `PatronIdentifierScheme` is designed — deliberately short, every value one a library can point at on a document. KEPT OUT OF `patrons` ON A DATA-PROTECTION ARGUMENT, not a normalisation one: an ΑΦΜ, an ΑΜΚΑ and a student number are three different disclosures with three different retention arguments, and a library that collects one has not thereby collected the others. As nullable columns they are three fields nobody can audit; as rows they are a list the subject-access bundle renders and an erase deletes, which is why ΑΜΚΑ — special-category-adjacent under Greek law — is a value here at all: so it can be FOUND, not so it can be collected casually. `value_norm` is what `patron_identifiers_one_per_scheme` makes unique per patron and scheme, because a person has one ΑΦΜ and two rows means one of them is wrong, which is a thing to discover before erase time rather than during it. `patron_identifiers_lookup_idx` on `(scheme, value_norm)` serves the other direction, finding the patron FROM the identifier, which is the academic self-service case where a student number is what the reader knows. `patron_identifiers_other_has_label` is a CHECK because without it `other` becomes the bucket everything falls into and nothing in it can be interpreted afterwards."
     },
     "patron_identities": {
       "status": "deferred",
@@ -993,28 +993,28 @@
       "reason": "M12, executed last."
     },
     "patron_merges": {
-      "status": "deferred",
-      "phase": "9c/14/32",
+      "status": "created",
+      "basis": "invented",
       "group": "Patrons",
-      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+      "reason": "§3 names it in the record-side inventory line and gives no DDL; §6 phase 14's acceptance criterion is about the OTHER half — \"an old card barcode resolves through `merged_into_id` in one hop, never a chain\". Both halves are needed and neither substitutes for the other: `patrons.merged_into_id` is what a card scan FOLLOWS, and this is what a librarian READS when they ask why. The 1.0 author dedup is the counter-example that settles it — it recorded its survivor only in `audit_log.afterJson`, with no column, so a stale author id resolves to nothing to this day. `carried` holds the counts (cards, identifiers, addresses, loans, fees) and `collided` holds what could NOT move because it would have violated a unique index — a duplicate card barcode, the same ΑΦΜ on both records — retired rather than dropped and named here, so a merge that silently lost something is visible without re-deriving it from the audit log. Both foreign keys are `ON DELETE RESTRICT`, and `patron_merges_one_per_loser` makes losing a merge a once-only event: a second row for the same loser means the merge ran twice or the record was un-merged and re-merged, and both are things somebody has to look at. REPLICATED EVEN THOUGH A DEVICE CANNOT MERGE, because a device that cached the loser has to learn it has been superseded — without the row, a card scanned offline resolves to a record the server folded away last Tuesday."
     },
     "patron_messages": {
-      "status": "deferred",
-      "phase": "9c/14/32",
+      "status": "created",
+      "basis": "invented",
       "group": "Patrons",
-      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+      "reason": "§3 names it in the record-side inventory line and gives no DDL, and names `patron_notes` beside it in the same line without saying how the two differ. THE DIFFERENCE IS WHETHER IT INTERRUPTS: a message is pushed at whoever opens the record and is dismissed; a note is filed and read when somebody goes looking. One table for both gives a desk screen that either interrupts on everything or on nothing, and the library then stops reading it. `acknowledged_at` is stamped rather than the row deleted, because \"was this person told?\" is the question the message exists to answer, and `patron_messages_unacknowledged_idx` is partial on it, keyed `(patron_id, audience)` — the desk asks only for the staff ones. `audience = 'patron'` is storable now and rendered by phase 32, because a message a library writes today should not have to be re-typed when the OPAC ships. Replicated for the reason the block table is: the offline core has to show the librarian what is standing in front of them, and a message that only exists on the server is a message nobody reads on the day the link is down."
     },
     "patron_notes": {
-      "status": "deferred",
-      "phase": "9c/14/32",
+      "status": "created",
+      "basis": "invented",
       "group": "Patrons",
-      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+      "reason": "§3 names it in the record-side inventory line and gives no DDL. The real decision is not this table's columns but what stays OUT of it: `patrons.staff_notes` SURVIVES BESIDE IT ON PURPOSE. A one-line \"prefers large print\" is not a dated, attributed note, and forcing every scrap through a form with an author and a timestamp is how a field stops being used and the information migrates into the name — which is the 1.0 shape phase 35's migration adapters have to defend against, quarantining a patron whose notes contain an ΑΦΜ-shaped string rather than importing it. So the inline field keeps the scraps and this table holds what a librarian meant to put on the record: attributed, dated, editable, and ARCHIVED rather than deleted, with `patron_notes_live_idx` partial on `archived_at IS NULL` so retiring a note costs nothing at the desk and loses nothing for the person who later asks what was written about them."
     },
     "patron_number_counters": {
-      "status": "deferred",
-      "phase": "9c/14/32",
+      "status": "created",
+      "basis": "invented",
       "group": "Patrons",
-      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+      "reason": "§3 names it in the record-side inventory line and gives no DDL; §6 phase 14 supplies the only requirement — \"number minting (`UPDATE … RETURNING`, never `max()+1`)\" — and that prohibition has a measurement under it: `perf-04` recorded 1.0 pulling every member number for the year into Node and taking the max, 47 ms and ~190 MB of RSS churn per create on a 100,000-member tenant, which makes a roster import O(n²) and unfinishable. That is the first thing a new customer does. ONE ROW PER YEAR, KEYED ON THE YEAR ITSELF, no surrogate id and no branch column: a single-row counter CANNOT deadlock, because deadlock needs two lockables taken in two orders and there is one. Measured on this shape, 25 clients × 40 mints gave 1,000 distinct contiguous sequences, zero duplicates, zero deadlocks, zero rollbacks; minting inside the enrolment transaction is still correct and 23.7× slower (187 ms against 7.9 ms with a 5 ms body) because the row lock is then held for the whole transaction and every enrolment queues behind the slowest one; and minting under REPEATABLE READ fails 94.8% of the time with `40001`. Seeded LAZILY rather than by the migration, because the seed value is per-tenant data (`max(patron_number)` for the year) that a schema migration has no business computing. THE ONE TABLE HERE WHOSE NON-REPLICATION IS A SAFETY PROPERTY rather than an omission: it is a write-side singleton whose whole purpose is a row lock in ONE database, and a device that had it would mint locally — two branches enrolling offline then hand out the same number, printed on two cards."
     },
     "patron_privacy_settings": {
       "status": "deferred",
@@ -1035,10 +1035,10 @@
       "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
     },
     "patron_relationships": {
-      "status": "deferred",
-      "phase": "9c/14/32",
+      "status": "created",
+      "basis": "invented",
       "group": "Patrons",
-      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+      "reason": "§3 names it in the record-side inventory line and gives no DDL. DIRECTIONAL: the row reads `from` IS THE `kind` OF `to`, so a guardian row is parent → child. The symmetric alternative needs two rows kept in step and gives no answer at all to \"who is the adult here?\", which is the only question the guardian case asks. `can_borrow` is a SEPARATE column from the kind and defaults false, because a guardian relationship is not automatically a borrowing right, and conflating the two is how a library hands a fourteen-year-old's reserved book to an estranged parent. `confirmed_at` exists and PHASE 14 NEVER SETS IT: Greek L.4624/2019 art. 21 puts digital consent at 15 and phase 33 builds the double opt-in, so this phase stores the relationship and asserts nothing whatever about consent — a column phase 33 has somewhere to write is cheaper than a migration on a table that by then has guardian rows in it. `patron_relationships_one_live_per_kind` is unique on `(from, to, kind) WHERE ends_at IS NULL`, because two live `guardian` rows between the same two people that disagree about `can_borrow` is a question with two answers, and `patron_relationships_not_self` refuses the typo that makes somebody their own guardian."
     },
     "patron_sessions": {
       "status": "deferred",
@@ -1054,9 +1054,9 @@
     },
     "patrons": {
       "status": "created",
-      "basis": "skeleton",
+      "basis": "invented",
       "group": "Patrons",
-      "reason": "Created because a specified table foreign-keys to it. Columns are deliberately incomplete; see the model docblock."
+      "reason": "NO LONGER A SKELETON, WHICH IS WHY THE BASIS CHANGED: the baseline created this table because `loans.patron_id text REFERENCES patrons(id)` forced its primary key, and its entry said the columns were deliberately incomplete. Phase 14 filled them in, so that sentence is now false. §3 names `patrons` in the record-side inventory line and mentions it nine times, every one about BEHAVIOUR — anonymisation on return, merge resolving in one hop, minting by `UPDATE … RETURNING` rather than `max()+1` — and none about a column, so every column here is designed. They are 1.0's `members`, which is not a shortcut: those are the fields this product already collects from Greek libraries, and a 2.0 patron holding different ones would make phase 19's copy-forward lossy for nothing. What is NEW is `merged_into_id`, `expires_at`, `erased_at` as a first-class column, and the address, the card and the identifiers moving OUT into satellite tables. TWO INDEXES ON `patron_number`, AND THEY CANNOT BE ONE: measured on 50,000 rows where the prefix selects 10%, a plain btree under `en_US.UTF-8`, `el_GR.UTF-8` and ICU el-GR seq-scans `LIKE 'M-2026-%'` at 319 buffers and STILL seq-scans with `enable_seqscan = off` — no index path exists, it is not a costing preference — while `text_pattern_ops` bitmap-scans at 21. The uniqueness index stays PARTIAL (`WHERE archived_at IS NULL`) so an archived card's number is re-issuable, and `patrons_number_pattern_idx` is deliberately NOT partial, because the counter seed must see archived numbers and a partial predicate is not implied by an unqualified query (Seq Scan, 337 buffers against 21). No third index for equality: `text_pattern_ops` carries `=(text,text)` at btree strategy 3, checked in `pg_amop`. And NOT `COLLATE \"C\"`, which is phase 13's precedent for `circulation_rules_listing_idx` and the obvious thing to copy — as the only index it makes `LIKE` work and `patron_number = $1` SEQ SCAN, because the equality takes its collation from the column. The one-hop merge invariant is a DEFERRABLE constraint trigger with two clauses plus sorted `patron:` locks, because measured over 60 concurrent pairs the trigger alone let 59 of 60 chains form — each transaction's deferred check passes on a snapshot that cannot see the other's uncommitted row — and trigger + sorted locks let 0 of 60. A chain is not a latency problem: the lookup is a fixed 12 buffers at any depth and returns the WRONG patron, and the desk then charges the loan to a record with no cards, no blocks and a balance nobody sees."
     },
     "payment_methods": {
       "status": "deferred",
@@ -1109,10 +1109,10 @@
       "reason": "M12, executed last."
     },
     "reading_history_policy": {
-      "status": "deferred",
-      "phase": "9c/14/32",
+      "status": "created",
+      "basis": "invented",
       "group": "Patrons",
-      "reason": "Record side with phase 14; identity side with phase 32 (OPAC)."
+      "reason": "§3 names it in the record-side inventory line, then spends a paragraph on its BEHAVIOUR without ever giving a column: mode defaults to `anonymised`, school libraries to `none`, \"an IFLA/NISO professional obligation and a Greek DPA answer, and it is a DEFAULT rather than a setting someone forgot to turn on\". That last clause is what the migration implements — the `id = 1` row is INSERTed by the migration itself, not by a seed script, because a default nobody has stored is not a default, and this has to hold for the tenants phase 19's PL/pgSQL copy-forward creates without the application ever running. A SINGLETON, like `circulation_settings`, and per-library rather than per-branch on purpose: a branch-scoped policy means a patron's reading history is anonymised or not depending on which desk they happened to walk up to. The `CHECK (id = 1)` is hand-written UNQUOTED because `check:schema-conventions` allows an INTEGER `id` only when it can find that clause, and Prisma always quotes. `retain_months` is refused unless `mode = 'kept'`, since a retention window on `anonymised` is a library believing it retains something it does not, and NULL means \"until the patron asks\", the only honest default for a setting whose whole point is that the patron chose it. NOT REPLICATED, and not for the counter's reason: §3 puts the null-and-stamp in the return transaction, phase 16 owns that transaction and it runs on the server, so a device would be carrying configuration it never reads. PHASE 14 STORES IT AND NOTHING READS IT YET — there is no return path until phase 16, and an anonymisation written here would have no caller."
     },
     "reading_positions": {
       "status": "deferred",

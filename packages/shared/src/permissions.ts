@@ -143,6 +143,15 @@ export const PERMISSIONS: readonly PermissionDescriptor[] = [
   def('patron.pii.export', 'patron', 'Export a patron’s personal data (GDPR)'),
   // Irreversible. Held by owner and admin only, and never by support.
   def('patron.erase', 'patron', 'Erase a patron’s personal data permanently'),
+  // Two records for one person, folded into one (2.0 phase 14). Separate from
+  // `patron.write` because it moves another person's loans, fees and cards onto
+  // a record, and because it is only reversible by hand — `merged_into_id` and
+  // the `patron_merges` row say what happened, but nothing un-merges.
+  def('patron.merge', 'patron', 'Merge two patron records into one'),
+  // Placing and lifting a block is desk work: it is what a librarian does when
+  // somebody has four books thirty days over. It is NOT `patron.status`, which
+  // suspends a person for everything.
+  def('patron.block.manage', 'patron', 'Place and lift a block on a patron'),
 
   // --- the tenant's own data model ---------------------------------------
   def('data.field.read', 'data', 'View custom fields'),
@@ -305,6 +314,7 @@ const LIBRARIAN: readonly string[] = [
   'patron.status',
   'patron.archive',
   'patron.photo.write',
+  'patron.block.manage',
   'patron.pii.export',
   'data.record.write',
   'data.record.delete',
@@ -318,6 +328,7 @@ const ADMIN: readonly string[] = [
   'circ.fee.void',
   'circ.policy.manage',
   'patron.erase',
+  'patron.merge',
   'data.field.manage',
   'data.collection.manage',
   'billing.manage',

@@ -137,6 +137,22 @@ const PACKAGES: Pkg[] = [
         `${TRGM} Written \`public.gin_trgm_ops\` rather ` +
         'than bare: an operator class is resolved through `search_path` exactly as a function ' +
         'is, and phase 20 relocates pg_trgm out of `public`.',
+      'DROP INDEX "patrons_search_trgm";':
+        `${TRGM} On \`search_text\`, the folded name-and-contact column, because what the desk ` +
+        'types for a reader who has forgotten their card is a fragment of a Greek name. ' +
+        'Qualified `public.gin_trgm_ops` for the reason `bib_records_search_trgm` is.',
+      'DROP INDEX "patrons_number_pattern_idx";':
+        'A `text_pattern_ops` index; Prisma cannot express an operator class. It is the number ' +
+        'this phase is accepted on (perf-13), and that measurement is also the argument against ' +
+        'the two shapes that look equivalent. 50,000 rows, a prefix selecting 10%: a plain btree ' +
+        'is a Bitmap Index Scan at 21 index buffers under C, and a Seq Scan at 319 under ' +
+        'en_US.UTF-8, el_GR.UTF-8 and ICU el-GR alike — still seq-scanning with ' +
+        '`enable_seqscan = off`, so there is no index path at all, not a costing preference. ' +
+        '`text_pattern_ops` gives the 21-buffer bitmap scan under all four. It also carries the ' +
+        'ordinary `=(text,text)` at btree strategy 3, so `patron_number = $1` needs no second ' +
+        'index — while `COLLATE "C"`, the obvious thing to copy from ' +
+        '`circulation_rules_listing_idx` above, serves `LIKE` and SEQ SCANS that equality, ' +
+        'whose collation comes from the column and not from the index.',
       'DROP SEQUENCE "record_version_seq";':
         'A bare sequence shared by `marc_records.row_version` and `change_events.row_version`, ' +
         'so a device replica can order a catalogue change against a circulation change. Prisma ' +

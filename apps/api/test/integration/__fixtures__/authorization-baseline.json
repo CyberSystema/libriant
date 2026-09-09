@@ -16,6 +16,7 @@
     "DELETE t/:slug/imports/:id": ["admin", "owner"],
     "DELETE t/:slug/members/:id": ["admin", "librarian", "owner"],
     "DELETE t/:slug/members/:id/photo": ["admin", "librarian", "owner"],
+    "DELETE t/:slug/patrons/blocks/:blockId": ["admin", "librarian", "owner"],
     "DELETE t/:slug/reservations/:id": ["admin", "librarian", "owner"],
     "DELETE t/:slug/storage/:resourceType/:filename": ["admin", "owner"],
     "DELETE t/:slug/support/keys/pending": ["admin", "owner"],
@@ -70,6 +71,10 @@
     "GET t/:slug/members/:id": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/members/:id/data-export": ["admin", "librarian", "owner"],
     "GET t/:slug/members/lookup": ["admin", "librarian", "owner", "volunteer"],
+    "GET t/:slug/patrons/:id/blocks": ["admin", "librarian", "owner", "volunteer"],
+    "GET t/:slug/patrons/:id/desk": ["admin", "librarian", "owner", "volunteer"],
+    "GET t/:slug/patrons/by-card": ["admin", "librarian", "owner", "volunteer"],
+    "GET t/:slug/patrons/data-map": ["admin", "librarian", "owner"],
     "GET t/:slug/plan": ["admin", "owner"],
     "GET t/:slug/plan/usage": ["admin", "owner"],
     "GET t/:slug/reservations": ["admin", "librarian", "owner", "volunteer"],
@@ -148,6 +153,9 @@
     "POST t/:slug/members": ["admin", "librarian", "owner"],
     "POST t/:slug/members/:id/erase": ["admin", "owner"],
     "POST t/:slug/members/:id/photo": ["admin", "librarian", "owner"],
+    "POST t/:slug/patrons": ["admin", "librarian", "owner"],
+    "POST t/:slug/patrons/:id/blocks": ["admin", "librarian", "owner"],
+    "POST t/:slug/patrons/merge": ["admin", "owner"],
     "POST t/:slug/reservations": ["admin", "librarian", "owner"],
     "POST t/:slug/reservations/:id/expire": ["admin", "librarian", "owner"],
     "POST t/:slug/reservations/:id/fulfill": ["admin", "librarian", "owner"],
@@ -158,6 +166,7 @@
     "POST t/:slug/storage/:resourceType": ["admin", "librarian", "owner"],
     "POST t/:slug/support/keys": ["admin", "owner"],
     "PUT t/:slug/circulation/mode": ["admin", "owner"],
-    "PUT t/:slug/members/:id/status": ["admin", "librarian", "owner"]
+    "PUT t/:slug/members/:id/status": ["admin", "librarian", "owner"],
+    "PUT t/:slug/patrons/cards/:cardId": ["admin", "librarian", "owner"]
   }
 }

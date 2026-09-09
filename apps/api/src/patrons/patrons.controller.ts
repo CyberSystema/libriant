@@ -1,0 +1,194 @@
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Inject,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { validateDto } from '../auth/validate-dto.js';
+import { RequirePermission } from '../authz/permission.decorator.js';
+import { PermissionGuard } from '../authz/permission.guard.js';
+import { TenantActor as TenantActorParam } from '../tenancy/tenant-actor.js';
+import type { TenantActor } from '../tenancy/tenant-actor.js';
+import { TenantCtx } from '../tenancy/tenant-context.js';
+import type { TenantContext } from '../tenancy/tenant-context.js';
+import { TenantGuard } from '../tenancy/tenant.guard.js';
+import { TenantClockService } from '../policy/tenant-clock.service.js';
+import { PATRON_DATA_TABLES } from './patron-data-map.js';
+import {
+  ClearBlockDto,
+  CreatePatronDto,
+  MergePatronsDto,
+  PlaceBlockDto,
+  ReplaceCardDto,
+  ResolveCardDto,
+} from './patrons.dto.js';
+import { PatronBlocksService, type LiveBlock } from './patron-blocks.service.js';
+import { PatronMergeService } from './patron-merge.service.js';
+import { PatronsService } from './patrons.service.js';
+
+/**
+ * The borrower record.
+ *
+ * `patrons`, not `members`: 1.0's word is `members`, and the whole of
+ * `apps/api/src/members` is on phase 20's delete list. Both surfaces exist side
+ * by side until then, against two different Postgres schemas, and the URL is how
+ * you tell which one you are on.
+ */
+@Controller('t/:slug/patrons')
+@UseGuards(TenantGuard, PermissionGuard)
+export class PatronsController {
+  constructor(
+    @Inject(PatronsService) private readonly patrons: PatronsService,
+    @Inject(PatronMergeService) private readonly merges: PatronMergeService,
+    @Inject(PatronBlocksService) private readonly blocks: PatronBlocksService,
+    @Inject(TenantClockService) private readonly clock: TenantClockService,
+  ) {}
+
+  @RequirePermission('patron.write')
+  @Post()
+  @HttpCode(201)
+  async create(
+    @TenantCtx() tenant: TenantContext,
+    @TenantActorParam() actor: TenantActor,
+    @Body() raw: unknown,
+  ) {
+    const dto = await validateDto(CreatePatronDto, raw ?? {});
+    return this.patrons.create(tenant, actor, {
+      ...dto,
+      dateOfBirth: dto.dateOfBirth === undefined ? undefined : this.clock.at(dto.dateOfBirth),
+      expiresAt: dto.expiresAt === undefined ? undefined : this.clock.at(dto.expiresAt),
+    });
+  }
+
+  /**
+   * A scanned card, resolved to the patron who should be charged.
+   *
+   * `was_merged` comes back with the answer rather than being swallowed: the
+   * desk should be able to say "this card belongs to a record that has been
+   * merged into another one" instead of silently substituting a patron.
+   */
+  @RequirePermission('patron.read')
+  @Get('by-card')
+  async byCard(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {
+    const q = await validateDto(ResolveCardDto, rawQuery ?? {});
+    const found = await this.patrons.resolveCard(tenant, q.barcode);
+    return found ?? { found: false };
+  }
+
+  /** Who they are, what stops them, and what they owe — per currency. */
+  @RequirePermission('patron.read')
+  @Get(':id/desk')
+  async desk(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
+    return this.patrons.deskSummary(tenant, id);
+  }
+
+  @RequirePermission('patron.block.manage')
+  @Post(':id/blocks')
+  @HttpCode(201)
+  async placeBlock(
+    @TenantCtx() tenant: TenantContext,
+    @TenantActorParam() actor: TenantActor,
+    @Param('id') id: string,
+    @Body() raw: unknown,
+  ) {
+    const dto = await validateDto(PlaceBlockDto, raw ?? {});
+    return this.blocks.placeManualBlock(tenant, actor, {
+      patronId: id,
+      reason: dto.reason,
+      severity: dto.severity,
+      now: this.clock.now(),
+    });
+  }
+
+  @RequirePermission('patron.read')
+  @Get(':id/blocks')
+  async listBlocks(
+    @TenantCtx() tenant: TenantContext,
+    @Param('id') id: string,
+  ): Promise<LiveBlock[]> {
+    return this.blocks.liveBlocks(tenant, id);
+  }
+
+  @RequirePermission('patron.block.manage')
+  @Delete('blocks/:blockId')
+  @HttpCode(200)
+  async clearBlock(
+    @TenantCtx() tenant: TenantContext,
+    @TenantActorParam() actor: TenantActor,
+    @Param('blockId') blockId: string,
+    @Body() raw: unknown,
+  ) {
+    const dto = await validateDto(ClearBlockDto, raw ?? {});
+    await this.blocks.clearBlock(tenant, actor, {
+      blockId,
+      reason: dto.reason,
+      now: this.clock.now(),
+    });
+    return { ok: true };
+  }
+
+  @RequirePermission('patron.write')
+  @Put('cards/:cardId')
+  @HttpCode(200)
+  async replaceCard(
+    @TenantCtx() tenant: TenantContext,
+    @TenantActorParam() actor: TenantActor,
+    @Param('cardId') cardId: string,
+    @Body() raw: unknown,
+  ) {
+    const dto = await validateDto(ReplaceCardDto, raw ?? {});
+    return this.patrons.replaceCard(tenant, actor, { cardId, ...dto });
+  }
+
+  /**
+   * Fold two records for the same person into one.
+   *
+   * The survivor keeps its id. That is not a detail: every loan, fee, hold and
+   * audit target pointing at it still resolves, and the loser's old card keeps
+   * working through exactly one hop.
+   */
+  @RequirePermission('patron.merge')
+  @Post('merge')
+  @HttpCode(200)
+  async merge(
+    @TenantCtx() tenant: TenantContext,
+    @TenantActorParam() actor: TenantActor,
+    @Body() raw: unknown,
+  ) {
+    const dto = await validateDto(MergePatronsDto, raw ?? {});
+    return this.merges.merge(tenant, actor, { ...dto, now: this.clock.now() });
+  }
+
+  /**
+   * Which tables hold something about a patron, and what an erase does to each.
+   *
+   * §5 promises `check:dsar-coverage` at phases 33 and 96 — "makes it
+   * structurally impossible for a new patron-referencing table to escape the
+   * subject-access bundle" — and it does not exist. Phase 14 takes the count
+   * from one to eleven, and a gate written nineteen phases later cannot
+   * retroactively catch a table this phase forgot; it can only freeze the
+   * forgetting.
+   *
+   * So the map is data, the bundle is driven from it, and this route makes it
+   * legible to the person who has to answer for it. Behind `patron.pii.export`,
+   * because knowing exactly what a library holds about its readers is the same
+   * kind of disclosure as the bundle itself.
+   */
+  @RequirePermission('patron.pii.export')
+  @Get('data-map')
+  dataMap() {
+    return {
+      note:
+        'Every table in the 2.0 schema that holds something about a person, and what an erase ' +
+        'does to it. `pending` entries are tables a later phase creates.',
+      tables: PATRON_DATA_TABLES,
+    };
+  }
+}
