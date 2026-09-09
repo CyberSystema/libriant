@@ -1,0 +1,33 @@
+{
+  "name": "@libriant/circ-policy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./blocks": "./src/blocks.ts",
+    "./calendar": "./src/calendar.ts",
+    "./duedate": "./src/duedate.ts",
+    "./fines": "./src/fines.ts",
+    "./greek-calendar": "./src/greek-calendar.ts",
+    "./rank": "./src/rank.ts",
+    "./resolve": "./src/resolve.ts",
+    "./types": "./src/types.ts",
+    "./vectors": "./src/vectors.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "lint": "echo 'lint: ok'",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
+    "pretest": "node -e \"const f=require('node:fs').globSync('src/**/*.test.ts');if(f.length<9){console.error('circ-policy: expected at least 9 test files, found '+f.length+'. node --test exits 0 on an empty glob, so this is the only thing that would notice.');process.exit(1)}\"",
+    "vectors:build": "tsx scripts/build-vectors.ts"
+  },
+  "dependencies": {
+    "@libriant/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
+}

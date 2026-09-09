@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    // NO node types, and that is the point of the package. §4.1 lists the
+    // offline Rust core and the OPAC among the consumers, and phase 76 renders
+    // the same screens in a WKWebView and a WebView2. `Buffer`, `process` and
+    // every `node:` specifier are compile errors here, so "this runs anywhere"
+    // is enforced by the compiler rather than by review.
+    //
+    // `Intl` lives in ES2020 and up, so the resolver's one platform dependency
+    // needs no DOM lib either.
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "include": ["src/**/*"],
+  // Tests may use `node:test` and `node:assert`; the shipped resolver may not.
+  // `tsconfig.test.json` typechecks them, and `pnpm typecheck` runs both.
+  "exclude": ["src/**/*.test.ts"]
+}

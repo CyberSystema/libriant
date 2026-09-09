@@ -1608,3 +1608,214 @@ zips and had never needed to read one; adding a dependency for one function is
 the trade `check:supply-chain` exists to make deliberate, and the central
 directory is forty lines of documented structure. `inflateRawSync` is the
 primitive, and it is Node's.
+
+## Phase 12 — the pure resolver
+
+`packages/circ-policy`: ten source files, nine test files, 112 tests, **630 golden
+vectors**, zero third-party dependencies, and nothing in it that can read a clock.
+No schema change, no service, no route — phase 13 owns all three. This is the
+library that decides when a book is due and what a patron owes, written so that a
+Rust core in phase 77 can be checked against it byte for byte.
+
+### The acceptance criterion is a test, not a claim
+
+§6 phase 12 says "Pure — no I/O, no `Date.now()`, asserted by test", and
+`src/purity.test.ts` is that assertion. It scans every source file for
+`Date.now()`, for the argless `new Date()` that is the same clock read wearing a
+constructor, for `node:` imports, `process`, `fetch`, `Math.random`, timers,
+`async`/`await`, and for any import specifier that is neither relative nor
+`@libriant/*` — including the bare side-effect `import 'x'`, which has no `from`
+and is exactly how a polyfill or a second tzdb would arrive unnoticed.
+
+The scanner blanks comments and string literals first, walking the file once
+rather than reaching for a regex: half these files discuss `Date.now()` at length
+in their docblocks, precisely because it is forbidden, and a grep would fail on
+the documentation of the rule it enforces.
+
+**Four mutations were injected to prove the scan has teeth** — a `Date.now()`, an
+argless `new Date()`, an `import 'typescript'`, and an in-place
+`snapshot.rules.sort(compareRank)` — and each was caught by the assertion that
+claims to catch it. A purity test that passes because its regex is broken is
+worse than no purity test, and there is no way to know which one you have without
+breaking it on purpose.
+
+The runtime half is what a source scan cannot see: every snapshot, calendar and
+policy is `structuredClone`d and **deep-frozen** before every vector runs. ES
+modules are strict mode, so an in-place sort of a caller's array throws rather
+than failing silently — which matters because in phase 13 that array is a cached
+snapshot shared by every checkout in the process, and the symptom would be a loan
+period that differs between two identical checkouts, only under load.
+
+### The vectors are checked against a second implementation, not against themselves
+
+`scripts/build-vectors.ts` computes every expectation with deliberately different
+machinery from `src/`:
+
+- **Specificity by bit shift** over the selector list, against `rank.ts`'s named
+  weight table.
+- **Wall-clock → instant by scanning offset space** — every UTC offset from
+  −14:00 to +14:00 in 15-minute steps, 113 probes, keeping those that round-trip
+  through `Intl` — against `calendar.ts`'s two-crossing algorithm.
+- **Civil arithmetic by stepping one day at a time through `Intl`**, against the
+  Hinnant `days_from_civil` integers.
+- **Rule resolution by an explicit three-key comparator** with its own in-force
+  test, against `compareRank` and `isInForce`.
+
+Two spellings of one rule agreeing is evidence. One spelling agreeing with itself
+is a tautology, and it is what most golden-vector suites actually assert. This is
+the phase-7 corpus argument applied to time.
+
+The first generator was a four-day linear scan at one-minute resolution and ran
+for over ten minutes. The offset-space rewrite, with a memoised formatter, builds
+630 vectors in 1.5 seconds — which matters only because a generator nobody runs
+is a fixture nobody regenerates.
+
+### The sweep, and the rule that must never win
+
+The resolve vectors were six hand-written narrative cases. Six cases let a Rust
+resolver that ignored `shelvingLocationId` entirely pass the file, so they are
+now six **plus a sweep**: 64 selector combinations × 3 instants against a wide
+rule set, 192 vectors that between them take every branch of the comparator.
+
+Three details make the sweep mean something, and `vectors.test.ts` asserts all
+three:
+
+- The sweep's context values are the values the rules actually name (`cat-child`,
+  `it-dvd`, `br-b`, `loc-ref`). A sweep over values no rule mentions resolves to
+  the wildcard 64 times and proves nothing.
+- **Every rule wins at least once.** The priority-50 override originally shadowed
+  the maximum-specificity rule at every instant, so specificity 63 — the top of
+  the lattice — was unreachable and a resolver that got it wrong would have
+  passed. The override now has an `effectiveTo`, so priority beats specificity at
+  two instants and specificity wins at the third.
+- **`w-c-disabled` never wins**, and it carries priority 999 so that a resolver
+  which forgot `enabled` would return it everywhere. A fixture that cannot fail
+  is decoration.
+
+### Intl is crossed exactly twice, and that is a measurement
+
+Constructing an `Intl.DateTimeFormat` measured **30.4 µs**; `formatToParts` on a
+cached one **3.74 µs**; the integer civil arithmetic that replaced it **0.009 µs**
+— **415× cheaper**. So `calendar.ts` crosses into ICU exactly twice per
+resolution (instant → civil at the start, civil → instant at the end) and does
+everything between them on day numbers, and `purity.test.ts` asserts that no
+other file so much as mentions `Intl`. Formatters are memoised in a module-level
+`Map`; that is the one piece of mutable state in the package, so a test runs the
+whole civil corpus twice and compares, because a memo keyed on the wrong thing is
+how a cache stops being referentially transparent.
+
+§7's cut of a date library is what forces this: "a date library is a second,
+divergent tzdb — and the Rust core must agree byte-for-byte."
+
+### Five decisions that would otherwise be made twice, differently
+
+**Ambiguous and non-existent wall times both resolve LATER.** A spring-forward gap
+has no instant and an autumn fold has two, and the naive local→instant algorithm
+silently loses one of the two. The rule is one sentence, and it is written down so
+phase 77 does not choose the other one: _every value this package computes is a
+deadline, and the later instant gives the patron more time._
+
+**`ROLL_HORIZON_DAYS = 45`.** A Greek library shut 10–20 August, plus the weekends
+either side, plus Δεκαπενταύγουστος, can be closed for three consecutive weeks — a
+7- or 14-day horizon refuses an ordinary summer loan. Unbounded is worse: a
+misconfigured all-closed calendar spins the desk forever. 45 survives August and
+still names a number in the refusal.
+
+**Opening hours are an ARRAY of intervals per day, not an open/close pair.** The
+Greek split day is 08:00–14:00 and 17:00–21:00. A pair models the afternoon
+closure as open, and every "due at close of business" lands three hours late.
+
+**Fines are integer × integer.** `@libriant/shared/money`'s `multiplyRounded` is
+half-to-even, so €0.025 becomes €0.02 — correct for allocation, wrong for a rate.
+The accrual multiplies a `bigint` minor-unit rate by an integer interval count and
+never rounds at all.
+
+**Money crosses the vector boundary as `{minorUnits, currency}`.**
+`JSON.stringify({a: 1n})` **throws**, so a `bigint` cannot appear in the fixture
+file at all — hence `MoneyJson` beside `Money`, and `toMoney`/`toMoneyJson` as the
+only bridge.
+
+### Three defects the tests found
+
+**A two-hour in-library loan came back at 21:00 instead of 01:30.**
+`endOfCurrentOpenHours` clamped from the computed due date rather than from the
+loan's start, so a loan beginning at 01:30 on a spring-forward night was clamped
+into the wrong interval entirely. The fixture was also complicit: an always-open
+calendar makes `close: 1440` bite in a way a real one does not, so the policy was
+split into `lp-2h` and `lp-2h-inlibrary` and the clamp rewritten to measure from
+`from`.
+
+**`previousOpenCivil` used `minute > iv.open` where it needed `>=`,** which made a
+loan starting exactly at opening time roll back a day.
+
+**`chargeAt: 'intervalStart'` charged nothing for being one minute late.**
+Calendar-day counting is integer, so `Math.ceil(0)` is `0` and the first
+partial interval vanished — the rule is `Math.floor(elapsed) + 1`, fixed in the
+implementation _and_ in the generator, which had inherited the same reasoning.
+
+### The `id ASC` tiebreak is a collation trap, and phase 13 must not step in it
+
+§3 fixes rank as `priority DESC, specificity DESC, id ASC`, and the `id` tiebreak
+is what makes the order total — without it two equally-specific rules resolve
+differently on different pods. But the tenant databases collate `el-GR-x-icu`,
+and ICU's `id ASC` is **not** JavaScript's `<`: ICU ignores case and punctuation
+differences at the primary level, so `r-A` and `r_a` can order differently in
+Postgres than they do here.
+
+`rank.ts` documents this and phase 13's snapshot query **must** order by
+`id COLLATE "C"`. The resolver cannot detect the divergence — it never sees the
+SQL — so the note is the only thing standing between here and a policy that
+resolves one way in the API and another way in a report.
+
+### Notice templates invert the weights, and that is the domain
+
+§4.1 gives templates branch 2, category 1 — the inverse of a circulation rule's
+category 32, branch 8. It is not an inconsistency. A loan period is a property of
+**who is borrowing**: a child gets three weeks, a staff member a term. A notice is
+a property of **who is sending** — the branch's name, address, hours and voice are
+in the text. A library that has rewritten its overdue letter for one branch means
+that branch's letter, even for a category with its own.
+
+`resolveTemplate` returning `null` is also the **one** place in this package where
+absence is an answer: a library that configured no `holdExpiring` template has
+decided not to send one, and the consequence is silence rather than a wrong
+number. Everywhere else, a missing policy is a `PolicyResolutionError` with one of
+ten codes — because §4.1's "never fails open to a default policy" is defeated the
+moment anything default-shaped is exported, even for fixtures, and the first
+`?? DEFAULT` at a call site makes every refusal in the package unreachable. A test
+greps the source for one.
+
+### CI would not have run any of this
+
+`.github/workflows/verify.yml`'s node:test step is a **filter list**, and a filter
+list is an allowlist: a new package is invisible until the line names it.
+Compounding it, `node --test` exits 0 on an empty glob — so 630 vectors could have
+passed CI by not existing. The workflow now names `@libriant/circ-policy`, and the
+package's `pretest` refuses to run with fewer than nine test files, for the same
+reason `@libriant/marc`'s suite asserts its own size.
+
+### Decisions worth their sentence
+
+**`hoursOn` returns the calendar's own array, deliberately.** It is called once
+per candidate day while a due date rolls forward, and allocating a copy per probe
+buys nothing. The price is that one careless call site rewrites a branch's opening
+hours for the life of the process — `duedate.ts` genuinely does reverse this
+value, correctly, by spreading first — so `purity.test.ts` greps for a mutating
+method applied directly to the return.
+
+**Orthodox Pascha is Meeus's Julian Paschalion plus 13 days, and it throws outside
+1900–2099.** The 13-day Julian–Gregorian offset is not a constant; it becomes 14
+in 2100. Returning a plausible wrong date for 2100 is worse than refusing, and a
+`RangeError` naming the range is what a seeder can act on.
+
+**`fixtures/` is in `.prettierignore`.** The vector file is a cross-language
+contract read by `cargo test`; prettier reflows its arrays, so every regeneration
+would fail `format:check` on a file nobody edited. Same argument, same wording, as
+`docs/api/` and `packages/marc/src/definitions/`: the generator is the formatter
+of record.
+
+**`beatenRuleIds` is the rules that matched and LOST**, not every rule of lower
+rank. The naive reading returns 499 ids from a 500-rule snapshot on every
+checkout, allocated on the hot path and rendered into an explain screen nobody
+could read. "Your branch rule beat the tenant default" is what the librarian
+asking _why is this due on the 19th_ actually wanted.

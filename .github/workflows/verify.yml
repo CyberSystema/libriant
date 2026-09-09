@@ -353,10 +353,18 @@ jobs:
       # matches nothing. A codec with no gate running it is a directory of
       # plausible TypeScript, so the suite asserts its own size (below) and this
       # line is what runs it.
+      #
+      # `@libriant/circ-policy` joins on exactly that argument. It is the package
+      # that decides when a book is due and what a patron owes, its ~440 golden
+      # vectors are the contract phase 77's Rust core is pinned to, and its test
+      # script is the same exit-0-on-an-empty-glob shape. A filter list is an
+      # allowlist: a new package is invisible to CI until this line names it, so
+      # the vectors could pass by not existing. Its `pretest` asserts the file
+      # count for the same reason.
       - name: Web, design-system and codec tests
         run: >-
           pnpm --filter @libriant/web --filter @libriant/ui --filter @libriant/shared
-          --filter @libriant/marc test
+          --filter @libriant/marc --filter @libriant/circ-policy test
 
   # The verify gate ran typecheck, lint, prettier, translations, assets, unit,
   # integration, migrations and the DR drill — and zero supply-chain checks.
