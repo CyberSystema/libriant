@@ -22,6 +22,7 @@ import { EmailModule } from './email/email.module.js';
 import { FinesModule } from './fines/fines.module.js';
 import { BibModule } from './bib/bib.module.js';
 import { PolicyModule } from './policy/policy.module.js';
+import { ItemsModule } from './items/items.module.js';
 import { PatronsModule } from './patrons/patrons.module.js';
 import { HelpModule } from './help/help.module.js';
 import { ImportModule } from './import/import.module.js';
@@ -86,6 +87,7 @@ import { ApplicationsModule } from './applications/applications.module.js';
     BibModule,
     PolicyModule,
     PatronsModule,
+    ItemsModule,
     ReservationsModule,
     TenantSettingsModule,
     AuditModule,

@@ -53,6 +53,7 @@ const TABLES: Readonly<Record<string, readonly string[]>> = {
     'patron_merges',
     'reading_history_policy',
   ],
+  'v2-items': ['item_status_reasons', 'item_status_history', 'item_transfers', 'item_notes'],
   'v2-policy': [
     'calendars',
     'calendar_hours',
@@ -161,7 +162,8 @@ export async function teardown(): Promise<void> {
               fixed_due_date_sets, fixed_due_date_ranges, patron_categories,
               patron_category_limits, circulation_rules,
               patron_number_counters, patron_cards, patron_identifiers, patron_addresses,
-              patron_relationships, patron_blocks, patron_messages, patron_notes, patron_merges
+              patron_relationships, patron_blocks, patron_messages, patron_notes, patron_merges,
+              item_status_reasons, item_status_history, item_transfers, item_notes
      RESTART IDENTITY CASCADE`,
   );
   // The two singletons are NOT truncated. They are seeded by the migration
@@ -739,6 +741,120 @@ export const v2Modules: SmokeModule[] = [
         );
       }
       ok('patrons_number_pattern_idx is text_pattern_ops and not partial (perf-13)');
+    },
+    reset: teardown,
+  },
+  {
+    name: 'v2-items',
+    describes: 'the one open transfer per copy, the default holdings claim, and an honest history',
+    async run() {
+      await tablesExistAndAreEmpty('v2-items');
+      await seedMinimalChain();
+      await v2Query(
+        url(),
+        `INSERT INTO branches (id, code, name, timezone, updated_at)
+         VALUES ('smk_b2', 'SMOKE2', 'Δεύτερο', 'Europe/Athens', pg_catalog.now())`,
+      );
+
+      // ---- the default holdings claim, and the freedom it must not take away
+      await expectSqlstate(
+        url(),
+        `INSERT INTO holdings_records (record_id, bib_id, branch_id, is_default, updated_at)
+         VALUES ('smk_h2', 'smk_m', 'smk_b', true, pg_catalog.now()),
+                ('smk_h3', 'smk_m', 'smk_b', true, pg_catalog.now())`,
+        '23505',
+        'a branch cannot hold two AUTO-CREATED DEFAULT holdings records for one title',
+      );
+      await v2Query(
+        url(),
+        `INSERT INTO holdings_records (record_id, bib_id, branch_id, is_default, updated_at)
+         VALUES ('smk_h2', 'smk_m', 'smk_b', false, pg_catalog.now()),
+                ('smk_h3', 'smk_m', 'smk_b', false, pg_catalog.now())`,
+      );
+      note(
+        'and it may still hold as many NON-default ones as it likes — reference and stacks, ' +
+          'large-print beside ordinary. That is the freedom phase 11 refused a (bib, branch) ' +
+          'unique to protect, and `is_default DEFAULT false` is what preserves it.',
+      );
+
+      // ---- open is the absence of both endings
+      await v2Query(
+        url(),
+        `INSERT INTO item_transfers (id, item_id, from_branch_id, to_branch_id, updated_at)
+         VALUES ('smk_t1', 'smk_i', 'smk_b', 'smk_b2', pg_catalog.now())`,
+      );
+      await expectSqlstate(
+        url(),
+        `INSERT INTO item_transfers (id, item_id, from_branch_id, to_branch_id, updated_at)
+         VALUES ('smk_t2', 'smk_i', 'smk_b', 'smk_b2', pg_catalog.now())`,
+        '23505',
+        'a copy cannot have two open transfers',
+      );
+      await expectSqlstate(
+        url(),
+        `UPDATE item_transfers
+            SET received_at = pg_catalog.now(), cancelled_at = pg_catalog.now()
+          WHERE id = 'smk_t1'`,
+        '23514',
+        'a transfer cannot be both received and cancelled — the partial unique depends on it',
+      );
+      await v2Query(
+        url(),
+        `UPDATE item_transfers SET received_at = pg_catalog.now() WHERE id = 'smk_t1'`,
+      );
+      await v2Query(
+        url(),
+        `INSERT INTO item_transfers (id, item_id, from_branch_id, to_branch_id, updated_at)
+         VALUES ('smk_t2', 'smk_i', 'smk_b2', 'smk_b', pg_catalog.now())`,
+      );
+      ok('closing one frees the copy for the next — the index is keyed on the two NULL tests');
+
+      await expectSqlstate(
+        url(),
+        `INSERT INTO item_transfers (id, item_id, from_branch_id, to_branch_id, updated_at)
+         VALUES ('smk_t3', 'smk_i', 'smk_b', 'smk_b', pg_catalog.now())`,
+        '23514',
+        'a transfer to the branch the copy is already at is not a transfer',
+      );
+
+      // ---- a history that says nothing happened is not a history
+      await v2Query(
+        url(),
+        `INSERT INTO item_status_history (id, item_id, from_status, to_status)
+         VALUES ('smk_sh1', 'smk_i', NULL, 'available')`,
+      );
+      note('the creation row is the one row with no from_status, and it is accepted');
+      await expectSqlstate(
+        url(),
+        `INSERT INTO item_status_history (id, item_id, from_status, to_status)
+         VALUES ('smk_sh2', 'smk_i', 'available', 'available')`,
+        '23514',
+        'a history row that records no change is refused',
+      );
+      await v2Query(
+        url(),
+        `INSERT INTO item_status_history
+           (id, item_id, from_status, to_status, from_branch_id, to_branch_id)
+         VALUES ('smk_sh3', 'smk_i', 'available', 'available', 'smk_b', 'smk_b2')`,
+      );
+      note(
+        'a branch move with no status move IS a change — which is what a float is, and what a ' +
+          'history keyed only on status would answer wrongly.',
+      );
+
+      const cols = await v2Query<{ n: string }>(
+        url(),
+        `SELECT pg_catalog.count(*)::text AS n
+           FROM information_schema.columns
+          WHERE table_schema = 'lbr2' AND table_name = 'item_status_history'
+            AND column_name IN ('updated_at', 'archived_at')`,
+      );
+      if (cols[0]!.n !== '0') {
+        throw new Error(
+          'item_status_history has updated_at or archived_at; it must be append-only',
+        );
+      }
+      ok('item_status_history is append-only — no updated_at, no archived_at');
     },
     reset: teardown,
   },

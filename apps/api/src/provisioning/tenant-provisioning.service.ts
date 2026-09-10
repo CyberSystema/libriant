@@ -1,3 +1,4 @@
+import { seedItemDefaults } from '../items/item-defaults.js';
 import { seedCirculationDefaults } from '../policy/circulation-defaults.js';
 import { Injectable, Logger } from '@nestjs/common';
 import { execFile } from 'node:child_process';
@@ -326,6 +327,12 @@ export class TenantProvisioningService {
    * `tenant_settings` row, and the four system roles reconciled against the
    * shipped templates. Both live in `@libriant/db-tenant` so every provisioning
    * path seeds the same thing.
+   *
+   * Then the 2.0 half — a branch, a shelving location, an item type, a material
+   * type, and the six circulation rows. A library with none of those is one that
+   * can neither catalogue a copy (five NOT NULL foreign keys with nothing to
+   * point at) nor lend one (`NO_MATCHING_RULE` at the desk), and both failures
+   * are things an admin discovers rather than things provisioning tells them.
    */
   private async seedDefaults(targetUrl: string): Promise<void> {
     const client = makeTenantPrismaClient({ databaseUrl: targetUrl });
@@ -346,7 +353,14 @@ export class TenantProvisioningService {
     // being provisioned rather than something an admin discovers they need.
     const clientV2 = makeTenantPrismaClientV2({ databaseUrl: targetUrl });
     try {
-      await seedCirculationDefaults(clientV2 as never, new Date());
+      const now = new Date();
+      // ORDER MATTERS BETWEEN THESE TWO, and only in one direction: nothing in
+      // the circulation defaults references a branch (the wildcard rule's six
+      // selectors are all NULL, which is what makes it the wildcard), while a
+      // shelving location references a branch. Seeding items first keeps the
+      // dependency pointing the same way as the FKs.
+      await seedItemDefaults(clientV2 as never, now);
+      await seedCirculationDefaults(clientV2 as never, now);
     } finally {
       await clientV2.$disconnect();
     }

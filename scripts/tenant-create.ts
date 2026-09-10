@@ -46,6 +46,7 @@ import {
   disconnectTenantClient,
   makeTenantPrismaClient,
   seedTenantDefaults,
+  makeTenantPrismaClientV2,
   withV2Schema,
 } from '@libriant/db-tenant';
 import { Client as PgClient } from 'pg';
@@ -61,6 +62,8 @@ import {
   type Prisma,
 } from '@libriant/db-control';
 import { assertSlug, dbNameForTenant, die, isYes, log, parseArgs, urlForDb } from './_lib/cli.js';
+import { seedItemDefaults } from '../apps/api/src/items/item-defaults.js';
+import { seedCirculationDefaults } from '../apps/api/src/policy/circulation-defaults.js';
 
 const execFileP = promisify(execFile);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -414,6 +417,36 @@ async function seedTenantDefaultsFor(credential: {
     log(SCRIPT, `  ${describeSeedResult(await seedTenantDefaults(client))}`);
   } finally {
     await disconnectTenantClient(client);
+  }
+
+  // THE 2.0 HALF, which this script did not have. Phase 13's provisioning
+  // service says "every provisioning path seeds the same thing" and then seeded
+  // the circulation rows on the signup path only, so a library created with this
+  // script got the 2.0 tables and none of their rows: it could not lend
+  // (`NO_MATCHING_RULE` at the desk) and, from phase 15, could not catalogue
+  // either — `items` has five NOT NULL foreign keys and nothing to point them
+  // at. Closed here rather than left as a second, quieter provisioning path.
+  // Composed AT the call, like the 1.0 client above — `check:tenant-db-urls`
+  // reads this line, and a url arriving through anything but a bare
+  // `composeRuntimeUrl(...)` is one it cannot tell from the superuser's. NOT
+  // wrapped in `withV2Schema`: `makeTenantPrismaClientV2` sets `schema: lbr2` on
+  // its own adapter, so wrapping the url would be the second half of a job
+  // already done — and it is what made this gate fail.
+  const clientV2 = makeTenantPrismaClientV2({
+    databaseUrl: composeRuntimeUrl(credential),
+    maxPoolSize: 1,
+  });
+  try {
+    const now = new Date();
+    const items = await seedItemDefaults(clientV2 as never, now);
+    const circulation = await seedCirculationDefaults(clientV2 as never, now);
+    log(
+      SCRIPT,
+      `  2.0 defaults: ${items ? 'branch, location, item type and material type seeded' : 'org rows already present'}; ` +
+        `${circulation ? 'five policies and the wildcard rule seeded' : 'circulation rules already present'}`,
+    );
+  } finally {
+    await clientV2.$disconnect();
   }
 }
 

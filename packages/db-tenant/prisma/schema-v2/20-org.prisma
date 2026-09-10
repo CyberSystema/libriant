@@ -123,6 +123,10 @@ model Branch {
   itemsOwned        Item[]             @relation("ItemOwningBranch")
   itemsCurrent      Item[]             @relation("ItemCurrentBranch")
   holdPickupFor     HoldPolicyPickupBranch[]
+  itemHistoryFrom   ItemStatusHistory[] @relation("ItemHistoryFromBranch")
+  itemHistoryTo     ItemStatusHistory[] @relation("ItemHistoryToBranch")
+  itemTransfersFrom ItemTransfer[]      @relation("ItemTransferFromBranch")
+  itemTransfersTo   ItemTransfer[]      @relation("ItemTransferToBranch")
 
   @@index([parentBranchId])
   @@map("branches")
@@ -130,16 +134,17 @@ model Branch {
 
 /// A shelf, a room, a reading area — where a copy physically is.
 ///
-/// SKELETON. §3 names this table and never describes it; every column below
-/// except `id` is either forced by `items.permanent_location_id NOT NULL
-/// REFERENCES shelving_locations(id)` or is a §3 convention column. It is
-/// recorded as `created-skeleton` in BASELINE-SCOPE.json and the smoke module
-/// asserts only that it exists and is empty — never that it round-trips a
-/// domain object, which would be a claim this schema has not earned.
+/// NO LONGER A SKELETON — phase 15 filled it in, at the skeleton's own
+/// invitation. §3 names this table and never describes it, so phase 9 created
+/// only what `items.permanent_location_id NOT NULL REFERENCES
+/// shelving_locations(id)` forced plus the §3 convention columns, and wrote down
+/// what a real one would need: "OPAC display name, whether it is browsable, the
+/// 852 $b/$c mapping, floating-collection membership — belong with the phase-15
+/// service that knows what they are for."
 ///
-/// The columns a real one needs — OPAC display name, whether it is browsable,
-/// the 852 $b/$c mapping, floating-collection membership — belong with the
-/// phase-15 service that knows what they are for.
+/// Those four are below, marked. The one thing phase 15 did NOT bring with them
+/// is `floating_rules`; the reason is in `floating_group` and in
+/// `45-items.prisma`.
 /// @replicated entity_kind=shelving_location
 model ShelvingLocation {
   id String @id @default(cuid())
@@ -148,6 +153,51 @@ model ShelvingLocation {
   code     String
   name     String
   nameI18n Json   @default("{}") @db.JsonB @map("name_i18n")
+
+  // -- PHASE 15 filled these in, and the skeleton's docblock named it ---------
+  //
+  // "The columns a real one needs — OPAC display name, whether it is browsable,
+  // the 852 $b/$c mapping, floating-collection membership — belong with the
+  // phase-15 service that knows what they are for." This is that phase, so the
+  // four are here as a citation rather than a divergence.
+
+  /// What the PUBLIC is told. A library whose staff call a shelf `REF-2F-N`
+  /// should not print that on a hold slip, and the alternative — reusing `name`
+  /// for both — means the staff name is the one a patron reads.
+  opacName     String? @map("opac_name")
+  opacNameI18n Json    @default("{}") @db.JsonB @map("opac_name_i18n")
+
+  /// Whether the OPAC lets a reader browse the shelf. A closed stack, a staff
+  /// workroom and a conservation store are all real locations that must not
+  /// appear in a shelf-browse, and hiding them by convention is how one of them
+  /// eventually does.
+  browsable Boolean @default(true)
+  /// Whether a copy here can be found by the public at all. Distinct from
+  /// `browsable`: an item in the conservation lab is catalogued and visible,
+  /// and simply not on a shelf anybody can walk to.
+  opacVisible Boolean @default(true) @map("opac_visible")
+
+  /// MARC 21 Holdings 852 $b (sub-location) and $c (shelving location). §5 gives
+  /// the compressed-holdings statement to phase 84; these two subfields are the
+  /// ones an EXPORT needs to say where a copy is, and a library that has to
+  /// re-derive them from a code at export time will derive them differently
+  /// every time.
+  marc852b String? @map("marc_852_b")
+  marc852c String? @map("marc_852_c")
+
+  /// Floating-collection membership. §6 phase 23 owns the RULES — "an item owned
+  /// by A, checked out at B, returned at C either floats or generates a transit
+  /// per `floating_rules`" — and `floating_rules` is deferred to it, because its
+  /// columns are decided by that phase's four-branch fixture and phase 15 has no
+  /// checkin to test a single row against. What phase 15 owns is the SELECTOR
+  /// the rules will read, and the baseline assigned it here by name.
+  ///
+  /// NULL means "does not float". A group name rather than a boolean because
+  /// floating is almost never library-wide: a consortium floats its large-print
+  /// collection between three branches and nothing else.
+  floatingGroup String? @map("floating_group")
+
+  sortOrder Int @default(0) @map("sort_order")
 
   createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
   updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
@@ -158,5 +208,6 @@ model ShelvingLocation {
   itemsTemporary    Item[] @relation("ItemTemporaryLocation")
 
   @@index([branchId])
+  @@index([floatingGroup], map: "shelving_locations_floating_idx")
   @@map("shelving_locations")
 }

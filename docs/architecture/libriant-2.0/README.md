@@ -2391,3 +2391,303 @@ on" is only true if the row is there for every tenant, including the ones phase
 `(id, updated_at)` because `patrons` was a skeleton; three NOT NULL columns later
 it broke seven modules at once. A table that stops being a skeleton breaks every
 fixture that relied on it being one, and the fixture is where you find out.
+
+---
+
+## Phase 15 — items, holdings, call numbers
+
+Four tables (`item_status_reasons`, `item_status_history`, `item_transfers`,
+`item_notes`), two skeleton fill-outs the baseline assigned to this phase by
+name, two partial uniques, one service that is the only writer of two columns,
+and the two gates that make that last claim mean anything.
+
+§6's acceptance clause is five sentences and each one is a test in
+`apps/api/test/integration/items.spec.ts`. What follows is what had to be decided
+to make them true.
+
+### The single-status-writer boundary needs TWO gates, and the reason is provable
+
+"`items.status` is writable through exactly one service (ESLint boundary rule + a
+grep gate)" reads like belt and braces. It is not. Each gate is blind to a
+surface the other covers, and the blindness is structural rather than
+incidental.
+
+ESLint sees ASTs. `no-restricted-syntax` can match
+`<x>.item.update({ data: { status } })` on the member path — so `tx.item.update`
+is caught, `tx.loan.update({ data: { status } })` is not, and a `where: { status }`
+clause is untouched because reading a status to find a copy is not writing it.
+All three discriminations are asserted by a break test. What it cannot see is
+`tx.$executeRaw\`UPDATE lbr2.items SET status = …\``: a template literal has no
+structure a selector can reach, and this repository writes raw SQL deliberately
+and often — `patron_blocks`mints ids in it,`is_shelf_available` can only be
+READ in it, and this phase's own holdings upsert is raw because a Prisma unique
+violation aborts the whole interactive transaction.
+
+`scripts/check-item-status-writer.ts` reads text, so it covers exactly that, plus
+the trees ESLint's `apps/api/src/**` block does not lint at all — the worker and
+`scripts/`.
+
+A DATABASE CANNOT DO EITHER. There is no trigger, grant or rule that expresses
+"only this function may issue this UPDATE": every writer connects as the same
+role, and a `BEFORE UPDATE` trigger sees the row and not the caller. A trigger
+COULD write the history row itself — that is precisely the shape §4.2 chose for
+`change_events`, on the argument that a forgotten `emit()` is invisible — and it
+is deliberately not the shape here. A trigger sees a status column changing and
+cannot see `reason_id`, `note`, `cause_type` or `source`, which are the four
+columns a librarian actually reads. And the value of a boundary is that a stray
+write FAILS review, not that it is silently repaired into something plausible.
+
+**The break test found a real bug in the grep gate**, which is the argument for
+having one. The first pattern was
+`update\s+(?:[a-z_]+\.)?items\b…` — and the schema is named `lbr2`, with a digit.
+So it matched `UPDATE items` and missed `UPDATE lbr2.items`, the only form this
+codebase ever writes. The gate reported "0 violations" over a file containing
+one. It also then caught itself: its own docblock quotes the statement it looks
+for. That is an allowlist entry with a reason rather than a weakened pattern,
+because the example is what makes the rule legible.
+
+**The exemptions are scoped in two directions rather than one**, copying phase
+13's clock ban exactly. `item-status.service.ts` IS the writer and is exempt from
+everything. `items.service.ts` may establish `current_branch_id` and
+`status_since` ON CREATE and may never move them — which is forced rather than
+generous: `items.current_branch_id` is NOT NULL with no default, so a copy cannot
+be created without naming where it is. `status` stays banned there even on
+create, because the column defaults to `available` and a create that named
+anything else would be a transition wearing an insert.
+
+**And a flat-config trap that would have been silent.** A later `files:` block
+REPLACES a rule's options for the files it matches, so putting
+`apps/api/src/**/*.ts` after the phase-13 `apps/api/src/policy/**` block would
+have switched the clock ban off in `policy/` — or, in the other order, switched
+the item boundary off in `policy/` and `circulation/`, the two directories most
+likely to move a copy. The item blocks come first and the circulation blocks
+carry `...ITEM_STATE_WRITES` forward explicitly.
+
+### "Open" is the absence of both endings, and the enum is not a style preference
+
+`item_transfers` has no `state` enum. The obvious design — `state transfer_state
+NOT NULL DEFAULT 'open'` with a partial unique `WHERE state = 'open'` — was built
+beside this one on the same 200,053 rows (50 open: the real shape, because almost
+every transfer a library has ever made has arrived) and asked the only question
+the desk asks, in the form Prisma emits:
+
+```
+  NULL predicate,  parameterised   Index Scan,             2 bufs,  0.011 ms
+  enum predicate,  parameterised   Parallel Seq Scan,   1470 bufs,  5.922 ms
+  enum predicate,  seqscan = off   Seq Scan,            1470 bufs,  7.573 ms
+  enum predicate,  LITERAL         Index Scan,             2 bufs,  0.016 ms
+```
+
+The last two lines are the whole argument. With `enable_seqscan = off` the
+parameterised enum STILL seq-scans — there is no index path, it is not a costing
+preference — while the same query written with a literal uses the index. **So the
+shape that is fast when a developer tries it by hand in psql is the shape that
+reads 200,000 rows in production.** `enum_in` is only STABLE, Prisma emits
+`state = CAST($1::text AS transfer_state)`, and the planner can never prove the
+predicate. This is the fifth time that wall has been hit here:
+`loans_active_dueAt_idx` (1.0), `items.is_shelf_available`,
+`patron_blocks_live_idx`, `patron_cards_barcode_unique_live`, and now this.
+
+The second consequence is worse and splits the same way. `ON CONFLICT (item_id)
+WHERE state = 'open'` INFERS the arbiter; `WHERE state = CAST($3::text AS
+transfer_state)` raises `42P10 — there is no unique or exclusion constraint
+matching the ON CONFLICT specification`. Both measured. The upsert works by hand
+and fails from the application, which is the worst possible place to find out.
+The NULL-predicate arbiter parameterises and infers.
+
+The third is forward-looking: a three-value enum has to be widened the moment
+phase 23 adds "queued at the send desk but not yet in the van", and `sent_at IS
+NULL` already expresses it.
+
+**`item_transfers_one_ending` is what makes the partial unique mean what it
+says.** Without a CHECK forbidding `received_at` and `cancelled_at` together, a
+row carrying both is excluded from the index by either, and a second open
+transfer slips through the constraint that is the phase's acceptance criterion.
+
+### The copy stays at the SOURCE branch for the whole transfer
+
+`items.current_branch_id` flips at RECEIPT, in the same transaction that stamps
+`received_at`, and this is forced rather than tidy. `items_shelf_order_idx` is
+`(current_branch_id, call_number_sort, id)` — it IS the shelf list at a branch —
+so flipping at send would put a copy on the destination's shelf list while it is
+on a van, and a librarian would walk to a shelf to fetch a book that is not in
+the building. Availability would not catch it, because `is_shelf_available`
+requires `status = 'available'` and `in_transit` fails that.
+
+The second thing it buys only shows up on the cancel path: a cancelled transfer
+has NO branch to put back, because the copy never left. Under flip-at-send, every
+cancellation is a two-column repair with a window in which the copy is somewhere
+it has never been.
+
+### `is_default` is the narrowest claim auto-creation needs
+
+§3 makes `items.holdings_record_id` NOT NULL and calls that "costless by
+auto-creating a default holdings record on first item". Costless it is; free it
+is not: measured, 25 concurrent creates of the first copy of one title at one
+branch with the obvious SELECT-then-INSERT produced 25 holdings records, every
+run — which is exactly the shape of a cataloguer importing a batch.
+
+The tempting fix is a UNIQUE on `(bib_id, branch_id)`. Phase 11 refused it and
+was right to: a branch legitimately holds one title in several MFHDs — reference
+and stacks, large-print beside ordinary, a serial whose bound volumes and current
+issues carry different 852 $b. Auto-creation never needed that claim. It needs
+"at most one AUTO-CREATED DEFAULT per (bib, branch)", which is strictly narrower,
+is true, and is an index predicate.
+
+`DEFAULT false` on the column is therefore load-bearing: with `DEFAULT true` the
+phase-11 smoke assertion that a branch may hold one title in two MFHDs would
+collide on the new index, and the freedom phase 11 argued for would have been
+taken away by the column added to leave it alone.
+
+Three mechanisms guard the create, and all three are deliberate. The advisory
+lock on `bib:<id>` serialises it (and `bib` outranks `item` in
+`LOCK_DOMAIN_RANK`, so phase 16 taking both cannot deadlock against this path).
+`ON CONFLICT … DO NOTHING` holds even if a future caller forgets the lock. The
+re-SELECT is correct at ReadCommitted because speculative insertion makes the
+conflicting inserter WAIT for the other transaction to resolve. **A raw statement
+rather than `prisma.holdingsRecord.create`, and that is forced**: a unique
+violation inside a Prisma interactive transaction aborts the whole transaction —
+there is no per-statement savepoint — so catch-then-select cannot work there at
+all. It only looks like it does outside a transaction.
+
+### No `SELECT … FOR UPDATE`, because phase 14 already paid for that lesson
+
+A transition is read-then-write: the history row names the status the copy was
+in. The exclusion is an advisory lock taken as the first statement, not a row
+lock — `item_status_history` foreign-keys to `items`, so inserting the history row
+takes `FOR KEY SHARE` on the same item row, and a concurrent transaction holding
+`FOR UPDATE` on it blocks that insert. Measured on `patrons` in phase 14, the
+equivalent shape gave 0/20 desk commits and zero loans written. An advisory lock
+does not join the row-lock graph at all.
+
+`ItemTransfersService.receive` takes its lock AFTER one read, and says so: the
+lock key is the item id, and when the caller identified the transfer by its own
+id there is nothing to lock until we know which copy it is. The read is of
+`item_transfers`, not of the row the lock protects, and the write re-checks that
+the transfer is still open with a conditional `updateMany`.
+
+### `floating_rules` is re-phased to 23, and the SELECTOR lands instead
+
+It was `9c/15` in `BASELINE-SCOPE.json` and is now `23`, which is the first time
+this program has moved a table's phase after reaching it. The argument: §6 phase
+23 states the whole decision — "an item owned by A, checked out at B, returned at
+C either floats or generates a transit per `floating_rules`" — and carries the
+four-branch fixture that is the only thing able to test a single row of it, and
+the decision itself is taken at CHECKIN, which is phase 16. Phase 15 has no
+checkin, no fixture, and no caller. Writing its columns here would be writing
+them with none of those, which is the failure `patrons` names in its own
+docblock, one phase earlier and one table over.
+
+What phase 15 DOES own is the selector, because the baseline assigned it here by
+name: `shelving_locations.floating_group`, nullable, a group name rather than a
+boolean because floating is almost never library-wide — a consortium floats its
+large-print collection between three branches and nothing else.
+
+### A reason is not a code, and the difference is what makes availability work
+
+`item_status_reasons` sits beside three columns that look like it.
+`items.not_for_loan_code`, `damaged_code` and `lost_code` are CONDITION flags:
+they are read by the `is_shelf_available` generated column, they change what a
+copy IS, and a copy can carry more than one at once. A reason is the librarian's
+answer to "why did you do that?" — one per transition, never read by a predicate,
+meaningful only beside the status it explains. Conflating them would blur exactly
+the line that makes the generated column a single definition of "on the shelf
+right now". The three code vocabularies have no lookup table anywhere in `lbr2`
+and stay with phase 21, which already owns `override_reasons` — recorded as a
+citation rather than a silence.
+
+### `item_status_history_is_a_change`, and why it is a CHECK
+
+A history row where nothing changed is not a transition; it is a save button that
+fired twice, and once such rows exist "what happened to this copy?" cannot be
+answered by reading the table. The constraint is
+`from_status IS DISTINCT FROM to_status OR from_branch_id IS DISTINCT FROM
+to_branch_id` — `IS DISTINCT FROM` rather than `<>` because both sides are
+nullable and `<>` yields NULL, which a CHECK passes.
+
+It also states the domain in one line: **a branch move with no status move IS a
+change.** That is what a float is, and a history keyed only on status would
+answer "where has this been?" wrongly. It is why `status_since` advances only
+when the STATUS moved — otherwise "how long has this been missing?" answers
+"since it was moved".
+
+The table is APPEND-ONLY: no `updated_at`, no `archived_at`, asserted by reading
+`information_schema` in both the smoke module and the integration spec. A history
+that can be edited is not one; `loans` sets the same precedent as an event log
+with neither column.
+
+### Provisioning seeded nothing an item could point at
+
+`items` has five NOT NULL foreign keys and a freshly provisioned 2.0 tenant had
+rows for none of them, so the first `POST /items` a library could make was a
+foreign-key error — the cataloguing equivalent of the `NO_MATCHING_RULE` refusal
+phase 13's seed exists to prevent. `seedItemDefaults` writes a branch, a shelving
+location, an item type and a material type; the holdings record is the one gap
+the service closes on its own.
+
+The branch's timezone is `Europe/Athens` and a seed has to choose one, because
+`branches.timezone` is THE `circ-5` column and is NOT NULL. A wrong zone is one
+field on a form; a missing one is a branch that cannot compute a due date.
+
+**And `scripts/tenant-create.ts` seeded no 2.0 rows at all.** Phase 13's
+provisioning service says "every provisioning path seeds the same thing" and then
+seeded the circulation rows on the signup path only. A library created with the
+script got the 2.0 tables and none of their rows: it could not lend, and from
+this phase could not catalogue either. Closed here rather than left as a second,
+quieter provisioning path.
+
+### Decisions worth their sentence
+
+**Two new permission keys, in `circ` and not `cat`.** `circ.item.status` and
+`circ.item.transfer`. A copy's status is circulation state — it is what decides
+whether the copy can be lent — and the people who hold these are different
+people: shelf-reading staff mark books missing all afternoon and must not be able
+to re-catalogue a copy; a cataloguer needs the opposite; a transit clerk needs
+neither. Collapsing any two means every library that wants one has to grant both.
+
+**The status route accepts three of the six statuses.** `on_loan`, `in_transit`
+and `awaiting_pickup` are outcomes of circulation acts, and a route that let the
+desk set them by hand would produce a copy that is `on_loan` with no loan — a
+state every availability count, every overdue sweep and every patron's account
+would then disagree about. They arrive through `ItemStatusService` from the
+service that owns the act, which is what `cause_type`/`cause_id` are for.
+
+**`UpdateItemDto` has no `status` field, and `validateDto` runs
+`forbidNonWhitelisted`.** So `PUT /items/:id` with `{"status":"missing"}` is a
+400 naming the property rather than a 200 that silently dropped it. A caller must
+not be able to believe a status write happened.
+
+**Item barcodes fold; patron card barcodes do not.** `items.barcode_norm` says
+"folded per `@libriant/shared/greek`" and `patron_cards.barcode_norm` does not,
+and the difference is real: a patron card barcode is machine-issued and printed,
+and folding it would let two people's cards collide, while an item barcode is
+frequently a hand-typed accession number on legacy Greek stock.
+
+**The shelf-list cursor has three branches, not two.** `call_number_sort` is
+nullable and a btree ASC index puts NULLs LAST. A copy with no call number is one
+nobody has shelved yet; it belongs at the end of the list rather than missing from
+it, and a two-branch keyset silently drops the whole tail because `gt` never
+matches NULL.
+
+**`items.public_note` and `staff_note` survive beside `item_notes`.** The same
+split `patrons.staff_notes` already makes: a one-line "spine label damaged" that
+prints on the record page is a field, and forcing it to be a dated attributed note
+is how a field stops being used. `item_notes.public_note` defaults to FALSE,
+because a note written on the assumption that nobody outside the building reads it
+must not become public because a later screen offered the choice and defaulted the
+other way.
+
+**Archiving is refused while a copy is in transit.** A copy archived mid-transit
+is a copy in a van that no work list mentions.
+
+**The two acceptance plans are asserted as EXPLAIN, not as timings.** A timing on
+a laptop measures the laptop. The claim in §6 is about access path — a change from
+Index Scan to Seq Scan is invisible on a fixture and fatal at 200,000 copies — so
+the spec reads the plan and names the index, and asserts the absence of a `Sort`
+node on the shelf list, which is the part a `LIMIT` cannot save you from.
+
+**`holdings_records` was never exempted from `check:schema-conventions`.** Its
+docblock claimed it was, and phase 15 checked: the gate's rule is "a column named
+`id` must be TEXT", and this table has no column named `id`, so the check skips it
+rather than waiving it. An exemption is a decision somebody signed; a skip is a
+rule that never applied. Corrected in place.

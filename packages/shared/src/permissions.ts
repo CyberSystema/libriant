@@ -130,6 +130,16 @@ export const PERMISSIONS: readonly PermissionDescriptor[] = [
   // ANSWER it should not hand over the ability to change what the answer is.
   def('circ.policy.read', 'circ', 'View circulation rules and why a loan was priced'),
   def('circ.policy.manage', 'circ', 'Change circulation rules, policies and calendars'),
+  // A copy's state, and where it physically is (2.0 phase 15). Both are `circ`
+  // rather than `cat` because they are circulation state — a copy's status is
+  // what decides whether it can be lent — and both are separate from
+  // `cat.item.write` because the people who hold them are different people.
+  // Shelf-reading staff mark books missing all afternoon and must not be able to
+  // re-catalogue a copy; a cataloguer needs the opposite; a transit clerk needs
+  // neither. Collapsing any two of the three means every library that wants one
+  // has to grant both.
+  def('circ.item.status', 'circ', 'Mark a copy missing, found or in process'),
+  def('circ.item.transfer', 'circ', 'Send a copy to another branch and receive it'),
 
   // --- patrons ------------------------------------------------------------
   def('patron.read', 'patron', 'View patrons'),
@@ -306,6 +316,8 @@ const LIBRARIAN: readonly string[] = [
   'circ.hold.expire',
   'circ.hold.fulfill',
   'circ.fee.pay',
+  'circ.item.status',
+  'circ.item.transfer',
   // Read, not manage. A librarian must be able to answer "why is this due on the
   // 19th?"; changing what the answer is belongs to whoever is accountable for
   // the library's policy.

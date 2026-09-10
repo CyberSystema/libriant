@@ -41,6 +41,8 @@
               "circ.hold.fulfill": "circ.hold.fulfill",
               "circ.hold.place": "circ.hold.place",
               "circ.hold.read": "circ.hold.read",
+              "circ.item.status": "circ.item.status",
+              "circ.item.transfer": "circ.item.transfer",
               "circ.loan.checkout": "circ.loan.checkout",
               "circ.loan.edit": "circ.loan.edit",
               "circ.loan.mark_lost": "circ.loan.mark_lost",

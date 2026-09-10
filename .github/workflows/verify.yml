@@ -229,6 +229,18 @@ jobs:
       - name: Every replicated model has a change trigger, and vice versa
         run: pnpm check:changelog-coverage
 
+      # items.status has exactly one writer (2.0 phase 15).
+      #
+      # The GREP half of that boundary. `eslint.config.mjs` carries the AST half
+      # and is precise about the Prisma shapes; it is blind to raw SQL, which
+      # this repository writes deliberately and often, and a boundary with a door
+      # in it is not one. A status write that goes around ItemStatusService
+      # succeeds, returns 200 and leaves item_status_history without the row —
+      # nothing fails until a librarian asks what happened to a copy and the
+      # history says nothing.
+      - name: Only ItemStatusService writes items.status
+        run: pnpm check:item-status-writer
+
       # amtool is run against a COPY with the receiver placeholders substituted,
       # not against the file as committed.
       #

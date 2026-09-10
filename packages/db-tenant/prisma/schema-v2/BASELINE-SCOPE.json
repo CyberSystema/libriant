@@ -564,9 +564,9 @@
     },
     "floating_rules": {
       "status": "deferred",
-      "phase": "9c/15",
+      "phase": "23",
       "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
-      "reason": "Item satellites land with the phase-15 service that defines them."
+      "reason": "RE-PHASED BY PHASE 15, from 9c/15 to 23, having reached the phase that was supposed to create it. Phase 15 owns the SELECTOR and added it — `shelving_locations.floating_group`, a nullable group name because floating is almost never library-wide. It does not own the RULES. §6 phase 23 states the whole decision (\"an item owned by A, checked out at B, returned at C either floats or generates a transit per `floating_rules`\") and carries the four-branch fixture that is the only thing able to test a single row of it; the decision itself is taken at CHECKIN, which is phase 16. Inventing the columns here would mean inventing them with no caller, no fixture and no test — which is the failure `patrons` names in its own docblock, and a table created empty and wrong is worse than one honestly deferred."
     },
     "hold_groups": {
       "status": "deferred",
@@ -596,7 +596,7 @@
       "status": "created",
       "basis": "skeleton",
       "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
-      "reason": "Created because a specified table foreign-keys to it. Columns are deliberately incomplete; see the model docblock."
+      "reason": "Created because a specified table foreign-keys to it — `items.holdings_record_id text NOT NULL REFERENCES holdings_records(record_id)`, which is also why the primary key is `record_id` and not `id`. Phase 15 added `is_default`, which is what makes §3’s promised auto-creation of a default holdings record safe: it carries a partial unique on (bib_id, branch_id) WHERE is_default, strictly narrower than the unqualified unique phase 11 refused. The 852/853-855/863-868 compressed-holdings statement and the mandatory holdings 008 are still phase 84’s."
     },
     "holds": {
       "status": "deferred",
@@ -670,22 +670,22 @@
       "reason": "The calendar model and the rules matrix are phases 12-13 design."
     },
     "item_notes": {
-      "status": "deferred",
-      "phase": "9c/15",
+      "status": "created",
+      "basis": "invented",
       "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
-      "reason": "Item satellites land with the phase-15 service that defines them."
+      "reason": "§3 names it in the Holdings and items line and gives it no DDL. Phase 15. `items.public_note`/`staff_note` survive beside it: a one-line note that prints on the record page is a field, and the dated, attributed, twenty-year conservation history is this table."
     },
     "item_status_history": {
-      "status": "deferred",
-      "phase": "9c/15",
+      "status": "created",
+      "basis": "invented",
       "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
-      "reason": "Item satellites land with the phase-15 service that defines them."
+      "reason": "§3 names it in the Holdings and items line and gives it no DDL. Phase 15, and half of its headline claim: \"Every transition writes history.\" Append-only — no updated_at, no archived_at — and it records the branch move as well as the status move, because a float and a transit receipt change where a copy is without changing what it is."
     },
     "item_status_reasons": {
-      "status": "deferred",
-      "phase": "9c/15",
+      "status": "created",
+      "basis": "invented",
       "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
-      "reason": "Item satellites land with the phase-15 service that defines them."
+      "reason": "§3 names it in the Holdings and items line and gives it no DDL. Phase 15. Not a §3 table by name — §3 gives `items.status_reason_id` a column and no REFERENCES clause — and created anyway, because \"every transition writes history\" is unanswerable without a vocabulary for WHY. Deliberately not the same thing as `not_for_loan_code`/`damaged_code`/`lost_code`, which are condition flags read by the `is_shelf_available` generated column; those three vocabularies have no table anywhere in lbr2 and stay with phase 21, which already owns `override_reasons`."
     },
     "item_text": {
       "status": "deferred",
@@ -694,10 +694,10 @@
       "reason": "Projections and the analytics schema."
     },
     "item_transfers": {
-      "status": "deferred",
-      "phase": "9c/15",
+      "status": "created",
+      "basis": "invented",
       "group": "Holdings and items (identity/description: Cataloguing; circulation state: Circulation)",
-      "reason": "Item satellites land with the phase-15 service that defines them."
+      "reason": "§3 names it in the Holdings and items line and gives it no DDL. Phase 15: \"only one open transfer per item is possible\", enforced by a partial unique on `WHERE received_at IS NULL AND cancelled_at IS NULL`. Open is the absence of both endings rather than a status enum, measured: the enum predicate seq-scans even with enable_seqscan off, and `ON CONFLICT` cannot infer an enum-predicate arbiter through Prisma's parameterised cast at all."
     },
     "item_types": {
       "status": "created",
@@ -1214,9 +1214,9 @@
     },
     "shelving_locations": {
       "status": "created",
-      "basis": "skeleton",
+      "basis": "skeleton-completed",
       "group": "Platform",
-      "reason": "Created because a specified table foreign-keys to it. Columns are deliberately incomplete; see the model docblock."
+      "reason": "Created in phase 9 because a specified table foreign-keys to it, with the columns a real one needs written down as phase 15’s. PHASE 15 ADDED THEM: opac_name(_i18n), browsable, opac_visible, marc_852_b/$c and floating_group — the last being the floating SELECTOR, while `floating_rules` itself is re-phased to 23. Still not a §3 table with a DDL block; §3 names it and never describes it."
     },
     "spaces": {
       "status": "deferred",

@@ -10,8 +10,15 @@
 /// — `record_id`, not `id`. That deviates from the §3 convention "`id text`
 /// cuid, never re-keyed", and it is kept anyway: the FK target is the one thing
 /// the document states about this table, and silently renaming it would make the
-/// items DDL (which IS fully specified) wrong. `check:schema-conventions`
-/// exempts it by name with this reason rather than by relaxing the rule.
+/// items DDL (which IS fully specified) wrong.
+///
+/// `check:schema-conventions` does NOT exempt it — this docblock used to claim
+/// it did, and phase 15 checked. The gate's rule is "a column literally named
+/// `id` must be TEXT", and this table has no column named `id`, so the check
+/// skips it rather than waiving it. The distinction matters because an exemption
+/// is a decision somebody signed and a skip is a rule that never applied: if
+/// this key were ever renamed to `id`, the gate would start checking it and
+/// would pass, which is the right answer either way.
 ///
 /// Everything else here is the minimum an item can hang off. `bib_id` landed in
 /// phase 11a, as this docblock promised. The 852/853-855/863-868 compressed-
@@ -34,6 +41,27 @@ model HoldingsRecord {
   bibId String @map("bib_id")
 
   branchId String @map("branch_id")
+
+  /// Whether THIS is the one an item falls back to when nobody chose an MFHD.
+  ///
+  /// §3 makes `items.holdings_record_id` NOT NULL and calls that "costless by
+  /// auto-creating a default holdings record on first item, which is how a
+  /// village library and a university share one schema". This column is what
+  /// makes the auto-creation safe.
+  ///
+  /// Phase 11 refused a UNIQUE on `(bib_id, branch_id)` and was right to: a
+  /// branch legitimately holds one title in several MFHDs — reference and
+  /// stacks, large-print beside ordinary, a serial whose bound volumes and
+  /// current issues carry different 852 $b. But auto-creation does not need that
+  /// claim. It needs the strictly narrower one — "at most one AUTO-CREATED
+  /// DEFAULT per (bib, branch)" — which can be written correctly today, and is,
+  /// as a partial unique in the migration.
+  ///
+  /// `DEFAULT false` is required rather than stylistic: with `DEFAULT true` the
+  /// phase-11 smoke assertion that a branch may hold one title in two MFHDs
+  /// would collide on the new index, and the freedom phase 11 argued for would
+  /// have been taken away by the column that was supposed to leave it alone.
+  isDefault Boolean @default(false) @map("is_default")
 
   createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
   updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
@@ -219,7 +247,10 @@ model Item {
   permanentLocation ShelvingLocation @relation("ItemPermanentLocation", fields: [permanentLocationId], references: [id])
   temporaryLocation ShelvingLocation? @relation("ItemTemporaryLocation", fields: [temporaryLocationId], references: [id])
 
-  loans Loan[]
+  loans         Loan[]
+  statusHistory ItemStatusHistory[]
+  transfers     ItemTransfer[]
+  notes         ItemNote[]
 
   @@index([currentBranchId, callNumberSort, id], map: "items_shelf_order_idx")
   @@index([holdingsRecordId])

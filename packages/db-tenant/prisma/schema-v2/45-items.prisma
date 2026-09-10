@@ -1,0 +1,251 @@
+// ---------------------------------------------------------------------------
+// Items — the satellites, and the history that makes a status accountable
+// ---------------------------------------------------------------------------
+//
+// `items` itself is fully specified by §3 and was created in the phase-9
+// baseline. What phase 15 adds is everything that makes writing to it
+// answerable: where a status came from, why, who moved it, and where the copy
+// physically is while it is between two branches.
+//
+// FOUR OF THE FIVE `9c/15` TABLES LAND HERE. `floating_rules` does not, and the
+// argument is in `shelving_locations.floating_group`: its columns are decided by
+// §6 phase 23's four-branch fixture ("an item owned by A, checked out at B,
+// returned at C either floats or generates a transit per `floating_rules`"), and
+// floating is decided at CHECKIN, which is phase 16. Phase 15 has no fixture, no
+// checkin, and no way to test a single row of it — which is the failure
+// `patrons`' own docblock names: "inventing its shape a dozen phases early would
+// be inventing the hardest part of the schema with the least information". The
+// SELECTOR side landed instead, because the baseline assigned that to phase 15
+// by name.
+
+/// Why a copy is in the state it is in.
+///
+/// A REASON IS NOT A CODE, and the difference is the reason this table exists
+/// beside three columns that look like it. `items.not_for_loan_code`,
+/// `damaged_code` and `lost_code` are CONDITION flags: they are read by the
+/// generated `is_shelf_available` column, they change what the copy IS, and a
+/// copy can carry more than one at once. A reason is the librarian's answer to
+/// "why did you do that?" — one per transition, never read by a predicate, and
+/// meaningful only alongside the status it explains.
+///
+/// Conflating them is tempting and would blur exactly the line that makes
+/// `is_shelf_available` work. The three code vocabularies have no lookup table
+/// anywhere in `lbr2` and are deferred to phase 21, which already owns
+/// `override_reasons` — recorded here as a citation rather than a silence.
+/// @replicated entity_kind=item_status_reason
+model ItemStatusReason {
+  id   String @id @default(cuid())
+  code String
+  name String
+  nameI18n Json @default("{}") @db.JsonB @map("name_i18n")
+
+  /// Which transitions this reason may explain. Empty means any — a library
+  /// that has one reason list and uses it everywhere is a real library, and
+  /// forcing it to tag each reason with a status is configuration nobody
+  /// finishes.
+  appliesToStatuses ItemStatus[] @default([]) @map("applies_to_statuses")
+
+  /// Whether a librarian may pick it, or only a sweep may set it. An `in_transit`
+  /// reason written by the transit desk is not something to offer in a dropdown.
+  staffSelectable Boolean @default(true) @map("staff_selectable")
+
+  sortOrder Int @default(0) @map("sort_order")
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt  DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  history   ItemStatusHistory[]
+  transfers ItemTransfer[]
+
+  @@map("item_status_reasons")
+}
+
+/// Every transition `items.status` has ever made.
+///
+/// §6 phase 15: "Every transition writes history." That is one half of the
+/// phase's headline claim; the other half is that exactly one service may make a
+/// transition at all, which is enforced by an ESLint block and
+/// `check:item-status-writer` rather than by anything in this file — a database
+/// cannot tell which TypeScript function issued an UPDATE.
+///
+/// WHAT IT IS FOR is a question a librarian asks in a specific way: "this book
+/// is marked missing and I am holding it — what happened?" The answer has to
+/// name the previous status, the instant, the person and the reason, and it has
+/// to survive the copy being marked available again five minutes later. A
+/// `status_since` column on `items` answers only the last of those.
+///
+/// APPEND-ONLY. No `updated_at`, no `archived_at`: a history that can be edited
+/// is not one. `loans` sets the same precedent as an event log with neither.
+/// @replicated entity_kind=item_status_history
+model ItemStatusHistory {
+  /// A cuid, not the `bigserial` a high-volume append-only table invites.
+  /// `check:schema-conventions` requires `id text` and grants one exemption, to
+  /// `marc_record_versions.id`, on the argument that §2 SPECIFIES bigserial
+  /// there. §3 specifies nothing here, so taking the exemption would be taking
+  /// it on a preference — and a cuid costs 25 bytes against 8 on a table that a
+  /// public library writes a few times per copy per year.
+  id String @id @default(cuid())
+
+  itemId String @map("item_id")
+
+  /// NULL only for the row that records a copy's creation, where there is no
+  /// previous state to name.
+  fromStatus ItemStatus? @map("from_status")
+  toStatus   ItemStatus  @map("to_status")
+
+  /// The other column the single writer owns. A float and a transit receipt both
+  /// move a copy between branches without touching `status`, and a history that
+  /// could not see that would answer "where has this been?" wrongly.
+  ///
+  /// Foreign-keyed, unlike `cause_id` below: a branch is soft-deleted like
+  /// everything else in this schema, so `RESTRICT` costs nothing and stops a
+  /// history from naming a branch that never existed.
+  fromBranchId String? @map("from_branch_id")
+  toBranchId   String? @map("to_branch_id")
+
+  reasonId String? @map("reason_id")
+  /// Free text, for the reason no vocabulary anticipated.
+  note String?
+
+  /// What moved it. `desk` is a librarian, `system` a sweep, `device` an offline
+  /// client replaying — the same vocabulary `loans.source` uses, because the two
+  /// histories are read side by side.
+  source EventSource @default(desk)
+
+  /// The loan, transfer or hold that caused it, when there was one. No foreign
+  /// key: `holds` is phase 17 and a loan may be anonymised out from under this
+  /// row, and a history that could be broken by an unrelated erasure is not one.
+  causeType String? @map("cause_type")
+  causeId   String? @map("cause_id")
+
+  occurredAt   DateTime @default(now()) @db.Timestamptz(3) @map("occurred_at")
+  actorUserId  String?  @map("actor_user_id")
+  deviceId     String?  @map("device_id")
+
+  item       Item              @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  reason     ItemStatusReason? @relation(fields: [reasonId], references: [id], onDelete: Restrict)
+  fromBranch Branch?           @relation("ItemHistoryFromBranch", fields: [fromBranchId], references: [id], onDelete: Restrict)
+  toBranch   Branch?           @relation("ItemHistoryToBranch", fields: [toBranchId], references: [id], onDelete: Restrict)
+
+  @@index([itemId, occurredAt], map: "item_status_history_item_idx")
+  @@map("item_status_history")
+}
+
+/// A copy on its way from one branch to another.
+///
+/// §6 phase 15: "Only one open transfer per item is possible." OPEN IS THE
+/// ABSENCE OF BOTH ENDINGS — `received_at IS NULL AND cancelled_at IS NULL` —
+/// and not a status enum, for a reason this repo has now paid for three times.
+///
+/// Measured on 200,053 rows, 50 of them open, asking the only question that
+/// matters ("is there an open transfer for this item?") in the shape Prisma
+/// emits:
+///
+/// ```
+///   NULL predicate, parameterised   Index Scan,           2 bufs, 0.011 ms
+///   enum predicate, parameterised   Parallel Seq Scan, 1470 bufs, 5.922 ms
+///   enum predicate, seqscan = off   Seq Scan,          1470 bufs, 7.573 ms
+///   enum predicate, LITERAL         Index Scan,           2 bufs, 0.016 ms
+/// ```
+///
+/// The last two lines are the argument. With `enable_seqscan = off` the
+/// parameterised enum STILL seq-scans — no index path exists, it is not a
+/// costing preference — while the same query written with a literal uses the
+/// index. So the shape that looks fine when tried by hand in psql is the shape
+/// that reads 200,000 rows in production. Prisma emits `state = CAST($1::text
+/// AS transfer_state)` and `enum_in` is only STABLE. Same wall that forced
+/// `items.is_shelf_available` to be a generated column and
+/// `patron_blocks_live_idx` to key on `cleared_at IS NULL`.
+///
+/// The second consequence is worse and splits the same way: `ON CONFLICT
+/// (item_id) WHERE state = 'open'` infers the arbiter, and `WHERE state =
+/// CAST($3::text AS transfer_state)` raises `42P10`. The upsert works by hand
+/// and fails from the application. The NULL-predicate arbiter parameterises and
+/// infers — measured.
+///
+/// The third is forward-looking: a three-value enum has to be widened the moment
+/// phase 23 adds "queued at the send desk but not yet in the van", whereas
+/// `sent_at IS NULL` already expresses it.
+///
+/// WHERE THE COPY IS DURING TRANSIT: `items.current_branch_id` stays at the
+/// SOURCE for the whole open transfer, and phase 23 flips it at receipt in the
+/// same transaction that sets `received_at`. That is forced rather than tidy —
+/// `items_shelf_order_idx` is `(current_branch_id, call_number_sort, id)`, i.e.
+/// the shelf list at a branch, so flipping at SEND would put the copy on the
+/// destination's shelf list while it is on a van. Availability would not catch
+/// it, because `is_shelf_available` requires `status = 'available'` and
+/// `in_transit` fails that — which is exactly why it has to be written down.
+/// @replicated entity_kind=item_transfer
+model ItemTransfer {
+  id     String @id @default(cuid())
+  itemId String @map("item_id")
+
+  fromBranchId String @map("from_branch_id")
+  toBranchId   String @map("to_branch_id")
+
+  reasonId String? @map("reason_id")
+  /// The hold that pulled it, when there was one. No FK: `holds` is phase 17.
+  holdId String? @map("hold_id")
+
+  queuedAt      DateTime  @default(now()) @db.Timestamptz(3) @map("queued_at")
+  /// NULL means queued at the send desk and not yet in the van. Phase 23 fills
+  /// it; neither queued nor sent is closed.
+  sentAt        DateTime? @db.Timestamptz(3) @map("sent_at")
+  sentByUserId  String?   @map("sent_by_user_id")
+  /// Phase 23's overdue-in-transit report reads this.
+  expectedBy    DateTime? @db.Timestamptz(3) @map("expected_by")
+
+  receivedAt       DateTime? @db.Timestamptz(3) @map("received_at")
+  receivedByUserId String?   @map("received_by_user_id")
+
+  cancelledAt       DateTime? @db.Timestamptz(3) @map("cancelled_at")
+  cancelledByUserId String?   @map("cancelled_by_user_id")
+  cancelledReason   String?   @map("cancelled_reason")
+
+  source   EventSource @default(desk)
+  deviceId String?     @map("device_id")
+  note     String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(3) @map("updated_at")
+
+  item       Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  reason     ItemStatusReason? @relation(fields: [reasonId], references: [id], onDelete: Restrict)
+  fromBranch Branch            @relation("ItemTransferFromBranch", fields: [fromBranchId], references: [id], onDelete: Restrict)
+  toBranch   Branch            @relation("ItemTransferToBranch", fields: [toBranchId], references: [id], onDelete: Restrict)
+
+  @@index([itemId])
+  @@map("item_transfers")
+}
+
+/// A note on a copy.
+///
+/// `items.public_note` and `items.staff_note` survive beside this, and the split
+/// is the one `patrons.staff_notes` already makes: a one-line "spine label
+/// damaged" that prints on the record page is a FIELD, and forcing it to be a
+/// dated attributed note is how a field stops being used. This is for the
+/// second note, and the third — the conservation history a copy accumulates over
+/// twenty years.
+/// @replicated entity_kind=item_note
+model ItemNote {
+  id     String @id @default(cuid())
+  itemId String @map("item_id")
+
+  body String
+  /// Whether a reader may see it. Defaults to staff-only: a note written on the
+  /// assumption that nobody outside the building reads it should not become
+  /// public because a later screen offered the choice and defaulted the other
+  /// way.
+  publicNote Boolean @default(false) @map("public_note")
+
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3) @map("created_at")
+  createdByUserId String?   @map("created_by_user_id")
+  updatedAt       DateTime  @db.Timestamptz(3) @map("updated_at")
+  archivedAt      DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@index([itemId])
+  @@map("item_notes")
+}
