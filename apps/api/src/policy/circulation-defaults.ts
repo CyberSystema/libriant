@@ -63,6 +63,22 @@ export const DEFAULT_IDS = {
    * orders rules in SQL; see the loader.
    */
   wildcardRule: 'rule-default',
+  /**
+   * THE OPENING CALENDAR, added in phase 16 — and it is a correction of a
+   * phase-13 decision rather than an addition to it.
+   *
+   * Phase 13 deliberately seeded no calendar, on the argument that it had no
+   * acceptance criterion touching calendars and no caller. That was right then
+   * and is wrong now: phase 16 has both, and without a calendar the FIRST
+   * checkout of every provisioned library raises `CALENDAR_NOT_DEFINED_FOR` —
+   * at a desk, with a reader standing there, because `computeDueDate` cannot
+   * roll a due date against a calendar that does not exist.
+   *
+   * `circ-policy` is right to refuse rather than to invent one (§4.1: "never
+   * fails open to a default policy"), so the fix belongs here, where a SEED is a
+   * row a librarian can see and edit rather than a fallback nobody wrote.
+   */
+  calendar: 'cal-default',
 } as const;
 
 /** 1.0's `tenant_settings` circulation defaults, as the six rows they become. */
@@ -222,6 +238,7 @@ export function defaultPolicyRows(now: Date) {
  */
 export async function seedCirculationDefaults(
   tx: {
+    calendar: { count: () => Promise<number>; create: (a: never) => Promise<unknown> };
     circulationRule: { count: () => Promise<number>; create: (a: never) => Promise<unknown> };
     loanPolicy: { create: (a: never) => Promise<unknown> };
     overdueFinePolicy: { create: (a: never) => Promise<unknown> };
@@ -233,6 +250,7 @@ export async function seedCirculationDefaults(
   now: Date,
 ): Promise<boolean> {
   if ((await tx.circulationRule.count()) > 0) return false;
+  await seedDefaultCalendar(tx, now);
   const rows = defaultPolicyRows(now);
   await tx.loanPolicy.create({ data: rows.loanPolicy } as never);
   await tx.overdueFinePolicy.create({ data: rows.finePolicy } as never);
@@ -244,6 +262,67 @@ export async function seedCirculationDefaults(
     where: { id: 1 },
     create: { id: 1, circulationRulesEnabled: false, updatedAt: now },
     update: {},
+  } as never);
+  return true;
+}
+
+/**
+ * An always-open calendar, so a due date can be computed on day one.
+ *
+ * ## Open every day, `closedDayHandling: 'keep'`, and that combination is chosen
+ *
+ * It behaves IDENTICALLY to a library with no calendar at all — nothing rolls,
+ * no day is closed, a fourteen-day loan is due in fourteen days — which is the
+ * whole point: seeding it changes no due date anywhere, and it turns
+ * `CALENDAR_NOT_DEFINED_FOR` from something a librarian meets at a desk on a
+ * Saturday into something nobody meets. A seed that altered behaviour would be a
+ * migration nobody asked for; §6 phase 23 owns the UI where a library enters its
+ * real hours, and the moment it does, fines and due dates start rolling because
+ * the library said so.
+ *
+ * 00:00 to 24:00 rather than a plausible 09:00-17:00, for the same reason. Real
+ * hours that nobody chose would make a 16:00 checkout due at 17:00 on a day the
+ * library never said it shut.
+ *
+ * ## The horizon, and the job that has to extend it
+ *
+ * `defined_to` is a real bound: `circ-policy` refuses past it by name rather
+ * than extrapolating, because a calendar that answers for a date it was never
+ * given is a calendar that invents opening hours. Ten years is chosen so that
+ * `maxPeriod` on a long deposit loan cannot reach it, and `partition-maintenance`
+ * is where the extension will live when phase 23 gives a library real hours to
+ * extend — recorded here so the obligation is inherited rather than the horizon
+ * quietly expiring in 2036.
+ */
+export async function seedDefaultCalendar(
+  tx: {
+    calendar: { count: () => Promise<number>; create: (a: never) => Promise<unknown> };
+  },
+  now: Date,
+): Promise<boolean> {
+  if ((await tx.calendar.count()) > 0) return false;
+  const from = new Date(Date.UTC(now.getUTCFullYear() - 1, 0, 1));
+  const to = new Date(Date.UTC(now.getUTCFullYear() + 10, 11, 31));
+  await tx.calendar.create({
+    data: {
+      id: DEFAULT_IDS.calendar,
+      code: 'DEFAULT',
+      name: 'Open every day',
+      nameI18n: { el: 'Ανοιχτά κάθε μέρα', en: 'Open every day' },
+      definedFrom: from,
+      definedTo: to,
+      updatedAt: now,
+      hours: {
+        // A weekday with no rows is CLOSED all day — absence is the encoding,
+        // which is why `calendar_hours` has no `closed boolean`. Seven rows is
+        // therefore the only way to say "open every day".
+        create: [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({
+          weekday,
+          openMin: 0,
+          closeMin: 1440,
+        })),
+      },
+    },
   } as never);
   return true;
 }

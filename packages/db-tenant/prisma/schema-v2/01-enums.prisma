@@ -565,3 +565,32 @@ enum ReadingHistoryMode {
 
   @@map("reading_history_mode")
 }
+
+/// What a `loan_events` row records.
+///
+/// INVENTED. §3 names `loan_events` in the Circulation table list and gives it
+/// no DDL; `effective_at` appears exactly once in the whole plan of record, in
+/// the phase-16 line. So every value here is a decision, and the rule for
+/// choosing them is the one phase 15 used for `item_status_reasons`: declare
+/// what this phase WRITES, not what a later one might.
+///
+/// Phase 21 widens it — declare-lost, mark-found, claims-returned,
+/// claims-never-borrowed, recall, repolicy (§6 phase 21, plus the
+/// `POST /circulation/loans/repolicy` route §3 names as "writing a `loan_event`
+/// per loan"). `ALTER TYPE … ADD VALUE` is a one-line migration, so pre-declaring
+/// six values nothing writes would buy nothing and would make the enum a list of
+/// intentions rather than a list of facts.
+enum LoanEventKind {
+  checked_out
+  renewed
+  returned
+  /// The link to the patron being severed. §3: "`loans.patron_id` is nulled and
+  /// `anonymised_at` stamped IN THE SAME TRANSACTION as the return." The event
+  /// is written because the severing is a thing that happened to the loan and a
+  /// library has to be able to show that it happened — but note the event
+  /// carries no patron id either, so the record of the erasure is not itself a
+  /// re-identification.
+  anonymised
+
+  @@map("loan_event_kind")
+}

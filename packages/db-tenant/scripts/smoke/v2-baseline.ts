@@ -54,6 +54,7 @@ const TABLES: Readonly<Record<string, readonly string[]>> = {
     'reading_history_policy',
   ],
   'v2-items': ['item_status_reasons', 'item_status_history', 'item_transfers', 'item_notes'],
+  'v2-circulation-events': ['loan_events', 'circulation_statistics'],
   'v2-policy': [
     'calendars',
     'calendar_hours',
@@ -163,7 +164,8 @@ export async function teardown(): Promise<void> {
               patron_category_limits, circulation_rules,
               patron_number_counters, patron_cards, patron_identifiers, patron_addresses,
               patron_relationships, patron_blocks, patron_messages, patron_notes, patron_merges,
-              item_status_reasons, item_status_history, item_transfers, item_notes
+              item_status_reasons, item_status_history, item_transfers, item_notes,
+              loan_events, circulation_statistics
      RESTART IDENTITY CASCADE`,
   );
   // The two singletons are NOT truncated. They are seeded by the migration
@@ -855,6 +857,145 @@ export const v2Modules: SmokeModule[] = [
         );
       }
       ok('item_status_history is append-only — no updated_at, no archived_at');
+    },
+    reset: teardown,
+  },
+  {
+    name: 'v2-circulation-events',
+    describes: 'the two instants, the partitioned rollup, and the three change-feed columns',
+    async run() {
+      await tablesExistAndAreEmpty('v2-circulation-events');
+      await seedMinimalChain();
+      await v2Query(url(), `INSERT INTO loans (${LOAN_COLUMNS}) VALUES (${loanValues('l1')})`);
+
+      // ---- occurred_at and effective_at, which is the phase line -----------
+      await expectSqlstate(
+        url(),
+        `INSERT INTO loan_events (id, loan_id, kind, occurred_at, effective_at, branch_id)
+         VALUES ('e_future', 'l1', 'checked_out', pg_catalog.now(),
+                 pg_catalog.now() + interval '1 hour', 'smk_b')`,
+        '23514',
+        'an event cannot have happened after Postgres learned of it — the service clamps',
+      );
+      await v2Query(
+        url(),
+        `INSERT INTO loan_events (id, loan_id, kind, occurred_at, effective_at, branch_id)
+         VALUES ('e_back', 'l1', 'checked_out', pg_catalog.now(),
+                 pg_catalog.now() - interval '3 days', 'smk_b')`,
+      );
+      note(
+        'but a BACKDATED one is accepted, and that is the whole point of the pair: a wand that ' +
+          'synced on Monday a checkout it took on Friday, and a Saturday book drop opened on ' +
+          'Monday. accrueOverdue is fed effective_at, or it charges three days nobody owes.',
+      );
+
+      // ---- money on an event: paired, non-negative, and not both ----------
+      await expectSqlstate(
+        url(),
+        `INSERT INTO loan_events (id, loan_id, kind, effective_at, branch_id, overdue_cents)
+         VALUES ('e_nc', 'l1', 'returned', pg_catalog.now(), 'smk_b', 250)`,
+        '23514',
+        'an amount without a currency is refused',
+      );
+      await expectSqlstate(
+        url(),
+        `INSERT INTO loan_events
+           (id, loan_id, kind, effective_at, branch_id, overdue_cents, currency, fine_error_code)
+         VALUES ('e_both', 'l1', 'returned', pg_catalog.now(), 'smk_b', 250, 'EUR', 'CAL')`,
+        '23514',
+        'a computed fine AND a refusal to compute one are exclusive — phase 18 must be able to ' +
+          'tell "nothing was owed" from "we could not work out what was owed"',
+      );
+
+      // ---- the partitioned rollup -----------------------------------------
+      await expectSqlstate(
+        url(),
+        `INSERT INTO circulation_statistics
+           (period_start, branch_id, item_type_id, patron_category_id)
+         VALUES (pg_catalog.date_trunc('month', pg_catalog.now())::date + 5, 'smk_b', 'smk_it', 'pc')`,
+        '23514',
+        'a rollup row must be the first of a month',
+      );
+      await expectSqlstate(
+        url(),
+        `INSERT INTO circulation_statistics
+           (period_start, branch_id, item_type_id, patron_category_id)
+         VALUES (pg_catalog.date_trunc('month', pg_catalog.now() + interval '40 months')::date,
+                 'smk_b', 'smk_it', 'pc')`,
+        '23514',
+        'a period past the window fails LOUDLY — there is no DEFAULT partition, deliberately',
+      );
+      const parts = await v2Query<{ n: string }>(
+        url(),
+        `SELECT pg_catalog.count(*)::text AS n
+           FROM pg_catalog.pg_inherits i
+           JOIN pg_catalog.pg_class p ON p.oid = i.inhparent
+          WHERE p.relname = 'circulation_statistics'`,
+      );
+      if (Number(parts[0]!.n) < 27) {
+        throw new Error(`circulation_statistics has ${parts[0]!.n} partition(s), expected 27`);
+      }
+      ok('circulation_statistics is partitioned monthly, 27 partitions, same window as audit_log');
+
+      // ---- the three change-feed columns that had no writer ---------------
+      await v2Query(
+        url(),
+        `BEGIN;
+         SELECT pg_catalog.set_config('libriant.actor_kind', 'device', true),
+                pg_catalog.set_config('libriant.actor_id', 'u1', true),
+                pg_catalog.set_config('libriant.device_id', 'dev-1', true),
+                pg_catalog.set_config('libriant.client_change_id',
+                                      '1e4f8a3c-0000-4000-8000-000000000001', true);
+         INSERT INTO item_types (id, code, name, updated_at)
+         VALUES ('smk_it2', 'DVD', 'DVD', pg_catalog.now());
+         COMMIT`,
+      );
+      const fed = await v2Query<{ cci: string | null; xmin_set: boolean }>(
+        url(),
+        `SELECT client_change_id::text AS cci, (commit_xmin IS NOT NULL) AS xmin_set
+           FROM change_events WHERE entity_id = 'smk_it2'`,
+      );
+      if (fed[0]?.cci !== '1e4f8a3c-0000-4000-8000-000000000001' || fed[0]?.xmin_set !== true) {
+        throw new Error(
+          `change_events did not record the client change id and commit xmin: ` +
+            `${JSON.stringify(fed[0])}`,
+        );
+      }
+      ok(
+        'change_events records client_change_id and commit_xmin — created in phase 9, filled here',
+      );
+
+      const watermark = await v2Query<{ n: string }>(
+        url(),
+        `SELECT pg_catalog.count(*)::text AS n FROM change_events
+          WHERE commit_xmin < pg_catalog.pg_snapshot_xmin(pg_catalog.pg_current_snapshot())`,
+      );
+      if (Number(watermark[0]!.n) === 0) {
+        throw new Error('the §4.2 commit-watermark read returns nothing; commit_xmin is unusable');
+      }
+      note(
+        '§4.2 reads the feed "with a commit watermark (row_version < pg_snapshot_xmin(...)) so ' +
+          'no late-committing transaction is skipped". That read was impossible against a NULL ' +
+          'column, and change_events is append-only — so no later phase could have backfilled it.',
+      );
+
+      // An unattributed write on the same backend must still land as `system`
+      // rather than raising 22P02 on the new uuid cast: an unset custom GUC is
+      // '' and not NULL after the first set_config on that backend.
+      await v2Query(
+        url(),
+        `INSERT INTO material_types (id, code, name, updated_at)
+         VALUES ('smk_mt2', 'CD', 'CD', pg_catalog.now())`,
+      );
+      const plain = await v2Query<{ kind: string; cci: string | null }>(
+        url(),
+        `SELECT actor_kind AS kind, client_change_id::text AS cci
+           FROM change_events WHERE entity_id = 'smk_mt2'`,
+      );
+      if (plain[0]?.kind !== 'system' || plain[0]?.cci !== null) {
+        throw new Error(`an unattributed write landed as ${JSON.stringify(plain[0])}`);
+      }
+      ok('an unattributed write still lands as system, and NULLIF saves the uuid cast from 22P02');
     },
     reset: teardown,
   },

@@ -106,10 +106,12 @@ export class ItemStatusService {
    * `item_status_history_is_a_change` would refuse the row anyway.
    */
   async applyWithin(tx: TxV2, input: TransitionInput): Promise<TransitionResult> {
-    const before = await tx.item.findUnique({
-      where: { id: input.itemId },
-      select: { id: true, status: true, currentBranchId: true },
-    });
+    const before =
+      input.beforeReadUnderLock ??
+      (await tx.item.findUnique({
+        where: { id: input.itemId },
+        select: { id: true, status: true, currentBranchId: true },
+      }));
     if (before === null) throw new NotFoundException('No such copy.');
 
     const toStatus = input.toStatus ?? before.status;
@@ -302,6 +304,25 @@ export type TransitionInput = {
   readonly actorUserId?: string | null;
   readonly deviceId?: string | null;
   readonly now?: Date;
+  /**
+   * The copy's state, ALREADY READ under the caller's locks.
+   *
+   * An optimisation with a sharp edge, added in phase 16 because a checkin
+   * otherwise reads `items` twice in one transaction — once to find the loan
+   * with its copy, once here — and the phase is accepted at "≤ 12 statements per
+   * transaction".
+   *
+   * THE NAME IS THE CONTRACT. A row read BEFORE the locks were taken is a guess,
+   * and passing one here writes a `from_status` that was never true — a history
+   * that is wrong in exactly the way a history is supposed to be right. The
+   * caller that reads it must be the caller that took `lockKey('item', id)`, and
+   * it must read it after.
+   */
+  readonly beforeReadUnderLock?: {
+    readonly id: string;
+    readonly status: ItemStatusValue;
+    readonly currentBranchId: string;
+  };
 };
 
 export type TransitionResult = {

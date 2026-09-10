@@ -397,6 +397,39 @@ groups:
             `[scheduled] started` naming it, and BullMQ's job schedulers under
             the `lbr-bull` prefix.
 
+      # Phase 16. The baseline migration deliberately made a missing partition
+      # LOUD — "a missing future partition makes the INSERT fail with 23514,
+      # which is loud and fixable; a DEFAULT partition silently swallows those
+      # rows into a heap that can never be partitioned afterwards" — and named
+      # phase 16's job as "what stops the loud failure ever happening". This is
+      # the alert that sentence promises.
+      #
+      # It fires with MONTHS to spare, which is the whole point: the failure it
+      # prevents is an INSERT that raises 23514 in the middle of a checkout, and
+      # an alert that fired on the day would be a page about something already
+      # broken. Six is roughly two release cycles of warning.
+      #
+      # A tenant restored from an old backup is the realistic trigger, not a
+      # broken job: its window is whatever it was when the dump was taken, and
+      # `partition-maintenance` extends it on the next tick. So a single firing
+      # that clears within a day is that, and one that persists is the job.
+      - alert: LibriantPartitionWindowClosing
+        expr: libriant_partition_headroom_months < 6
+        for: 2h
+        labels: { severity: warning }
+        annotations:
+          summary: 'Only {{ $value }} month(s) of partition window left'
+          description: >-
+            The tightest partitioned table in the fleet (audit_log or
+            circulation_statistics) has fewer than six months of monthly
+            partitions ahead of it. When the window closes, every INSERT past the
+            last partition fails with 23514 — deliberately, because there is no
+            DEFAULT partition — which stops audited writes and the statistics
+            rollup. The daily partition-maintenance sweep normally keeps this at
+            24; check the worker log for the tenant it failed on. A tenant
+            restored from an old backup shows up here once and clears on the next
+            tick.
+
       - alert: LibriantCatalogProjectionDrift
         # `bib_records` is what the OPAC, facets, browse and every report read;
         # `marc_records` is what the catalogue actually says. When they disagree

@@ -2691,3 +2691,365 @@ docblock claimed it was, and phase 15 checked: the gate's rule is "a column name
 `id` must be TEXT", and this table has no column named `id`, so the check skips it
 rather than waiving it. An exemption is a decision somebody signed; a skip is a
 rule that never applied. Corrected in place.
+
+---
+
+## Phase 16 — circulation engine, part 1
+
+Checkout, checkin and renew; two new tables; the lock gate phase 10 deferred;
+three columns of the change feed that had never had a writer; and the
+anonymisation §3 calls "an IFLA/NISO professional obligation and a Greek DPA
+answer", which phase 14 created a policy row for and left to this phase to
+perform.
+
+§6's acceptance clause is five sentences and each is a test in
+`apps/api/test/integration/circulation.spec.ts`. What follows is what had to be
+decided, and the four things that were decided wrongly first.
+
+### The lock gate: the deferral was right, for a reason phase 10 could not see
+
+`platform/locks.ts` shipped the helper in phase 10 and refused the gate, on the
+argument that "a gate shipped with 25 allowlist entries pointing at code the
+phase-20 cutover deletes is a gate that checks nothing while looking like
+coverage". Phase 16 found NINETEEN bare call sites, and the deferral turns out to
+have been right for a better reason than the one given: they are not one pile,
+they are three.
+
+**Nine** are in `loans`, `reservations`, `members` and one scheduled job, all of
+which phase 20 deletes. They are allowlisted by DIRECTORY with that citation —
+and because an allowlist entry that stops matching FAILS, phase 20 is forced to
+delete the entries in the same commit that deletes the code.
+
+**Nine** are CONTROL-PLANE locks: billing, import staging, quota, staff seats.
+They are in a different Postgres database and can never contend with a tenant
+lock, so ranking them against `patron` would be inventing an ordering to
+reassure a reader. Their domains are deliberately absent from
+`LOCK_DOMAIN_RANK`, which turns "these are in different databases" from a fact
+somebody has to know into a type error.
+
+**One** was in the 2.0 tree — `PolicyWriteService.seedDefaults`, on
+`policy:<tenantId>`, already spelling the key this file's way and hashing it
+this file's way "so the two can never collide by accident". It was a
+`LockDomain` in everything but the type, and it is one now.
+
+So the gate guards the tenant plane with ZERO exemptions on it, which is the
+only state in which a gate is worth having. `policy` ranks 0, before `patron`,
+and the argument is simultaneity rather than tidiness: a tenant-wide
+configuration key is derivable before any read, so every path that wants one
+wants it as its FIRST statement and only afterwards discovers which patron or
+item it will touch. The reverse derivation does not exist and cannot — there is
+no "look up the item, then lock its policy". §3 gives phase 21 a
+`POST /circulation/loans/repolicy` that must hold the configuration steady while
+re-pricing N open loans, which will be the first transaction here to hold two
+domains at once.
+
+### PROBE, LOCK, RE-VERIFY — and the deadlock this phase nearly shipped
+
+A checkin is keyed on an ITEM barcode and cannot know the PATRON until it has
+found the loan. So the natural implementation takes `item:` then `patron:`,
+which is the inversion of the rank, and it deadlocks against checkout.
+
+Measured on these tables, two lanes taking the same two keys in opposite orders:
+**3 deadlocks in 120 transactions**, and in a longer earlier run 17 `40P01` in
+fifteen seconds with the first at 1,165 ms. Through `orderLocks` the four-lane
+mixed workload did **1,000 operations with 251 refusals and zero deadlocks**.
+
+The rule is now written in `locks.ts` because checkin will not be the last
+caller that meets it:
+
+1. read what you need to learn the key, OUTSIDE the transaction, and treat the
+   answer as a GUESS;
+2. open the transaction and take every lock, sorted, in one call;
+3. re-read under the locks and check the guess still holds — if it does not, the
+   world moved and the caller must retry rather than proceed.
+
+Step 3 is what makes step 1 safe. Skipping it is the same defect as locking after
+the read, which `locks.ts` already measured to be exactly the protection of no
+lock at all.
+
+**The break test is the point.** A four-lane soak proves nothing on its own: a
+checkout with NO advisory lock also passes "one open loan per copy" (the partial
+unique does that), and four lanes that never contend report zero for as long as
+you care to run them. So the spec carries a test that reproduces the inverted
+order and asserts it DOES deadlock. Without it, "zero deadlocks" is an
+observation rather than a claim.
+
+`acquireLocks` also became ONE statement — `FROM pg_catalog.unnest($1::text[])`
+over an already-sorted array, because a Function Scan produces rows in array
+order. NOT two calls in a SELECT target list: target-list evaluation order is
+unspecified, and trading the ordering guarantee to save a round trip would be
+trading away the entire point of the module.
+
+### `effective_at` is not `occurred_at`, and the difference is money
+
+The phase line says "`loan_events` with `occurred_at` **and** `effective_at`" and
+the plan of record says nothing else — the word `effective_at` appears exactly
+once in the whole document. The surrounding schema settles it: `change_events`,
+`audit_log` and `item_status_history` all already use `occurred_at` to mean "when
+Postgres learned", so `effective_at` is the new column and means "when it
+happened, at a desk, in the world".
+
+They differ in the two cases the schema already anticipates — `EventSource.offline`
+exists for a client replaying its queue, and a Saturday book drop is opened on
+Monday. `accrueOverdue`'s `asOf` is documented as "a return, or a sweep's own
+clock" and must be fed `effective_at`; fed `occurred_at`, a wand that syncs on
+Monday charges three days of fine on a Friday return and the receipt is already
+printed.
+
+Both are NOT NULL, with `effective_at <= occurred_at` as a CHECK. The nullable
+alternative — "NULL means the same instant" — puts a `COALESCE` in the fine
+calculation, the due-date calculation, the rollup and every report, and one
+forgotten `COALESCE` is a silent overcharge. The service CLAMPS rather than
+letting the CHECK fire: a device with a fast clock must not hand a librarian a
+`23514` they cannot act on, and clamping IS what §6 phase 78 means by
+"clock-skew clamping".
+
+### The policy is frozen and the calendar is NOT
+
+This is the one asymmetry in the design and it looks like an inconsistency.
+
+The POLICY is what the library DECIDED. Re-pricing an open loan because somebody
+edited a rule this morning is charging a reader under terms that did not exist
+when they borrowed the book — not a bug, a false statement on a receipt. So
+`policy-pinning.ts` freezes the three policies that price the loan, the rule id,
+the snapshot version, the branch and its timezone.
+
+The CALENDAR is what HAPPENED. A closure entered after the fact is a CORRECTION
+OF THE RECORD, and `OverdueFinePolicy.countClosedDays: false` exists precisely so
+a reader is not fined for a day the door was locked. Freezing it would mean a
+snowstorm closure entered on Tuesday could never forgive the Monday it closed,
+and a librarian would waive the fines by hand, one reader at a time.
+
+The DUE DATE has no such tension, which is why the asymmetry is safe: it is
+computed once, stored in `loans.due_at`, and never re-derived. The frozen
+`rolls` explain it without needing the hours.
+
+**The naive version of this test passes on a broken implementation.** Asserting
+that `dueAt` is unchanged after a rule edit proves nothing — it is a column.
+What proves it is a RENEWAL after the edit: the loan period was halved from 14 to
+7 through the real trigger path, `circulation_policy_version` bumped, and the
+renewal still extended by fourteen days because it priced from the frozen
+snapshot.
+
+`hold` and `notice` are excluded from the snapshot: §3 pins a hold policy on
+`holds` "identically", so phase 17 freezes its own, and §4.4 gives the
+notification engine channel resolution at SEND time, so a frozen template binding
+would send last year's letter in this year's branding.
+
+### Four things that were decided wrongly first, and what corrected them
+
+**Hashing the server's own clock.** `sync-replay.ts` states the rule — "OUT: the
+server's clock. It differs on every attempt by definition" — and the first
+implementation then hashed `effectiveAt` AFTER defaulting it to `clock.now()`,
+so every replay was a mismatch and every device would have been told 409 for ever.
+The replay test found it. The hash now covers the CLAIMED instant, `null` when
+the caller gave none.
+
+**`loan_events` was going to be unreplicated.** The argument was that `loans` is
+already replicated, so a device has the state it needs in order to lend. True and
+beside the point: `item_status_history` has been `@replicated` since phase 15, so
+leaving this one out would mean a device replica could say what happened to a
+COPY and not what happened to a LOAN — and §6 phase 78 owes the librarian a
+reconciliation report written by comparing the two, event for event. The test
+found it: a checkin wrote three change events where the docblock predicted two.
+
+**`CARD_EXPIRED` was going to move into `packages/circ-policy`.** Phase 14's
+`patron-blocks.service.ts` says "three codes appear in both lists
+(`too_many_overdues`, `fine_limit_exceeded`, `card_expired`) … the resolver still
+computes its own answer at checkout". Two of the three did. The tempting fix was
+to add the third to `BLOCK_CODE` — and `blocks.test.ts` refuses it by name, with
+the argument that "patron and item STATE is deliberately absent: deciding it needs
+a query, and this package makes none". That boundary is right: an expiry is not a
+comparison against a policy value, and there is no policy field saying whether an
+expired card may borrow. `CheckoutService` refuses it directly, beside the
+archived reader and the suspended one, and phase 14's paragraph was corrected
+instead.
+
+**A backtick inside a SQL comment, again.** The phase-14 lesson, re-learned in
+`checkout.service.ts`: a backtick in a `--` comment terminates the JS template
+literal it lives in, mid-statement. Also re-learned: `COALESCE` and `NULLIF` are
+SQL CONSTRUCTS, not functions, so `pg_catalog.coalesce(...)` is `42883 function
+does not exist` — the `pg_catalog.`-qualify-everything convention does not reach
+them.
+
+### THE POOL IS ONE CONNECTION, so a nested client call inside a transaction
+
+### self-deadlocks
+
+The most expensive finding of the phase, and it is not in any file the phase
+added. `CheckoutService` called `PatronBlocksService.liveBlocks(tenant, …)` from
+inside its own `$transaction`, which is the obvious thing to write and which the
+phase-14 module docblock explicitly invited: "exported because phase 16's
+checkout has to see the blocks in the same transaction as the loan it is about to
+refuse."
+
+`TenantPrismaService` clamps the per-tenant pool — measured on a real boot,
+"50 tenant(s) × 1 connection(s) × 2 datamodel(s) = peak 100 of a 118 budget;
+clamped: poolMax 5→1" — so the open transaction holds the tenant's ONLY
+connection and the nested read waits for a connection that cannot be returned
+until the transaction it is inside commits.
+
+**The symptom points at the wrong line.** It is not a deadlock error: it is
+Prisma's 5,000 ms interactive-transaction timeout, reported against whatever
+statement came next, which was `loan.create`. Thirteen tests failed at exactly
+5,0xx ms each.
+
+The rule is general and now lives on `liveBlocksWithin`: nothing inside a
+`$transaction` may reach the tenant client again, and every collaborator a
+transactional service calls has to take the `tx`.
+
+### Three columns of the change feed that had never had a writer
+
+`change_events.client_change_id`, `change_events.commit_xmin`, and the sequence
+number a write's own event got. All three were created in the phase-9 baseline
+and none had ever been filled, because until this phase nothing in the 2.0 tree
+produced a change with a client change id or needed to correlate a write with its
+own feed entry.
+
+They are filled NOW because `change_events` is APPEND-ONLY. A column added to an
+append-only table is NULL for every row already written and no later phase can
+backfill it — the same argument phase 9 recorded for `008/00-05` and phase 15 for
+`patron_age_band`. Phase 16 is the first phase producing rows worth correlating,
+so it is the last cheap moment.
+
+- `client_change_id` from a fourth actor GUC beside the three the phase-9b
+  rewrite already reads. A device replaying its queue has to recognise its own
+  change coming back down the feed.
+- `commit_xmin` from `pg_current_xact_id()`. §4.2 reads the feed "with a commit
+  watermark (`row_version < pg_snapshot_xmin(pg_current_snapshot())`) so no
+  late-committing transaction is skipped", and that read is impossible against
+  a NULL column. `pg_current_xact_id()` and not `txid_current()`: the former
+  returns `xid8`, which is what the column is; the latter wraps at 4 billion.
+- the published sequence, via `set_config('libriant.last_event_seq', …, true)`,
+  so `sync_client_changes.server_event_seq` costs no query and is not a guess.
+  A transaction that fired several triggers publishes the LAST, which is the
+  position after everything it did.
+
+`commit_xmin` also turned out to be the right instrument for the phase's own
+budget: every event a single transaction writes shares one transaction id, so
+"the checkin was one transaction" is "its events have one distinct commit_xmin".
+
+### `circulation_statistics` is a rollup, not a counter
+
+§3 writes it "`circulation_statistics` (partitioned)" and nothing else. A counter
+bumped inside the checkout transaction would be a hot row in exactly the
+transaction this phase is accepted on — 25-way concurrent checkout of the SAME
+item — so all 25 would additionally serialise on one statistics row, for a number
+nobody reads until month end. It is rebuilt hourly from `loan_events` instead,
+current month and previous, because a rollup that can be recomputed can be
+repaired and a counter incremented in-transaction can only be believed. §8 risk 7
+makes the same argument about the fee ledger.
+
+The counters are COLUMNS rather than rows keyed by a `kind` enum, forced from
+three directions at once: a partitioned table's unique index must contain every
+partitioning column (`0A000`), the rollup is an `INSERT … ON CONFLICT DO UPDATE`,
+and an enum-predicate arbiter raises `42P10` through Prisma's parameterised cast
+while working by hand in psql. All four dimensions are NOT NULL because a unique
+index treats two NULLs as distinct, and a nullable dimension would silently
+accumulate duplicate buckets — which a dashboard renders as a plausible number.
+
+The baseline migration named this phase for the partition job: "PHASE 16 OWNS THE
+JOB THAT ROLLS THE WINDOW FORWARD, and its alert is what stops the loud failure
+ever happening." `partition-maintenance` is driven by a registry rather than a
+hardcoded table, because `audit_log` was the first, this is the second, and §6
+phase 26's `analytics.fact_circulation` will be the third. The metric is
+HEADROOM, not a run counter: the failure being prevented is a `23514` months from
+now, so the alert has to fire while there is still time to act.
+
+### Measured
+
+```
+  4-way mixed soak        1,000 operations, 251 refusals, 0 deadlocks
+  inverted lock order       120 transactions, 3 deadlocks   (the break test)
+  25-way same-copy race       1 commit, 24 × 23505, 0 × 40P01
+  checkin                  p50 6.04 ms / p99 8.16 ms        (budget 40)
+  checkin change events      4, under ONE commit_xmin
+```
+
+The wire statement count is NOT asserted, and the reason is written into the spec
+rather than left as a silence: it needs `pg_stat_statements`, which is not
+loadable on the cluster the suite runs against (`CREATE EXTENSION` succeeds on the
+Homebrew server and the view then reports "must be loaded via
+shared_preload_libraries"; `logging_collector` is off, so the statement log is not
+readable either). It IS preloaded in the compose files, so a check against the
+container would say it works — the two-cluster trap this repo has now paid for
+four times. What is asserted instead is sharper for what the budget protects: ONE
+transaction, and the exact row footprint, so an N+1 inside a loop shows up as a
+count that scales with the fixture where twelve would not have noticed on a
+fixture of one.
+
+### Decisions worth their sentence
+
+**Phase 16 writes no `fees`.** Three independent reasons, any one sufficient.
+`fees.account_id` and `fee_type_id` are NOT NULL and phase 18 owns
+`patron_accounts` and `fee_types`, so a fee row here would have to invent an
+account id — which is inventing the double-entry invariant a phase early. The
+seeded fine rate is zero and `fees_amount_positive CHECK (amount_cents > 0)`
+refuses a zero row, so it is unreachable anyway. And a placeholder `account_id`
+written onto real loans is a data-repair job for phase 18 rather than a one-line
+migration. What phase 16 does instead is COMPUTE the amount from the frozen
+snapshot and record it on the `loan_event`, which is what makes "editing a rule
+does not change an open loan's fine" checkable and what phase 18 will bill from.
+
+**A return is never refused.** Not for a block, not for an expired card, not
+because the fine could not be worked out. A copy coming back onto the shelf is a
+fact about the world, and making it conditional on an arithmetic question about
+money is the mistake 1.0 made by conflating `returned_at` with `closed_at`. When
+`accrueOverdue` refuses — a calendar that does not reach far enough is the
+realistic case — the refusal is recorded as `fine_error_code` and the copy is
+shelved.
+
+**Reading history is anonymised in the return transaction.** Phase 14 created
+`reading_history_policy` and never read it, recording that phase 16 owns the
+transaction. This is it: `patron_id` nulled, `anonymised_at` stamped, in the same
+UPDATE as the return. Which is also why `patron_age_band` had to be computed at
+CHECKOUT — it is derived from a date of birth, and after the return there is no
+patron row to derive it from, so "defer it" and "lose it for ever" are one
+sentence. And why `loan_events` carries NO patron id: an event log keeping its own
+copy would make the anonymisation cosmetic, with the link surviving one join away
+in a table nobody remembered to check.
+
+**A renewal that would move the due date backwards is refused.** `renewFrom:
+'currentDueDate'` on an overdue loan computes fourteen days from a date already
+past, which can land before today; `loans_due_after_loaned` does not catch it,
+because the new due date is still after the original checkout. So a librarian
+would "renew" a book and make it more overdue with no error. Refused at the
+service rather than clamped in the package: `circulation-defaults.ts` records
+that 1.0's base is `max(dueAt, now)` and that "`renewFrom` has no value that
+means both", so a silent clamp would invent a third semantics nobody configured,
+for all eight consumers.
+
+**Batch renewal is N transactions.** One transaction holding N patron and item
+locks grows its lock set with the reader's shelf. Each renewal is its own
+transaction and its own row in the result, so a block on the third does not roll
+back the first two — which is also the answer a librarian wants: "these four
+renewed, this one is on hold for somebody else" is useful and "nothing renewed"
+is not.
+
+**`CheckinDisposition` is derived and not stored.** The facts that produce it are
+each already stored by their owning phase, so a stored enum beside them is a
+second answer that can drift; and it is an INSTRUCTION rather than a state, which
+goes stale the moment somebody acts on it. All four values are declared even
+though phase 16 can only reach two, because a client should not need redeploying
+to understand a returned book.
+
+**An always-open calendar is now seeded, correcting phase 13.** Phase 13
+deliberately seeded none, on the argument that it had no acceptance criterion
+touching calendars and no caller. Phase 16 has both, and without one the FIRST
+checkout of every provisioned library raises `CALENDAR_NOT_DEFINED_FOR` — at a
+desk, with a reader standing there. Open 00:00–24:00 with `closedDayHandling:
+'keep'`, which behaves identically to having no calendar at all: it changes no
+due date anywhere and makes the refusal unreachable. Plausible 09:00–17:00 hours
+nobody chose would have made a 16:00 checkout due at 17:00 on a day the library
+never said it shut. The seed order in provisioning INVERTED as a result —
+circulation before items — because `branches.calendar_id` is a foreign key.
+
+**No new permission keys.** `circ.loan.read`, `circ.loan.checkout`,
+`circ.loan.return` and `circ.loan.renew` were minted in phase 3, so the busiest
+surface in the product needed no new capability and `docs/api/openapi.v1.json` is
+unchanged. That is what landing the permission model in M0 was for.
+
+**`service_points` re-phased to 18/23.** `loans.checkout_service_point_id` stays
+NULL: a service point earns its columns from the cash drawer (phase 18) and the
+branch/desk switcher (phase 23), and phase 16 has neither. The same refusal phase
+15 made for `floating_rules` and phase 14 for the patron identity side.

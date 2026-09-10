@@ -438,8 +438,11 @@ async function seedTenantDefaultsFor(credential: {
   });
   try {
     const now = new Date();
-    const items = await seedItemDefaults(clientV2 as never, now);
+    // Circulation FIRST: from phase 16 it writes the always-open calendar, and
+    // `branches.calendar_id` is an FK, so the calendar must exist before the
+    // branch that names it. See `TenantProvisioningService.seedDefaults`.
     const circulation = await seedCirculationDefaults(clientV2 as never, now);
+    const items = await seedItemDefaults(clientV2 as never, now);
     log(
       SCRIPT,
       `  2.0 defaults: ${items ? 'branch, location, item type and material type seeded' : 'org rows already present'}; ` +

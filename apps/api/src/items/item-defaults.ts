@@ -36,6 +36,7 @@
  * already created its own branches must add nothing. An upsert on a fixed id
  * would silently rewrite a branch a librarian had renamed.
  */
+import { DEFAULT_IDS } from '../policy/circulation-defaults.js';
 
 export const DEFAULT_ITEM_IDS = {
   /**
@@ -83,6 +84,13 @@ export async function seedItemDefaults(client: SeedClient, now: Date): Promise<b
         nameI18n: { el: 'Κεντρική βιβλιοθήκη', en: 'Main library' },
         kind: 'branch',
         timezone: DEFAULT_TIMEZONE,
+        // The always-open calendar `seedCirculationDefaults` writes. Without a
+        // calendar the branch's FIRST checkout raises `CALENDAR_NOT_DEFINED_FOR`
+        // — `computeDueDate` cannot roll a due date against a calendar that does
+        // not exist, and `circ-policy` refuses rather than inventing one. Which
+        // is why the circulation seed now runs BEFORE this one; see
+        // `TenantProvisioningService.seedDefaults`.
+        calendarId: DEFAULT_IDS.calendar,
         depth: 0,
         createdAt: now,
         updatedAt: now,

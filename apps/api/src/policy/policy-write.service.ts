@@ -5,6 +5,7 @@ import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TxV2 } from '../tenancy/tenant-tx-v2.js';
+import { acquireLocks, lockKey } from '../platform/locks.js';
 import { DEFAULT_IDS, seedCirculationDefaults } from './circulation-defaults.js';
 import { PolicySnapshotService } from './policy-snapshot.service.js';
 import { TenantClockService } from './tenant-clock.service.js';
@@ -67,9 +68,11 @@ export class PolicyWriteService {
     const outcome = await client.$transaction(
       async (tx) => {
         // The whole tenant's policy configuration is one lock domain; there is
-        // no per-row contention to model. `hashtextextended` matches
-        // `platform/locks.ts` so the two can never collide by accident.
-        await tx.$executeRaw`SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${`policy:${tenant.id}`}, 0))`;
+        // no per-row contention to model. Phase 13 wrote this key by hand,
+        // spelling it and hashing it exactly as `platform/locks.ts` does "so the
+        // two can never collide by accident"; phase 16 made `policy` a real
+        // LockDomain and this the call it always should have been.
+        await acquireLocks(tx, [lockKey('policy', tenant.id)]);
         await setChangeActor(tx, changeActorOf(actor));
 
         // The same function the provisioning path calls, so a library created

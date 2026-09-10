@@ -49,6 +49,20 @@ export type ChangeActor = {
   readonly id: string | null;
   /** The offline client that produced this change, from M8. */
   readonly deviceId?: string | null;
+  /**
+   * The device's own idempotency key for this change, from phase 16.
+   *
+   * `change_events.client_change_id` has existed since the phase-9 baseline and
+   * had no writer until something circulated. It is what lets a device
+   * RECOGNISE ITS OWN WRITE coming back down the feed — without it, a client
+   * replaying its queue cannot tell the change it made from a change somebody
+   * else made to the same row, and either re-applies or stalls.
+   *
+   * Filled now rather than later because `change_events` is APPEND-ONLY: a
+   * column added to it is NULL for every row already written and no later phase
+   * can backfill it.
+   */
+  readonly clientChangeId?: string | null;
 };
 
 /**
@@ -58,8 +72,17 @@ export type ChangeActor = {
  * is why the phase-9 enum kept them verbatim; `device` has no 1.0 equivalent and
  * arrives with M8.
  */
-export function changeActorOf(actor: TenantActor, deviceId?: string | null): ChangeActor {
-  return { kind: actor.actorType, id: actor.actorId, deviceId: deviceId ?? null };
+export function changeActorOf(
+  actor: TenantActor,
+  deviceId?: string | null,
+  clientChangeId?: string | null,
+): ChangeActor {
+  return {
+    kind: actor.actorType,
+    id: actor.actorId,
+    deviceId: deviceId ?? null,
+    clientChangeId: clientChangeId ?? null,
+  };
 }
 
 /** The system actor, for sweeps and migrations. Explicit rather than implied. */
@@ -80,5 +103,6 @@ export async function setChangeActor(tx: RawExecutor, actor: ChangeActor): Promi
   await tx.$executeRaw`SELECT
     pg_catalog.set_config('libriant.actor_kind', ${actor.kind}, true),
     pg_catalog.set_config('libriant.actor_id', ${actor.id ?? ''}, true),
-    pg_catalog.set_config('libriant.device_id', ${actor.deviceId ?? ''}, true)`;
+    pg_catalog.set_config('libriant.device_id', ${actor.deviceId ?? ''}, true),
+    pg_catalog.set_config('libriant.client_change_id', ${actor.clientChangeId ?? ''}, true)`;
 }

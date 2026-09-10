@@ -127,6 +127,7 @@ model Branch {
   itemHistoryTo     ItemStatusHistory[] @relation("ItemHistoryToBranch")
   itemTransfersFrom ItemTransfer[]      @relation("ItemTransferFromBranch")
   itemTransfersTo   ItemTransfer[]      @relation("ItemTransferToBranch")
+  loanEvents        LoanEvent[]
 
   @@index([parentBranchId])
   @@map("branches")

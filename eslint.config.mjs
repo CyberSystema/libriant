@@ -26,6 +26,46 @@ import globals from 'globals';
  */
 
 /**
+ * Phase 16's advisory-lock boundary, as a syntax rule.
+ *
+ * §6 phase 16: "`locks.ts` that SORTS keys by domain rank (patron < bib < item)
+ * before acquiring, with a CI grep forbidding a bare `pg_advisory_xact_lock`
+ * outside it."
+ *
+ * WHY AN ORDER NEEDS A GATE. A hand-written lock is correct in isolation and
+ * cannot agree with the lock another transaction is taking at the same moment.
+ * Measured during phase 16 on the real tables: a checkin taking `item:` then
+ * `patron:` — the natural order, because checkin is keyed on a barcode and
+ * cannot know the patron until it has read the loan — produced 17 `40P01` in
+ * fifteen seconds against a concurrent checkout, the first at 1,165 ms. Through
+ * `orderLocks` the same workload produced zero. The order has to be decided in
+ * ONE place, and a call site that spells the lock itself has left that place
+ * without saying so.
+ *
+ * `TemplateElement[value.cooked=…]` rather than a string match, and that choice
+ * is what makes the rule precise: a template element is the TEXT INSIDE a
+ * template literal, so the rule sees `tx.$executeRaw`…pg_advisory_xact_lock…``
+ * and is structurally incapable of seeing the eight doc-comment mentions of the
+ * same token elsewhere in `apps/api/src` — every one of which is a file
+ * explaining why it locks. A grep has to blank comments to get there;
+ * `scripts/check-advisory-locks.ts` does exactly that, because it also has to
+ * read `.sql`, which ESLint cannot.
+ *
+ * THE EXEMPTIONS ARE THE SAME LIST IN BOTH FILES and they fall into three
+ * groups: what phase 20 deletes, what is a CONTROL-PLANE lock in a different
+ * database (and therefore has no rank to sort against), and `locks.ts` itself.
+ * The tenant plane has none, which is the only state in which a boundary is
+ * worth having.
+ */
+const ADVISORY_LOCK_WRITES = [
+  {
+    selector: 'TemplateElement[value.cooked=/pg_(try_)?advisory_(xact_)?lock/]',
+    message:
+      'Take advisory locks through acquireLocks(tx, [lockKey(domain, id)]) from platform/locks.ts, which SORTS by domain rank (policy < patron < bib < item) before acquiring. Two transactions taking the same two locks in opposite orders deadlock and Postgres kills one, which reaches a librarian as a save that failed with no explanation — measured at 17 x 40P01 in fifteen seconds, the first at 1,165 ms. A control-plane lock in a different database genuinely has no rank; add the file to ALLOWED in scripts/check-advisory-locks.ts with that reason (2.0 phase 16).',
+  },
+];
+
+/**
  * Phase 15's single-status-writer boundary, as a syntax rule.
  *
  * The claim is `docs/architecture/libriant-2.0/MASTER-ARCHITECTURE.md` §6 phase
@@ -313,31 +353,91 @@ export default tseslint.config(
   },
   {
     /**
-     * `items.status` and `items.current_branch_id` have exactly one writer.
-     * Phase 15 of the 2.0 program. The argument is on `ITEM_STATE_WRITES` above.
+     * The two 2.0 boundaries that apply to essentially all of `apps/api/src`:
+     * phase 15's single-status-writer and phase 16's advisory-lock ordering.
      *
-     * Scoped to `apps/api/src/**` rather than to `apps/api/src/items/**`,
-     * because the whole point is what happens OUTSIDE this directory: phase 16's
-     * checkout, phase 17's holds and phase 23's transit desk all want to move a
-     * copy, and the rule is what makes each of them import the service instead
-     * of writing the column. It lands against a tree with zero existing 2.0 item
-     * writers — measured, against 16 in 1.0, which are on a different model and
-     * a different client and which phase 20 deletes — so it lands clean, which
-     * is the only moment a boundary rule is ever free.
+     * THEY SHARE A BLOCK BECAUSE THEY SHARE A RULE NAME. A flat-config entry
+     * REPLACES a rule's options for every file it matches, so two blocks both
+     * matching `apps/api/src/**` and both setting `no-restricted-syntax` do not
+     * compose — the later one silently wins and the earlier one's selectors stop
+     * firing everywhere. Phase 15 recorded that trap; phase 16 walked into it,
+     * and its break test is what caught it, because ESLint reported zero on a
+     * hand-planted bare lock. The blocks below are therefore organised by
+     * EXEMPTION SET, not by rule, and each one restates every selector that
+     * should apply to the files it matches.
      */
     files: ['apps/api/src/**/*.ts'],
-    ignores: ['apps/api/src/items/item-status.service.ts', 'apps/api/src/items/items.service.ts'],
+    ignores: [
+      // Phase 15's two, which have their own blocks below.
+      'apps/api/src/items/item-status.service.ts',
+      'apps/api/src/items/items.service.ts',
+      // Phase 16's advisory exemptions, which keep the item boundary and lose
+      // the lock one. See `scripts/check-advisory-locks.ts` for the three
+      // groups and the reason attached to each.
+      'apps/api/src/loans/**',
+      'apps/api/src/reservations/**',
+      'apps/api/src/members/**',
+      'apps/api/src/jobs/reservation-expiry.job.ts',
+      'apps/api/src/billing/**',
+      'apps/api/src/import/**',
+      'apps/api/src/customization/quota.service.ts',
+      'apps/api/src/staff/**',
+      'apps/api/src/platform/locks.ts',
+    ],
+    rules: {
+      'no-restricted-syntax': ['error', ...ITEM_STATE_WRITES, ...ADVISORY_LOCK_WRITES],
+    },
+  },
+  {
+    // The advisory-lock exemptions. They keep the item-status boundary — a 1.0
+    // service could still be edited to write `item.status` and should not be —
+    // and lose only the lock rule.
+    files: [
+      'apps/api/src/loans/**/*.ts',
+      'apps/api/src/reservations/**/*.ts',
+      'apps/api/src/members/**/*.ts',
+      'apps/api/src/jobs/reservation-expiry.job.ts',
+      'apps/api/src/billing/**/*.ts',
+      'apps/api/src/import/**/*.ts',
+      'apps/api/src/customization/quota.service.ts',
+      'apps/api/src/staff/**/*.ts',
+      'apps/api/src/platform/locks.ts',
+    ],
     rules: {
       'no-restricted-syntax': ['error', ...ITEM_STATE_WRITES],
     },
   },
   {
     // The one file that may establish a copy's initial place and may never move
-    // it. See the two-exemption note on `ITEM_STATE_WRITES`; `item-status.service.ts`
-    // is absent from both blocks because it IS the writer.
+    // it. See the two-exemption note on `ITEM_STATE_WRITES`.
     files: ['apps/api/src/items/items.service.ts'],
     rules: {
-      'no-restricted-syntax': ['error', ...ITEM_STATE_UPDATES],
+      'no-restricted-syntax': ['error', ...ITEM_STATE_UPDATES, ...ADVISORY_LOCK_WRITES],
+    },
+  },
+  {
+    // `item-status.service.ts` IS the status writer and is exempt from that
+    // boundary entirely. It is NOT exempt from the lock one — it takes an item
+    // lock on the desk path and must take it through `acquireLocks` like
+    // everything else.
+    files: ['apps/api/src/items/item-status.service.ts'],
+    rules: {
+      'no-restricted-syntax': ['error', ...ADVISORY_LOCK_WRITES],
+    },
+  },
+  {
+    /**
+     * `scripts/**` takes the lock rule and nothing else.
+     *
+     * In scope because a maintenance script runs against the same database as
+     * the desk — `fine-accrual` already races a return — so a lock taken there
+     * is exactly as unordered as one taken in a service. Not in scope for the
+     * item boundary: `scripts/**` is CLI and fixtures, and
+     * `check:item-status-writer` reads it as text already.
+     */
+    files: ['scripts/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': ['error', ...ADVISORY_LOCK_WRITES],
     },
   },
   {
@@ -421,10 +521,12 @@ export default tseslint.config(
         ...CIRCULATION_CLOCK_READS,
         ...CIRCULATION_DATE_ARITHMETIC,
         // Carried forward, not inherited. A flat-config block REPLACES a rule's
-        // options for the files it matches, so omitting this would switch phase
-        // 15's boundary off for exactly the two directories most likely to move
-        // a copy — which is the silent kind of hole a gate is supposed to close.
+        // options for the files it matches, so omitting these would switch the
+        // phase-15 and phase-16 boundaries off for exactly the two directories
+        // most likely to move a copy or take a lock — the silent kind of hole a
+        // gate is supposed to close.
         ...ITEM_STATE_WRITES,
+        ...ADVISORY_LOCK_WRITES,
       ],
     },
   },
@@ -437,7 +539,12 @@ export default tseslint.config(
       'apps/api/src/policy/policy-snapshot.service.ts',
     ],
     rules: {
-      'no-restricted-syntax': ['error', ...CIRCULATION_DATE_ARITHMETIC, ...ITEM_STATE_WRITES],
+      'no-restricted-syntax': [
+        'error',
+        ...CIRCULATION_DATE_ARITHMETIC,
+        ...ITEM_STATE_WRITES,
+        ...ADVISORY_LOCK_WRITES,
+      ],
     },
   },
   {

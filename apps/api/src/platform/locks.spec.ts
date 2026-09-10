@@ -54,16 +54,47 @@ describe('advisory lock ordering', () => {
     expect(ordered).toHaveLength(1);
   });
 
-  it('issues one statement per key, in the sorted order', async () => {
-    const calls: string[] = [];
+  it('issues ONE statement, carrying the keys in the sorted order', async () => {
+    // Phase 16 merged the per-key loop into a single `FROM unnest($1::text[])`,
+    // because a checkin is budgeted at twelve statements and two locks were two
+    // of them. The array is what carries the order now, and a Function Scan
+    // produces its rows in array order — which is why it is `FROM unnest(...)`
+    // and NOT two calls in a SELECT target list, whose evaluation order is
+    // unspecified. Trading the ordering guarantee to save a round trip would be
+    // trading away the entire point of this module.
+    const batches: unknown[][] = [];
     const tx = {
       $executeRaw: vi.fn(async (_q: TemplateStringsArray, ...values: unknown[]) => {
-        calls.push(String(values[0]));
+        batches.push(values);
         return 1;
       }),
     };
     await acquireLocks(tx, [lockKey('item', 'i1'), lockKey('patron', 'p1')]);
-    expect(calls).toEqual(['patron:p1', 'item:i1']);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]![0]).toEqual(['patron:p1', 'item:i1']);
+  });
+
+  it('issues NOTHING when there is nothing to lock', async () => {
+    // A checkin whose loan has already been anonymised has no patron key, and
+    // `unnest` of an empty array would take no lock and still cost a round trip
+    // in a transaction that is counting them.
+    const tx = { $executeRaw: vi.fn(async () => 1) };
+    await acquireLocks(tx, []);
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('ranks `policy` first, and the argument is simultaneity', () => {
+    // Added in phase 16 for `PolicyWriteService`, which was taking the key by
+    // hand. It sorts FIRST because a tenant-wide configuration key is derivable
+    // before any read, so every path that wants one wants it as its first
+    // statement and only afterwards discovers which patron or item it touches.
+    // The reverse derivation does not exist: there is no "look up the item, then
+    // lock its policy".
+    expect(LOCK_DOMAIN_RANK.policy).toBeLessThan(LOCK_DOMAIN_RANK.patron);
+    expect(orderLocks([lockKey('item', 'i'), lockKey('policy', 't')]).map(lockToken)).toEqual([
+      'policy:t',
+      'item:i',
+    ]);
   });
 
   it('uses the same token shape the 1.0 services already use', () => {

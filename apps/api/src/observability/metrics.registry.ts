@@ -319,6 +319,21 @@ export const METRICS = [
     why: 'The denominator. It is what makes a drift count readable — 12 of 12 is a projector change, 12 of 400,000 is a lost write — and a threshold on the total size of the fleet catalogue would page on a successful import.',
   }),
   defineMetric({
+    name: 'libriant_partition_headroom_months',
+    help: 'Months of monthly partitions still ahead of the current month, for the tightest partitioned table in the fleet.',
+    type: 'gauge',
+    source: 'worker',
+    alert: true,
+  }),
+  defineMetric({
+    name: 'libriant_partitions_created_total',
+    help: 'Monthly partitions created by the last partition-maintenance run.',
+    type: 'gauge',
+    source: 'worker',
+    alert: false,
+    why: 'Zero is the normal and correct value — a month passes once a month, so this is non-zero on about one tick in thirty. A threshold on it would page on a working system, and the failure it would supposedly catch (the window running out) is what libriant_partition_headroom_months alerts on, from the other end and with time to act.',
+  }),
+  defineMetric({
     name: 'libriant_email_outbox_rows',
     help: 'E-mail outbox rows by status.',
     type: 'gauge',

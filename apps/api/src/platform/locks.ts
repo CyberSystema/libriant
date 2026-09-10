@@ -32,20 +32,37 @@
  * configurable, because the value of a total order is that it is the same one
  * everywhere.
  *
- * ## Why this exists in phase 10 rather than phase 16
+ * ## The gate landed in phase 16, and the shape it took
  *
  * §6 phase 16 owns this file by name, together with "a CI grep forbidding a bare
- * `pg_advisory_xact_lock` outside it". Phase 10 needs one lock, and writing it
- * by hand would add a 26th hand-rolled call site to a pile phase 16 then has to
- * find and rewrite.
+ * `pg_advisory_xact_lock` outside it". Phase 10 wrote the helper and deferred
+ * the gate, on the argument that "a gate shipped with 25 allowlist entries
+ * pointing at code the phase-20 cutover deletes is a gate that checks nothing
+ * while looking like coverage".
  *
- * So the helper lands now and the GATE does not. There are 25 bare call sites in
- * 1.0 services today, and a gate shipped with 25 allowlist entries pointing at
- * code the phase-20 cutover deletes is a gate that checks nothing while looking
- * like coverage. Phase 16 migrates the 1.0 call sites it keeps and lands the
- * grep against a tree where it can be clean. Until then this file is the
- * convention for NEW code, enforced by review rather than by CI — which is
- * stated here rather than implied.
+ * Phase 16 found NINETEEN bare call sites, and the deferral turned out to be
+ * right for a reason phase 10 could not see: they fall into three groups, not
+ * one.
+ *
+ *   NINE are in `apps/api/src/{loans,reservations,members}` plus one scheduled
+ *   job, and phase 20 deletes all of them. They are allowlisted by DIRECTORY
+ *   with that citation — and because an allowlist entry that stops matching
+ *   FAILS, phase 20 is forced to delete the entries in the same commit that
+ *   deletes the code.
+ *
+ *   NINE are CONTROL-PLANE locks — billing, import staging, quota, staff seats.
+ *   They live in a different Postgres database and can never contend with a
+ *   tenant lock, which is why their domains are deliberately absent from
+ *   `LOCK_DOMAIN_RANK` below rather than ranked against `patron`.
+ *
+ *   ONE was in the 2.0 tree: `PolicyWriteService.seedDefaults`. It is now a
+ *   `policy` domain and goes through `acquireLocks`.
+ *
+ * So the gate guards the tenant plane with zero exemptions ON that plane, which
+ * is the only state in which a gate is worth having. `check:advisory-locks`
+ * reads `.sql` too, because a migration can take a lock and ESLint cannot read
+ * SQL — the complementary-blindness argument `check:item-status-writer` makes,
+ * in the other direction.
  */
 
 /**
@@ -55,8 +72,41 @@
  * is always taken before an item lock. Adding a domain means deciding where it
  * sits relative to these three, which is a real design question and should look
  * like one.
+ *
+ * ## `policy` is rank 0, and the argument is SIMULTANEITY
+ *
+ * Phase 16 added it, for the one 2.0 call site that was taking a bare lock —
+ * `PolicyWriteService.seedDefaults`, on `policy:<tenantId>`, which was already
+ * spelling the key this file's way and hashing it this file's way "so the two
+ * can never collide by accident". It was a `LockDomain` in everything but the
+ * type.
+ *
+ * It sorts FIRST because the ordering a rank encodes is which lock a transaction
+ * can discover it needs while already holding another. `policy:<tenantId>` is
+ * derivable from the tenant alone — known before any read — so every path that
+ * wants it wants it as its first statement and only afterwards discovers which
+ * patron, bib or item it will touch. The reverse derivation does not exist and
+ * cannot: there is no "look up the item, then lock its policy", because the
+ * policy lock is not per-policy-row. The relation is strictly one-directional,
+ * which is exactly what a rank is for.
+ *
+ * The pair that makes it concrete is not hypothetical: §3 gives phase 21 a
+ * `POST /circulation/loans/repolicy` route that must hold the policy
+ * configuration steady while it re-prices N open loans — `policy:<t>` plus N
+ * patron and item keys, in one transaction, and the first transaction in this
+ * codebase to hold two domains at once.
+ *
+ * ## What is NOT here, and why refusing is the useful part
+ *
+ * `billing:`, `import-staging:` and `quota:<tenant>:<feature>` are locks on the
+ * CONTROL-PLANE database. They can never contend with a tenant lock because they
+ * are not in the same database, so ranking them against `patron` would be
+ * ranking two things that cannot meet. Leaving them out turns "these are in
+ * different databases" from a fact somebody has to know into a type error, and
+ * `check:advisory-locks` records them as what they are.
  */
 export const LOCK_DOMAIN_RANK = {
+  policy: 0,
   patron: 1,
   bib: 2,
   item: 3,
@@ -116,22 +166,58 @@ export type RawExecutor = {
 };
 
 /**
- * Take every lock, in order, inside the caller's transaction.
+ * Take every lock, in order, inside the caller's transaction. ONE statement.
  *
- * MUST be the first statement of the transaction, before any read. That is not
- * a style preference: measured, taking the lock AFTER the read gives exactly the
- * protection of no lock at all, because both readers complete before either lock
- * is requested. It is also the natural left-to-right reading of "advisory lock →
- * hash precondition", which is why it is written down here.
+ * MUST be the first statement of the transaction, before any read — with the one
+ * exception below, which is stated here because phase 16 hit it immediately.
+ * That is not a style preference: measured, taking the lock AFTER the read gives
+ * exactly the protection of no lock at all, because both readers complete before
+ * either lock is requested.
+ *
+ * ## THE PROBE EXCEPTION, and the rule that keeps it safe
+ *
+ * A caller sometimes cannot know its highest-ranked key until it has read
+ * something. Checkin is the first instance and will not be the last: it is
+ * keyed on an ITEM barcode and cannot know the PATRON until it has found the
+ * loan — so the natural implementation takes `item:` and then `patron:`, which
+ * is the inversion of this rank, and it deadlocks against checkout within about
+ * a second. Measured on the real tables: the `item:`→`patron:` order produced 17
+ * `40P01` in fifteen seconds, the first at 1,165 ms.
+ *
+ * The rule is PROBE, LOCK, RE-VERIFY:
+ *
+ *   1. read what you need to learn the key — OUTSIDE the transaction, or at
+ *      least before any lock, and treat the answer as a guess;
+ *   2. open the transaction and take every lock, sorted, in one call;
+ *   3. re-read under the locks and check the guess still holds. If it does not,
+ *      the world moved between 1 and 2 and the caller must retry rather than
+ *      proceed on the stale answer.
+ *
+ * Step 3 is what makes step 1 safe, and skipping it is the same defect as
+ * locking after the read: the guess protects nothing on its own. The branch is
+ * cheap — one indexed row — and it must be exercised by a test, or it is
+ * untested code on the hottest path in the building.
+ *
+ * ## Why one statement rather than a loop
+ *
+ * `FROM pg_catalog.unnest($1::text[])` over an ALREADY-SORTED array: a Function
+ * Scan produces its rows in array order, so the acquisition order is the one
+ * `orderLocks` decided. It saves N−1 round trips inside a transaction budgeted
+ * at twelve statements.
+ *
+ * NOT two calls in one target list. Target-list evaluation order is unspecified,
+ * and the entire value of this file is that the order is fixed — a merge that
+ * gave that up to save a round trip would be trading the guarantee for the cost
+ * of the guarantee.
  *
  * `hashtextextended(text, 0)` rather than a hand-assigned integer: the key space
  * is 2^64 and the names are readable in `pg_locks` via the query text, whereas a
  * table of magic numbers is a second thing to keep in step.
  */
 export async function acquireLocks(tx: RawExecutor, keys: readonly LockKey[]): Promise<void> {
-  for (const key of orderLocks(keys)) {
-    await tx.$executeRaw`SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${lockToken(
-      key,
-    )}, 0))`;
-  }
+  const tokens = orderLocks(keys).map(lockToken);
+  if (tokens.length === 0) return;
+  await tx.$executeRaw`
+    SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(k, 0))
+      FROM pg_catalog.unnest(${tokens}::text[]) AS k`;
 }

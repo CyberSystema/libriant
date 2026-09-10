@@ -386,10 +386,10 @@
       "reason": "NOT A §3 TABLE, AND DELIBERATELY NOT `tenant_settings`. That one is named by §3's Platform line and stays `deferred / various` — \"owned by the phase that first needs it\" — because what phase 13 needs is ONE boolean, `circulation_rules_enabled`, not a cross-cutting settings singleton whose other columns belong to phases that have not been designed. Creating it here would mean inventing them, which is the guess this whole manifest exists to refuse, and it would hand every later phase a table it has to migrate rather than create. It also cannot be `public.tenant_settings`, the 1.0 table: phase 20 renames `public` to `v1_archive`, at which point a 2.0 service reading it is reading an archive. AND IT IS NOT A PLAN FEATURE. `EffectivePlanService.unlimitedPlan` rewrites every plan boolean to TRUE whenever `BILLING_ENABLED` is false, which is the configuration this product ships, so a plan-gated `circulation_rules_enabled` would be ON for every library — the exact inverse of §8 risk 6's \"simple mode is the DEFAULT\" — and `PlanGuard` answers 402 Payment Required, which a five-person school library that never asked for a rules matrix has not earned. If the matrix ever becomes sellable, the established two-layer shape is `tenant_settings.reservations_enabled` layered UNDER the plan capability: the plan key grants it and this column stays the switch."
     },
     "circulation_statistics": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 writes it \"`circulation_statistics` (partitioned)\" and nothing else. A ROLLUP, not a per-act stream: `loan_events` is already the per-act record, and a counter bumped inside the checkout transaction would be a hot row in exactly the transaction this phase is accepted on (25-way concurrent checkout of the same item) as well as costing one of the twelve statements a checkin is allowed. Rebuilt hourly from `loan_events` by `circulation-statistics-rollup`, so it can be repaired; an in-transaction counter can only be believed. The counters are COLUMNS rather than rows keyed by an enum, forced from three directions: a partitioned table's unique index must contain every partitioning column (0A000), the rollup is an ON CONFLICT DO UPDATE, and an enum-predicate arbiter raises 42P10 through Prisma. Partitioned monthly on `period_start` with no DEFAULT partition, like `audit_log`, and rolled forward by `partition-maintenance` — the job the baseline assigned to phase 16 by name. NOT `@replicated`: it is derived."
     },
     "collection_fields": {
       "status": "deferred",
@@ -728,10 +728,10 @@
       "reason": "A control-plane table. Not in a tenant database at all."
     },
     "loan_events": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it in the Circulation line and gives it no DDL — the word `effective_at` appears exactly once in the whole plan of record, in the phase-16 line — so every column is a phase-16 decision. `occurred_at` keeps the meaning `change_events`, `audit_log` and `item_status_history` already give it (when Postgres learned) and `effective_at` is the new one (when it happened, at a desk, in the world); they differ for an offline replay and for a Saturday book drop, and `accrueOverdue` must be fed the second or a wand that syncs on Monday charges three days of fine on a Friday return. It carries NO patron_id: §3 nulls `loans.patron_id` on return, and an event log keeping its own copy would make that anonymisation cosmetic. NOT `@replicated` — `loans` already is, so a device gets the state it needs to lend, and replicating the event log would put a second divergent answer beside `change_events`."
     },
     "loan_policies": {
       "status": "created",
@@ -1208,9 +1208,9 @@
     },
     "service_points": {
       "status": "deferred",
-      "phase": "various",
+      "phase": "18/23",
       "group": "Platform",
-      "reason": "Owned by the phase that first needs it; see §6."
+      "reason": "RE-PHASED BY PHASE 16, from \"various\" to 18/23, having reached the first phase that could plausibly have needed it. `loans.checkout_service_point_id` exists and phase 16 leaves it NULL: a service point earns its columns from the CASH DRAWER (§6 phase 18, \"payment methods, cash drawer, receipts\") and from the branch/desk switcher (§6 phase 23, multi-branch operations), and phase 16 has neither. Inventing them now would be inventing them with no caller, no UI and no fixture — the same failure phase 15 refused for `floating_rules` and phase 14 for the patron identity side."
     },
     "shelving_locations": {
       "status": "created",

@@ -52,7 +52,7 @@ export type PatronDataTable = {
 };
 
 /**
- * The eleven that exist, plus the ones later phases will add.
+ * The twelve that exist, plus the ones later phases will add.
  *
  * Ordered as the bundle renders them: the person, then how the library reaches
  * them, then what they did.
@@ -111,6 +111,28 @@ export const PATRON_DATA_TABLES: readonly PatronDataTable[] = [
     // return is unaffected, and the copy's own history — when it went out, when
     // it came back — is the library's record and not the borrower's.
     onErase: 'anonymise',
+  },
+  {
+    table: 'loan_events',
+    // NOT `patron_id`. The table has no such column, deliberately, and that is
+    // this entry's whole point.
+    patronColumn: '(reached through loans.id)',
+    verdict: 'excluded',
+    // §3 nulls `loans.patron_id` on return, in the same transaction. An event
+    // log keeping its own copy of the patron id would make that anonymisation
+    // COSMETIC — the link would survive one join away, in a table nobody
+    // remembered to check — so phase 16 gave it none. Severing the loan's link
+    // severs this one too, with no second erasure path to forget.
+    //
+    // Listed here rather than omitted precisely BECAUSE it holds circulation
+    // history: a reader of this map should be able to see that the question was
+    // asked and answered, which is what §5's `check:dsar-coverage` will
+    // eventually enforce and what a silence would hide.
+    onErase: 'retain',
+    reason:
+      'It holds no patron column. Every row is reached through `loans`, whose `patron_id` an ' +
+      'erase nulls — so an erase reaches these rows by construction rather than by a rule ' +
+      'somebody has to remember to write.',
   },
   {
     table: 'fees',

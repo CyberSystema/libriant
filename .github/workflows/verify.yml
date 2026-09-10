@@ -241,6 +241,18 @@ jobs:
       - name: Only ItemStatusService writes items.status
         run: pnpm check:item-status-writer
 
+      # Advisory locks are taken through platform/locks.ts, which sorts them
+      # (2.0 phase 16).
+      #
+      # A hand-written lock is correct in isolation and cannot agree with the
+      # lock another transaction is taking at the same moment. Measured on the
+      # real tables: a checkin taking `item:` then `patron:` produced 17 x 40P01
+      # in fifteen seconds against a concurrent checkout, the first at 1,165 ms;
+      # through `orderLocks` the same workload produced zero. This is the half
+      # that reads `.sql`, which ESLint cannot.
+      - name: Advisory locks go through platform/locks.ts
+        run: pnpm check:advisory-locks
+
       # amtool is run against a COPY with the receiver placeholders substituted,
       # not against the file as committed.
       #

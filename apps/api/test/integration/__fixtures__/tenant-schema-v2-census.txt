@@ -36,6 +36,9 @@ constraint circulation_rules_limits_non_negative ON circulation_rules CHECK ((((
 constraint circulation_rules_pkey ON circulation_rules PRIMARY KEY (id)
 constraint circulation_settings_pkey ON circulation_settings PRIMARY KEY (id)
 constraint circulation_settings_singleton ON circulation_settings CHECK ((id = 1))
+constraint circulation_statistics_non_negative ON circulation_statistics CHECK (((checkouts >= 0) AND (renewals >= 0) AND (returns >= 0)))
+constraint circulation_statistics_period_is_month_start ON circulation_statistics CHECK ((period_start = (date_trunc('month'::text, (period_start)::timestamp with time zone))::date))
+constraint circulation_statistics_pkey ON circulation_statistics PRIMARY KEY (period_start, branch_id, item_type_id, patron_category_id)
 constraint fees_amount_positive ON fees CHECK ((amount_cents > 0))
 constraint fees_pkey ON fees PRIMARY KEY (id)
 constraint fees_settlement_within_charge ON fees CHECK ((((paid_cents + waived_cents) + written_off_cents) <= (amount_cents + tax_cents)))
@@ -77,6 +80,11 @@ constraint item_types_pkey ON item_types PRIMARY KEY (id)
 constraint items_pkey ON items PRIMARY KEY (id)
 constraint items_price_non_negative ON items CHECK (((price_cents IS NULL) OR (price_cents >= 0)))
 constraint items_replacement_cost_non_negative ON items CHECK (((replacement_cost_cents IS NULL) OR (replacement_cost_cents >= 0)))
+constraint loan_events_effective_not_future ON loan_events CHECK ((effective_at <= occurred_at))
+constraint loan_events_fine_computed_or_refused ON loan_events CHECK (((fine_error_code IS NULL) OR (overdue_cents IS NULL)))
+constraint loan_events_overdue_non_negative ON loan_events CHECK ((((overdue_cents IS NULL) OR (overdue_cents >= 0)) AND ((overdue_days IS NULL) OR (overdue_days >= 0))))
+constraint loan_events_overdue_pair ON loan_events CHECK (((overdue_cents IS NULL) = (currency IS NULL)))
+constraint loan_events_pkey ON loan_events PRIMARY KEY (id)
 constraint loan_policies_alt_checkout_pair ON loan_policies CHECK (((alt_checkout_period_with_holds_value IS NULL) = (alt_checkout_period_with_holds_unit IS NULL)))
 constraint loan_policies_alt_renewal_pair ON loan_policies CHECK (((alt_renewal_period_with_holds_value IS NULL) = (alt_renewal_period_with_holds_unit IS NULL)))
 constraint loan_policies_due_time_of_day_range ON loan_policies CHECK (((due_time_of_day_min IS NULL) OR ((due_time_of_day_min >= 0) AND (due_time_of_day_min < 1440))))
@@ -171,6 +179,7 @@ enum hold_pickup_policy = any,owningBranch,patronHomeBranch,holdingBranch,explic
 enum hold_request_type = page,hold,recall
 enum item_level_holds = allow,deny,force
 enum item_status = available,on_loan,in_transit,awaiting_pickup,in_process,missing
+enum loan_event_kind = checked_out,renewed,returned,anonymised
 enum loan_profile = rolling,fixed,indefinite
 enum loan_status = active,recalled,claims_returned,claims_never_borrowed,returned,lost
 enum lost_item_fee_basis = replacementPrice,itemTypeDefault,fixedAmount,actualCost
@@ -211,6 +220,7 @@ index CREATE INDEX calendar_hours_no_overlap ON calendar_hours USING gist (calen
 index CREATE INDEX change_events_branch_seq_idx ON change_events USING btree (branch_id, seq)
 index CREATE INDEX change_events_kind_seq_idx ON change_events USING btree (entity_kind, seq)
 index CREATE INDEX circulation_rules_listing_idx ON circulation_rules USING btree (priority DESC, specificity DESC, id COLLATE "C")
+index CREATE INDEX circulation_statistics_branch_idx ON ONLY circulation_statistics USING btree (branch_id, period_start)
 index CREATE INDEX fees_loan_id_idx ON fees USING btree (loan_id)
 index CREATE INDEX fees_patron_id_status_idx ON fees USING btree (patron_id, status)
 index CREATE INDEX fixed_due_date_ranges_no_overlap ON fixed_due_date_ranges USING gist (set_id, daterange("from", "to", '[]'::text))
@@ -228,6 +238,8 @@ index CREATE INDEX items_holdings_record_id_idx ON items USING btree (holdings_r
 index CREATE INDEX items_item_type_id_idx ON items USING btree (item_type_id)
 index CREATE INDEX items_shelf_available_idx ON items USING btree (bib_id, current_branch_id) WHERE is_shelf_available
 index CREATE INDEX items_shelf_order_idx ON items USING btree (current_branch_id, call_number_sort, id)
+index CREATE INDEX loan_events_loan_idx ON loan_events USING btree (loan_id, occurred_at)
+index CREATE INDEX loan_events_rollup_idx ON loan_events USING btree (branch_id, effective_at)
 index CREATE INDEX loans_bib_id_idx ON loans USING btree (bib_id)
 index CREATE INDEX loans_patron_open_idx ON loans USING btree (patron_id) WHERE (closed_at IS NULL)
 index CREATE INDEX loans_status_due_id_idx ON loans USING btree (status, due_at, id)
@@ -284,6 +296,7 @@ index CREATE UNIQUE INDEX circulation_rules_default_singleton ON circulation_rul
 index CREATE UNIQUE INDEX circulation_rules_pkey ON circulation_rules USING btree (id)
 index CREATE UNIQUE INDEX circulation_rules_scope_unique ON circulation_rules USING btree (COALESCE(patron_category_id, ''::text), COALESCE(item_type_id, ''::text), COALESCE(owning_branch_id, ''::text), COALESCE(shelving_location_id, ''::text), COALESCE(checkout_branch_id, ''::text), COALESCE(pickup_branch_id, ''::text)) WHERE (enabled AND (effective_to IS NULL))
 index CREATE UNIQUE INDEX circulation_settings_pkey ON circulation_settings USING btree (id)
+index CREATE UNIQUE INDEX circulation_statistics_pkey ON ONLY circulation_statistics USING btree (period_start, branch_id, item_type_id, patron_category_id)
 index CREATE UNIQUE INDEX fees_one_open_accrual_per_loan ON fees USING btree (loan_id) WHERE ((loan_id IS NOT NULL) AND is_accruing AND (closed_at IS NULL))
 index CREATE UNIQUE INDEX fees_pkey ON fees USING btree (id)
 index CREATE UNIQUE INDEX fixed_due_date_ranges_pkey ON fixed_due_date_ranges USING btree (id)
@@ -305,6 +318,7 @@ index CREATE UNIQUE INDEX item_types_pkey ON item_types USING btree (id)
 index CREATE UNIQUE INDEX items_barcode_unique_active ON items USING btree (barcode_norm) WHERE ((barcode_norm IS NOT NULL) AND (archived_at IS NULL))
 index CREATE UNIQUE INDEX items_pkey ON items USING btree (id)
 index CREATE UNIQUE INDEX items_rfid_uid_unique ON items USING btree (rfid_tag_uid) WHERE ((rfid_tag_uid IS NOT NULL) AND (archived_at IS NULL))
+index CREATE UNIQUE INDEX loan_events_pkey ON loan_events USING btree (id)
 index CREATE UNIQUE INDEX loan_policies_pkey ON loan_policies USING btree (id)
 index CREATE UNIQUE INDEX loans_one_open_per_item ON loans USING btree (item_id) WHERE (closed_at IS NULL)
 index CREATE UNIQUE INDEX loans_pkey ON loans USING btree (id)
@@ -346,6 +360,7 @@ index CREATE UNIQUE INDEX shelving_locations_pkey ON shelving_locations USING bt
 index CREATE UNIQUE INDEX sync_client_changes_pkey ON sync_client_changes USING btree (device_id, client_change_id)
 index CREATE UNIQUE INDEX work_clusters_pkey ON work_clusters USING btree (id)
 partitioned audit_log BY RANGE (occurred_at)
+partitioned circulation_statistics BY RANGE (period_start)
 trigger CREATE CONSTRAINT TRIGGER patrons_merge_one_hop AFTER INSERT OR UPDATE OF merged_into_id ON patrons DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION lbr2_patrons_merge_one_hop()
 trigger CREATE TRIGGER branches_changelog AFTER INSERT OR DELETE OR UPDATE ON branches FOR EACH ROW EXECUTE FUNCTION lbr2_write_change_event('branch', 'id', 'false')
 trigger CREATE TRIGGER branches_guard_cycle BEFORE INSERT OR UPDATE ON branches FOR EACH ROW EXECUTE FUNCTION branches_guard_cycle()
@@ -376,6 +391,7 @@ trigger CREATE TRIGGER item_status_reasons_changelog AFTER INSERT OR DELETE OR U
 trigger CREATE TRIGGER item_transfers_changelog AFTER INSERT OR DELETE OR UPDATE ON item_transfers FOR EACH ROW EXECUTE FUNCTION lbr2_write_change_event('item_transfer', 'id', 'false')
 trigger CREATE TRIGGER item_types_changelog AFTER INSERT OR DELETE OR UPDATE ON item_types FOR EACH ROW EXECUTE FUNCTION lbr2_write_change_event('item_type', 'id', 'false')
 trigger CREATE TRIGGER items_changelog AFTER INSERT OR DELETE OR UPDATE ON items FOR EACH ROW EXECUTE FUNCTION lbr2_write_change_event('item', 'id', 'false')
+trigger CREATE TRIGGER loan_events_changelog AFTER INSERT OR DELETE OR UPDATE ON loan_events FOR EACH ROW EXECUTE FUNCTION lbr2_write_change_event('loan_event', 'id', 'true')
 trigger CREATE TRIGGER loan_policies_bump_policy_version AFTER INSERT OR DELETE OR UPDATE OR TRUNCATE ON loan_policies FOR EACH STATEMENT EXECUTE FUNCTION lbr2_bump_policy_version()
 trigger CREATE TRIGGER loan_policies_changelog AFTER INSERT OR DELETE OR UPDATE ON loan_policies FOR EACH ROW EXECUTE FUNCTION lbr2_write_change_event('loan_policy', 'id', 'false')
 trigger CREATE TRIGGER loans_changelog AFTER INSERT OR DELETE OR UPDATE ON loans FOR EACH ROW EXECUTE FUNCTION lbr2_write_change_event('loan', 'id', 'false')

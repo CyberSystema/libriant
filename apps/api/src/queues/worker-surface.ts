@@ -1,6 +1,10 @@
 import { renderOutboxCensus } from '../email/outbox-census.js';
 import { renderScheduledJobMetrics } from '../jobs/scheduled-jobs.runner.js';
 import { CATALOG_VERIFY_COUNTS, CATALOG_VERIFY_JOB } from '../jobs/catalog-verify.job.js';
+import {
+  PARTITION_MAINTENANCE_COUNTS,
+  PARTITION_MAINTENANCE_JOB,
+} from '../jobs/partition-maintenance.job.js';
 import { metricHeader, metricLine } from '../observability/metrics.registry.js';
 import type { TenantPoolPlan } from '../platform/tenant-pool-budget.js';
 import { WORKER_CONSUMERS, type ConsumerHandle, type QueueConsumer } from './consumers.js';
@@ -169,6 +173,7 @@ export function renderWorkerMetrics(input: {
     renderScheduledJobMetrics(
       jobResults(states) as Parameters<typeof renderScheduledJobMetrics>[0],
     ),
+    ...renderPartitionMetrics(jobResults(states)),
     ...renderCatalogProjectionMetrics(jobResults(states)),
   ];
   return lines.join('\n');
@@ -208,5 +213,31 @@ function renderCatalogProjectionMetrics(results: Record<string, unknown>): strin
     ...sample('libriant_catalog_projection_drift_total', CATALOG_VERIFY_COUNTS.drift),
     ...metricHeader('libriant_catalog_projection_scanned_total'),
     ...sample('libriant_catalog_projection_scanned_total', CATALOG_VERIFY_COUNTS.scanned),
+  ];
+}
+
+/**
+ * How much partition window is left (2.0 phase 16).
+ *
+ * Same shape and the same reason as the block above: three literals — the
+ * registry name, the handler's `counts` keys and these lookups — used to have to
+ * agree by hand, and renaming any of them silently deleted the only series the
+ * alert reads. Every string here comes from `partition-maintenance.job.ts`.
+ *
+ * ABSENT rather than zero when the sweep has not run. A gauge that read 0 before
+ * the first tick would page for "no partition window" on every worker restart,
+ * which is the same lie the catalog block above avoids by the same means: absent
+ * data leaves the alert without an opinion, which is the honest state.
+ */
+function renderPartitionMetrics(results: Record<string, unknown>): string[] {
+  const run = results[PARTITION_MAINTENANCE_JOB] as { counts?: Record<string, number> } | undefined;
+  const counts = run?.counts;
+  const sample = (metric: Parameters<typeof metricLine>[0], key: string) =>
+    counts && typeof counts[key] === 'number' ? [metricLine(metric, counts[key])] : [];
+  return [
+    ...metricHeader('libriant_partition_headroom_months'),
+    ...sample('libriant_partition_headroom_months', PARTITION_MAINTENANCE_COUNTS.minHeadroomMonths),
+    ...metricHeader('libriant_partitions_created_total'),
+    ...sample('libriant_partitions_created_total', PARTITION_MAINTENANCE_COUNTS.created),
   ];
 }

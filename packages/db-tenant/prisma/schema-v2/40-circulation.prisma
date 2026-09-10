@@ -238,6 +238,7 @@ model Loan {
 
   item   Item    @relation(fields: [itemId], references: [id], onDelete: Restrict)
   patron Patron? @relation(fields: [patronId], references: [id], onDelete: Restrict)
+  events LoanEvent[]
 
   /// NOT partial on `status`. A `WHERE status = 'active'` predicate cannot be
   /// used by the planner here for the enum-cast reason recorded on `Item` —

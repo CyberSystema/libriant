@@ -354,13 +354,17 @@ export class TenantProvisioningService {
     const clientV2 = makeTenantPrismaClientV2({ databaseUrl: targetUrl });
     try {
       const now = new Date();
-      // ORDER MATTERS BETWEEN THESE TWO, and only in one direction: nothing in
-      // the circulation defaults references a branch (the wildcard rule's six
-      // selectors are all NULL, which is what makes it the wildcard), while a
-      // shelving location references a branch. Seeding items first keeps the
-      // dependency pointing the same way as the FKs.
-      await seedItemDefaults(clientV2 as never, now);
+      // ORDER MATTERS, and phase 16 REVERSED it. Nothing in the circulation
+      // defaults references a branch — the wildcard rule's six selectors are all
+      // NULL, which is what makes it the wildcard — but from phase 16 the
+      // circulation seed writes the always-open CALENDAR, and `branches.
+      // calendar_id` is a foreign key with `ON DELETE RESTRICT`. So the calendar
+      // has to exist before the branch that names it.
+      //
+      // Phase 15's comment here said the opposite and was right at the time; the
+      // dependency genuinely inverted when the calendar seed landed.
       await seedCirculationDefaults(clientV2 as never, now);
+      await seedItemDefaults(clientV2 as never, now);
     } finally {
       await clientV2.$disconnect();
     }

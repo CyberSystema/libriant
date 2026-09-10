@@ -18,12 +18,23 @@ import { acquireLocks, lockKey } from '../platform/locks.js';
  * request, that a librarian sees on the patron's screen before the patron
  * reaches the desk, and that a nightly sweep maintains.
  *
- * Three codes appear in both lists (`too_many_overdues`, `fine_limit_exceeded`,
- * `card_expired`) and that is not duplication: the resolver still computes its
- * own answer at checkout, and the two agree because both read the same policy.
- * The stored copy is what makes the answer VISIBLE in advance. The rest —
- * `manual`, `address_unconfirmed`, `items_long_overdue`, `lost_card` — have no
- * computed equivalent at all.
+ * TWO codes appear in both lists — `too_many_overdues` and `fine_limit_exceeded`
+ * — and that is not duplication: the resolver still computes its own answer at
+ * checkout, and the two agree because both read the same policy. The stored copy
+ * is what makes the answer VISIBLE in advance.
+ *
+ * `card_expired` is NOT one of them, and phase 16 corrected this paragraph after
+ * checking. `packages/circ-policy`'s `BLOCK_CODE` has no `CARD_EXPIRED`, and
+ * `blocks.test.ts` asserts its absence by name with the argument that "patron and
+ * item STATE is deliberately absent: deciding it needs a query, and this package
+ * makes none". That boundary is right and phase 16 kept it — an expiry is not a
+ * policy comparison, there is no policy field saying whether an expired card may
+ * borrow, and `evaluateBlocks` answers questions ABOUT policy from counts. So an
+ * expired card is refused by `CheckoutService` directly, beside the archived
+ * patron and the suspended one, and this stored block is what makes it visible
+ * before the reader reaches the desk. The rest — `manual`,
+ * `address_unconfirmed`, `items_long_overdue`, `lost_card` — have no computed
+ * equivalent at all.
  *
  * ## The recompute is an upsert, and §3 says why
  *
@@ -271,8 +282,34 @@ export class PatronBlocksService {
    * — out of a shape callers might start relying on.
    */
   async liveBlocks(tenant: TenantContext, patronId: string): Promise<LiveBlock[]> {
-    const client = this.tenantPrisma.getClientV2(tenant);
-    const rows = await client.patronBlock.findMany({
+    return this.liveBlocksWithin(this.tenantPrisma.getClientV2(tenant), patronId);
+  }
+
+  /**
+   * The same read, on a transaction the caller owns.
+   *
+   * Phase 14's module docblock said `PatronBlocksService` is exported "because
+   * phase 16's checkout has to see the blocks in the same transaction as the
+   * loan it is about to refuse". This is the method that makes that possible,
+   * and phase 16 found out the hard way that it is not optional.
+   *
+   * A checkout that called `liveBlocks(tenant, …)` from inside its own
+   * transaction SELF-DEADLOCKS. `TenantPrismaService` clamps the per-tenant pool
+   * — measured on a real boot: "50 tenant(s) × 1 connection(s) × 2 datamodel(s)
+   * = peak 100 of a 118 budget; clamped: poolMax 5→1" — so the open transaction
+   * holds the tenant's ONLY connection and the nested read waits for a
+   * connection that cannot be returned until the transaction it is inside
+   * commits. The symptom is not a deadlock error: it is Prisma's 5,000 ms
+   * interactive-transaction timeout, reported against whatever statement came
+   * next, which points at the wrong line entirely.
+   *
+   * So the rule is general and belongs here rather than in a comment in
+   * `CheckoutService`: NOTHING inside a `$transaction` may reach the tenant
+   * client again. Every collaborator a transactional service calls has to take
+   * the `tx`.
+   */
+  async liveBlocksWithin(tx: TxV2, patronId: string): Promise<LiveBlock[]> {
+    const rows = await tx.patronBlock.findMany({
       where: { patronId, clearedAt: null },
       orderBy: [{ severity: 'asc' }, { placedAt: 'desc' }],
       select: {

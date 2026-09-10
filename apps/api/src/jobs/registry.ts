@@ -11,6 +11,11 @@ import { sweepStaleStorageTemps } from './storage-temp-cleanup.job.js';
 import { recomputeStorageUsage } from './storage-usage-recompute.job.js';
 import { sweepRetention } from './retention.job.js';
 import { CATALOG_VERIFY_JOB, verifyCatalogProjections } from './catalog-verify.job.js';
+import { PARTITION_MAINTENANCE_JOB, maintainPartitions } from './partition-maintenance.job.js';
+import {
+  CIRCULATION_ROLLUP_JOB,
+  rollUpCirculationStatistics,
+} from './circulation-statistics-rollup.job.js';
 import type { ScheduledJob } from './jobs.types.js';
 
 /**
@@ -153,5 +158,39 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     name: CATALOG_VERIFY_JOB,
     intervalMs: 24 * 60 * 60_000,
     handler: () => verifyCatalogProjections(),
+  },
+  {
+    /**
+     * Roll the monthly partition window forward (2.0 phase 16).
+     *
+     * DAILY, and the cadence is chosen from what it prevents rather than from
+     * what it does. It almost always does nothing: the window is 24 months and
+     * a month passes once a month. What it is guarding against is a `23514` on
+     * an INSERT into `audit_log` or `circulation_statistics` when the window
+     * finally runs out — which the baseline migration deliberately made LOUD,
+     * naming this job and this phase as the reason nobody ever hears it.
+     *
+     * Hourly would re-read every partition catalogue in the fleet twenty-four
+     * times a day to find nothing; weekly would leave a restored-from-backup
+     * tenant with a stale window for a week.
+     */
+    name: PARTITION_MAINTENANCE_JOB,
+    intervalMs: 24 * 60 * 60_000,
+    handler: () => maintainPartitions(),
+  },
+  {
+    /**
+     * Rebuild `circulation_statistics` from `loan_events` (2.0 phase 16).
+     *
+     * Hourly, in the "desk-facing sweeps that are cheap to re-run" band, beside
+     * `fine-accrual` — and for the same reason: it is a full RECOMPUTE of the
+     * current and previous month, so re-running it within the hour is an
+     * idempotent no-op and a missed tick catches up on the next one. A branch
+     * manager looking at this month's figures at 16:00 should not be reading
+     * yesterday's.
+     */
+    name: CIRCULATION_ROLLUP_JOB,
+    intervalMs: 60 * 60_000,
+    handler: () => rollUpCirculationStatistics(),
   },
 ];

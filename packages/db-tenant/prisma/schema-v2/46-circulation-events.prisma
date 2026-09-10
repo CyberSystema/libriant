@@ -1,0 +1,229 @@
+// ---------------------------------------------------------------------------
+// Circulation: what happened, and how much of it happened
+// ---------------------------------------------------------------------------
+//
+// The two tables §3 names in the Circulation list and never describes. Both are
+// INVENTED in `BASELINE-SCOPE.json`'s own vocabulary — §3 gives DDL for `loans`,
+// `circulation_rules` and `holds` and for nothing else in that paragraph — so
+// every column below is a decision phase 16 took, and the reasons are here
+// rather than in a commit message.
+
+/// Everything that has happened to a loan.
+///
+/// ## `occurred_at` AND `effective_at`, which is the whole phase line
+///
+/// The phase-16 line says "`loan_events` with `occurred_at` **and**
+/// `effective_at`" and the document says nothing else about either — the word
+/// `effective_at` appears exactly once in the entire plan of record. The
+/// surrounding schema settles the meaning, and it has to be written down here
+/// because no later reader can re-derive it:
+///
+///   `occurred_at`  when POSTGRES learned. Defaulted to `now()`, exactly as
+///                  `change_events.occurred_at`, `audit_log.occurred_at` and
+///                  `item_status_history.occurred_at` already are. Three event
+///                  tables that mean different things by the same column name
+///                  cannot be read side by side, and they are read side by side.
+///
+///   `effective_at` when it HAPPENED, at a desk, in the world. For a librarian
+///                  standing at the counter the two are the same instant. They
+///                  are not the same for the two cases this schema already
+///                  anticipates: an offline client replaying on Monday a
+///                  checkout it took on Friday (`EventSource.offline` exists for
+///                  exactly that, and `AuditActorKind.device` with it), and a
+///                  librarian recording a return that went into the book drop on
+///                  Saturday.
+///
+/// THE DISTINCTION IS MONEY. `accrueOverdue`'s `asOf` is documented as "the
+/// moment to price up to — a return, or a sweep's own clock", and it must be fed
+/// `effective_at`. A wand that syncs on Monday and prices against `occurred_at`
+/// charges three days of fines on a Friday return, to a patron who did nothing
+/// wrong, and the receipt is already printed. The same holds in the other
+/// direction for a due date: `loans.loaned_at` is an EFFECTIVE instant, which is
+/// why a backdated checkout must still satisfy `loans_due_after_loaned`.
+///
+/// Both are NOT NULL. The tempting alternative — nullable `effective_at`
+/// meaning "same as `occurred_at`" — puts a `COALESCE` in the fine calculation,
+/// the due-date calculation, the statistics rollup and every report, and one
+/// forgotten `COALESCE` is a silent overcharge. "They were equal" is a fact
+/// worth recording, which is the argument `item_transfers` already makes for
+/// spelling "open" as two NULL tests.
+///
+/// `effective_at <= occurred_at` is a CHECK, and the service CLAMPS to satisfy
+/// it. A device with a fast clock would otherwise get a `23514` at the desk for
+/// something no librarian can act on. §6 phase 78 calls this "clock-skew
+/// clamping"; phase 16 is the first phase that can HAVE skew, so it is the phase
+/// that has to survive it.
+///
+/// ## NO `patron_id`, deliberately, and it is not an oversight
+///
+/// §3: "`loans.patron_id` is nulled and `anonymised_at` stamped in the same
+/// transaction as the return … This is an IFLA/NISO professional obligation and
+/// a Greek DPA answer." An event log that kept its own copy of the patron id
+/// would make that anonymisation cosmetic — the link would survive one join
+/// away, in a table nobody remembered to check. The patron is reached THROUGH
+/// the loan, so severing the loan's link severs it here too, with no second
+/// erasure path to forget.
+///
+/// It is also why `patron-data-map.ts` lists this table as reached-through
+/// rather than as a direct holder of personal data.
+///
+/// ## Append-only, and `@replicated` — following phase 15 rather than arguing
+/// ## with it
+///
+/// No `updated_at`, no `archived_at`: the argument `item_status_history` makes,
+/// and `loans` sets the same precedent as an event log with neither.
+///
+/// It IS replicated, and phase 16 changed its mind about that. The first draft
+/// left it out on the argument that `loans` is already replicated, so a device
+/// has the state it needs in order to lend. True, and beside the point:
+/// `item_status_history` is `@replicated` and this is the same kind of table, so
+/// leaving one out would mean a device replica could say what happened to a COPY
+/// and not what happened to a LOAN. §6 phase 78 owes the librarian a
+/// reconciliation report — "which of these receipts was wrong?" — and that
+/// report is written by comparing what the device did against what the server
+/// recorded, event for event.
+///
+/// The test found it, not the reasoning: a checkin wrote three change events
+/// where the docblock predicted two, because `item_status_history` had been
+/// replicated all along.
+/// @replicated entity_kind=loan_event
+model LoanEvent {
+  id String @id @default(cuid())
+
+  loanId String @map("loan_id")
+
+  kind LoanEventKind
+
+  /// See the docblock. These two are the phase line.
+  occurredAt  DateTime @default(now()) @db.Timestamptz(3) @map("occurred_at")
+  effectiveAt DateTime @db.Timestamptz(3) @map("effective_at")
+
+  /// WHERE the act happened, which is not always where the loan started: a copy
+  /// lent at the main library and returned at a branch produces two events at
+  /// two branches. The statistics rollup groups on this, and ISO 2789 counts a
+  /// loan at the branch that lent it — which is why the branch belongs on the
+  /// EVENT and not only on the loan.
+  branchId String @map("branch_id")
+
+  source      EventSource @default(desk)
+  actorUserId String?     @map("actor_user_id")
+  deviceId    String?     @map("device_id")
+  /// The offline client's idempotency key, copied from `sync_client_changes` so
+  /// a replayed act can be recognised in the log as well as refused at the door.
+  clientChangeId String? @db.Uuid @map("client_change_id")
+
+  /// What moved. A checkout has no `before`; a renewal has both; a return has
+  /// neither. Stored rather than derived because "why is this due on the 19th?"
+  /// has to be answerable after phase 21 has moved the due date twice.
+  dueAtBefore DateTime? @db.Timestamptz(3) @map("due_at_before")
+  dueAtAfter  DateTime? @db.Timestamptz(3) @map("due_at_after")
+
+  /// What was OWED at this event, computed from the loan's frozen snapshot and
+  /// NOT charged. Phase 18 owns `fees`, `patron_accounts` and the double-entry
+  /// invariant that decides what an `account_id` is; a fee row written here
+  /// would have to invent one, and inventing it is inventing the ledger.
+  ///
+  /// This is what makes the phase's acceptance criterion checkable — "editing a
+  /// rule afterwards provably does not change an open loan's due date or FINE" —
+  /// and it is what phase 18 bills from, rather than re-deriving months later
+  /// against a policy somebody has since edited.
+  overdueCents  BigInt? @map("overdue_cents")
+  currency      String? @db.Char(3)
+  overdueDays   Int?    @map("overdue_days")
+  /// Set when the fine could not be computed — a calendar that does not reach
+  /// this far, typically. The copy still comes back onto the shelf: a book
+  /// returning is a fact about the world and must never be blocked by an
+  /// arithmetic refusal about money, which is the same reasoning that splits
+  /// `closed_at` from `returned_at`. Phase 18's sweep retries these.
+  fineErrorCode String? @map("fine_error_code")
+
+  note   String?
+  detail Json    @default("{}") @db.JsonB
+
+  loan   Loan   @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@index([loanId, occurredAt], map: "loan_events_loan_idx")
+  /// The rollup's scan. `effective_at` and not `occurred_at`: a month's
+  /// statistics are about what the library DID that month, and a Friday checkout
+  /// synced on the 2nd belongs to the previous month's return.
+  @@index([branchId, effectiveAt], map: "loan_events_rollup_idx")
+  @@map("loan_events")
+}
+
+/// How much circulation happened, by month, branch, item type and patron
+/// category.
+///
+/// ## A ROLLUP, not an event stream, and the difference is the phase's budget
+///
+/// §3 writes it "`circulation_statistics` (partitioned)" and nothing else. The
+/// obvious reading — a row per circulation act — is wrong twice over. It would
+/// duplicate `loan_events`, which is already the per-act record; and a counter
+/// bumped inside the checkout transaction is a hot row, which is precisely the
+/// contention the phase's own acceptance criterion stresses ("one-open-loan-per-
+/// item holds under 25-way concurrent checkout of the SAME item" — with a
+/// per-branch counter in that transaction, all 25 would also serialise on one
+/// statistics row). It also costs a statement inside a transaction budgeted at
+/// twelve.
+///
+/// So it is maintained OUT of band by `circulation-statistics-rollup`, which
+/// recomputes the current and previous month idempotently from `loan_events`.
+/// A rollup that can be recomputed is a rollup that can be repaired; a counter
+/// incremented in-transaction can only ever be believed.
+///
+/// §6 phase 26 owns `analytics.fact_circulation` and the ISO 2789 return, on a
+/// separate pool. This is the CIRCULATION module's own table — what a branch
+/// manager's dashboard reads without touching the analytics schema at all.
+///
+/// ## Four NOT NULL dimensions, and no `kind` enum
+///
+/// The counters are COLUMNS (`checkouts`, `renewals`, `returns`) rather than
+/// rows keyed by a `kind` enum, and that is a measured constraint rather than a
+/// preference: the rollup is an `INSERT … ON CONFLICT DO UPDATE`, a partitioned
+/// table's unique index must contain every partitioning column, and an
+/// `ON CONFLICT` arbiter carrying an enum predicate raises `42P10` through
+/// Prisma's parameterised cast while working by hand in psql. Columns dodge all
+/// three: the arbiter is four plain scalars, adding a counter later is an
+/// `ALTER TABLE` rather than an enum value plus a backfill, and there is no
+/// enum anywhere near the statement.
+///
+/// All four dimensions are NOT NULL, which is free: `loans.checkout_branch_id`,
+/// `item_type_id_applied` and `patron_category_id_applied` are all NOT NULL
+/// already. That matters because a unique index treats two NULLs as distinct, so
+/// a nullable dimension would silently accumulate duplicate buckets — the kind
+/// of defect a dashboard renders as a plausible number.
+model CirculationStatistic {
+  /// The first day of the month, in the BRANCH's timezone. A civil date, not an
+  /// instant: "how many loans in September" is a question about a calendar, and
+  /// a timestamptz would put a 00:30 Athens checkout on the 1st into August.
+  periodStart DateTime @db.Date @map("period_start")
+
+  /// NO foreign keys, and that is the same decision `loans`' six pinned policy
+  /// columns take: a statistic must keep naming the item type that produced it
+  /// after the library has retired that type, and `ON DELETE RESTRICT` would
+  /// make a type un-retirable for as long as any month's figures referenced it —
+  /// which, for a public library, is forever.
+  branchId         String @map("branch_id")
+  itemTypeId       String @map("item_type_id")
+  patronCategoryId String @map("patron_category_id")
+
+  checkouts BigInt @default(0)
+  renewals  BigInt @default(0)
+  returns   BigInt @default(0)
+
+  /// When the rollup last rebuilt this row. A dashboard that renders a stale
+  /// number should be able to say how stale.
+  computedAt DateTime @default(now()) @db.Timestamptz(3) @map("computed_at")
+
+  /// The partition key must be part of every unique constraint on a partitioned
+  /// table (`0A000`), so it leads the composite key. That is forced, not chosen —
+  /// the same forcing that gave `audit_log` a composite primary key.
+  @@id([periodStart, branchId, itemTypeId, patronCategoryId])
+  /// The branch dashboard's read. Declared here as well as written by hand in
+  /// the migration so `check:schema-drift` sees no surplus — the TABLE is
+  /// invisible to Prisma's diff (it has no `PARTITION BY` concept and does not
+  /// notice one), but an index it does not know about is a DROP proposal on
+  /// every run.
+  @@index([branchId, periodStart], map: "circulation_statistics_branch_idx")
+  @@map("circulation_statistics")
+}
