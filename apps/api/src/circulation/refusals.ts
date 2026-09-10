@@ -34,16 +34,13 @@ export class CirculationRefusal extends ConflictException {
  */
 export class CirculationBlockedError extends ConflictException {
   constructor(
-    readonly operation: 'checkout' | 'renewal',
+    readonly operation: 'checkout' | 'renewal' | 'hold',
     readonly blocks: readonly Block[],
     readonly all: readonly Block[],
   ) {
     super({
       code: `circulation.${operation}Blocked`,
-      message:
-        operation === 'checkout'
-          ? 'This loan is blocked. Clear or override every blocking reason to lend the copy.'
-          : 'This renewal is blocked.',
+      message: BLOCKED_MESSAGE[operation],
       blocks,
       warnings: all.filter((b) => b.severity === 'warn'),
       // The permission an override will need, per block. Phase 21 builds the
@@ -53,6 +50,18 @@ export class CirculationBlockedError extends ConflictException {
     });
   }
 }
+
+/**
+ * One sentence per operation, because "blocked" on its own tells a reader
+ * nothing about what they were trying to do. `hold` joined the list in phase 17;
+ * `evaluateBlocks` has taken `'hold'` as an operation since phase 12 and there
+ * was simply nothing to raise until the queue existed.
+ */
+const BLOCKED_MESSAGE: Readonly<Record<'checkout' | 'renewal' | 'hold', string>> = {
+  checkout: 'This loan is blocked. Clear or override every blocking reason to lend the copy.',
+  renewal: 'This renewal is blocked.',
+  hold: 'This request is blocked. Clear or override every blocking reason to place it.',
+};
 
 /**
  * The client's instant, never later than the server's.

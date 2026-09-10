@@ -15,6 +15,7 @@ import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { acquireLocks, lockKey } from '../platform/locks.js';
 import { TenantClockService } from '../policy/tenant-clock.service.js';
 import { PolicySnapshotService } from '../policy/policy-snapshot.service.js';
+import { civilToday, hasOutstandingHoldOn } from './circulation-state.js';
 import { readPinnedPolicy } from './policy-pinning.js';
 import { CirculationBlockedError, CirculationRefusal, clampEffective } from './refusals.js';
 import { lookupReplay, recordClaim, requestHash } from './sync-replay.js';
@@ -134,6 +135,7 @@ export class RenewService {
             closedAt: true,
             renewalCount: true,
             checkoutBranchId: true,
+            bibId: true,
             policySnapshot: true,
           },
         });
@@ -153,12 +155,29 @@ export class RenewService {
           categoryLimit: null,
         } as never;
 
+        // IS SOMEBODY ELSE WAITING? The one fact a renewal reads out of phase
+        // 17's `holds`, and it decides two different things: whether the
+        // renewal is refused at all (`renewWithOutstandingHolds`) and, when it
+        // is allowed, whether it is shortened
+        // (`alternateRenewalPeriodWithHolds`). Phase 16 left it undefined and
+        // said so; this is the field being filled rather than the file being
+        // rewritten.
+        const hasOutstandingHold = await hasOutstandingHoldOn(tx, {
+          bibId: loan.bibId,
+          excludePatronId: loan.patronId,
+          today: civilToday(effectiveAt, pinned.timezone),
+        });
+
         // Only the renewal half of the block set. A renewal does not re-check
         // the loan ceiling — the reader already HAS this book, and refusing to
         // extend it because they are at their limit would mean the only way out
         // of the limit is to return something, which is a rule no library has.
         const computed: Block[] = [
-          ...evaluateBlocks(resolved, { renewalCount: loan.renewalCount }, 'renewal'),
+          ...evaluateBlocks(
+            resolved,
+            { renewalCount: loan.renewalCount, hasOutstandingHold },
+            'renewal',
+          ),
         ];
         const tooEarly = renewalTooEarly(resolved, loan.dueAt, effectiveAt);
         if (tooEarly !== null) computed.push(tooEarly);
@@ -172,6 +191,7 @@ export class RenewService {
           calendar,
           from: effectiveAt,
           currentDueAt: loan.dueAt,
+          hasOutstandingHold,
         });
         if (next.dueAt === null) {
           throw new CirculationRefusal(

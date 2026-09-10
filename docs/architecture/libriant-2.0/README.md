@@ -3053,3 +3053,339 @@ unchanged. That is what landing the permission model in M0 was for.
 NULL: a service point earns its columns from the cash drawer (phase 18) and the
 branch/desk switcher (phase 23), and phase 16 has neither. The same refusal phase
 15 made for `floating_rules` and phase 14 for the patron identity side.
+
+## Phase 17 — Holds 2.0
+
+The queue, the promotion, the transit and the shelf; two new tables; three policy
+values that had existed since phase 12 and done nothing; and the constraint that
+turns §3's "a named regression test must fail under the 1.0 blanket decrement"
+from a test into a refusal the database will not commit through.
+
+§6's acceptance clause is three sentences and each is a test in
+`apps/api/test/integration/holds.spec.ts`. What follows is what had to be
+decided, the three things that were decided wrongly first, and one measurement
+that is not about holds at all.
+
+### The blanket decrement does not produce a wrong number. It ABORTS.
+
+§3: "a TARGETED queue rebalance (`WHERE queue_position > <vacated>`). The 1.0
+blanket `> 0` decrement is correct only because the head always leaves; with
+suspended holds being skipped it corrupts positions, and a named regression test
+must fail under the old form."
+
+The 1.0 form is in three files — `reservations.service.ts`'s promoter,
+`reservation-expiry.job.ts` and `loans.service.ts`'s return path — and it is
+CORRECT there, because 1.0 has no suspension, so the hold that leaves is always
+position 1. The moment a suspended reader can be skipped, the hold that leaves is
+not the head. Five holds with #1 suspended and #2 filled:
+
+```
+  targeted   WHERE queue_position > 2   ->  1(susp), 2, 3, 4   correct
+  blanket    WHERE queue_position > 0   ->  0(susp), 2, 3, 4   position 0
+```
+
+`holds_position_is_one_based CHECK (queue_position IS NULL OR queue_position >= 1)`
+makes the second line abort with `23514`. MEASURED, against a real queue:
+
+```
+  ERROR:  new row for relation "holds" violates check constraint
+          "holds_position_is_one_based"
+```
+
+That is what the regression test asserts, and a SQLSTATE is the sharper
+assertion: a multiset of positions can still be satisfied by a subtly different
+wrong implementation, and `23514` can only be produced by one that tried to put a
+waiting reader at position 0.
+
+There is ONE implementation of the rebalance — `closeQueueGap(tx, bibId, vacated,
+now)` — called by the promoter, the checkout, the cancel, the group resolution and
+both sweeps. 1.0 has three copies because a worker could not take the Nest graph
+and a return path could not import a service; `circ-4` then fixed the same
+rebalance in each of them separately. A plain function that takes a transaction
+has one place to be wrong.
+
+### Placement never assigns a copy, and the pull list is a QUERY
+
+The tempting shortcut is to look for a copy on the shelf and hand it to the reader
+on the spot. Assigning a copy is a claim on a physical object, and a placement
+transaction holds no lock on any item — so a copy assigned there can be lent at
+the desk a second later, and the reader is told a book is waiting for them that
+somebody walked out with.
+
+So a copy is claimed in exactly two places, both of which already hold the item's
+lock because they are holding the copy: `promoteForItem` inside a checkin, and
+`HoldShelfService.fetch` when a librarian has walked to the shelf. "These readers
+are waiting and a copy is on the shelf" is derivable, and derivable beats stored
+for anything nobody has physically done yet.
+
+`fetch` is keyed on the COPY and not on the request the pull list named. Between
+printing the list and reaching the shelf the queue can move — a reader ahead
+resumed a suspension, a request was cancelled — and serving the request that was
+on the printout would serve the queue out of order for a reason nobody could see.
+
+### `FOR UPDATE SKIP LOCKED` is the obvious tool and is wrong here
+
+It is what you reach for with "three workers, one queue, no double-take", and it
+gives the wrong answer: skipping a LOCKED row is not skipping an INELIGIBLE one.
+Under contention worker B would hand copy 2 to position 3 while worker A was
+still deciding about position 2, and the queue would be served out of order,
+silently, only under load. Serialising the whole queue on `lockKey('bib', bibId)`
+costs the three concurrent returns of one title a few milliseconds each and gives
+every one of them the same queue to read.
+
+`bib:` therefore joins the checkin's and the checkout's single sorted
+`acquireLocks` call — patron < bib < item, which is the rank phase 16 fixed, so
+nothing about the deadlock graph changes. The checkout takes the group's OTHER
+bibs as well, discovered by its probe and re-verified inside: filling one member
+of a group cancels its siblings, and each cancellation rebalances another
+record's queue.
+
+What makes `max(queue_position) + 1` safe is that lock and nothing else, and the
+spec proves it in both directions on raw connections with the interleaving forced:
+without the lock two writers read the same max and the second insert is refused by
+`holds_one_hold_per_position` (`23505`); with it, the second waits and gets the
+next position. There is no `ON CONFLICT` alternative — an arbiter must name the
+index's columns, and an upsert that wanted "the next position" would have to know
+the position before it could name it.
+
+### A routed hold reaches `awaiting_pickup` only on transit receipt
+
+Made a fact about an append-only table rather than a fact about timing. A checkin
+whose winning reader collects elsewhere writes ONE status transition, `on_loan →
+in_transit`, and opens the transfer in the same transaction;
+`holds.awaiting_pickup_since` stays NULL for the whole journey, which
+`holds_collectable_implies_assigned` and `holds_shelf_expiry_implies_collectable`
+keep honest. `ItemTransfersService.receive` then writes the second, `in_transit →
+awaiting_pickup`. Between them `item_status_history` has NOTHING:
+
+```
+  on_loan      -> in_transit
+  in_transit   -> awaiting_pickup
+```
+
+so the copy was never momentarily `available` at the pickup branch. Two
+mechanisms made that possible. `ItemTransfersService.openWithin` splits the
+transfer ROW from the status change, because a checkin is allowed exactly one
+`applyWithin` call — the phase-16 budget test asserts one history row per checkin,
+"a fourth means the copy transitioned twice". And `HoldArrivalService` lives in a
+module that imports NOTHING, which both `ItemsModule` and `HoldsModule` import: a
+transit desk scans a barcode and does not know whether the copy in its hand is a
+hold arrival, a float or a repair return, so one route has to answer for all
+three, and `forwardRef` would have hidden the cycle rather than removed it.
+
+### Three policy values that existed and did nothing
+
+Each had been declared by phase 12, loaded by phase 13, and read by nobody.
+
+**`hold.maxHoldsTotal`** was never evaluated. It is now the third ceiling beside
+`rule.maxHoldsForRule` and `categoryLimit.maxHolds`, tightest wins. Computed
+INSIDE the `operation === 'hold'` branch, which is not tidiness: `RenewService`
+assembles its `resolved` from a LOAN's pinned snapshot, which has no `hold`
+policy in it at all, and reading `hold.maxHoldsTotal` unconditionally made every
+renewal in the building throw a TypeError. The integration suite caught it.
+
+**`hold.itemLevelHolds: 'deny'`** had a block code, `ITEM_LEVEL_HOLDS_NOT_ALLOWED`,
+and nothing emitted it. It does now, against a new `requestedHoldLevel` on
+`CirculationState`. `'force'` is deliberately NOT a block: it is a constraint on
+the placement UI, and "you must name a copy" is a different sentence from "you may
+not name one", with no code for it.
+
+**`pickupPolicy: 'holdingBranch'`** was answered with `itemHomeBranchId` — the
+same field as `owningBranch`. Phase 15 made those two branches deliberately
+different for the whole of a transit: `current_branch_id` stays at the SOURCE
+until receipt, so a copy in a van LIVES at one branch and IS at another.
+Collapsing them is wrong for exactly the copies a hold spends its time routing.
+`itemCurrentBranchId` is now its own field, and the two policies give opposite
+answers on the same state.
+
+An absent branch also stopped being a refusal. `patrons.home_branch_id` is
+nullable, so under `patronHomeBranch` a reader who never chose one was refused
+every branch by a comparison against `undefined` — a refusal produced by a missing
+value rather than by a policy.
+
+### `computeRenewalDueDate` never applied the renewal period
+
+Not a holds bug, found by wiring `hasOutstandingHold` into it. It chose a period
+— `alternateRenewalPeriodWithHolds ?? renewalPeriod ?? period` — used it only for
+a null check, and then handed `computeDueDate` the untouched policy, which
+re-derived a CHECKOUT period from `period` and `alternateCheckoutPeriodWithHolds`.
+So `renewalPeriod` had never taken effect, and turning on the hold variant would
+have silently applied the checkout one. Every vector in
+`resolution-vectors.json` has `renewalPeriod: null`, which is exactly why nobody
+had seen it. The chosen period is now passed explicitly, with
+`alternateCheckoutPeriodWithHolds: null` so the shortening cannot apply twice.
+
+### MEASURED, and not about holds: Prisma writes `timestamptz` in local time
+
+Found by a sweep whose fixture set a deadline with `pg_catalog.now()`. On a host
+whose Postgres session `TimeZone` is `Europe/Athens`:
+
+```
+  js now                        2026-09-10T10:48:29.401Z
+  node-pg reads pg now()        2026-09-10T10:48:29.503Z
+  node-pg reads a Prisma write  2026-09-10T07:48:29.401Z   three hours EARLY
+  Prisma  reads its own write   2026-09-10T10:48:29.401Z
+  Prisma  reads pg now()        2026-09-10T13:48:29.507Z   three hours LATE
+  stored ::text                 2026-09-10 10:48:29.401+03
+```
+
+Prisma's pg adapter encodes and decodes `timestamptz` as if a JS Date's UTC wall
+clock were LOCAL time, in BOTH directions. It therefore agrees with itself, and
+every comparison in this repository is Prisma-frame on both sides and correct —
+which is why nothing has caught it, and why CI, whose Postgres is UTC, never
+will. What is wrong is (a) the instant physically stored, by the session offset,
+and (b) any predicate that puts a Prisma-written column beside a server-side
+`now()`.
+
+This is §8 risk 2's family — "timestamp conversion silently shifts every date by
+three hours" — arriving through the driver rather than through a migration. It is
+older than this phase and is not this phase's to fix: the fix is an adapter or
+`PGTZ` decision affecting all three Prisma clients and every phase from 9 onward,
+and it needs its own session and its own repair script. What phase 17 owes and
+pays is not making it worse: `hold-transit-timeout.job.ts` binds its instant from
+Node and names no `now()` in SQL, and the sweeps compare Prisma-frame values on
+both sides.
+
+### Measured
+
+```
+  holds integration suite      18 tests, 18 green
+  three copies / five holds     3 filled, queue left contiguous at 1,2
+  queue race without the lock   both writers read max=1, second insert 23505
+  queue race with the lock      positions 1 and 2, no retry, no refusal
+  routed transit history        2 rows, nothing between them
+  smoke module v2-holds        12 assertions, 10 of them a SQLSTATE
+```
+
+### Seven holes an adversarial review found before this landed
+
+Six independent reviewers over the diff, then a refutation pass on each finding:
+24 raised, 19 survived, 7 distinct defects after deduplication. All seven are
+fixed here and each has a named regression test in `holds.spec.ts`. Four of them
+are the same shape and it is worth naming the shape rather than the instances:
+
+**A REQUEST THAT ENDS WHILE HOLDING A COPY MUST GIVE THE COPY BACK.** Three paths
+ended one and did not: a reader cancelling, a group sibling cancelled because
+another edition was collected, and a reader who had a copy set aside and walked
+out with a DIFFERENT one off the open shelf. In every case the copy stayed
+`awaiting_pickup` with a dead name on it, and nothing would ever have taken it
+back — the shelf sweep reads `shelf_expires_at` on OPEN requests only, and none of
+those three is open. Absent from `is_shelf_available`, from the pull list, from
+the queue behind it, and present only on a shelf-list screen nobody reads on
+purpose. No constraint can catch it: `items.status` and `holds` are two tables and
+the invariant between them is not one a CHECK can see. All three now go through
+`hold-release.ts`, which treats a book leaving a hold shelf as exactly what it is
+— a book being returned — and walks the queue for it. The fourth instance is the
+mirror image: cancelling a hold's TRANSFER left the request assigned to a copy
+that was never coming, so the reader waited for ever and the next promotion of
+that copy would have raised `23505` on `holds_one_assignment_per_item`.
+
+The other three:
+
+**`expireRequests` closed the gap with a position read before the lock.** The
+sweep read its work list on the outer client and passed the scanned
+`queue_position` into `closeQueueGap` — and its own earlier iterations renumber
+the queue the later ones were read with. No concurrency needed: because
+`request_expires_at` is `placed_at + policy`, the scan walks a record in placement
+order, which is exactly the direction that leaves every later position one too
+high. Two expiring requests on one record either raised `23505` and abandoned the
+whole tenant's sweep, or committed a queue with no position 1 in it. The position
+is now re-read under the bib lock, which is step three of probe-lock-re-verify
+applied to the one value the arithmetic depends on.
+
+**`pg_catalog.extract(epoch FROM …)` is a syntax error.** `EXTRACT` is a SQL
+CONSTRUCT with its own grammar, like `COALESCE` and `NULLIF` — the trap this
+repository has now paid for three times — so the transit-timeout job would have
+failed for every tenant on every run. The days are now subtracted in JavaScript,
+which is legitimate here for the one reason it usually is not: both sides are
+instants in the same frame and the result is an elapsed duration.
+
+**`countCirculationState`'s copy count sequentially scanned `items`.**
+`items_shelf_available_idx` is PARTIAL on `is_shelf_available`, so it answers "how
+many are on the shelf" and cannot answer "how many are there at all" — and
+`allCopiesAvailable` is the ratio, asked on every checkout and every hold
+placement. `items_bib_idx` is partial on `archived_at IS NULL`, which does two
+jobs: the subquery's own literal makes the predicate provable, and its absence
+from phase 15's hold-promotion probe keeps this index from competing with the
+two-column one there. A plain `@@index([bibId])` ties on an empty table and makes
+`items.spec.ts`'s plan assertion flap — an assertion about a real plan, broken by
+an index that is worse for that query.
+
+Two more were fixed on the way and are worth a line each. Hold-routed transfers
+never set `expected_by`, so every one of them was invisible to the alert built to
+notice a crate nobody unpacked — the winner's frozen `maxTransitDays` now travels
+out of `promoteForItem`, and the deadline is computed with `addDuration` because
+the ESLint block on `apps/api/src/holds/**` refused `n * 86_400_000` and was right
+to: a van given three days on 25 March in Athens arrives an hour late. And
+`place()` wrote `suspended_until` without any of the three checks `suspend()`
+makes, so a policy that forbade suspension was enforced on one route and not on
+the other — one checkbox on the same form — while a date in the past reached the
+database and came back as a `23514` with no sentence in it.
+
+### Decisions worth their sentence
+
+**No status enum, for the fourth time.** A hold is open when `fulfilled_at`,
+`cancelled_at` and `expired_at` are all NULL. Phase 15's measurement on 200,053
+rows stands: a parameterised enum predicate seq-scans at 1470 buffers against 2
+for a NULL predicate, still seq-scans with `enable_seqscan = off`, and
+`ON CONFLICT … WHERE state = CAST($1::text AS …)` raises `42P10` where the literal
+form works by hand. `holds_one_ending` is what makes the partial uniques mean what
+they say: a row carrying two endings is excluded from an index by either.
+
+**A group is a cancellation rule, not a queue.** Each member sits in its own bib's
+queue at its own position and is promoted independently; the group only says what
+happens when one is FULFILLED — not assigned. A copy put on a shelf is not the
+reader having the book, and cancelling the siblings at assignment would lose a
+reader their place in three other queues to a copy they never collected. Hence no
+`hold_groups.queue_position`, no group lock domain, and `resolveGroupOnFulfilment`
+refusing when the sibling set is not the set the caller locked.
+
+**A suspended hold keeps its position and is skipped.** It is a reader who is not
+ready, not a reader who has left. It is also excluded from `hasOutstandingHold`,
+so it neither shortens somebody else's loan nor blocks their renewal — holding one
+reader's renewal for another reader's convenience is a charge nobody agreed to.
+And it cannot be suspended once a copy has been set aside: "keep my place but give
+the book to somebody else" is two different requests.
+
+**`shelf_expires_at` is computed once and stored.** Exactly as `loans.due_at` is,
+and more so: a shelf expiry is on the slip in the book and in the message the
+reader was sent. Re-deriving it against a live calendar would let a closure entered
+on Tuesday silently extend a shelf life the reader was told expired on Monday, and
+a closure removed would shorten one. `shelfExpiryUsesCalendar` counts OPEN days —
+the FOLIO bug phase 12's docblock names — and the function never throws: a copy
+arriving at a pickup desk goes on the shelf whether or not the arithmetic worked,
+for the reason a return is never refused, and a NULL expiry means no automatic
+expiry rather than an invented date.
+
+**The shelf sweep promotes; it does not repair.** A book leaving the hold shelf is
+exactly a book being returned, so it goes straight to the next reader through the
+same `promoteForItem` rather than waiting for a librarian to notice a copy on a
+trolley. What neither sweep does is renumber a queue: §8 risk 7's rule — "alerts
+rather than self-heals (self-healing hides the bug that caused the drift)" — so
+`queueIntegrity` REPORTS.
+
+**The transit timeout reports and cancels nothing.** A transfer past its
+`expected_by` is a physical fact nobody in the software can fix, and a job that
+cancelled the request would tell a reader their book is not coming while the
+driver still has it in the boot. Its predicate keeps `hold_id IS NOT NULL`: a late
+float has no reader waiting at the far end and belongs to phase 23's transit desk.
+
+**No new permission keys, again.** `circ.hold.read`, `.place`, `.edit`, `.cancel`,
+`.fulfill` and `.expire` were all minted in phase 3, so fourteen new routes needed
+no new capability. That is what landing the permission model in M0 was for.
+
+**`cancellation_reasons` re-phased to 21, `hold_ratio_alerts` to 87,
+`patron_reading_history` to 33.** The first is the same shape of
+librarian-configurable vocabulary table phase 21 already owns in
+`override_reasons`; `holds.cancelled_reason` is free text because what phase 17
+owes is that a job-written cancellation is READABLE. The second is a
+collection-development signal — nothing in the queue, promotion, shelf or transit
+reads it — and belongs with CREW/MUSTIE weeding and demand forecasting. The third
+is the OPAC opt-in, and building it before the opt-in that populates it would be
+an empty table whose only effect is to make phase 16's anonymisation default look
+negotiable.
+
+**`holds` and `hold_groups` joined the patron data map as `in_bundle`.** `holds`
+is anonymised rather than deleted, on `loans`' argument: a request is half of the
+copy's history and that half is the library's record. `hold_groups` is deleted,
+because a group holds nothing but a reader's own words.

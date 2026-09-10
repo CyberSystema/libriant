@@ -1,4 +1,4 @@
-import { zonedCivil, type CirculationState } from '@libriant/circ-policy';
+import { civilKey, zonedCivil, type CirculationState } from '@libriant/circ-policy';
 import type { TxV2 } from '../tenancy/tenant-tx-v2.js';
 import { ageBandAt } from './age-band.js';
 
@@ -24,15 +24,32 @@ import { ageBandAt } from './age-band.js';
  * patron who returns a book between the second and the third is over the limit
  * and under it in the same decision.
  *
- * ## What is NOT counted, and why an absent count is the honest answer
+ * ## The hold counts, filled in by phase 17
  *
- *   `openHolds`, `openHoldsOfRecord`, `hasOutstandingHold`, `anyCopyAvailable`
- *   — `holds` is phase 17 and does not exist. They are LEFT UNDEFINED rather
- *   than set to 0 or false, because `evaluateBlocks` distinguishes the two and a
- *   zero here would be this phase asserting that no holds exist, which is a
- *   claim it cannot make. The visible consequence is that
- *   `alternateCheckoutPeriodWithHolds` does not shorten a loan yet, and phase 17
- *   turns it on by filling in a field rather than by changing this file.
+ * Phase 16 left `openHolds`, `openHoldsOfRecord`, `hasOutstandingHold` and the
+ * two availability flags UNDEFINED rather than zero, on the rule that an absent
+ * count is "not checked" and never "zero" — "a zero here would be this phase
+ * asserting that no holds exist, which is a claim it cannot make". Phase 17 owns
+ * `holds`, so it can make the claim, and it does so in the same statement rather
+ * than in a second one.
+ *
+ * THREE of the five are subtler than they look:
+ *
+ *   `hasOutstandingHold` is "somebody ELSE is waiting", and it decides whether a
+ *   loan is shortened (`alternateCheckoutPeriodWithHolds`) and whether a renewal
+ *   is refused (`renewWithOutstandingHolds`). It therefore excludes the
+ *   borrower's OWN hold — a reader collecting the copy they asked for must not
+ *   be given a short loan because they are waiting for it — and it excludes
+ *   SUSPENDED holds, because a reader who said "not until the 3rd" is not
+ *   waiting today and shortening somebody else's loan for them is charging one
+ *   reader for another reader's convenience.
+ *
+ *   `anyCopyAvailable` / `allCopiesAvailable` read the GENERATED
+ *   `is_shelf_available` column rather than `status = 'available'`, for the
+ *   reason the baseline migration records: Prisma emits `status = CAST($1::text
+ *   AS item_status)`, `enum_in` is only STABLE, and the planner can never prove
+ *   an enum-predicate index. They are also the only place "on the shelf right
+ *   now" is decided, so the four exclusion codes cannot be forgotten here.
  *
  * ## The fine balance is real money and is read from `fees`
  *
@@ -70,10 +87,35 @@ export async function countCirculationState(
     readonly patron: { dateOfBirth: Date | null };
     /** For a renewal. Absent on a checkout. */
     readonly renewalCount?: number;
+    /**
+     * Civil today in the branch's zone, `YYYY-MM-DD`, for the suspension window.
+     *
+     * A DATE and not an instant, for `holds.suspended_until`'s own reason: "back
+     * on the 3rd" is true in every zone, and an instant makes it true at 02:00
+     * in one and 23:00 in another.
+     */
+    readonly today: string;
+    /** Where the reader may collect, when a hold is being placed. */
+    readonly requestedPickupBranchId?: string;
+    readonly requestedHoldLevel?: 'title' | 'volume' | 'item';
+    /** Where the copy LIVES and where it IS. Deliberately two branches. */
+    readonly itemOwningBranchId?: string | null;
+    readonly itemCurrentBranchId?: string | null;
+    readonly patronHomeBranchId?: string | null;
   },
 ): Promise<CountedState> {
   const rows = await tx.$queryRaw<
-    { open_loans: bigint; open_of_title: bigint; overdue: bigint; owed: bigint }[]
+    {
+      open_loans: bigint;
+      open_of_title: bigint;
+      overdue: bigint;
+      owed: bigint;
+      open_holds: bigint;
+      open_holds_of_record: bigint;
+      outstanding_holds: bigint;
+      copies: bigint;
+      copies_available: bigint;
+    }[]
   >`
     SELECT
       (SELECT pg_catalog.count(*) FROM lbr2.loans
@@ -89,9 +131,36 @@ export async function countCirculationState(
       -- returns NUMERIC, which Prisma hands back as a string.
       (SELECT COALESCE(pg_catalog.sum(outstanding_cents), 0)::bigint FROM lbr2.fees
         WHERE patron_id = ${input.patronId} AND closed_at IS NULL
-          AND currency = ${input.currency}) AS owed`;
+          AND currency = ${input.currency}) AS owed,
+      -- THE HOLD COUNTS. "Open" is three NULL tests and never a status enum —
+      -- 45-items.prisma has the measurement: a parameterised enum predicate
+      -- seq-scans at 1470 buffers against 2 for a NULL predicate, and still
+      -- seq-scans with enable_seqscan off, so there is no index path at all.
+      (SELECT pg_catalog.count(*) FROM lbr2.holds
+        WHERE patron_id = ${input.patronId}
+          AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL) AS open_holds,
+      (SELECT pg_catalog.count(*) FROM lbr2.holds
+        WHERE patron_id = ${input.patronId} AND bib_id = ${input.bibId}
+          AND fulfilled_at IS NULL AND cancelled_at IS NULL
+          AND expired_at IS NULL) AS open_holds_of_record,
+      -- SOMEBODY ELSE, and not somebody who said "not until the 3rd". Both
+      -- exclusions are in the class docblock; together they are what stops a
+      -- reader being given a short loan on the copy they themselves asked for.
+      (SELECT pg_catalog.count(*) FROM lbr2.holds
+        WHERE bib_id = ${input.bibId} AND patron_id <> ${input.patronId}
+          AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL
+          AND (suspended_until IS NULL
+               OR suspended_until < ${input.today}::date)) AS outstanding_holds,
+      (SELECT pg_catalog.count(*) FROM lbr2.items
+        WHERE bib_id = ${input.bibId} AND archived_at IS NULL) AS copies,
+      -- The GENERATED column, which is the ONE definition of "on the shelf right
+      -- now" and already folds in the four exclusion codes.
+      (SELECT pg_catalog.count(*) FROM lbr2.items
+        WHERE bib_id = ${input.bibId} AND is_shelf_available) AS copies_available`;
 
   const row = rows[0]!;
+  const copies = Number(row.copies);
+  const available = Number(row.copies_available);
   const band = ageBandAt(input.patron.dateOfBirth, input.at, input.timezone);
 
   return {
@@ -102,6 +171,30 @@ export async function countCirculationState(
     // its docblock: "Integer, never a decimal string." A balance beyond
     // 2^53 minor units is €90 trillion, which is not a debt a library is owed.
     fineBalance: { minorUnits: Number(row.owed), currency: input.currency },
+    openHolds: Number(row.open_holds),
+    openHoldsOfRecord: Number(row.open_holds_of_record),
+    hasOutstandingHold: Number(row.outstanding_holds) > 0,
+    anyCopyAvailable: available > 0,
+    // A record with NO copies is not a record all of whose copies are on the
+    // shelf. `every` over an empty set is vacuously true and would turn
+    // `onShelfHolds: 'ifAnyUnavailable'` into a refusal of every hold on an
+    // on-order title, which is the one hold a library most wants to accept.
+    allCopiesAvailable: copies > 0 && available === copies,
+    // The three branch facts `pickupBlock` reads, each only when the caller
+    // knows it. Undefined is "not checked" here as everywhere: a comparison
+    // against an absent branch is a refusal produced by a missing value rather
+    // than by a policy.
+    ...(input.requestedPickupBranchId === undefined
+      ? {}
+      : { requestedPickupBranchId: input.requestedPickupBranchId }),
+    ...(input.requestedHoldLevel === undefined
+      ? {}
+      : { requestedHoldLevel: input.requestedHoldLevel }),
+    ...(input.itemOwningBranchId == null ? {} : { itemHomeBranchId: input.itemOwningBranchId }),
+    ...(input.itemCurrentBranchId == null
+      ? {}
+      : { itemCurrentBranchId: input.itemCurrentBranchId }),
+    ...(input.patronHomeBranchId == null ? {} : { patronHomeBranchId: input.patronHomeBranchId }),
     // Only when it is genuinely known. `ageBandAt` returns `unknown` for a
     // patron with no date of birth, and an age restriction evaluated against a
     // guessed age would refuse a reader on a fact nobody recorded.
@@ -135,4 +228,49 @@ function wholeYears(
   let years = now.year - year;
   if (now.month < month || (now.month === month && now.day < day)) years -= 1;
   return Math.max(0, years);
+}
+
+/**
+ * Civil today in a branch's zone, as `YYYY-MM-DD`.
+ *
+ * The ONE derivation of "today" that circulation and holds share, so a
+ * suspension that ends on the 3rd ends on the same day for the promoter, the
+ * counter and the resume sweep. `civilKey` and `zonedCivil` rather than
+ * `toISOString().slice(0, 10)`, which is today in UTC and is a different day
+ * either side of midnight in Athens — the `circ-5` mistake in its smallest form.
+ */
+export function civilToday(at: Date, timezone: string): string {
+  return civilKey(zonedCivil(at, timezone));
+}
+
+/**
+ * Is somebody ELSE waiting for this title today?
+ *
+ * The one fact a RENEWAL needs out of `holds`, and the reason it is not the
+ * whole of {@link countCirculationState}: a renewal deliberately re-checks
+ * almost nothing — "the reader already HAS this book, and refusing to extend it
+ * because they are at their limit would mean the only way out of the limit is to
+ * return something, which is a rule no library has" — so counting their loans
+ * and their debts again would be nine subqueries for one boolean.
+ *
+ * `IS DISTINCT FROM` rather than `<>` because a returned-and-anonymised loan has
+ * no patron: `patron_id <> NULL` is NULL, which is not true, so every hold would
+ * be excluded and a renewal of an anonymised loan would never see one.
+ */
+export async function hasOutstandingHoldOn(
+  tx: TxV2,
+  input: {
+    readonly bibId: string;
+    readonly excludePatronId: string | null;
+    readonly today: string;
+  },
+): Promise<boolean> {
+  const rows = await tx.$queryRaw<{ n: bigint }[]>`
+    SELECT pg_catalog.count(*) AS n
+      FROM lbr2.holds
+     WHERE bib_id = ${input.bibId}
+       AND patron_id IS DISTINCT FROM ${input.excludePatronId}
+       AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL
+       AND (suspended_until IS NULL OR suspended_until < ${input.today}::date)`;
+  return Number(rows[0]?.n ?? 0) > 0;
 }

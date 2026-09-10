@@ -260,3 +260,84 @@ test('the vocabulary is the ONE list SIP2, NCIP, the OPAC and the core share', (
     assert.ok(!codesList.includes(absent as never), `${absent} belongs to phase 14/16/17`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Phase 17: three policy values that existed and did nothing
+// ---------------------------------------------------------------------------
+
+test('owningBranch and holdingBranch are DIFFERENT branches', () => {
+  // Phase 15 keeps `items.current_branch_id` at the SOURCE for the whole of an
+  // open transfer, so a copy in a van LIVES at br-a and IS at br-b. Answering
+  // `holdingBranch` with the owning branch — which this package did until phase
+  // 17 — is wrong for exactly the copies a hold spends its time routing.
+  const inTheVan = { itemHomeBranchId: 'br-a', itemCurrentBranchId: 'br-b' };
+  const owning = resolved({ hold: { ...HOLD, pickupPolicy: 'owningBranch' } });
+  const holding = resolved({ hold: { ...HOLD, pickupPolicy: 'holdingBranch' } });
+
+  assert.deepEqual(
+    codes(evaluateBlocks(owning, { ...inTheVan, requestedPickupBranchId: 'br-a' }, 'hold')),
+    [],
+  );
+  assert.deepEqual(
+    codes(evaluateBlocks(owning, { ...inTheVan, requestedPickupBranchId: 'br-b' }, 'hold')),
+    [BLOCK_CODE.pickupBranchNotAllowed],
+  );
+  // The same two states, the other policy, the OPPOSITE answers. Under the
+  // collapsed implementation both lines agreed with the two above.
+  assert.deepEqual(
+    codes(evaluateBlocks(holding, { ...inTheVan, requestedPickupBranchId: 'br-b' }, 'hold')),
+    [],
+  );
+  assert.deepEqual(
+    codes(evaluateBlocks(holding, { ...inTheVan, requestedPickupBranchId: 'br-a' }, 'hold')),
+    [BLOCK_CODE.pickupBranchNotAllowed],
+  );
+});
+
+test('a reader with no home branch is not a reader who may collect nowhere', () => {
+  const r = resolved({ hold: { ...HOLD, pickupPolicy: 'patronHomeBranch' } });
+  // An absent value is "not checked", never "does not match" — the same rule
+  // every count in `CirculationState` follows.
+  assert.deepEqual(codes(evaluateBlocks(r, { requestedPickupBranchId: 'br-a' }, 'hold')), []);
+  assert.deepEqual(
+    codes(
+      evaluateBlocks(r, { requestedPickupBranchId: 'br-a', patronHomeBranchId: 'br-b' }, 'hold'),
+    ),
+    [BLOCK_CODE.pickupBranchNotAllowed],
+  );
+});
+
+test('itemLevelHolds: deny refuses a named copy and nothing else', () => {
+  const deny = resolved({ hold: { ...HOLD, itemLevelHolds: 'deny' } });
+  assert.deepEqual(codes(evaluateBlocks(deny, { requestedHoldLevel: 'item' }, 'hold')), [
+    BLOCK_CODE.itemLevelHoldsNotAllowed,
+  ]);
+  assert.deepEqual(codes(evaluateBlocks(deny, { requestedHoldLevel: 'title' }, 'hold')), []);
+  assert.deepEqual(codes(evaluateBlocks(deny, { requestedHoldLevel: 'volume' }, 'hold')), []);
+  // Not stated is not refused.
+  assert.deepEqual(codes(evaluateBlocks(deny, {}, 'hold')), []);
+  // `force` is a constraint on the placement UI, not a refusal here: "you must
+  // name a copy" is a different sentence from "you may not name one", and there
+  // is no code for it.
+  const force = resolved({ hold: { ...HOLD, itemLevelHolds: 'force' } });
+  assert.deepEqual(codes(evaluateBlocks(force, { requestedHoldLevel: 'title' }, 'hold')), []);
+});
+
+test('maxHoldsTotal is a third ceiling and the tightest of the three wins', () => {
+  const r = (max: number | null, ruleMax: number | null) =>
+    resolved({
+      hold: { ...HOLD, maxHoldsTotal: max },
+      rule: { ...RULE, maxHoldsForRule: ruleMax },
+    });
+  // The policy's own limit, which nothing evaluated before phase 17.
+  assert.deepEqual(codes(evaluateBlocks(r(3, null), { openHolds: 3 }, 'hold')), [
+    BLOCK_CODE.tooManyHolds,
+  ]);
+  assert.deepEqual(codes(evaluateBlocks(r(3, null), { openHolds: 2 }, 'hold')), []);
+  // The rule's is tighter, so the rule's is the one reported.
+  const blocked = evaluateBlocks(r(10, 2), { openHolds: 2 }, 'hold');
+  assert.deepEqual(codes(blocked), [BLOCK_CODE.tooManyHolds]);
+  assert.equal(blocked[0]?.limit, 2);
+  // Both null is no ceiling at all, not a ceiling of zero.
+  assert.deepEqual(codes(evaluateBlocks(r(null, null), { openHolds: 99 }, 'hold')), []);
+});

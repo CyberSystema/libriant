@@ -185,15 +185,33 @@ export const PATRON_DATA_TABLES: readonly PatronDataTable[] = [
     onErase: null,
   },
 
-  // -- Later phases ----------------------------------------------------------
   {
     table: 'holds',
     patronColumn: 'patron_id',
-    verdict: 'pending',
-    phase: '17',
-    reason: 'The holds queue. Phase 17 creates the table.',
-    onErase: null,
+    verdict: 'in_bundle',
+    // ANONYMISED, not deleted, and the argument is `loans`': a request is half
+    // of the copy's history — when it was set aside, how long it sat on a shelf,
+    // whether anybody came — and that half is the library's record rather than
+    // the reader's. Deleting the rows would also renumber nothing and leave a
+    // queue with holes in it, because `queue_position` is contiguous by
+    // construction and a DELETE takes no targeted rebalance with it.
+    //
+    // What an erase overwrites is `notes`, which is free text a librarian typed
+    // about a named person, and the link itself.
+    onErase: 'anonymise',
   },
+  {
+    table: 'hold_groups',
+    patronColumn: 'patron_id',
+    verdict: 'in_bundle',
+    // DELETED, unlike `holds`, and the difference is that a group holds nothing
+    // but a reader's own words: "Zorba, any edition" is a name they chose. It is
+    // a cancellation rule over their requests and carries no circulation fact of
+    // its own, so nothing in the library's record depends on it surviving.
+    onErase: 'delete',
+  },
+
+  // -- Later phases ----------------------------------------------------------
   {
     table: 'patron_privacy_settings',
     patronColumn: 'patron_id',

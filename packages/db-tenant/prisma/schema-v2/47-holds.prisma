@@ -1,0 +1,242 @@
+// ---------------------------------------------------------------------------
+// Holds — the queue, and the two things a queue has to be
+// ---------------------------------------------------------------------------
+//
+// §3 names `holds` and gives it no CREATE TABLE. Its ONE paragraph
+// (MASTER-ARCHITECTURE.md:415) is the whole specification:
+//
+//   "Holds are title / volume / item level with `hold_policy_id` +
+//    `policy_snapshot` pinned identically, `holds_one_assignment_per_item`
+//    making a double-assigned item impossible, and a TARGETED queue rebalance
+//    (`WHERE queue_position > <vacated>`). The 1.0 blanket `> 0` decrement is
+//    correct only because the head always leaves; with suspended holds being
+//    skipped it corrupts positions, and a named regression test must fail under
+//    the old form."
+//
+// So this table is INVENTED in `BASELINE-SCOPE.json`'s own vocabulary, like
+// `loan_policies` and `loan_events` before it, and every column is a phase-17
+// decision. The richest thing available to design against is phase 13's
+// `HoldPolicy`, whose docblock says so: "Phase 17 owns the queue, promotion,
+// transit and the shelf. This table is the CONFIGURATION those behaviours read."
+
+/// A reader waiting for a copy.
+///
+/// ## ONE QUEUE PER BIB, and the level is a filter rather than a partition
+///
+/// A title hold, a volume hold and an item hold on the same record share one
+/// `queue_position` sequence. The acceptance criterion settles it: "three copies
+/// returned concurrently against FIVE MIXED HOLDS … fill exactly three" only
+/// counts to five if the five are one queue. Partitioning by level would mean an
+/// item-level hold at position 1 of its own queue jumping ahead of a title hold
+/// placed a month earlier, which is not what a reader in a library believes is
+/// happening.
+///
+/// `level` and `item_id` are therefore ELIGIBILITY filters applied when a
+/// returned copy looks for a hold to fill, not keys.
+///
+/// ## NO STATUS ENUM, and this is the fourth time this repo has paid for that
+///
+/// A hold is OPEN when it has not been fulfilled, cancelled or expired — three
+/// NULL tests, exactly as `item_transfers` spells "open" as the absence of both
+/// its endings. Phase 15 measured the alternative on 200,053 rows: a
+/// parameterised enum predicate seq-scans at 1470 buffers against 2 for a NULL
+/// predicate, STILL seq-scans with `enable_seqscan = off` (so there is no index
+/// path at all, not a costing preference), and `ON CONFLICT … WHERE state =
+/// CAST($1::text AS …)` raises `42P10` while the same statement written with a
+/// literal works by hand in psql.
+///
+/// `holds_one_ending` is the CHECK that makes the partial uniques mean what they
+/// say. Without it a row carrying two endings is excluded from an index by
+/// either, and a second assignment slips past
+/// `holds_one_assignment_per_item` — the same argument `item_transfers_one_ending`
+/// makes, and it is not hypothetical there either.
+///
+/// ## `queue_position` is NULL exactly when the hold is not waiting
+///
+/// A hold leaves the queue when it is ASSIGNED a copy — it is still open, it is
+/// simply no longer queued — and again when it ends. So the column is non-NULL
+/// iff the hold is open AND unassigned, which is a CHECK
+/// (`holds_position_iff_waiting`), and when it is non-NULL it is at least 1,
+/// which is another (`holds_position_is_one_based`).
+///
+/// THE SECOND CHECK IS THE ACCEPTANCE CRITERION, made enforceable rather than
+/// merely tested. §3 demands "a named regression test fails under the 1.0
+/// blanket `> 0` decrement"; under `holds_position_is_one_based` that form does
+/// not merely produce a wrong answer, it ABORTS with `23514` the first time a
+/// suspended hold at position 1 is skipped. A test that asserts a SQLSTATE is
+/// unambiguous and order-independent; one that asserts a multiset of positions
+/// can still be satisfied by a subtly different wrong implementation.
+/// @replicated entity_kind=hold
+model Hold {
+  id String @id @default(cuid())
+
+  /// The QUEUE. Every hold on a record shares one position sequence.
+  bibId String @map("bib_id")
+
+  level HoldLevel @default(title)
+  /// Set for `item` level, and for a title hold only once a copy is ASSIGNED —
+  /// which is why there are two columns rather than one. A reader asking for a
+  /// specific copy and a reader who has been given one are different facts, and
+  /// collapsing them loses the ability to say which.
+  itemId String? @map("item_id")
+  /// For `volume` level: the enumeration a reader asked for, matched against
+  /// `items.enumeration`. Free text because a serial's own enumeration is, and
+  /// §5 gives the compressed-holdings machinery to phase 84.
+  volume String?
+
+  patronId    String          @map("patron_id")
+  requestType HoldRequestType @default(hold) @map("request_type")
+
+  /// Where the reader will collect it. Validated at PLACEMENT against the
+  /// pinned policy's `pickup_policy`, and never re-validated: a reader was told
+  /// the rules when they asked, and a rule edit must not retroactively make
+  /// their pickup branch ineligible.
+  pickupBranchId String @map("pickup_branch_id")
+
+  /// NULL when the hold is assigned or ended. See the docblock.
+  queuePosition Int? @map("queue_position")
+  /// The librarian's thumb on the scale. Higher sorts first, and the queue is
+  /// ordered `priority DESC, queue_position ASC` — so an override changes the
+  /// ORDER without renumbering anybody, which is what keeps contiguity a
+  /// property of the column rather than of every mutation that touches it.
+  priority Int @default(0)
+
+  /// The copy this hold has been given. `holds_one_assignment_per_item` makes a
+  /// double-assigned copy impossible, which is §3's own phrase.
+  assignedItemId String?   @map("assigned_item_id")
+  assignedAt     DateTime? @db.Timestamptz(3) @map("assigned_at")
+
+  /// The instant the copy became COLLECTABLE — on the shelf, at the pickup
+  /// branch, waiting for a name.
+  ///
+  /// NULL for the whole of a transit, which is the acceptance criterion made
+  /// into a column: "a routed hold reaches `awaiting_pickup` only on transit
+  /// receipt". It is also what phase 22 will dedupe the ready-notice on — §4.4
+  /// says producers emit INTENTS only, and "this became collectable at 14:32" is
+  /// the intent. A re-shelving updates it, so a second notice is a second fact
+  /// rather than a duplicate.
+  awaitingPickupSince DateTime? @db.Timestamptz(3) @map("awaiting_pickup_since")
+
+  /// When the copy goes back on the shelf if nobody collects it.
+  ///
+  /// COMPUTED ONCE when the hold is shelved, stored, and never re-derived —
+  /// `policy-pinning.ts` argues exactly this for `loans.due_at`, and a shelf
+  /// expiry is the same kind of promise: made to a named reader at a desk, not a
+  /// retrospective statement about what the library did. Re-deriving it against
+  /// a live calendar would let a closure entered on Tuesday silently extend a
+  /// shelf life a reader was told expired on Monday.
+  shelfExpiresAt DateTime? @db.Timestamptz(3) @map("shelf_expires_at")
+
+  /// "Not until I'm back from Crete on the 3rd."
+  ///
+  /// CIVIL DATES, not instants, for the reason `calendars.defined_from` gives:
+  /// "back on the 3rd" is true in every zone, and an instant makes it true at
+  /// 02:00 in one and 23:00 in another.
+  ///
+  /// A suspended hold KEEPS its position — it is a reader who is not ready, not
+  /// a reader who has left — and is SKIPPED when a copy looks for somebody to
+  /// go to. That skip is precisely what breaks the 1.0 blanket decrement, and it
+  /// is why phase 17 exists as a separate phase from 16.
+  suspendedFrom  DateTime? @db.Date @map("suspended_from")
+  suspendedUntil DateTime? @db.Date @map("suspended_until")
+
+  /// When an UNFILLED request gives up, from `hold_policies.unfilled_request_*`.
+  /// A reader who asked for a book the library has since withdrawn should not
+  /// wait for ever.
+  requestExpiresAt DateTime? @db.Timestamptz(3) @map("request_expires_at")
+
+  // -- THE THREE ENDINGS. Exactly one, or none. ------------------------------
+  fulfilledAt DateTime? @db.Timestamptz(3) @map("fulfilled_at")
+  /// The loan that collected it, so "did this hold work?" has an answer.
+  fulfilledByLoanId String? @map("fulfilled_by_loan_id")
+
+  cancelledAt       DateTime? @db.Timestamptz(3) @map("cancelled_at")
+  cancelledByUserId String?   @map("cancelled_by_user_id")
+  /// Free text, not a foreign key. §3 lists `cancellation_reasons` and phase 17
+  /// does not create it: phase 21 already owns `override_reasons`, which is the
+  /// same shape of librarian-configurable vocabulary table, and phase 15 sent
+  /// the three item condition codes there for the same reason. What phase 17
+  /// owes is that a job-written cancellation is READABLE, and a sentence is.
+  cancelledReason String? @map("cancelled_reason")
+
+  expiredAt DateTime? @db.Timestamptz(3) @map("expired_at")
+  /// `shelf` (nobody collected it) or `request` (it was never filled). Two very
+  /// different conversations with a reader.
+  expiredKind String? @map("expired_kind")
+
+  // -- POLICY PINNING, "identically" to loans per §3 -------------------------
+  //
+  // Same argument as `loans`, same absence of a foreign key: a hold must keep
+  // naming the policy that priced it after that policy is archived, and
+  // `ON DELETE RESTRICT` would make a policy un-retirable for as long as any
+  // historical hold referenced it.
+  holdPolicyId   String @map("hold_policy_id")
+  appliedRuleId  String @map("applied_rule_id")
+  policySnapshot Json   @db.JsonB @map("policy_snapshot")
+
+  /// "Any one of these five editions." Filling one cancels its siblings.
+  groupId String? @map("group_id")
+
+  source      EventSource @default(desk)
+  placedByUserId String?  @map("placed_by_user_id")
+  notes       String?
+
+  placedAt  DateTime @default(now()) @db.Timestamptz(3) @map("placed_at")
+  createdAt DateTime @db.Timestamptz(3) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(3) @map("updated_at")
+
+  bib          MarcRecord @relation(fields: [bibId], references: [id], onDelete: Restrict)
+  patron       Patron     @relation(fields: [patronId], references: [id], onDelete: Restrict)
+  item         Item?      @relation("HoldRequestedItem", fields: [itemId], references: [id], onDelete: Restrict)
+  assignedItem Item?      @relation("HoldAssignedItem", fields: [assignedItemId], references: [id], onDelete: Restrict)
+  pickupBranch Branch     @relation(fields: [pickupBranchId], references: [id], onDelete: Restrict)
+  group        HoldGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  transfers    ItemTransfer[]
+
+  /// THE PROMOTION SCAN. A returned copy asks "who is waiting for this record?"
+  /// and reads this index in queue order. `priority DESC` leads because that is
+  /// the order the queue is IN; `queue_position` is the tiebreak and the
+  /// contiguous thing.
+  @@index([bibId, priority(sort: Desc), queuePosition], map: "holds_queue_idx")
+  /// The reader's own list, and the count `evaluateBlocks` needs.
+  @@index([patronId, placedAt], map: "holds_patron_idx")
+  @@map("holds")
+}
+
+/// "Any one of these, whichever comes first."
+///
+/// §6 phase 17 names "group holds" and says nothing else. The case is a reader
+/// who wants a book and does not care which edition, printing or translation —
+/// which in a Greek public library is most requests for a classic, because the
+/// catalogue holds four Καζαντζάκης printings under four bibliographic records.
+///
+/// A GROUP IS A CANCELLATION RULE, not a queue. Each member hold sits in its own
+/// bib's queue at its own position and is promoted independently; the group only
+/// says what happens when one of them wins — the siblings are cancelled with a
+/// reason that names the group, so the reader is not handed four copies of the
+/// same novel.
+///
+/// That is why there is no `hold_groups.queue_position` and no group-level lock
+/// domain: a promotion still serialises on ONE bib, and the sibling cancellation
+/// is an ordinary targeted rebalance in each of the others.
+/// @replicated entity_kind=hold_group
+model HoldGroup {
+  id       String @id @default(cuid())
+  patronId String @map("patron_id")
+  /// What the reader called it. "Zorba, any edition."
+  name String?
+
+  /// Stamped when a member was filled and the siblings were cancelled, so the
+  /// group's own history is legible without re-deriving it from the members.
+  resolvedAt        DateTime? @db.Timestamptz(3) @map("resolved_at")
+  resolvedByHoldId  String?   @map("resolved_by_hold_id")
+
+  createdAt DateTime @db.Timestamptz(3) @map("created_at")
+  updatedAt DateTime @db.Timestamptz(3) @map("updated_at")
+
+  patron Patron @relation(fields: [patronId], references: [id], onDelete: Cascade)
+  holds  Hold[]
+
+  @@index([patronId])
+  @@map("hold_groups")
+}

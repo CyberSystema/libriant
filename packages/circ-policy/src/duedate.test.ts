@@ -321,3 +321,37 @@ test('addDuration is exported, because phase 13 needs the same arithmetic', () =
   const t = addDuration(TZ, new Date('2026-05-05T09:00:00Z'), { value: 3, unit: 'days' }, null);
   assert.equal(zonedCivil(t, TZ).day, 8);
 });
+
+test('a renewal uses the RENEWAL period, and the hold variant of it', () => {
+  // Both of these were silently ignored until phase 17: `computeRenewalDueDate`
+  // chose a period and then handed `computeDueDate` the untouched policy, which
+  // re-derived the CHECKOUT period from the same fields. Every vector has
+  // `renewalPeriod: null`, so nothing caught it.
+  const from = new Date('2026-06-01T09:00:00Z');
+  const currentDueAt = new Date('2026-06-01T09:00:00Z');
+  const policy = {
+    ...BASE,
+    renewFrom: 'systemDate' as const,
+    period: { value: 14, unit: 'days' as const },
+    renewalPeriod: { value: 7, unit: 'days' as const },
+    alternateCheckoutPeriodWithHolds: { value: 3, unit: 'days' as const },
+    alternateRenewalPeriodWithHolds: { value: 2, unit: 'days' as const },
+  };
+  const plain = computeRenewalDueDate({ policy, calendar: ALWAYS, from, currentDueAt });
+  assert.equal(zonedCivil(plain.dueAt!, TZ).day, 8, 'seven days, not fourteen');
+
+  const withHold = computeRenewalDueDate({
+    policy,
+    calendar: ALWAYS,
+    from,
+    currentDueAt,
+    hasOutstandingHold: true,
+  });
+  // Two days, from `alternateRenewalPeriodWithHolds` — NOT three, which is the
+  // checkout variant, and not two-then-shortened-again.
+  assert.equal(zonedCivil(withHold.dueAt!, TZ).day, 3);
+
+  // A checkout of the same policy still gets the checkout numbers.
+  const checkout = computeDueDate({ policy, calendar: ALWAYS, from, hasOutstandingHold: true });
+  assert.equal(zonedCivil(checkout.dueAt!, TZ).day, 4, 'three days for a checkout with a hold');
+});

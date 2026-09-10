@@ -248,6 +248,8 @@ model Item {
   temporaryLocation ShelvingLocation? @relation("ItemTemporaryLocation", fields: [temporaryLocationId], references: [id])
 
   loans         Loan[]
+  holdsRequested Hold[]            @relation("HoldRequestedItem")
+  holdsAssigned  Hold[]            @relation("HoldAssignedItem")
   statusHistory ItemStatusHistory[]
   transfers     ItemTransfer[]
   notes         ItemNote[]

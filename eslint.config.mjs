@@ -510,7 +510,17 @@ export default tseslint.config(
      * residual ban enforces its own stated refusal to grow a `clock.addDays()`
      * beside `now()`.
      */
-    files: ['apps/api/src/policy/**/*.ts', 'apps/api/src/circulation/**/*.ts'],
+    // `apps/api/src/holds/**` joined in phase 17, and the argument for adding it
+    // is the argument for the directory existing: a hold shelf expiry, a
+    // suspension window and a request expiry are all civil dates in a branch's
+    // timezone, computed by the same `packages/circ-policy` functions a due date
+    // is. A directory that decides when a reader loses their book is exactly the
+    // one that must not read the machine clock or add milliseconds to a date.
+    files: [
+      'apps/api/src/policy/**/*.ts',
+      'apps/api/src/circulation/**/*.ts',
+      'apps/api/src/holds/**/*.ts',
+    ],
     ignores: [
       'apps/api/src/policy/tenant-clock.service.ts',
       'apps/api/src/policy/policy-snapshot.service.ts',

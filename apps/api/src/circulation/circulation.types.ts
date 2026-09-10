@@ -55,6 +55,11 @@ export type CirculationOrigin = {
  * That is the same argument `ItemStatusService` makes against a trigger writing
  * history, applied to the other end of the transaction.
  *
+ * BOTH ARE REACHABLE FROM PHASE 17. `hold_shelf` when the first eligible reader
+ * in the queue collects at this desk, `transit` when they collect elsewhere and
+ * the copy is put in a van. What follows is the phase-16 note they were written
+ * under, kept because the reasoning for declaring them early is the reasoning:
+ *
  * `hold_shelf` and `transit` are declared and unreachable in phase 16: holds are
  * phase 17 and routing is phase 23. They are here because the DESK's vocabulary
  * is what this type is, and a client that has to learn two more values later is
@@ -95,6 +100,16 @@ export type CheckoutResult = {
   readonly rolls: readonly CalendarRoll[];
   /** Warnings that did NOT stop the loan. A block would have refused it. */
   readonly warnings: readonly Block[];
+  /**
+   * The request this loan satisfied, when the reader was collecting one.
+   *
+   * Phase 17. The desk needs it to say "that was your hold" out loud, and phase
+   * 22 needs it to know a ready-notice must not be sent for a request that has
+   * just been walked out of the building.
+   */
+  readonly filledHoldId: string | null;
+  /** Sibling requests in the same group, cancelled because this one was filled. */
+  readonly cancelledHoldIds: readonly string[];
   readonly replayed: boolean;
 };
 
@@ -108,6 +123,18 @@ export type CheckinResult = {
   readonly fine: ComputedFine | null;
   /** True when the patron link was severed in the same transaction. */
   readonly anonymised: boolean;
+  /**
+   * The request this copy has just been set aside for, if any (phase 17).
+   *
+   * Present for BOTH dispositions a promotion can produce: `hold_shelf`, where
+   * the reader collects it here, and `transit`, where it is on its way to
+   * another branch to be collected. The desk prints a slip from it; phase 22
+   * reads `holds.awaiting_pickup_since` — NOT this — to decide whether a reader
+   * has been told, because a copy on a van has not arrived.
+   */
+  readonly holdId: string | null;
+  /** The transfer opened to route it, when the reader is at another branch. */
+  readonly transferId: string | null;
   readonly replayed: boolean;
 };
 

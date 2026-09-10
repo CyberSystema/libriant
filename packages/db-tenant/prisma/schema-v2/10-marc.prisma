@@ -103,6 +103,8 @@ model MarcRecord {
   @@index([kind, status, updatedAt(sort: Desc), id(sort: Desc)])
   @@index([kind, recordTypeCode, bibLevelCode], map: "marc_records_type_idx")
   @@index([rowVersion], map: "marc_records_row_version_idx")
+  holds Hold[]
+
   @@map("marc_records")
 }
 

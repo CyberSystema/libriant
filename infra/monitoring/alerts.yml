@@ -430,6 +430,39 @@ groups:
             restored from an old backup shows up here once and clears on the next
             tick.
 
+      # A copy sent to a branch FOR A READER that has not arrived (2.0 phase 17).
+      #
+      # It reports rather than repairs, for §8 risk 7's reason applied to a van:
+      # a late transfer is a physical fact nobody in the software can fix — the
+      # book is in a crate, on the wrong shelf, or lost — and a job that
+      # cancelled the request would tell a reader their book is not coming while
+      # the driver still has it in the boot.
+      #
+      # The threshold is not zero, and `for: 24h` is why. One crate that is a day
+      # late is a van that ran late, and it clears on the next delivery; a branch
+      # that has quietly stopped unpacking shows as a count that does not go down
+      # for a day. `libriant_hold_transit_overdue_oldest_days` is the shape of the
+      # number an operator reads next, and is deliberately not alerted: one crate
+      # three weeks late and twenty crates a day late are the same problem class
+      # and would otherwise page twice.
+      #
+      # The metric counts ONLY transfers with a `hold_id`. A float or a
+      # rebalancing move that is late has no reader waiting at the far end and
+      # belongs to phase 23's transit desk.
+      - alert: LibriantHoldTransitOverdue
+        expr: libriant_hold_transit_overdue_total > 0
+        for: 24h
+        labels: { severity: warning }
+        annotations:
+          summary: '{{ $value }} copy(ies) sent for a reader have not arrived'
+          description: >-
+            One or more copies were put in a van for a named reader and have
+            passed the arrival date the sending desk expected. Nothing is
+            cancelled automatically: a reader is still waiting and the book is
+            still somewhere. Work the transit list at the receiving branch
+            (GET /t/:slug/items/transfers/inbound), receive what has arrived, and
+            cancel what has not so the request goes back into its queue.
+
       - alert: LibriantCatalogProjectionDrift
         # `bib_records` is what the OPAC, facets, browse and every report read;
         # `marc_records` is what the catalogue actually says. When they disagree

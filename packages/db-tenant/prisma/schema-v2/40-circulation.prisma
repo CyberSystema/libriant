@@ -134,6 +134,9 @@ model Patron {
   @@index([sortName, id], map: "patrons_sort_name_id_idx")
   @@index([status])
   @@index([email])
+  holds      Hold[]
+  holdGroups HoldGroup[]
+
   @@map("patrons")
 }
 

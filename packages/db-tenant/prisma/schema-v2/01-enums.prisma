@@ -594,3 +594,28 @@ enum LoanEventKind {
 
   @@map("loan_event_kind")
 }
+
+/// What a hold is a request FOR.
+///
+/// INVENTED. §3 names `holds` and gives it no DDL; its one paragraph
+/// (MASTER-ARCHITECTURE.md:415) says "title / volume / item level" and stops, so
+/// these three values are the whole of what the plan of record settles.
+///
+/// The three are NOT queue partitions — a bib has ONE queue and all three levels
+/// share it, ranked by `queue_position`. The level is an ELIGIBILITY FILTER
+/// applied when a returned copy looks for a hold to fill: a title hold takes any
+/// copy, a volume hold takes any copy of that enumeration, an item hold takes
+/// exactly one. The acceptance criterion settles it — "five mixed holds … fill
+/// exactly three" only counts to five if the five share one sequence.
+enum HoldLevel {
+  /// Any copy of the bibliographic record. The ordinary request.
+  title
+  /// Any copy carrying this enumeration — "volume 3", "1998". A serial run is
+  /// one bib and forty physical things, and a reader wants one of them.
+  volume
+  /// This copy and no other. `hold_policies.item_level_holds` decides whether a
+  /// reader may ask for it at all.
+  item
+
+  @@map("hold_level")
+}

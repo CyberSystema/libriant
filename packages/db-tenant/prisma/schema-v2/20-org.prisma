@@ -128,6 +128,7 @@ model Branch {
   itemTransfersFrom ItemTransfer[]      @relation("ItemTransferFromBranch")
   itemTransfersTo   ItemTransfer[]      @relation("ItemTransferToBranch")
   loanEvents        LoanEvent[]
+  holdPickups       Hold[]
 
   @@index([parentBranchId])
   @@map("branches")

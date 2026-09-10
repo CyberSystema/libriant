@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { HoldArrivalModule } from '../holds/hold-arrival.module.js';
 import { ItemsModule } from '../items/items.module.js';
 import { PatronsModule } from '../patrons/patrons.module.js';
 import { PolicyModule } from '../policy/policy.module.js';
@@ -27,6 +28,16 @@ import { RenewService } from './renew.service.js';
  *                   snapshot is served from a process cache and costs no
  *                   statement, which is what lets a checkout resolve policy on
  *                   the hot path at all.
+ *   `HoldArrivalModule` (phase 17) for `HoldArrivalService`. A checkin whose
+ *                   returned copy is wanted at THIS desk shelves it for the
+ *                   reader in the same transaction, and the module that answers
+ *                   that question imports nothing — see `hold-arrival.module.ts`
+ *                   for why it is not a `forwardRef` onto `HoldsModule`.
+ *
+ * `ItemsModule` also supplies `ItemTransfersService.openWithin` from phase 17: a
+ * copy wanted at ANOTHER branch is put in a van by the same checkin
+ * transaction, and the transfer row and the status change are separated so that
+ * transaction keeps its single `applyWithin`.
  *
  * NOTHING IS EXPORTED, and that is deliberate for now. Phase 17's holds, phase
  * 21's declare-lost and phase 61's SIP2 will each want a way in, and the right
@@ -34,7 +45,7 @@ import { RenewService } from './renew.service.js';
  * them. An export added speculatively is a boundary nobody has tested.
  */
 @Module({
-  imports: [TenantModule, PolicyModule, ItemsModule, PatronsModule],
+  imports: [TenantModule, PolicyModule, ItemsModule, PatronsModule, HoldArrivalModule],
   providers: [CheckoutService, CheckinService, RenewService, LoanReadService],
   controllers: [CirculationController],
 })

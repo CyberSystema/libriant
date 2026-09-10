@@ -185,7 +185,14 @@ model ItemTransfer {
   toBranchId   String @map("to_branch_id")
 
   reasonId String? @map("reason_id")
-  /// The hold that pulled it, when there was one. No FK: `holds` is phase 17.
+  /// The hold that pulled it, when there was one.
+  ///
+  /// PHASE 17 GAVE IT ITS FOREIGN KEY. Phase 15 wrote "no FK: `holds` is phase
+  /// 17", which was a promise rather than a refusal, and this is when it came
+  /// due. `ON DELETE RESTRICT`, like the three foreign keys this table already
+  /// carries: the transit-timeout job DEREFERENCES this column to decide which
+  /// hold to release, and a dangling id there strands a copy in a van with a
+  /// hold nobody can find.
   holdId String? @map("hold_id")
 
   queuedAt      DateTime  @default(now()) @db.Timestamptz(3) @map("queued_at")
@@ -214,6 +221,7 @@ model ItemTransfer {
   reason     ItemStatusReason? @relation(fields: [reasonId], references: [id], onDelete: Restrict)
   fromBranch Branch            @relation("ItemTransferFromBranch", fields: [fromBranchId], references: [id], onDelete: Restrict)
   toBranch   Branch            @relation("ItemTransferToBranch", fields: [toBranchId], references: [id], onDelete: Restrict)
+  hold       Hold?             @relation(fields: [holdId], references: [id], onDelete: Restrict)
 
   @@index([itemId])
   @@map("item_transfers")

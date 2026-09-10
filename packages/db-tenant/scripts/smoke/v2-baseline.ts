@@ -55,6 +55,7 @@ const TABLES: Readonly<Record<string, readonly string[]>> = {
   ],
   'v2-items': ['item_status_reasons', 'item_status_history', 'item_transfers', 'item_notes'],
   'v2-circulation-events': ['loan_events', 'circulation_statistics'],
+  'v2-holds': ['hold_groups', 'holds'],
   'v2-policy': [
     'calendars',
     'calendar_hours',
@@ -165,7 +166,7 @@ export async function teardown(): Promise<void> {
               patron_number_counters, patron_cards, patron_identifiers, patron_addresses,
               patron_relationships, patron_blocks, patron_messages, patron_notes, patron_merges,
               item_status_reasons, item_status_history, item_transfers, item_notes,
-              loan_events, circulation_statistics
+              loan_events, circulation_statistics, holds, hold_groups
      RESTART IDENTITY CASCADE`,
   );
   // The two singletons are NOT truncated. They are seeded by the migration
@@ -996,6 +997,170 @@ export const v2Modules: SmokeModule[] = [
         throw new Error(`an unattributed write landed as ${JSON.stringify(plain[0])}`);
       }
       ok('an unattributed write still lands as system, and NULLIF saves the uuid cast from 22P02');
+    },
+    reset: teardown,
+  },
+  {
+    name: 'v2-holds',
+    describes: 'the queue, and the constraint that makes the 1.0 decrement abort',
+    async run() {
+      await tablesExistAndAreEmpty('v2-holds');
+      await seedMinimalChain();
+      await v2Query(
+        url(),
+        `INSERT INTO patrons (id, full_name, sort_name, search_text, updated_at)
+         SELECT 'smk_p' || g, 'Reader ' || g, 'reader ' || g, 'reader ' || g, pg_catalog.now()
+           FROM pg_catalog.generate_series(1, 5) AS g`,
+      );
+
+      // `hold_policy_id` and `applied_rule_id` carry NO foreign key, deliberately
+      // and identically to `loans`: a request must keep naming the policy that
+      // priced it after that policy is archived, and ON DELETE RESTRICT would
+      // make a policy un-retirable for as long as any historical request named
+      // it. So a literal is a valid value here, and the smoke test needs no
+      // policy matrix to exercise the queue.
+      const hold = (id: string, patron: string, pos: string) =>
+        `INSERT INTO holds (id, bib_id, patron_id, pickup_branch_id, queue_position,
+                            hold_policy_id, applied_rule_id, policy_snapshot,
+                            created_at, updated_at)
+         VALUES ('${id}', 'smk_m', '${patron}', 'smk_b', ${pos},
+                 'hp', 'r', '{}'::jsonb, pg_catalog.now(), pg_catalog.now())`;
+
+      // ---- one reader, one live request per record ------------------------
+      await v2Query(url(), hold('smk_q1', 'smk_p1', '1'));
+      await expectSqlstate(
+        url(),
+        hold('smk_dup', 'smk_p1', '9'),
+        '23505',
+        'a reader cannot join the same queue twice — a double-click is a mistake at a desk, ' +
+          'not a second place in line',
+      );
+      await expectSqlstate(
+        url(),
+        hold('smk_dup', 'smk_p2', '1'),
+        '23505',
+        'two readers cannot share a slot',
+      );
+
+      // ---- a position exists exactly while a request is WAITING -----------
+      await expectSqlstate(
+        url(),
+        `UPDATE holds SET assigned_item_id = 'smk_i', assigned_at = pg_catalog.now()
+          WHERE id = 'smk_q1'`,
+        '23514',
+        'a request given a copy has left the queue and must drop its position',
+      );
+      await expectSqlstate(
+        url(),
+        `UPDATE holds SET awaiting_pickup_since = pg_catalog.now() WHERE id = 'smk_q1'`,
+        '23514',
+        'a request cannot be collectable without a copy on the shelf for it',
+      );
+      await expectSqlstate(
+        url(),
+        `UPDATE holds SET fulfilled_at = pg_catalog.now(), fulfilled_by_loan_id = 'l',
+                          cancelled_at = pg_catalog.now(), queue_position = NULL
+          WHERE id = 'smk_q1'`,
+        '23514',
+        'a request has exactly one ending, or none — the partial uniques depend on it',
+      );
+
+      // ---- a level carries the thing it names -----------------------------
+      await expectSqlstate(
+        url(),
+        `INSERT INTO holds (id, bib_id, patron_id, pickup_branch_id, queue_position, level,
+                            hold_policy_id, applied_rule_id, policy_snapshot, created_at, updated_at)
+         VALUES ('smk_lv', 'smk_m', 'smk_p2', 'smk_b', 2, 'item',
+                 'hp', 'r', '{}'::jsonb, pg_catalog.now(), pg_catalog.now())`,
+        '23514',
+        'an item-level request with no copy named would be silently treated as a title request ' +
+          'by the promoter, and hand a reader the wrong physical thing',
+      );
+
+      // ---- a copy goes to ONE reader --------------------------------------
+      await v2Query(
+        url(),
+        `UPDATE holds SET assigned_item_id = 'smk_i', assigned_at = pg_catalog.now(),
+                          queue_position = NULL
+          WHERE id = 'smk_q1'`,
+      );
+      await expectSqlstate(
+        url(),
+        `INSERT INTO holds (id, bib_id, patron_id, pickup_branch_id, assigned_item_id, assigned_at,
+                            hold_policy_id, applied_rule_id, policy_snapshot, created_at, updated_at)
+         VALUES ('smk_q2', 'smk_m', 'smk_p2', 'smk_b', 'smk_i', pg_catalog.now(),
+                 'hp', 'r', '{}'::jsonb, pg_catalog.now(), pg_catalog.now())`,
+        '23505',
+        'a double-assigned copy is impossible — §3 asks for exactly this index by name',
+      );
+
+      // ---- THE PHASE, in one statement ------------------------------------
+      //
+      // Five requests, #1 SUSPENDED, #2 filled. The 1.0 blanket decrement is
+      // correct only because the head always leaves; the moment a suspended
+      // request can be skipped, the request that leaves is not the head.
+      await v2Query(url(), `DELETE FROM holds`);
+      await v2Query(
+        url(),
+        `INSERT INTO holds (id, bib_id, patron_id, pickup_branch_id, queue_position,
+                            suspended_until, hold_policy_id, applied_rule_id, policy_snapshot,
+                            created_at, updated_at)
+         SELECT 'smk_h' || g, 'smk_m', 'smk_p' || g, 'smk_b', g,
+                CASE WHEN g = 1 THEN (pg_catalog.now() + interval '30 days')::date END,
+                'hp', 'r', '{}'::jsonb, pg_catalog.now(), pg_catalog.now()
+           FROM pg_catalog.generate_series(1, 5) AS g`,
+      );
+      await v2Query(
+        url(),
+        `UPDATE holds SET assigned_item_id = 'smk_i', assigned_at = pg_catalog.now(),
+                          queue_position = NULL
+          WHERE id = 'smk_h2'`,
+      );
+      await expectSqlstate(
+        url(),
+        `UPDATE holds SET queue_position = queue_position - 1
+          WHERE bib_id = 'smk_m' AND queue_position IS NOT NULL AND queue_position > 0`,
+        '23514',
+        'THE 1.0 BLANKET DECREMENT ABORTS. It would put the suspended request at position 0, ' +
+          'and holds_position_is_one_based turns that from a wrong number into a refusal',
+      );
+      await v2Query(
+        url(),
+        `UPDATE holds SET queue_position = queue_position - 1
+          WHERE bib_id = 'smk_m' AND queue_position IS NOT NULL AND queue_position > 2`,
+      );
+      const after = await v2Query<{ id: string; queue_position: number }>(
+        url(),
+        `SELECT id, queue_position FROM holds
+          WHERE queue_position IS NOT NULL ORDER BY queue_position`,
+      );
+      const shape = after.map((r) => `${r.id}=${r.queue_position}`).join(' ');
+      if (shape !== 'smk_h1=1 smk_h3=2 smk_h4=3 smk_h5=4') {
+        throw new Error(`the targeted rebalance produced ${shape}`);
+      }
+      ok(
+        'the TARGETED rebalance leaves 1,2,3,4 — contiguous, 1-based, and the suspended reader ' +
+          'keeps the place they never gave up',
+      );
+
+      // ---- the foreign key phase 15 promised ------------------------------
+      await v2Query(
+        url(),
+        `INSERT INTO branches (id, code, name, timezone, updated_at)
+         VALUES ('smk_b2', 'SMOKE2', 'Δεύτερο', 'Europe/Athens', pg_catalog.now())`,
+      );
+      await v2Query(
+        url(),
+        `INSERT INTO item_transfers (id, item_id, from_branch_id, to_branch_id, hold_id, updated_at)
+         VALUES ('smk_th', 'smk_i', 'smk_b', 'smk_b2', 'smk_h3', pg_catalog.now())`,
+      );
+      await expectSqlstate(
+        url(),
+        `DELETE FROM holds WHERE id = 'smk_h3'`,
+        '23503',
+        'a request a copy is travelling for cannot be deleted out from under the van — phase 15 ' +
+          'wrote "no FK: holds is phase 17", and this is phase 17 paying it',
+      );
     },
     reset: teardown,
   },

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { HoldArrivalModule } from '../holds/hold-arrival.module.js';
 import { PolicyModule } from '../policy/policy.module.js';
 import { TenantModule } from '../tenancy/tenant.module.js';
 import { ItemStatusService } from './item-status.service.js';
@@ -20,13 +21,21 @@ import { ItemsService } from './items.service.js';
  * hold-promotion probe, and `ItemTransfersService` for phase 17's routing and
  * phase 23's transit desk.
  *
+ * `HoldArrivalModule` is phase 17's, and it is the ONE direction the items/holds
+ * boundary runs. A transit desk scans a barcode and does not know whether the
+ * copy in its hand is a hold arrival, a float or a repair return, so
+ * `ItemTransfersService.receive` has to ask — and `HoldsModule` already imports
+ * THIS module for `ItemStatusService`. A `forwardRef` would close the cycle and
+ * hide it; a module that imports nothing, which both sides import, keeps the
+ * dependency one method wide and visible.
+ *
  * THE EXPORT IS THE BOUNDARY. `ItemStatusService` being the only exported way to
  * write `items.status` is what makes `check:item-status-writer` a rule about the
  * whole application rather than about this directory: a module that wants to
  * move a copy has to import this one, and importing it is visible.
  */
 @Module({
-  imports: [TenantModule, PolicyModule],
+  imports: [TenantModule, PolicyModule, HoldArrivalModule],
   providers: [ItemsService, ItemStatusService, ItemTransfersService],
   controllers: [ItemsController],
   exports: [ItemsService, ItemStatusService, ItemTransfersService],

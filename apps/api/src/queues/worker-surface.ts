@@ -5,6 +5,11 @@ import {
   PARTITION_MAINTENANCE_COUNTS,
   PARTITION_MAINTENANCE_JOB,
 } from '../jobs/partition-maintenance.job.js';
+import { HOLD_EXPIRY_COUNTS, HOLD_EXPIRY_JOB } from '../jobs/hold-expiry.job.js';
+import {
+  HOLD_TRANSIT_TIMEOUT_COUNTS,
+  HOLD_TRANSIT_TIMEOUT_JOB,
+} from '../jobs/hold-transit-timeout.job.js';
 import { metricHeader, metricLine } from '../observability/metrics.registry.js';
 import type { TenantPoolPlan } from '../platform/tenant-pool-budget.js';
 import { WORKER_CONSUMERS, type ConsumerHandle, type QueueConsumer } from './consumers.js';
@@ -174,6 +179,7 @@ export function renderWorkerMetrics(input: {
       jobResults(states) as Parameters<typeof renderScheduledJobMetrics>[0],
     ),
     ...renderPartitionMetrics(jobResults(states)),
+    ...renderHoldMetrics(jobResults(states)),
     ...renderCatalogProjectionMetrics(jobResults(states)),
   ];
   return lines.join('\n');
@@ -239,5 +245,40 @@ function renderPartitionMetrics(results: Record<string, unknown>): string[] {
     ...sample('libriant_partition_headroom_months', PARTITION_MAINTENANCE_COUNTS.minHeadroomMonths),
     ...metricHeader('libriant_partitions_created_total'),
     ...sample('libriant_partitions_created_total', PARTITION_MAINTENANCE_COUNTS.created),
+  ];
+}
+
+/**
+ * The hold shelf and the van (2.0 phase 17).
+ *
+ * The same shape as the two blocks above, and the same reason: three literals —
+ * the registry name, the handler's `counts` keys and these lookups — used to
+ * have to agree by hand, and renaming any of them silently deleted the only
+ * series an alert reads. Every string here comes from `hold-expiry.job.ts` and
+ * `hold-transit-timeout.job.ts`.
+ *
+ * ABSENT rather than zero before the first tick. `libriant_hold_transit_overdue_total`
+ * is alerted, and a gauge that read 0 on a worker that has not swept yet would
+ * be an assertion that no crate is late — made by a process that has not looked.
+ */
+function renderHoldMetrics(results: Record<string, unknown>): string[] {
+  const expiry = results[HOLD_EXPIRY_JOB] as { counts?: Record<string, number> } | undefined;
+  const transit = results[HOLD_TRANSIT_TIMEOUT_JOB] as
+    { counts?: Record<string, number> } | undefined;
+  const from =
+    (counts: Record<string, number> | undefined) =>
+    (metric: Parameters<typeof metricLine>[0], key: string) =>
+      counts && typeof counts[key] === 'number' ? [metricLine(metric, counts[key])] : [];
+  const e = from(expiry?.counts);
+  const t = from(transit?.counts);
+  return [
+    ...metricHeader('libriant_hold_shelf_expired_total'),
+    ...e('libriant_hold_shelf_expired_total', HOLD_EXPIRY_COUNTS.shelfExpired),
+    ...metricHeader('libriant_hold_shelf_promoted_total'),
+    ...e('libriant_hold_shelf_promoted_total', HOLD_EXPIRY_COUNTS.promoted),
+    ...metricHeader('libriant_hold_transit_overdue_total'),
+    ...t('libriant_hold_transit_overdue_total', HOLD_TRANSIT_TIMEOUT_COUNTS.overdue),
+    ...metricHeader('libriant_hold_transit_overdue_oldest_days'),
+    ...t('libriant_hold_transit_overdue_oldest_days', HOLD_TRANSIT_TIMEOUT_COUNTS.oldestDays),
   ];
 }

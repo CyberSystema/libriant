@@ -124,7 +124,23 @@ export function computeRenewalDueDate(
       policy.id,
     );
   }
-  return computeDueDate({ ...input, from: anchor });
+  // THE PERIOD CHOSEN ABOVE IS THE ONE APPLIED, and it has to be handed over
+  // explicitly. `computeDueDate` re-derives a period from `policy.period` and
+  // `alternateCheckoutPeriodWithHolds`, so passing the untouched policy would
+  // compute a CHECKOUT due date from a renewal anchor: `renewalPeriod` would
+  // never take effect at all, and `alternateRenewalPeriodWithHolds` would be
+  // silently replaced by its checkout twin. Every vector in
+  // `resolution-vectors.json` has `renewalPeriod: null`, which is exactly why
+  // this went unnoticed until phase 17 wired `hasOutstandingHold` in and asked
+  // the alternate renewal period to do something.
+  //
+  // `alternateCheckoutPeriodWithHolds: null` because `period` has already
+  // absorbed the hold decision; leaving it set would apply the shortening twice.
+  return computeDueDate({
+    ...input,
+    from: anchor,
+    policy: { ...policy, period, alternateCheckoutPeriodWithHolds: null },
+  });
 }
 
 // ---------------------------------------------------------------------------

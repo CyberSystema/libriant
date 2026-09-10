@@ -85,7 +85,32 @@ export type CirculationState = {
   readonly anyCopyAvailable?: boolean;
   readonly allCopiesAvailable?: boolean;
   readonly requestedPickupBranchId?: string;
+  /**
+   * What level of hold is being asked for, so `itemLevelHolds: 'deny'` has
+   * something to refuse. Absent means "not stated", and an absent level is never
+   * refused — a caller that does not say cannot be told it asked for the wrong
+   * thing.
+   */
+  readonly requestedHoldLevel?: 'title' | 'volume' | 'item';
+  /**
+   * Where the copy LIVES — `items.owning_branch_id`, for `owningBranch` pickup.
+   *
+   * Named `home` rather than `owning` because it predates phase 15, and renamed
+   * nowhere because a `CirculationState` field is a wire contract the offline
+   * core and SIP2 also fill.
+   */
   readonly itemHomeBranchId?: string;
+  /**
+   * Where the copy IS — `items.current_branch_id`, for `holdingBranch` pickup.
+   *
+   * A SEPARATE FIELD, added in phase 17, because these two branches are
+   * deliberately different for the whole of a transit: phase 15 keeps
+   * `current_branch_id` at the SOURCE until receipt, so a copy on a van lives at
+   * one branch and is at another. Collapsing them — which this function did
+   * until phase 17, answering `holdingBranch` with `itemHomeBranchId` — is
+   * silently wrong for exactly the copies a hold spends its time routing.
+   */
+  readonly itemCurrentBranchId?: string;
   readonly patronHomeBranchId?: string;
 };
 
@@ -137,9 +162,44 @@ export function evaluateBlocks(
     );
   }
 
-  const maxHolds = tighter(rule.maxHoldsForRule, categoryLimit?.maxHolds ?? null);
   if (operation === 'hold') {
+    // THREE ceilings, not two. `hold.maxHoldsTotal` is a field phase 12
+    // declared, phase 13's loader reads out of `hold_policies`, and nothing
+    // evaluated until phase 17 — a policy value a librarian could set and that
+    // did nothing, which is worse than one that does not exist. Each of the
+    // three is a limit somebody set on purpose, so the tightest wins rather than
+    // one overriding the others.
+    //
+    // COMPUTED HERE rather than beside the loan ceilings above, and that is not
+    // tidiness: `RenewService` hands this function a `resolved` it assembles
+    // from a LOAN's pinned snapshot, which has no `hold` policy in it at all —
+    // §3 pins the two separately and `policy-pinning.ts` requires exactly
+    // `['loan', 'overdueFine', 'lostItemFee']`. Reading `hold.maxHoldsTotal`
+    // unconditionally made every renewal in the building throw a TypeError.
+    const maxHolds = tighter(
+      tighter(rule.maxHoldsForRule, categoryLimit?.maxHolds ?? null),
+      hold.maxHoldsTotal,
+    );
     if (!hold.holdsAllowed) out.push(block(BLOCK_CODE.holdsNotAllowed, 'circ.hold.override'));
+    // `deny` means a reader may ask for the TITLE and not for a named copy. It
+    // is the ordinary public-library setting, and its point is that the library
+    // decides which copy travels — a reader who picks the one at the far branch
+    // has made a routing decision they were not asked to make.
+    //
+    // `force` is deliberately NOT a block here. It is a constraint on the
+    // PLACEMENT UI — a request that must name a copy — and refusing a title
+    // request under it would need a code saying "name a copy", which is a
+    // different sentence from "you may not name one".
+    if (hold.itemLevelHolds === 'deny' && state.requestedHoldLevel === 'item') {
+      out.push(
+        block(
+          BLOCK_CODE.itemLevelHoldsNotAllowed,
+          'circ.hold.override',
+          'item',
+          hold.itemLevelHolds,
+        ),
+      );
+    }
     if (maxHolds !== null && state.openHolds !== undefined && state.openHolds >= maxHolds) {
       out.push(block(BLOCK_CODE.tooManyHolds, 'circ.hold.override', state.openHolds, maxHolds));
     }
@@ -277,17 +337,41 @@ export function renewalTooEarly(
   };
 }
 
-/** Where a hold may be collected. Why `pickupBranchId` is a selector at all. */
+/**
+ * Where a hold may be collected. Why `pickupBranchId` is a selector at all.
+ *
+ * ## `owningBranch` and `holdingBranch` are DIFFERENT BRANCHES
+ *
+ * Until phase 17 both arms read `itemHomeBranchId`, which is right for
+ * `owningBranch` and wrong for `holdingBranch` in exactly the case that matters:
+ * phase 15 keeps `items.current_branch_id` at the SOURCE for the whole of an
+ * open transfer, so a copy in a van lives at one branch and is at another. A
+ * library that says "collect it where it is" and gets told "where it lives" is
+ * given the wrong branch for every copy currently moving.
+ *
+ * ## An absent branch is NOT a refusal
+ *
+ * `patrons.home_branch_id` is nullable, and under `patronHomeBranch` a reader
+ * who never chose one would be refused every branch by a comparison against
+ * `undefined`. That is a refusal produced by an absent value rather than by a
+ * policy decision — the same argument `hold-pinning.ts`'s `canCollectAt` makes
+ * from the other side of the transaction — so an unknown branch returns `null`
+ * and the desk gets a hold it can route.
+ */
 function pickupBlock(resolved: ResolvedPolicy, state: CirculationState): Block | null {
   const { hold } = resolved;
   const wanted = state.requestedPickupBranchId;
   if (wanted === undefined || hold.pickupPolicy === 'any') return null;
+  const against =
+    hold.pickupPolicy === 'owningBranch'
+      ? state.itemHomeBranchId
+      : hold.pickupPolicy === 'holdingBranch'
+        ? state.itemCurrentBranchId
+        : state.patronHomeBranchId;
   const allowed =
     hold.pickupPolicy === 'explicitSet'
       ? hold.pickupBranchIds.includes(wanted)
-      : hold.pickupPolicy === 'owningBranch' || hold.pickupPolicy === 'holdingBranch'
-        ? state.itemHomeBranchId === wanted
-        : state.patronHomeBranchId === wanted;
+      : against === undefined || against === wanted;
   if (allowed) return null;
   return {
     code: BLOCK_CODE.pickupBranchNotAllowed,

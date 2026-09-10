@@ -16,6 +16,8 @@ import {
   CIRCULATION_ROLLUP_JOB,
   rollUpCirculationStatistics,
 } from './circulation-statistics-rollup.job.js';
+import { HOLD_EXPIRY_JOB, sweepHoldExpiry } from './hold-expiry.job.js';
+import { HOLD_TRANSIT_TIMEOUT_JOB, checkHoldTransitTimeouts } from './hold-transit-timeout.job.js';
 import type { ScheduledJob } from './jobs.types.js';
 
 /**
@@ -192,5 +194,36 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     name: CIRCULATION_ROLLUP_JOB,
     intervalMs: 60 * 60_000,
     handler: () => rollUpCirculationStatistics(),
+  },
+  {
+    /**
+     * Expire hold-shelf and unfilled requests (2.0 phase 17).
+     *
+     * HOURLY, in the "desk-facing sweeps that are cheap to re-run" band, and
+     * that band is chosen for a reason a daily sweep would get wrong: a shelf
+     * expiry frees a COPY, and the reader behind it in the queue should be told
+     * within the hour rather than at 03:00 the next morning. The sweep is
+     * idempotent — every write re-checks that the request is still open — so a
+     * missed tick catches up on the next one and a doubled tick does nothing.
+     *
+     * It is not in the 60 s band because nothing here is user-facing state
+     * cleanup: a shelf expiry is a deadline that passed, and a reader who
+     * arrives four minutes after it has still arrived after it.
+     */
+    name: HOLD_EXPIRY_JOB,
+    intervalMs: 60 * 60_000,
+    handler: () => sweepHoldExpiry(),
+  },
+  {
+    /**
+     * Copies sent for a reader that have not arrived (2.0 phase 17).
+     *
+     * DAILY, because it reports rather than repairs and the thing it reports on
+     * moves at the speed of a van. Hourly would re-count the same crate
+     * twenty-four times and produce an alert that flaps on nothing.
+     */
+    name: HOLD_TRANSIT_TIMEOUT_JOB,
+    intervalMs: 24 * 60 * 60_000,
+    handler: () => checkHoldTransitTimeouts(),
   },
 ];

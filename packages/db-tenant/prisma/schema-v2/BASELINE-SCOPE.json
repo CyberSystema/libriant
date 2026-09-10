@@ -321,9 +321,9 @@
     },
     "cancellation_reasons": {
       "status": "deferred",
-      "phase": "9b/12-17",
+      "phase": "21",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "Re-phased by 17, which owns `holds` and deliberately did NOT create it. `holds.cancelled_reason` is free text, because what phase 17 owes is that a job-written cancellation is READABLE, and a sentence is. Phase 21 already owns `override_reasons`, which is the same shape of librarian-configurable vocabulary table, and phase 15 sent the three item condition codes there for the same reason: the machinery should be built once, by the phase that has two callers for it."
     },
     "cash_drawer_movements": {
       "status": "deferred",
@@ -569,10 +569,10 @@
       "reason": "RE-PHASED BY PHASE 15, from 9c/15 to 23, having reached the phase that was supposed to create it. Phase 15 owns the SELECTOR and added it — `shelving_locations.floating_group`, a nullable group name because floating is almost never library-wide. It does not own the RULES. §6 phase 23 states the whole decision (\"an item owned by A, checked out at B, returned at C either floats or generates a transit per `floating_rules`\") and carries the four-branch fixture that is the only thing able to test a single row of it; the decision itself is taken at CHECKIN, which is phase 16. Inventing the columns here would mean inventing them with no caller, no fixture and no test — which is the failure `patrons` names in its own docblock, and a table created empty and wrong is worse than one honestly deferred."
     },
     "hold_groups": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§6 phase 17 names \"group holds\" and says nothing else. A group is a CANCELLATION RULE and not a queue: each member sits in its own bib’s queue at its own position and is promoted independently, and the group only says what happens when one of them is FULFILLED — the siblings are cancelled with a reason naming the group, so a reader is not handed four printings of the same novel. That is why there is no `hold_groups.queue_position` and no group lock domain: a promotion still serialises on ONE bib, and the sibling cancellation is an ordinary targeted rebalance in each of the others."
     },
     "hold_policies": {
       "status": "created",
@@ -588,9 +588,9 @@
     },
     "hold_ratio_alerts": {
       "status": "deferred",
-      "phase": "9b/12-17",
+      "phase": "87",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "Re-phased by 17. It is a COLLECTION-DEVELOPMENT signal — \"twelve readers per copy, buy more\" — and not a circulation mechanism: nothing in the queue, the promotion, the shelf or the transit reads it, and building it here would mean inventing a threshold, an owner and a delivery channel with no acquisitions module able to act on any of them. §6 phase 87 is collection analytics, CREW/MUSTIE weeding and demand forecasting, which is where a holds-to-copies ratio is a number somebody can spend money on."
     },
     "holdings_records": {
       "status": "created",
@@ -599,10 +599,10 @@
       "reason": "Created because a specified table foreign-keys to it — `items.holdings_record_id text NOT NULL REFERENCES holdings_records(record_id)`, which is also why the primary key is `record_id` and not `id`. Phase 15 added `is_default`, which is what makes §3’s promised auto-creation of a default holdings record safe: it carries a partial unique on (bib_id, branch_id) WHERE is_default, strictly narrower than the unqualified unique phase 11 refused. The 852/853-855/863-868 compressed-holdings statement and the mandatory holdings 008 are still phase 84’s."
     },
     "holds": {
-      "status": "deferred",
-      "phase": "9b/12-17",
+      "status": "created",
+      "basis": "invented",
       "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "reason": "§3 names it in the Circulation line and gives it no DDL. Its ONE paragraph (MASTER-ARCHITECTURE.md:415) is the whole specification, so every column is a phase-17 decision. Three NULL tests spell \"open\" rather than a status enum, for the measurement 45-items.prisma records: a parameterised enum predicate seq-scans at 1470 buffers against 2, still seq-scans with enable_seqscan off, and `ON CONFLICT` cannot infer an enum-predicate arbiter through a parameterised cast at all. `queue_position` is non-NULL exactly while a hold is waiting (`holds_position_iff_waiting`) and at least 1 (`holds_position_is_one_based`) — and the second is the phase’s acceptance criterion made ENFORCEABLE rather than merely tested, because under it the 1.0 blanket `WHERE queue_position > 0` decrement does not produce a wrong number, it ABORTS with 23514 the first time a suspended hold at position 1 is skipped."
     },
     "iana_timezones": {
       "status": "created",
@@ -1024,9 +1024,9 @@
     },
     "patron_reading_history": {
       "status": "deferred",
-      "phase": "9b/12-17",
-      "group": "Circulation",
-      "reason": "The calendar model and the rules matrix are phases 12-13 design."
+      "phase": "33",
+      "group": "Patrons",
+      "reason": "Re-phased by 17 out of the circulation band it was parked in. It is the OPAC opt-in — §6 phase 33: \"reading history opt-in wired to the anonymisation path\" — and the anonymisation path it wires to is phase 16’s, which is already live: `loans.patron_id` is nulled and `anonymised_at` stamped in the same transaction as the return, by default. A history table built before the opt-in that populates it would be an empty table whose only effect is to make that default look negotiable."
     },
     "patron_registrations": {
       "status": "deferred",
