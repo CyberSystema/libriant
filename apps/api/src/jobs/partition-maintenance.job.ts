@@ -74,9 +74,45 @@ const MONTHS_AHEAD = 24;
  * next, and it lives in a different Postgres SCHEMA, which is why the schema is
  * a field rather than assumed to be `lbr2`.
  */
-const PARTITIONED: readonly { schema: string; table: string; column: string }[] = [
-  { schema: 'lbr2', table: 'audit_log', column: 'occurred_at' },
-  { schema: 'lbr2', table: 'circulation_statistics', column: 'period_start' },
+type PartitionTarget = {
+  readonly schema: string;
+  readonly table: string;
+  readonly column: string;
+  /**
+   * THE TYPE OF THE PARTITION KEY, and the two values are not interchangeable.
+   *
+   * A bare bound literal — `FOR VALUES FROM ('2026-10-01')` — is resolved
+   * against the key's type in the CREATING SESSION's timezone. For a
+   * `timestamptz` key that makes the boundary local midnight, so two sessions in
+   * two zones produce two different instants from the same string. MEASURED, and
+   * it is not theoretical: `prisma migrate deploy` creates the first 27
+   * partitions and this job creates the rest, and once the application pins its
+   * own sessions to UTC while the CLI inherits the server default, the two
+   * disagree at the seam:
+   *
+   *     audit_log_2026_09  [2026-08-31 21:00+00, 2026-09-30 21:00+00)   Athens
+   *     audit_log_2026_10  [2026-10-01 00:00+00, 2026-11-01 00:00+00)   UTC
+   *
+   * A three-hour hole, which Postgres accepts silently at DDL time and which
+   * `audit_log` — with no DEFAULT partition, deliberately — turns into a hard
+   * `23514` on every audited write for those three hours.
+   *
+   * So a `timestamptz` key gets an EXPLICIT `+00`. A `date` key must NOT: its
+   * bounds carry no zone at all (`FROM ('2026-06-01')`) and are already immune,
+   * and handing it a timestamptz literal would cast the value back through the
+   * session zone and introduce the defect where none exists.
+   */
+  readonly bound: 'timestamptz' | 'date';
+};
+
+const PARTITIONED: readonly PartitionTarget[] = [
+  { schema: 'lbr2', table: 'audit_log', column: 'occurred_at', bound: 'timestamptz' },
+  {
+    schema: 'lbr2',
+    table: 'circulation_statistics',
+    column: 'period_start',
+    bound: 'date',
+  },
 ];
 
 export async function maintainPartitions(): Promise<JobResult> {
@@ -153,21 +189,95 @@ type RawClient = {
  */
 async function ensureWindow(
   client: RawClient,
-  target: { schema: string; table: string; column: string },
+  target: PartitionTarget,
 ): Promise<{ created: number; headroomMonths: number }> {
+  await assertBoundsAreUtc(client, target);
   const before = await countFrom(client, target, monthName(target.table, 0));
 
   for (let i = 0; i <= MONTHS_AHEAD; i += 1) {
     await client.$executeRawUnsafe(
       `CREATE TABLE IF NOT EXISTS ${quote(target.schema)}.${quote(monthName(target.table, i))} ` +
         `PARTITION OF ${quote(target.schema)}.${quote(target.table)} ` +
-        `FOR VALUES FROM ('${monthStart(i)}') TO ('${monthStart(i + 1)}')`,
+        `FOR VALUES FROM (${bound(target, i)}) TO (${bound(target, i + 1)})`,
     );
   }
 
   const after = await countFrom(client, target, monthName(target.table, 0));
   // `after - 1`: the current month is not headroom, it is today.
   return { created: Math.max(0, after - before), headroomMonths: Math.max(0, after - 1) };
+}
+
+/**
+ * One partition bound, in the form its key type actually needs.
+ *
+ * See {@link PartitionTarget.bound}. `monthStart` already computes a UTC civil
+ * month start, so for a `timestamptz` key all this adds is the zone the literal
+ * was always meant to carry — and without which the session supplies one.
+ */
+function bound(target: PartitionTarget, offset: number): string {
+  return target.bound === 'timestamptz'
+    ? `TIMESTAMPTZ '${monthStart(offset)} 00:00:00+00'`
+    : `'${monthStart(offset)}'`;
+}
+
+/**
+ * Refuse a table whose existing bounds are not on a UTC day boundary.
+ *
+ * THE HALF THAT MAKES THE EXPLICIT BOUND SAFE. Emitting `+00` on its own is the
+ * one actively dangerous change available here: it aligns what this job creates
+ * from now on and says nothing about what is already there, so a database
+ * provisioned on a non-UTC session gets a silent three-hour hole at the seam —
+ * see {@link PartitionTarget.bound} for the measurement.
+ *
+ * So the job looks first, and a database that needs repair fails LOUDLY, per
+ * tenant, through the caller's existing `catch` — which counts it in
+ * `tenantsFailed` and names it in the log — rather than creating the partition
+ * that opens the gap. `scripts/tenant-timezone-audit.ts` is what reports and
+ * repairs the estate.
+ *
+ * `countFrom` compares partitions by NAME, which is exactly why this cannot be
+ * left to it: the names are identical either way. Only the bound differs.
+ */
+async function assertBoundsAreUtc(client: RawClient, target: PartitionTarget): Promise<void> {
+  if (target.bound !== 'timestamptz') return;
+  const rows = await client.$queryRawUnsafe<{ name: string; bound: string }[]>(
+    `SELECT c.relname AS name, pg_catalog.pg_get_expr(c.relpartbound, c.oid) AS bound
+       FROM pg_catalog.pg_inherits i
+       JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid
+       JOIN pg_catalog.pg_class p ON p.oid = i.inhparent
+       JOIN pg_catalog.pg_namespace n ON n.oid = p.relnamespace
+      WHERE n.nspname = $1 AND p.relname = $2 AND c.relkind = 'r'`,
+    target.schema,
+    target.table,
+  );
+  // THE TEST IS "MIDNIGHT UTC", NOT "ENDS IN +00", and the difference is the
+  // whole check. This job's own session is UTC (the pool carries
+  // `PG_SESSION_OPTIONS`), so Postgres renders EVERY bound with a `+00` suffix —
+  // including one created in Athens, which comes back as
+  // `'2026-08-31 21:00:00+00'`. Suffix-matching would have passed the exact rows
+  // it exists to catch. What distinguishes them is the time of day: a UTC month
+  // start is `00:00:00`, and local midnight in any other zone is not.
+  //
+  // Reading the rendered text is what `countFrom`'s docblock warns is
+  // version-dependent. Here it is the only thing that CAN distinguish them, and
+  // a rendering change makes this refuse rather than pass — the safe direction.
+  const utcMidnight = /'\d{4}-\d{2}-\d{2} 00:00:00\+00'/g;
+  const wrong = rows
+    .filter((r) => {
+      const literals = r.bound.match(/'[^']*'/g) ?? [];
+      const midnights = r.bound.match(utcMidnight) ?? [];
+      return literals.length === 0 || midnights.length !== literals.length;
+    })
+    .map((r) => r.name);
+  if (wrong.length === 0) return;
+  throw new Error(
+    `${target.schema}.${target.table} has ${wrong.length} partition(s) whose bounds are not UTC ` +
+      `day boundaries (${wrong.slice(0, 3).join(', ')}${wrong.length > 3 ? ', …' : ''}). They were ` +
+      'created by a session that was not UTC, and adding a UTC-bounded partition beside them ' +
+      'would leave a hole that every audited write in it fails into with 23514. Run ' +
+      '`pnpm tsx scripts/tenant-timezone-audit.ts` for the estate, and see ' +
+      'packages/shared/src/postgres-session.ts.',
+  );
 }
 
 /**

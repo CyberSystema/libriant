@@ -33,6 +33,14 @@ services:
       - postgres
       - -c
       - shared_preload_libraries=pg_stat_statements
+      # UTC, by statement rather than by the image happening to ship no TZ.
+      # `@prisma/adapter-pg` requires a UTC session and does not say so; a
+      # non-UTC one stores every instant wrong by the offset. See
+      # packages/shared/src/postgres-session.ts. This is the cluster-wide
+      # companion to the per-database ALTER in postgres-init.sql, and it is what
+      # a `TZ:` line added here in future would have to argue with.
+      - -c
+      - timezone=UTC
     ports:
       - '5432:5432'
     volumes:

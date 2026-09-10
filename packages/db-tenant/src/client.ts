@@ -8,6 +8,7 @@
 // string is handed to a fresh `@prisma/adapter-pg` instance instead of the
 // old `datasources` constructor option.
 import { PrismaPg } from '@prisma/adapter-pg';
+import { PG_SESSION_OPTIONS } from '@libriant/shared/postgres-session';
 import { PrismaClient } from '../node_modules/.prisma/tenant-client/index.js';
 import { PrismaClient as PrismaClientV2 } from '../node_modules/.prisma/tenant-v2-client/index.js';
 import { V2_SCHEMA } from './v2.js';
@@ -23,6 +24,35 @@ export type TenantPrismaClientV2 = PrismaClientV2;
  * one client at a time) can run leaner than the API.
  */
 const DEFAULT_TENANT_POOL_MAX = 5;
+
+/**
+ * THE UTC SESSION, and why it is on the adapter rather than on the URL.
+ *
+ * `@prisma/adapter-pg` requires a UTC session and does not say so;
+ * `packages/shared/src/postgres-session.ts` carries the measurement and the
+ * whole argument. Both halves of its `timestamptz` handling assume it, and both
+ * are silent when it is false — so a non-UTC session stores every instant wrong
+ * by the offset while every comparison inside the application still agrees with
+ * itself.
+ *
+ * This option is the BACKSTOP, not the mechanism. The mechanism is
+ * `ALTER DATABASE … SET TimeZone TO 'UTC'`, applied at provisioning, which also
+ * covers `prisma migrate deploy`, `psql` and `pg_dump`. What the option adds is
+ * everything the mechanism cannot reach: a database somebody forgot to pin, a
+ * cluster this product did not create, a restored dump, a customer's own
+ * Postgres in a self-hosted install. MEASURED: a startup option is
+ * `PGC_S_CLIENT` and OUTRANKS the per-database `PGC_S_DATABASE`, so against a
+ * database pinned to `Asia/Kolkata` a connection carrying this still reports
+ * `UTC`.
+ *
+ * IT MUST NEVER MOVE ONTO THE URL. `withV2Schema` (`./v2.ts`) puts the schema on
+ * with `searchParams.set`, and `URLSearchParams` re-serialises a space as `+`:
+ * MEASURED, `?options=-c%20timezone%3DUTC` survives one `set()` as
+ * `options=-c+timezone%3DUTC`, which node-pg accepts silently and libpq answers
+ * with `FATAL: unrecognized configuration parameter "+timezone"` — so psql,
+ * pg_dump and the migrate CLI would break while the app looked fine.
+ * `check:session-timezone` rule R4 refuses it.
+ */
 
 function resolveMaxPoolSize(explicit?: number): number {
   if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) {
@@ -59,6 +89,7 @@ export function makeTenantPrismaClient(opts: MakeTenantClientOptions): TenantPri
   const adapter = new PrismaPg({
     connectionString: opts.databaseUrl,
     max: resolveMaxPoolSize(opts.maxPoolSize),
+    options: PG_SESSION_OPTIONS,
   });
   return new PrismaClient({
     adapter,
@@ -101,6 +132,7 @@ export function makeTenantPrismaClientV2(opts: MakeTenantClientOptions): TenantP
     {
       connectionString: opts.databaseUrl,
       max: resolveMaxPoolSize(opts.maxPoolSize),
+      options: PG_SESSION_OPTIONS,
     },
     { schema: V2_SCHEMA },
   );

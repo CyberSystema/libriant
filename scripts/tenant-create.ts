@@ -35,6 +35,7 @@
  *       --dry-run
  */
 import { randomBytes } from 'node:crypto';
+import { pinDatabaseTimezoneSql } from '@libriant/shared/postgres-session';
 import { execFile } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -350,6 +351,14 @@ async function createTenantDatabase(dbName: string): Promise<void> {
     if (!existing.rowCount) {
       await admin.query(`CREATE DATABASE "${dbName}" ENCODING 'UTF8'`);
     }
+    // THE UTC PIN, outside the guard so a database created before this change
+    // is repaired by re-running the script. It must precede the migrations
+    // below: `@prisma/adapter-pg` requires a UTC session (see
+    // packages/shared/src/postgres-session.ts) and the migrate subprocess is the
+    // one connection no pool option can reach — its Rust schema engine is
+    // tokio-postgres and ignores `PGOPTIONS`. It is also what makes the
+    // `audit_log` partition bounds land on UTC day boundaries.
+    await admin.query(pinDatabaseTimezoneSql(dbName));
   } finally {
     await admin.end();
   }

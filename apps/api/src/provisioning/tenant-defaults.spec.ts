@@ -109,6 +109,11 @@ const PROVISIONER_TELLS = [
  * list was, so it stays short and every line says why.
  */
 const NOT_PROVISIONERS: Record<string, string> = {
+  'scripts/check-session-timezone.ts':
+    'is a GATE that hunts for unpinned `CREATE DATABASE` sites, so it quotes the tell it looks ' +
+    'for in its own pattern and in its failure message. It opens no connection and creates ' +
+    'nothing. A gate failing another gate for containing its own subject is the one exception ' +
+    'this list cannot avoid.',
   'scripts/tenant-relocate.ts':
     'creates the DESTINATION database of a move and fills it with pg_restore from the ' +
     "source's dump — which already carries that library's settings row and roles. Seeding " +

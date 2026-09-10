@@ -4,6 +4,7 @@
  * Lifted verbatim out of the single 400-line `smoke-test.ts` when phase 9 split
  * it per module. The helpers are unchanged; only their home moved.
  */
+import { PG_SESSION_OPTIONS } from '@libriant/shared/postgres-session';
 import { type TenantPrismaClient, V2_SCHEMA } from '../../src';
 
 export function ok(label: string) {
@@ -94,7 +95,11 @@ export async function v2Query<T = Record<string, unknown>>(
   params: unknown[] = [],
 ): Promise<T[]> {
   const { Client } = await import('pg');
-  const client = new Client({ connectionString: url });
+  // The same UTC session the application holds. The smoke fixtures write their
+  // timestamps with `pg_catalog.now()` while every service writes through
+  // Prisma, so until the two share a frame this harness cannot observe a
+  // disagreement even in principle. See packages/shared/src/postgres-session.ts.
+  const client = new Client({ connectionString: url, options: PG_SESSION_OPTIONS });
   await client.connect();
   try {
     await client.query(`SET search_path = ${V2_SCHEMA}, public`);

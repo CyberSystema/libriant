@@ -47,6 +47,7 @@
  *     pnpm tenant:relocate --tenant=acme --drop-source --allow-remote --yes
  */
 import { execFile } from 'node:child_process';
+import { pinDatabaseTimezoneSql } from '@libriant/shared/postgres-session';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -629,6 +630,15 @@ async function ensureDestinationDatabase(baseUrl: string, dbName: string): Promi
     if (!existing.rowCount) {
       await admin.query(`CREATE DATABASE "${dbName}" ENCODING 'UTF8'`);
     }
+    // THE UTC PIN, before the `pg_restore` this function precedes. See
+    // packages/shared/src/postgres-session.ts.
+    //
+    // IT DOES NOT REPAIR WHAT ARRIVES IN THE DUMP. A relocation moves bytes
+    // faithfully, so `audit_log` partition bounds and every stored instant carry
+    // the SOURCE cluster's frame across; pinning the destination only stops the
+    // problem growing from here. `scripts/tenant-timezone-audit.ts` is what
+    // reports a database whose partitions did not arrive on UTC boundaries.
+    await admin.query(pinDatabaseTimezoneSql(dbName));
   } finally {
     await admin.end();
   }

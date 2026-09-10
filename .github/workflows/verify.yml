@@ -253,6 +253,20 @@ jobs:
       - name: Advisory locks go through platform/locks.ts
         run: pnpm check:advisory-locks
 
+      # Every Postgres session this product opens is UTC.
+      # `@prisma/adapter-pg` requires it and does not say so: it encodes AND
+      # decodes timestamptz as if the session's local wall clock were UTC, so on
+      # a non-UTC session every instant it writes is stored wrong by the offset,
+      # and on the spring-forward night the value is silently moved by an hour.
+      #
+      # A STATIC gate, deliberately, because the runtime one cannot fail here:
+      # this workflow's postgres:16-alpine service ships no TZ and is therefore
+      # already UTC, which is exactly why CI never caught the defect. The runtime
+      # half is apps/api/test/integration/session-timezone.spec.ts, which makes
+      # its own Asia/Kolkata database so it discriminates on any cluster.
+      - name: Every Postgres session is UTC
+        run: pnpm check:session-timezone
+
       # amtool is run against a COPY with the receiver placeholders substituted,
       # not against the file as committed.
       #
@@ -629,6 +643,13 @@ jobs:
             "SELECT 1 FROM pg_database WHERE datname = 'libriant_demo'" | grep -q 1; then
             PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "CREATE DATABASE libriant_demo"
           fi
+          # UTC, on the database, unconditionally. @prisma/adapter-pg requires a
+          # UTC session and does not say so (packages/shared/src/postgres-session.ts).
+          # CI's postgres:16-alpine is already UTC, which is exactly why CI could
+          # never catch the defect — so the pin is stated here rather than
+          # inherited, and `check:session-timezone` refuses a CREATE without one.
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c \
+            "ALTER DATABASE libriant_control SET TimeZone TO 'UTC'; ALTER DATABASE libriant_demo SET TimeZone TO 'UTC'" 
           PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_demo -c "
             CREATE EXTENSION IF NOT EXISTS unaccent;
             CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -796,6 +817,11 @@ jobs:
             "SELECT 1 FROM pg_database WHERE datname = 'libriant_shadow'" | grep -q 1; then
             PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c "CREATE DATABASE libriant_shadow"
           fi
+          # See the demo-database step above. The shadow database is where
+          # `check:schema-drift` replays every migration, so its partition bounds
+          # have to land on UTC day boundaries like a real tenant's.
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control -c \
+            "ALTER DATABASE libriant_shadow SET TimeZone TO 'UTC'"
 
       - name: Schema and migrations still agree
         run: pnpm check:schema-drift

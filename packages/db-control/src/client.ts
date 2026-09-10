@@ -1,4 +1,5 @@
 import { PrismaPg } from '@prisma/adapter-pg';
+import { PG_SESSION_OPTIONS } from '@libriant/shared/postgres-session';
 import { PrismaClient } from '@prisma/client';
 
 /**
@@ -31,7 +32,18 @@ function makeClient(): PrismaClient {
   if (!connectionString) {
     throw new Error('CONTROL_DATABASE_URL is not set');
   }
-  const adapter = new PrismaPg({ connectionString });
+  // The UTC session. `packages/shared/src/postgres-session.ts` carries the
+  // measurement; `packages/db-tenant/src/client.ts` carries the argument for
+  // putting it on the adapter rather than on the URL.
+  //
+  // NOT DEAD CODE HERE, though it looks it: every instant column in the CONTROL
+  // datamodel is `timestamp without time zone`, which the adapter round-trips
+  // exactly whatever the session says. It is here for two reasons. Phase 20
+  // makes `lbr2` the tenant `public` schema and this client's siblings start
+  // sharing shapes with it; and one client in the product connecting on a
+  // different frame from the other two is precisely the asymmetry that makes a
+  // bug like this survive — three pools, one rule.
+  const adapter = new PrismaPg({ connectionString, options: PG_SESSION_OPTIONS });
   return new PrismaClient({
     adapter,
     log: ['warn', 'error'],

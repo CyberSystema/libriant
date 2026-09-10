@@ -3237,9 +3237,10 @@ will. What is wrong is (a) the instant physically stored, by the session offset,
 and (b) any predicate that puts a Prisma-written column beside a server-side
 `now()`.
 
-This is §8 risk 2's family — "timestamp conversion silently shifts every date by
-three hours" — arriving through the driver rather than through a migration. It is
-older than this phase and is not this phase's to fix: the fix is an adapter or
+FIXED in the interlude entry at the end of this document, which supersedes the
+paragraph below. It is §8 risk 2's family — "timestamp conversion silently shifts
+every date by three hours" — arriving through the driver rather than through a
+migration. It was older than this phase and was not this phase's to fix: the fix is an adapter or
 `PGTZ` decision affecting all three Prisma clients and every phase from 9 onward,
 and it needs its own session and its own repair script. What phase 17 owes and
 pays is not making it worse: `hold-transit-timeout.job.ts` binds its instant from
@@ -3389,3 +3390,232 @@ negotiable.
 is anonymised rather than deleted, on `loans`' argument: a request is half of the
 copy's history and that half is the library's record. `hold_groups` is deleted,
 because a group holds nothing but a reader's own words.
+
+## Interlude — the UTC session precondition
+
+Not a phase. A defect phase 17 found and could only record, fixed here because it
+is older than phase 17, reaches every phase from 9 onward, and gets worse every
+day it is left.
+
+### The whole of it, measured in both directions
+
+`@prisma/adapter-pg@7.9.1` requires a UTC session and does not say so. Both
+halves of its `timestamptz` handling assume it and both are silent when it is
+false. On a session whose `TimeZone` is `Europe/Athens`:
+
+```
+  WRITE   a JS Date of 2026-03-01T10:00:00.000Z reaches the server as
+    Prisma      2026-03-01 10:00:00              <- naive, NO zone
+    node-pg     2026-03-01T12:00:00.000+02:00    <- an explicit offset
+  so Postgres resolves Prisma's value in the SESSION zone and stores
+    2026-03-01 10:00:00+02  =  08:00Z, two hours EARLY.
+
+  READ    the adapter's own normaliser, verbatim:
+    function normalize_timestamptz(time) {
+      return time.replace(" ", "T").replace(/[+-]\d{2}(:\d{2})?$/, "+00:00");
+    }
+  Postgres renders a timestamptz in the session zone WITH its real offset; this
+  strips that offset and asserts "+00:00" — it declares the local wall clock to
+  be UTC.
+```
+
+The two errors are equal and opposite, so a Prisma-only round trip agrees with
+itself and every comparison in the application is correct. That is why nothing
+caught it: **it is invisible from inside Prisma**. node-pg is not at fault and
+was the control — it round-trips exactly, because it puts a real offset on the
+wire in both directions.
+
+### Three consequences, and the third is not a display bug
+
+**The instant physically stored is wrong**, by the session's offset AT THAT
+INSTANT — two hours in winter and three in summer, so not even a constant. Every
+reader that is not Prisma sees it: `psql`, a report, a restored dump, a trigger,
+a CHECK, a partition bound.
+
+**A predicate that mixes frames is wrong** — a Prisma-written column beside a
+server-side `now()`.
+
+**And once a year the DATA is wrong.** On the spring-forward night the naive
+local time Prisma sends does not exist, so Postgres moves it. MEASURED:
+
+```
+  wrote  2027-03-28T03:30:00.000Z
+  read   2027-03-28T04:30:00.000Z     silently, no error
+```
+
+For that hour the round trip is not self-consistent either: the application
+cannot store those instants at all. So "wrong on disk but consistent in the app"
+was too generous a description of the defect.
+
+### Why it has never bitten, which is the uncomfortable part
+
+Every deployed cluster is already UTC — `postgres:16-alpine` ships no `TZ`, in
+both compose files and in CI, and `docker-compose.prod.yml` sets none. So the
+offset is zero and both halves cancel to nothing. The one cluster that is NOT
+UTC is a developer's local Postgres, which is exactly where the test suites and
+`pnpm tenant:smoke` run.
+
+The product was correct **by accident**, and nothing stated or enforced the
+accident. That is the same shape as `boot-and-config-14` — a cluster property
+that was true for a reason nobody had written down — and the same remedy: say
+it, and refuse a cluster that disagrees.
+
+### The mechanism is the DATABASE; the adapter option is the backstop
+
+`ALTER DATABASE … SET TimeZone TO 'UTC'`, applied at every `CREATE DATABASE`
+site, BEFORE the migrations. It reaches the three connections no pool option can:
+
+```
+  prisma migrate deploy   a subprocess whose Rust schema engine is
+                          tokio-postgres and IGNORES libpq environment
+                          variables — PGOPTIONS does nothing, and it is the
+                          first thing the next person will try
+  psql, pg_dump           the runbook, the DR drill, an operator at 03:00
+  the smoke harness       and anything else holding a bare `pg` client
+```
+
+`options: '-c timezone=UTC'` on all three Prisma pools is the layer that covers
+what the pin cannot: a database somebody forgot, a cluster this product did not
+create, a restored dump, a customer's own Postgres. MEASURED, it outranks the
+pin — a startup option is `PGC_S_CLIENT` and a per-database setting is
+`PGC_S_DATABASE`, so against a database pinned to `Asia/Kolkata` a connection
+carrying the option still reports `UTC`. Verified to survive pgbouncer 1.25.2 in
+transaction pooling, which is what production runs.
+
+**The option must never move onto the URL**, and that is a rule rather than a
+preference. `withV2Schema` puts the schema on with `searchParams.set`, and
+`URLSearchParams` re-serialises a space as `+`: MEASURED,
+`?options=-c%20timezone%3DUTC` survives one `set()` as
+`options=-c+timezone%3DUTC`, which node-pg accepts silently and libpq answers
+with `FATAL: unrecognized configuration parameter "+timezone"`. The app would
+look fine while psql, pg_dump and the migrate CLI broke. `check:session-timezone`
+rule R4 refuses it.
+
+`ALTER SYSTEM` and a hand-edited `postgresql.conf` are both rejected for one
+reason: neither is in a backup, so a DR rebuild drops them silently — which is
+the exact failure this change exists to close. The compose `command: -c
+timezone=UTC` is the version-controlled equivalent.
+
+### THE HALF THAT MAKES THE FIX SAFE
+
+Pinning the client alone is the single actively dangerous version of this change.
+A bare partition-bound literal is resolved in the CREATING session's zone, so
+once the application is UTC while `prisma migrate deploy` inherits the server
+default, the two disagree at the seam. MEASURED, from the same month-start
+strings:
+
+```
+  audit_log_2026_09  [2026-08-31 21:00+00, 2026-09-30 21:00+00)   Athens session
+  audit_log_2026_10  [2026-10-01 00:00+00, 2026-11-01 00:00+00)   UTC session
+```
+
+A three-hour hole, which Postgres accepts silently at DDL time, and which
+`audit_log` — with no DEFAULT partition, deliberately — turns into a hard `23514`
+on every audited write for those three hours.
+
+So `partition-maintenance.job.ts` now emits an explicit `TIMESTAMPTZ '… +00'`
+bound for a `timestamptz` key, and REFUSES a table whose existing bounds are not
+UTC day boundaries rather than adding one beside them. A `date` key is left
+alone: `circulation_statistics` is keyed on a `date`, its bounds carry no zone,
+and a zoned literal there would introduce the defect where none exists.
+
+The test for "is this bound right" is **midnight UTC, not ends-in-`+00`**. On a
+UTC session Postgres renders every bound with `+00`, including an Athens-created
+one, which comes back as `'2026-08-31 21:00:00+00'`. Suffix-matching passes
+exactly the rows it exists to catch; it was written that way first and the
+falsification caught it.
+
+### What is proved, and how
+
+`apps/api/test/integration/session-timezone.spec.ts` makes its OWN database and
+pins it to `Asia/Kolkata` — so it discriminates identically on a developer's
+Athens cluster and on CI's UTC one, with no `verify.yml` change to drift.
+`Asia/Kolkata` because `+05:30` has no DST (an Athens expectation would be +2 in
+winter and +3 in summer) and because the half hour exercises the optional-minutes
+branch of the adapter's own regex. Three designs were rejected: a `TZ` on the CI
+service protects only CI; a spec that calls `SET TIME ZONE` itself INVERTS,
+because a session `SET` is `PGC_S_SESSION` and outranks the option; and asserting
+the literal is the gate, not the test.
+
+FALSIFIED, once, deliberately: with `PG_SESSION_OPTIONS` removed the spec fails
+by exactly 19,800,000 ms on the discriminator and 3,600,000 ms on the
+spring-forward case, while the three database-pin assertions still pass — which
+is the two layers being distinguished rather than one assertion covering both.
+
+`scripts/check-session-timezone.ts` is the static half, and it has to be static:
+the runtime check cannot fail on the machines that run it. Each of its four rules
+was proved to fire by planting a violation.
+
+### The repair, and the row values it refuses to invent
+
+`scripts/tenant-timezone-audit.ts` reports every database's true default, every
+partition on a local midnight, and how many rows it holds; `--pin` applies the
+pin idempotently and REFUSES a database that is both populated and skewed,
+printing the re-provision command instead — because pinning is what surfaces the
+shift and opens the seam.
+
+It does not rewrite row values, and the reasons are worth keeping:
+
+1. NO WITNESS. Correcting a row means knowing it was written in the shifted
+   frame. Almost everything in `lbr2` is Prisma-written, so almost nothing has
+   an unshifted sibling to compare against; the one column a non-Prisma writer
+   fills is `change_events.occurred_at`, which covers a fraction of the rows
+   and only while `xmin` is unfrozen — `track_commit_timestamp` is off.
+2. THE SHIFT IS PER-ROW — the offset at that row's own nominal instant, so a
+   blanket interval is wrong for half the table.
+3. IT IS NOT INVERTIBLE. In the spring-forward hour two inputs produced one
+   stored value; in the autumn overlap one value has two pre-images.
+4. THE FRAMES ARE MIXED IN ONE COLUMN wherever a trigger and Prisma both write.
+
+The local estate at the time of the fix: 887 databases, 886 without a pin, 380
+with partitions on local midnight — and every one of the 380 holding **zero**
+rows. So the honest repair is to pin and re-provision, and it costs nothing
+today.
+
+### Measured
+
+```
+  integration suite on the Athens cluster   533 -> 1,714 tests, all green
+  partitions after the pin, via migrate     FROM ('2026-06-01 00:00:00+00')
+  before the pin                            FROM ('2026-06-01 00:00:00+03')
+  falsification: option removed             discriminator off by 19,800,000 ms
+                                            DST case off by 3,600,000 ms
+  local estate                              887 databases / 886 unpinned /
+                                            380 skewed / 0 rows in any of them
+```
+
+### Decisions worth their sentence
+
+**`@db.Date` is NOT affected, and the fix must not claim it.** MEASURED across
+four instants × two session zones × two process `TZ`s: the adapter sends a date
+built from `getUTCFullYear/Month/Date` and its read normaliser is the identity,
+so `holds.suspended_from` and every other civil date already landed on the right
+day. Phase 17's `civilDate()` was correct.
+
+**The statistics rollup's month is now explicit, and is still the wrong month.**
+`date_trunc('month', now())` resolved in the session zone, so the job's
+"September" was whatever the connection happened to be. It now says `AT TIME ZONE
+'UTC'`, which is what every deployed cluster already computed — no deployed
+answer changes. But `46-circulation-events.prisma` documents `period_start` as
+"the first day of the month, in the BRANCH's timezone", and a Greek library's
+September is the Athens month. That is a statutory ISO 2789 figure and a product
+decision for phase 26, not a timezone bug; what this change does is stop two
+cancelling errors from hiding it.
+
+**`@default(now())` is materialised CLIENT-side.** MEASURED: a `create()` that
+omits the column still names it in the INSERT and binds a JS Date, so all 49
+`DEFAULT CURRENT_TIMESTAMP` columns in `lbr2` are dead code on the Prisma path —
+and `created_at` was shifted like everything else. Nothing in 2.0 may rely on "the
+database stamps this".
+
+**One definition, in `packages/shared`.** Both `db-tenant` and `db-control`
+depend on it and it depends on nothing. Three copies of a string is three chances
+for one to be edited, and the failure mode of the odd one out is this whole
+entry, on one connection pool.
+
+**Production is UTC, and it is worth confirming rather than believing.**
+`docker-compose.prod.yml` passes no `TZ` to the `postgres:16-alpine` service, so
+the session is UTC and the exposure is latent rather than live. The host is
+Berlin (RUNBOOK) — which affects the app container's clock, not the Postgres
+session — so one `SHOW TimeZone` against the production database is the cheap way
+to be certain rather than persuaded.

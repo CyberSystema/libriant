@@ -180,6 +180,27 @@ sudo timedatectl set-timezone Europe/Athens
 timedatectl   # verify, then update this section
 ```
 
+**The HOST timezone above and the POSTGRES SESSION timezone are different things,
+and only one of them is negotiable.** The host's zone sets cron times, log
+timestamps and the backup window — change it freely. Postgres must be **UTC**,
+and is not a preference: `@prisma/adapter-pg` encodes and decodes `timestamptz`
+as if the session's local wall clock were UTC, in both directions, so on a
+non-UTC session every instant the application writes is stored wrong by the
+offset, and on the spring-forward night the value is silently moved by an hour.
+`packages/shared/src/postgres-session.ts` carries the measurement.
+
+The stack sets it three ways — the postgres service's `-c timezone=UTC`,
+`ALTER DATABASE … SET TimeZone TO 'UTC'` at every database creation, and the
+`options` on every Prisma pool — so it should already be true. Confirm it, once,
+and never set `TZ:` on the postgres service to "match the host":
+
+```bash
+dc exec -T postgres psql -U libriant -d libriant_control -tAc 'SHOW TimeZone'
+# UTC — anything else is an incident. Run:
+#   pnpm tsx scripts/tenant-timezone-audit.ts          # report
+#   pnpm tsx scripts/tenant-timezone-audit.ts --pin    # repair the session
+```
+
 ---
 
 ## 2. What you are operating

@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { assertSessionTimezone, pinDatabaseTimezoneSql } from '@libriant/shared/postgres-session';
 import { Client as PgClient } from 'pg';
 import {
   makeTenantPrismaClient,
@@ -229,10 +230,18 @@ export class TenantProvisioningService {
       roleName: tenantLoginRole(tenantId, 'a'),
       password,
     });
+    // NO `options` on this client, deliberately. It is the one connection in
+    // provisioning that can still see the database's TRUE default, so it is the
+    // only place the pin above can be verified at all — a probe made through the
+    // application's pool would be told UTC by the backstop and would never
+    // notice a database that was never pinned.
     const probe = new PgClient({ connectionString: runtimeUrl });
     try {
       await probe.connect();
-      await probe.query('SELECT id FROM tenant_settings LIMIT 1');
+      const row = await probe.query<{ tz: string }>(
+        `SELECT pg_catalog.current_setting('TimeZone') AS tz, (SELECT id FROM tenant_settings LIMIT 1) AS ok`,
+      );
+      assertSessionTimezone(row.rows[0]?.tz ?? '(unknown)', `Tenant ${tenantId}`);
     } catch (err) {
       throw new Error(
         `Tenant ${tenantId} was provisioned but its own database role cannot use the ` +
@@ -266,10 +275,29 @@ export class TenantProvisioningService {
       const existing = await admin.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [dbName]);
       if (existing.rowCount && existing.rowCount > 0) {
         this.logger.debug(`Database ${dbName} already exists — reusing.`);
-        return;
+      } else {
+        await admin.query(`CREATE DATABASE "${dbName}" ENCODING 'UTF8'`);
+        this.logger.log(`Created tenant database ${dbName}.`);
       }
-      await admin.query(`CREATE DATABASE "${dbName}" ENCODING 'UTF8'`);
-      this.logger.log(`Created tenant database ${dbName}.`);
+      // THE UTC PIN, and it is OUTSIDE the reuse branch on purpose.
+      //
+      // `@prisma/adapter-pg` requires a UTC session and does not say so —
+      // `packages/shared/src/postgres-session.ts` has the measurement. This is
+      // the layer that reaches everything the pool option cannot: the
+      // `prisma migrate deploy` subprocess below (whose Rust schema engine is
+      // tokio-postgres and IGNORES `PGOPTIONS`), psql, pg_dump, the smoke
+      // harness, and an operator at 03:00.
+      //
+      // It runs BEFORE `applyTenantMigrations`, which is what makes the
+      // `audit_log` partition bounds those migrations create land on UTC day
+      // boundaries rather than on this host's local midnight. And it runs on the
+      // REUSE path too, because a database provisioned before this change would
+      // otherwise stay unpinned for ever — re-running provisioning repairs one.
+      //
+      // Idempotent, and NOT inherited: MEASURED, `CREATE DATABASE … TEMPLATE`
+      // does not carry the setting, which is why every creation site has to do
+      // this and `check:session-timezone` refuses one that does not.
+      await admin.query(pinDatabaseTimezoneSql(dbName));
     } finally {
       await admin.end();
     }

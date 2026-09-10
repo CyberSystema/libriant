@@ -31,6 +31,26 @@ import type { JobResult } from './jobs.types.js';
  * figures. Two months is what covers every realistic sync lag; a device offline
  * for longer than that is a reconciliation report (phase 78), not a statistic.
  *
+ * ## THE MONTH IS UTC, AND IT SAYS SO
+ *
+ * `date_trunc('month', now())` on a `timestamptz` resolves in the SESSION's
+ * timezone, and so does the `::date` cast — so this job's idea of "September"
+ * used to be whatever zone the connection happened to have. On the UTC clusters
+ * every deployment runs it was the UTC month; on a developer's local Postgres it
+ * was the local month; and nothing said which was meant. `AT TIME ZONE 'UTC'`
+ * makes it the UTC month explicitly, which is what every deployed cluster has
+ * always computed — this changes no deployed answer, it removes the dependence.
+ *
+ * IT IS NOT YET THE RIGHT MONTH, and that is deliberately out of scope here.
+ * `46-circulation-events.prisma` documents `period_start` as "the first day of
+ * the month, in the BRANCH's timezone", and a Greek library's September is the
+ * Athens month — a statutory ISO 2789 figure, not a rounding preference. Making
+ * that true needs `branches.timezone` in the GROUP BY and a decision about a
+ * multi-branch library whose branches share a bucket, which is a product
+ * question for phase 26's reporting work rather than a timezone bug. It is
+ * recorded there and in the divergence log; what this change does is stop two
+ * cancelling errors from hiding it.
+ *
  * ## It groups on `effective_at`, never `occurred_at`
  *
  * A month's statistics are about what the library DID that month. The wand that
@@ -113,8 +133,8 @@ async function rollMonth(client: RawClient, monthOffset: number): Promise<number
     INSERT INTO lbr2.circulation_statistics
            (period_start, branch_id, item_type_id, patron_category_id,
             checkouts, renewals, returns, computed_at)
-    SELECT pg_catalog.date_trunc('month', pg_catalog.now())::date
-             + (${monthOffset} * INTERVAL '1 month'),
+    SELECT (pg_catalog.date_trunc('month', pg_catalog.now() AT TIME ZONE 'UTC')::date
+             + (${monthOffset} * INTERVAL '1 month'))::date,
            e.branch_id,
            l.item_type_id_applied,
            l.patron_category_id_applied,
@@ -124,10 +144,10 @@ async function rollMonth(client: RawClient, monthOffset: number): Promise<number
            pg_catalog.now()
       FROM lbr2.loan_events e
       JOIN lbr2.loans l ON l.id = e.loan_id
-     WHERE e.effective_at >= (pg_catalog.date_trunc('month', pg_catalog.now())
-                              + (${monthOffset} * INTERVAL '1 month'))
-       AND e.effective_at <  (pg_catalog.date_trunc('month', pg_catalog.now())
-                              + ((${monthOffset} + 1) * INTERVAL '1 month'))
+     WHERE e.effective_at >= ((pg_catalog.date_trunc('month', pg_catalog.now() AT TIME ZONE 'UTC')
+                              + (${monthOffset} * INTERVAL '1 month')) AT TIME ZONE 'UTC')
+       AND e.effective_at <  ((pg_catalog.date_trunc('month', pg_catalog.now() AT TIME ZONE 'UTC')
+                              + ((${monthOffset} + 1) * INTERVAL '1 month')) AT TIME ZONE 'UTC')
      GROUP BY e.branch_id, l.item_type_id_applied, l.patron_category_id_applied
     ON CONFLICT (period_start, branch_id, item_type_id, patron_category_id)
     DO UPDATE SET checkouts   = EXCLUDED.checkouts,
