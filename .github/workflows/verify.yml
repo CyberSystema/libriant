@@ -796,21 +796,6 @@ jobs:
         env:
           TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
 
-      # The 1.0 seed above writes `tenant_settings` and the system roles through
-      # the 1.0 client and does not touch `lbr2`. The 2.0 defaults — the
-      # always-open calendar, the five policies, the wildcard `rule-default`,
-      # the branch, location and item type — were written only by
-      # `TenantProvisioningService`, inside the API, when a library signs up.
-      #
-      # So CI's tenant had 124 lbr2 tables and no circulation policy, and the
-      # phase-19 upgrade rehearsal below refuses to run against that — correctly,
-      # because an upgrade that seeded its own defaults would be inventing a
-      # library's circulation policy rather than carrying one forward.
-      - name: Seed the lbr2 defaults (the 2.0 half, which provisioning normally writes)
-        run: pnpm tenant:seed:defaults:v2
-        env:
-          TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
-
       # Eight modules: the 1.0 workflow against `public`, and seven 2.0 modules
       # against `lbr2`. The runner continues past a failure, so one broken
       # invariant reports itself rather than hiding the other seven.
@@ -846,6 +831,28 @@ jobs:
           PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control \
             -c "ALTER DATABASE libriant_upgrade SET TimeZone TO 'UTC'"
           URL=postgresql://libriant:libriant@localhost:5432/libriant_upgrade
+          # THE 2.0 DEFAULTS, seeded HERE and not earlier.
+          #
+          # The 1.0 seed writes `tenant_settings` and the system roles through
+          # the 1.0 client and never touches `lbr2`. The 2.0 defaults — the
+          # always-open calendar, the five policies, the wildcard `rule-default`,
+          # the branch, location and item type — were written only by
+          # `TenantProvisioningService`, inside the API, when a library signs up.
+          # Nothing outside the API wrote them, so CI's tenant had 124 lbr2
+          # tables and no circulation policy, and the upgrade refuses that —
+          # correctly, because an upgrade that seeded its own defaults would be
+          # inventing a library's policy rather than carrying one forward.
+          #
+          # Seeding them back in the `demo` steps above does NOT work: the smoke
+          # suite runs between there and here, and its teardown TRUNCATEs
+          # `branches`, `calendars`, `circulation_rules` and all five policy
+          # tables — by design, so one module cannot leave rows for the next.
+          # The template copy would then carry the truncation, not the seed.
+          #
+          # So the rehearsal seeds the database it actually runs against, which
+          # is also the truer rehearsal: a real tenant is provisioned first and
+          # upgraded afterwards.
+          pnpm tenant:seed:defaults:v2 --url "$URL"
           pnpm tsx scripts/seed-v1-fixture.ts --url "$URL" --profile ci
           pnpm tsx scripts/tenant-upgrade-v2.ts --url "$URL" --slug demo --report
 
