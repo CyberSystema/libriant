@@ -4201,3 +4201,60 @@ commit on disposable databases: one asserts the committed shape and then DROPS
 the archive to prove that is now safe, the other rolls back and reads the 1.0
 library out again. Both check that the flags refuse without `--yes`, and that a
 second rollback refuses.
+
+### What 20b-ii faces, measured before it starts
+
+A six-way read-only sweep of the deletion surface ran while 20b-i was built.
+Four probes returned before the session limit; their numbers are recorded here
+because they contradict §6's sizing badly enough that planning from §6 alone
+would produce an outage.
+
+**Of the 46 1.0 routes: ZERO have a clean drop-in equivalent.** 25 have one whose
+request or response shape differs, usually both, and **21 have none at all**. The
+hole is the write side: 20a built reads, and phases 10–18 built a DIFFERENT write
+model rather than a renamed one.
+
+What has no 2.0 successor at all, and must be built or consciously lost:
+
+- **GDPR Article 17 erase.** `MembersService.erase()` is the product's only
+  implementation and it sits inside a directory §6 says to delete. 2.0 never
+  writes `patrons.erased_at` — the column is read in three places and written in
+  none.
+- **GDPR Article 15/20 subject access.** `GET /t/:slug/members/:id/data-export`
+  is mounted from `privacy/`, OUTSIDE the five directories, so `rm -rf` leaves it
+  live and serving from 1.0 models. `BUNDLE_TABLES` in `patron-data-map.ts` has
+  zero consumers: the map is a specification, not an implementation. 20b-ii must
+  WRITE the bundle.
+- **The patron write surface is a third of the member one.** No read-by-id, no
+  update, no status change, no archive, no photo. Seven of the eleven member
+  routes have no successor.
+- **Authors, entirely.** Five routes. No `Author` model in schema-v2, and an
+  authority MARC record gets no projection row, so it can never be listed.
+- **No delete or archive for a bib record**, no cover upload, no per-hold expire,
+  no hold fulfil, and **no overdue-fine sweep** — a patron with an unreturned
+  overdue book shows a zero balance at the desk.
+- **The bulk import engine has no 2.0 write path.** Eleven routes; all six entity
+  kinds write 1.0 tables, and `ImportEntityKind` lives in the CONTROL database,
+  which the tenant upgrade does not touch.
+
+Three corrections to §6's own text:
+
+1. §6 says "the four `pages.{en,el}.json` claims". **There are twenty** — ten
+   MARC claims and eleven catalogue claims per locale.
+2. **The MARC claims were already false before this phase.** `catalog_marc` has
+   been a bulk export format since phase 11 and is offered in the tenant UI.
+3. **Rewriting the public-catalogue claims would make the site lie.** §6 groups
+   two claims into one instruction and only the first is false: the OPAC is
+   phase 31. That half must stay as it is.
+
+And a new instance of the G03 vacuity class, created by the promotion itself:
+**five integration specs hard-code `table_schema = 'lbr2'`**, including the three
+blocks in `patrons.spec.ts` that are the explicit stand-in for the
+`check:dsar-coverage` gate §5 defers to phase 33. After `ALTER SCHEMA lbr2
+RENAME TO public` each queries a schema that no longer exists and passes green on
+an empty result set. The spec's own comment says it "keeps the map honest until
+the gate arrives"; after the promotion it keeps nothing honest. 20b-ii must move
+them onto the promoted schema name in the same change that promotes it.
+
+`check:dsar-coverage` itself does not exist — not a script, not in `check:all`,
+not in the workflow. §5 promises it at phases 33 and 96.
