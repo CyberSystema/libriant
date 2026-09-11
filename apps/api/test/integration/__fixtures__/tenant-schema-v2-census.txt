@@ -9,6 +9,8 @@ compression marc_record_contents.content = lz4
 compression marc_record_contents.source_blob = lz4
 compression marc_record_versions.content = lz4
 compression sync_client_changes.response_json = lz4
+constraint _libriant_online_migrations_pkey ON _libriant_online_migrations PRIMARY KEY (name)
+constraint _libriant_schema_state_pkey ON _libriant_schema_state PRIMARY KEY (id)
 constraint account_entries_amounts_not_negative ON account_entries CHECK (((debit_cents >= 0) AND (credit_cents >= 0)))
 constraint account_entries_one_side_only ON account_entries CHECK (((debit_cents > 0) <> (credit_cents > 0)))
 constraint account_entries_pkey ON account_entries PRIMARY KEY (id)
@@ -52,6 +54,9 @@ constraint circulation_settings_singleton ON circulation_settings CHECK ((id = 1
 constraint circulation_statistics_non_negative ON circulation_statistics CHECK (((checkouts >= 0) AND (renewals >= 0) AND (returns >= 0)))
 constraint circulation_statistics_period_is_month_start ON circulation_statistics CHECK ((period_start = (date_trunc('month'::text, (period_start)::timestamp with time zone))::date))
 constraint circulation_statistics_pkey ON circulation_statistics PRIMARY KEY (period_start, branch_id, item_type_id, patron_category_id)
+constraint collection_fields_pkey ON collection_fields PRIMARY KEY (id)
+constraint collection_records_pkey ON collection_records PRIMARY KEY (id)
+constraint collections_pkey ON collections PRIMARY KEY (id)
 constraint fee_allocations_not_zero ON fee_allocations CHECK ((amount_cents <> 0))
 constraint fee_allocations_pkey ON fee_allocations PRIMARY KEY (id)
 constraint fee_types_pkey ON fee_types PRIMARY KEY (id)
@@ -60,6 +65,7 @@ constraint fees_amount_positive ON fees CHECK ((amount_cents > 0))
 constraint fees_pkey ON fees PRIMARY KEY (id)
 constraint fees_settlement_within_charge ON fees CHECK ((((paid_cents + waived_cents) + written_off_cents) <= (amount_cents + tax_cents)))
 constraint fees_tax_non_negative ON fees CHECK ((tax_cents >= 0))
+constraint field_definitions_pkey ON field_definitions PRIMARY KEY (id)
 constraint fixed_due_date_ranges_due_after_from ON fixed_due_date_ranges CHECK ((due_date >= "from"))
 constraint fixed_due_date_ranges_no_overlap ON fixed_due_date_ranges EXCLUDE USING gist (set_id WITH =, daterange("from", "to", '[]'::text) WITH &&)
 constraint fixed_due_date_ranges_pkey ON fixed_due_date_ranges PRIMARY KEY (id)
@@ -202,18 +208,30 @@ constraint receipt_number_counters_positive ON receipt_number_counters CHECK ((n
 constraint receipts_pkey ON receipts PRIMARY KEY (id)
 constraint receipts_sha256_is_32_bytes ON receipts CHECK ((length(rendered_sha256) = 32))
 constraint receipts_total_not_negative ON receipts CHECK ((total_cents >= 0))
+constraint role_permissions_pkey ON role_permissions PRIMARY KEY ("roleId", "permissionKey")
+constraint roles_pkey ON roles PRIMARY KEY (id)
 constraint service_points_pkey ON service_points PRIMARY KEY (id)
 constraint shelving_locations_browsable_implies_visible ON shelving_locations CHECK (((NOT browsable) OR opac_visible))
 constraint shelving_locations_floating_group_shape ON shelving_locations CHECK (((floating_group IS NULL) OR ((floating_group = btrim(floating_group)) AND ((length(floating_group) >= 1) AND (length(floating_group) <= 64)))))
 constraint shelving_locations_pkey ON shelving_locations PRIMARY KEY (id)
+constraint staff_permission_overrides_pkey ON staff_permission_overrides PRIMARY KEY ("userId", "permissionKey")
+constraint staff_profiles_pkey ON staff_profiles PRIMARY KEY ("userId")
+constraint staff_role_grants_pkey ON staff_role_grants PRIMARY KEY ("userId", "roleId")
 constraint sync_client_changes_pkey ON sync_client_changes PRIMARY KEY (device_id, client_change_id)
+constraint upgrade_dropped_rows_pkey ON upgrade_dropped_rows PRIMARY KEY (id)
+constraint upgrade_dropped_rows_reason_is_a_sentence ON upgrade_dropped_rows CHECK ((length(reason) >= 20))
+constraint upgrade_exceptions_note_is_a_sentence ON upgrade_exceptions CHECK ((length(note) >= 20))
+constraint upgrade_exceptions_pkey ON upgrade_exceptions PRIMARY KEY (id)
 constraint work_clusters_pkey ON work_clusters PRIMARY KEY (id)
+enum FieldEntityKind = book,book_copy,member,loan,reservation,fine
+enum FieldType = short_text,long_text,number,boolean,date,datetime,select_one,select_many,url,email
+enum PermissionEffect = grant,deny
 enum audit_actor_kind = user,admin,system,device
 enum branch_kind = system,branch,bookmobile,storage,virtual
 enum call_number_scheme = ddc,lcc,udc,nlm,alphanum,local
 enum closed_day_handling = keep,endOfPreviousOpenDay,startOfNextOpenDay,endOfNextOpenDay,endOfCurrentOpenHours
 enum duration_unit = minutes,hours,days,weeks,months
-enum event_source = desk,opac,sip2,ncip,api,offline,kiosk
+enum event_source = desk,opac,sip2,ncip,api,offline,kiosk,migration
 enum fee_allocation_kind = payment,waiver,write_off,refund
 enum fee_category = overdue,replacement,processing,hold,printing,manual
 enum fee_status = outstanding,paid,waived,written_off,cancelled
@@ -224,7 +242,7 @@ enum hold_pickup_policy = any,owningBranch,patronHomeBranch,holdingBranch,explic
 enum hold_request_type = page,hold,recall
 enum item_level_holds = allow,deny,force
 enum item_status = available,on_loan,in_transit,awaiting_pickup,in_process,missing
-enum ledger_account = patron_receivable,patron_credit,cash_on_hand,bank,card_clearing,fine_revenue,replacement_revenue,service_revenue,tax_payable,waiver_expense,bad_debt_expense,cash_over_short
+enum ledger_account = patron_receivable,patron_credit,cash_on_hand,bank,card_clearing,fine_revenue,replacement_revenue,service_revenue,tax_payable,waiver_expense,bad_debt_expense,cash_over_short,opening_balance
 enum ledger_discrepancy_kind = transaction_unbalanced,fee_allocation_mismatch,account_balance_mismatch
 enum ledger_tx_kind = charge,payment,waiver,write_off,refund,cancellation,reversal,cash_over_short
 enum loan_event_kind = checked_out,renewed,returned,anonymised
@@ -249,11 +267,21 @@ enum payment_method_kind = cash,card,bank_transfer,cheque,online,other
 enum reading_history_mode = anonymised,kept,none
 enum renew_from = currentDueDate,systemDate
 enum renewal_cutoff_basis = dueDate,now
+enum upgrade_exception_kind = no_target,invalid_source,refused_by_target
 generated circulation_rules.specificity = ((((( CASE WHEN (patron_category_id IS NOT NULL) THEN 32 ELSE 0 END + CASE WHEN (item_type_id IS NOT NULL) THEN 16 ELSE 0 END) + CASE WHEN (owning_branch_id IS NOT NULL) THEN 8 ELSE 0 END) + CASE WHEN (shelving_location_id IS NOT NULL) THEN 4 ELSE 0 END) + CASE WHEN (checkout_branch_id IS NOT NULL) THEN 2 ELSE 0 END) + CASE WHEN (pickup_branch_id IS NOT NULL) THEN 1 ELSE 0 END)
 generated fees.outstanding_cents = ((((amount_cents + tax_cents) - paid_cents) - waived_cents) - written_off_cents)
-generated fees.owed_cents = CASE WHEN (closed_at IS NULL) THEN ((((amount_cents + tax_cents) - paid_cents) - waived_cents) - written_off_cents) ELSE (0)::bigint END
+generated fees.owed_cents = CASE WHEN ((closed_at IS NULL) AND (archived_at IS NULL)) THEN ((((amount_cents + tax_cents) - paid_cents) - waived_cents) - written_off_cents) ELSE (0)::bigint END
 generated items.is_shelf_available = ((status = 'available'::item_status) AND (not_for_loan_code IS NULL) AND (damaged_code IS NULL) AND (lost_code IS NULL) AND (withdrawn_at IS NULL) AND (archived_at IS NULL))
 generated ledger_discrepancies.difference_cents = (actual_cents - expected_cents)
+index CREATE INDEX "_libriant_online_migrations_finishedAt_idx" ON _libriant_online_migrations USING btree ("finishedAt")
+index CREATE INDEX "collection_fields_collectionId_sortOrder_idx" ON collection_fields USING btree ("collectionId", "sortOrder")
+index CREATE INDEX "collection_records_collectionId_archivedAt_idx" ON collection_records USING btree ("collectionId", "archivedAt")
+index CREATE INDEX "collection_records_collectionId_createdAt_idx" ON collection_records USING btree ("collectionId", "createdAt")
+index CREATE INDEX "field_definitions_entityKind_sortOrder_idx" ON field_definitions USING btree ("entityKind", "sortOrder")
+index CREATE INDEX "role_permissions_permissionKey_idx" ON role_permissions USING btree ("permissionKey")
+index CREATE INDEX "roles_isSystem_idx" ON roles USING btree ("isSystem")
+index CREATE INDEX "staff_permission_overrides_permissionKey_idx" ON staff_permission_overrides USING btree ("permissionKey")
+index CREATE INDEX "staff_role_grants_roleId_idx" ON staff_role_grants USING btree ("roleId")
 index CREATE INDEX account_entries_account_idx ON account_entries USING btree (account_id, account) WHERE (account_id IS NOT NULL)
 index CREATE INDEX account_entries_fee_idx ON account_entries USING btree (fee_id) WHERE (fee_id IS NOT NULL)
 index CREATE INDEX account_entries_transaction_idx ON account_entries USING btree (transaction_id)
@@ -278,6 +306,7 @@ index CREATE INDEX change_events_branch_seq_idx ON change_events USING btree (br
 index CREATE INDEX change_events_kind_seq_idx ON change_events USING btree (entity_kind, seq)
 index CREATE INDEX circulation_rules_listing_idx ON circulation_rules USING btree (priority DESC, specificity DESC, id COLLATE "C")
 index CREATE INDEX circulation_statistics_branch_idx ON ONLY circulation_statistics USING btree (branch_id, period_start)
+index CREATE INDEX collections_slug_idx ON collections USING btree (slug)
 index CREATE INDEX fee_allocations_fee_idx ON fee_allocations USING btree (fee_id, kind)
 index CREATE INDEX fee_allocations_transaction_idx ON fee_allocations USING btree (transaction_id)
 index CREATE INDEX fees_loan_id_idx ON fees USING btree (loan_id)
@@ -345,6 +374,12 @@ index CREATE INDEX patrons_status_idx ON patrons USING btree (status)
 index CREATE INDEX shelving_locations_branch_id_idx ON shelving_locations USING btree (branch_id)
 index CREATE INDEX shelving_locations_floating_idx ON shelving_locations USING btree (floating_group)
 index CREATE INDEX sync_client_changes_applied_idx ON sync_client_changes USING btree (applied_at)
+index CREATE INDEX upgrade_dropped_rows_source_idx ON upgrade_dropped_rows USING btree (source_table)
+index CREATE INDEX upgrade_exceptions_source_idx ON upgrade_exceptions USING btree (source_table, kind)
+index CREATE UNIQUE INDEX "collection_fields_collectionId_fieldKey_key" ON collection_fields USING btree ("collectionId", "fieldKey")
+index CREATE UNIQUE INDEX "field_definitions_entityKind_fieldKey_key" ON field_definitions USING btree ("entityKind", "fieldKey")
+index CREATE UNIQUE INDEX _libriant_online_migrations_pkey ON _libriant_online_migrations USING btree (name)
+index CREATE UNIQUE INDEX _libriant_schema_state_pkey ON _libriant_schema_state USING btree (id)
 index CREATE UNIQUE INDEX account_entries_pkey ON account_entries USING btree (id)
 index CREATE UNIQUE INDEX account_transactions_client_change_unique ON account_transactions USING btree (client_change_id)
 index CREATE UNIQUE INDEX account_transactions_one_reversal_per_original ON account_transactions USING btree (reverses_transaction_id)
@@ -371,11 +406,15 @@ index CREATE UNIQUE INDEX circulation_rules_pkey ON circulation_rules USING btre
 index CREATE UNIQUE INDEX circulation_rules_scope_unique ON circulation_rules USING btree (COALESCE(patron_category_id, ''::text), COALESCE(item_type_id, ''::text), COALESCE(owning_branch_id, ''::text), COALESCE(shelving_location_id, ''::text), COALESCE(checkout_branch_id, ''::text), COALESCE(pickup_branch_id, ''::text)) WHERE (enabled AND (effective_to IS NULL))
 index CREATE UNIQUE INDEX circulation_settings_pkey ON circulation_settings USING btree (id)
 index CREATE UNIQUE INDEX circulation_statistics_pkey ON ONLY circulation_statistics USING btree (period_start, branch_id, item_type_id, patron_category_id)
+index CREATE UNIQUE INDEX collection_fields_pkey ON collection_fields USING btree (id)
+index CREATE UNIQUE INDEX collection_records_pkey ON collection_records USING btree (id)
+index CREATE UNIQUE INDEX collections_pkey ON collections USING btree (id)
 index CREATE UNIQUE INDEX fee_allocations_pkey ON fee_allocations USING btree (id)
 index CREATE UNIQUE INDEX fee_types_code_unique_active ON fee_types USING btree (code) WHERE (archived_at IS NULL)
 index CREATE UNIQUE INDEX fee_types_pkey ON fee_types USING btree (id)
 index CREATE UNIQUE INDEX fees_one_open_accrual_per_loan ON fees USING btree (loan_id) WHERE ((loan_id IS NOT NULL) AND is_accruing AND (closed_at IS NULL))
 index CREATE UNIQUE INDEX fees_pkey ON fees USING btree (id)
+index CREATE UNIQUE INDEX field_definitions_pkey ON field_definitions USING btree (id)
 index CREATE UNIQUE INDEX fixed_due_date_ranges_pkey ON fixed_due_date_ranges USING btree (id)
 index CREATE UNIQUE INDEX fixed_due_date_sets_pkey ON fixed_due_date_sets USING btree (id)
 index CREATE UNIQUE INDEX hold_groups_pkey ON hold_groups USING btree (id)
@@ -447,11 +486,18 @@ index CREATE UNIQUE INDEX receipt_number_counters_pkey ON receipt_number_counter
 index CREATE UNIQUE INDEX receipts_number_unique ON receipts USING btree (number)
 index CREATE UNIQUE INDEX receipts_one_per_transaction ON receipts USING btree (transaction_id)
 index CREATE UNIQUE INDEX receipts_pkey ON receipts USING btree (id)
+index CREATE UNIQUE INDEX role_permissions_pkey ON role_permissions USING btree ("roleId", "permissionKey")
+index CREATE UNIQUE INDEX roles_pkey ON roles USING btree (id)
 index CREATE UNIQUE INDEX service_points_code_unique_active ON service_points USING btree (branch_id, code) WHERE (archived_at IS NULL)
 index CREATE UNIQUE INDEX service_points_pkey ON service_points USING btree (id)
 index CREATE UNIQUE INDEX shelving_locations_code_unique_active ON shelving_locations USING btree (branch_id, code) WHERE (archived_at IS NULL)
 index CREATE UNIQUE INDEX shelving_locations_pkey ON shelving_locations USING btree (id)
+index CREATE UNIQUE INDEX staff_permission_overrides_pkey ON staff_permission_overrides USING btree ("userId", "permissionKey")
+index CREATE UNIQUE INDEX staff_profiles_pkey ON staff_profiles USING btree ("userId")
+index CREATE UNIQUE INDEX staff_role_grants_pkey ON staff_role_grants USING btree ("userId", "roleId")
 index CREATE UNIQUE INDEX sync_client_changes_pkey ON sync_client_changes USING btree (device_id, client_change_id)
+index CREATE UNIQUE INDEX upgrade_dropped_rows_pkey ON upgrade_dropped_rows USING btree (id)
+index CREATE UNIQUE INDEX upgrade_exceptions_pkey ON upgrade_exceptions USING btree (id)
 index CREATE UNIQUE INDEX work_clusters_pkey ON work_clusters USING btree (id)
 partitioned audit_log BY RANGE (occurred_at)
 partitioned circulation_statistics BY RANGE (period_start)

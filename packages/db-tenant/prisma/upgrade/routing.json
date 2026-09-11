@@ -1,0 +1,740 @@
+{
+  "$comment": "EVERY 1.0 COLUMN CARRIES EXACTLY ONE VERDICT (2.0 phase 19). copied = moved as-is; derived = computed into one or more 2.0 places; dropped = deliberately not carried, and the reason is the point; compat = the table is copied verbatim into an lbr2 twin with its 1.0 physical shape. scripts/check-upgrade-coverage.ts fails the build on a column that exists in the 1.0 datamodel and is not listed here, on a listed column that no longer exists, and on a dropped verdict with no reason. It is the only structural answer to \"a 1.0 column nobody thought about\", and writing it is what found four columns every candidate design lost: tenant_settings.lostItemFeesEnabled, lostItemDefaultFeeCents, the four notify* settings, and book_authors.role on the order-0 creator.",
+  "tables": {
+    "books": {
+      "id": {
+        "verdict": "copied",
+        "to": "marc_records.id",
+        "note": "THE cuid is the MARC 001, so every permalink and audit target still resolves."
+      },
+      "title": {
+        "verdict": "derived",
+        "to": "marc_record_contents.content 245$a",
+        "how": "split on the ISBD colon into 245$a/$b when a subtitle is absent"
+      },
+      "subtitle": {
+        "verdict": "derived",
+        "to": "marc_record_contents.content 245$b",
+        "how": "always $b when present, never appended to $a"
+      },
+      "sortTitle": {
+        "verdict": "derived",
+        "to": "bib_records.sort_title",
+        "how": "recomputed by the real projector, not copied — the 1.0 value predates stripNonfilingArticle"
+      },
+      "searchText": {
+        "verdict": "derived",
+        "to": "bib_records.search_text",
+        "how": "recomputed through foldGreek; the 1.0 value predates the final-sigma fix (phase 1)"
+      },
+      "isbn13": {
+        "verdict": "derived",
+        "to": "marc 020$a + bib_identifiers",
+        "how": "check-digit validated; an invalid one becomes an anomaly, never a silent drop"
+      },
+      "isbn10": {
+        "verdict": "derived",
+        "to": "marc 020$z + bib_identifiers",
+        "how": "$z, not $a: a 10-digit ISBN on a record that also has a 13 is a cancelled/invalid form"
+      },
+      "publisher": {
+        "verdict": "derived",
+        "to": "marc 264$b ind2=1",
+        "how": ""
+      },
+      "publicationYear": {
+        "verdict": "derived",
+        "to": "marc 264$c and 008/07-10",
+        "how": ""
+      },
+      "language": {
+        "verdict": "derived",
+        "to": "marc 041$a and 008/35-37",
+        "how": "ISO 639-2/B: el->gre (NOT ell), en->eng; unknown codes go to upgrade_dropped_rows"
+      },
+      "edition": {
+        "verdict": "derived",
+        "to": "marc 250$a",
+        "how": ""
+      },
+      "numPages": {
+        "verdict": "derived",
+        "to": "marc 300$a",
+        "how": ""
+      },
+      "description": {
+        "verdict": "derived",
+        "to": "marc 520$a",
+        "how": ""
+      },
+      "coverAssetRef": {
+        "verdict": "copied",
+        "to": "bib_records.cover_asset_ref"
+      },
+      "classification": {
+        "verdict": "derived",
+        "to": "marc 082$a / 084$a",
+        "how": "bib_classifications rows and items.call_number_sort are left EMPTY and backfilled in phase 20 — see the spec"
+      },
+      "customFields": {
+        "verdict": "copied",
+        "to": "bib_records.legacy_json",
+        "note": "bib_records.custom_fields keeps the library-defined values; legacy_json keeps the whole 1.0 row AND its authors, for provenance. bib_records.legacy_json carries {book, authors} rather than the books row alone. The model docblock calls it \"the 1.0 flat row, verbatim, for provenance\" and says it is unreconstructible once v1_archive is dropped — which is exactly the argument for the authors being in it, since to_jsonb(books) contains no author column at all."
+      },
+      "createdAt": {
+        "verdict": "derived",
+        "to": "marc 008/00-05 and marc_records.created_at",
+        "how": "READ AS UTC; 008/00-05 is never rewritten afterwards"
+      },
+      "updatedAt": {
+        "verdict": "derived",
+        "to": "marc 005 and marc_records.updated_at",
+        "how": "READ AS UTC; 005 is excluded from content_hash"
+      },
+      "archivedAt": {
+        "verdict": "derived",
+        "to": "marc_records.deleted_at and status",
+        "how": ""
+      },
+      "metadataRefreshedAt": {
+        "verdict": "dropped",
+        "reason": "A cache timestamp for the 1.0 ISBN-lookup enrichment, which phase 30 replaces with Z39.50 copy cataloguing. It describes a subsystem that does not exist in 2.0."
+      }
+    },
+    "authors": {
+      "id": {
+        "verdict": "derived",
+        "to": "marc 100/700 $0",
+        "how": "the cuid is carried as the authority link so a later authority pass can find it"
+      },
+      "fullName": {
+        "verdict": "derived",
+        "to": "marc 100/700 $a",
+        "how": ""
+      },
+      "sortName": {
+        "verdict": "copied",
+        "to": "bib_records.legacy_json .authors[].sortName",
+        "note": "PRESERVED DELIBERATELY: the 1.0 importer natural key (unique among non-archived). Without it a post-cutover import cannot find-or-create against an existing author. bib_records.legacy_json carries {book, authors} rather than the books row alone. The model docblock calls it \"the 1.0 flat row, verbatim, for provenance\" and says it is unreconstructible once v1_archive is dropped — which is exactly the argument for the authors being in it, since to_jsonb(books) contains no author column at all."
+      },
+      "isOrganization": {
+        "verdict": "derived",
+        "to": "marc 110/710 vs 100/700",
+        "how": "an organisation becomes 110/710 with ind1=2"
+      },
+      "birthYear": {
+        "verdict": "derived",
+        "to": "marc 100 $d",
+        "how": ""
+      },
+      "deathYear": {
+        "verdict": "derived",
+        "to": "marc 100 $d",
+        "how": ""
+      },
+      "notes": {
+        "verdict": "copied",
+        "to": "bib_records.legacy_json .authors[].notes",
+        "note": "bib_records.legacy_json carries {book, authors} rather than the books row alone. The model docblock calls it \"the 1.0 flat row, verbatim, for provenance\" and says it is unreconstructible once v1_archive is dropped — which is exactly the argument for the authors being in it, since to_jsonb(books) contains no author column at all."
+      },
+      "customFields": {
+        "verdict": "copied",
+        "to": "bib_records.legacy_json .authors[].customFields",
+        "note": "bib_records.legacy_json carries {book, authors} rather than the books row alone. The model docblock calls it \"the 1.0 flat row, verbatim, for provenance\" and says it is unreconstructible once v1_archive is dropped — which is exactly the argument for the authors being in it, since to_jsonb(books) contains no author column at all."
+      },
+      "createdAt": {
+        "verdict": "dropped",
+        "reason": "As updatedAt: an author has no 2.0 row until phase 45, and the bib that names them carries its own created_at (which is also what 008/00-05 is built from)."
+      },
+      "updatedAt": {
+        "verdict": "dropped",
+        "reason": "An author is not a record in 2.0 until phase 45 builds the authority store, so there is no row whose modification time this could be. The bib records that name the author each carry their own updated_at, and the name itself is carried into 100/700 $a."
+      },
+      "archivedAt": {
+        "verdict": "dropped",
+        "reason": "An archived author with live books still names them; an archived author with none is reported by the orphan assertion."
+      }
+    },
+    "book_authors": {
+      "bookId": {
+        "verdict": "derived",
+        "to": "marc 100/110/700/710 placement",
+        "how": ""
+      },
+      "authorId": {
+        "verdict": "derived",
+        "to": "marc $0",
+        "how": ""
+      },
+      "order": {
+        "verdict": "derived",
+        "to": "marc tag choice",
+        "how": "order 0 becomes 100/110, the rest 700/710 in order"
+      },
+      "role": {
+        "verdict": "derived",
+        "to": "marc $e on EVERY name field",
+        "how": "INCLUDING order 0. Dropping it there migrates a book whose first listed creator is a TRANSLATOR as its author."
+      }
+    },
+    "book_copies": {
+      "id": {
+        "verdict": "copied",
+        "to": "items.id",
+        "note": "cuid preserved"
+      },
+      "bookId": {
+        "verdict": "derived",
+        "to": "items.bib_id + holdings_records",
+        "how": "one holdings record per distinct (bookId, shelfLocation)"
+      },
+      "barcode": {
+        "verdict": "copied",
+        "to": "items.barcode"
+      },
+      "status": {
+        "verdict": "derived",
+        "to": "items.status",
+        "how": "BookCopyStatus -> item_status; `reserved` is paired with a ready reservation, see the spec"
+      },
+      "shelfLocation": {
+        "verdict": "derived",
+        "to": "shelving_locations + holdings_records.location",
+        "how": "distinct values become shelving_locations rows"
+      },
+      "conditionNotes": {
+        "verdict": "copied",
+        "to": "items.condition_note"
+      },
+      "acquiredAt": {
+        "verdict": "copied",
+        "to": "items.acquired_at",
+        "note": "READ AS UTC"
+      },
+      "priceCents": {
+        "verdict": "copied",
+        "to": "items.price_cents",
+        "note": "Int -> BigInt; currency comes from the branch, NOT from the item (see the items.currency exemption in check:schema-conventions)"
+      },
+      "customFields": {
+        "verdict": "copied",
+        "to": "items.custom_fields"
+      },
+      "createdAt": {
+        "verdict": "copied",
+        "to": "items.created_at",
+        "note": "READ AS UTC"
+      },
+      "updatedAt": {
+        "verdict": "copied",
+        "to": "items.updated_at",
+        "note": "READ AS UTC"
+      },
+      "archivedAt": {
+        "verdict": "copied",
+        "to": "items.archived_at",
+        "note": "READ AS UTC"
+      }
+    },
+    "members": {
+      "id": {
+        "verdict": "copied",
+        "to": "patrons.id",
+        "note": "cuid preserved"
+      },
+      "memberNumber": {
+        "verdict": "copied",
+        "to": "patrons.patron_number",
+        "note": "and a patron_cards row as the PRIMARY card"
+      },
+      "fullName": {
+        "verdict": "copied",
+        "to": "patrons.full_name"
+      },
+      "sortName": {
+        "verdict": "derived",
+        "to": "patrons.sort_name",
+        "how": "recomputed through foldGreek"
+      },
+      "searchText": {
+        "verdict": "derived",
+        "to": "patrons.search_text",
+        "how": "recomputed with COALESCE on every part — a member with a NULL email must not get a NULL search_text"
+      },
+      "email": {
+        "verdict": "copied",
+        "to": "patrons.email",
+        "note": "citext BOTH sides; see the search_path note in the spec"
+      },
+      "phone": {
+        "verdict": "copied",
+        "to": "patrons.phone"
+      },
+      "dateOfBirth": {
+        "verdict": "copied",
+        "to": "patrons.date_of_birth",
+        "note": "@db.Date both sides, unaffected by the UTC read"
+      },
+      "addressLine1": {
+        "verdict": "derived",
+        "to": "patron_addresses.line1",
+        "how": "one primary address row"
+      },
+      "addressLine2": {
+        "verdict": "derived",
+        "to": "patron_addresses.line2",
+        "how": ""
+      },
+      "city": {
+        "verdict": "derived",
+        "to": "patron_addresses.city",
+        "how": ""
+      },
+      "postalCode": {
+        "verdict": "derived",
+        "to": "patron_addresses.postal_code",
+        "how": ""
+      },
+      "country": {
+        "verdict": "derived",
+        "to": "patron_addresses.country",
+        "how": ""
+      },
+      "photoAssetRef": {
+        "verdict": "copied",
+        "to": "patrons.photo_asset_ref"
+      },
+      "status": {
+        "verdict": "derived",
+        "to": "patrons.status",
+        "how": "MemberStatus -> patron_status"
+      },
+      "staffNotes": {
+        "verdict": "derived",
+        "to": "patron_notes",
+        "how": "one note row, staff-visible"
+      },
+      "joinedAt": {
+        "verdict": "copied",
+        "to": "patrons.joined_at",
+        "note": "READ AS UTC"
+      },
+      "customFields": {
+        "verdict": "copied",
+        "to": "patrons.custom_fields"
+      },
+      "createdAt": {
+        "verdict": "copied",
+        "to": "patrons.created_at",
+        "note": "READ AS UTC"
+      },
+      "updatedAt": {
+        "verdict": "copied",
+        "to": "patrons.updated_at",
+        "note": "READ AS UTC"
+      },
+      "archivedAt": {
+        "verdict": "copied",
+        "to": "patrons.archived_at",
+        "note": "READ AS UTC"
+      },
+      "erasedAt": {
+        "verdict": "copied",
+        "to": "patrons.erased_at",
+        "note": "READ AS UTC"
+      }
+    },
+    "loans": {
+      "id": {
+        "verdict": "copied",
+        "to": "loans.id",
+        "note": "cuid preserved"
+      },
+      "copyId": {
+        "verdict": "copied",
+        "to": "loans.item_id"
+      },
+      "memberId": {
+        "verdict": "copied",
+        "to": "loans.patron_id"
+      },
+      "loanedAt": {
+        "verdict": "copied",
+        "to": "loans.loaned_at",
+        "note": "READ AS UTC"
+      },
+      "dueAt": {
+        "verdict": "copied",
+        "to": "loans.due_at",
+        "note": "READ AS UTC; original_due_at takes the same value"
+      },
+      "returnedAt": {
+        "verdict": "copied",
+        "to": "loans.returned_at",
+        "note": "READ AS UTC"
+      },
+      "renewedCount": {
+        "verdict": "copied",
+        "to": "loans.renewal_count"
+      },
+      "status": {
+        "verdict": "derived",
+        "to": "loans.status and closed_at",
+        "how": "LoanStatus -> loan_status; closed_at is BACK-FILLED — a lost loan keeps returned_at NULL and must still close"
+      },
+      "notes": {
+        "verdict": "copied",
+        "to": "loans.notes",
+        "note": "a REAL new column added by the prereq migration; routing it to loan_events.note would drop every active and lost loan note"
+      },
+      "checkedOutByUserId": {
+        "verdict": "copied",
+        "to": "loans.checked_out_by_user_id"
+      },
+      "returnedByUserId": {
+        "verdict": "copied",
+        "to": "loans.returned_by_user_id"
+      },
+      "customFields": {
+        "verdict": "copied",
+        "to": "loans.custom_fields",
+        "note": "new column, prereq migration"
+      },
+      "createdAt": {
+        "verdict": "copied",
+        "to": "loans.created_at",
+        "note": "READ AS UTC"
+      },
+      "updatedAt": {
+        "verdict": "copied",
+        "to": "loans.updated_at",
+        "note": "READ AS UTC"
+      }
+    },
+    "reservations": {
+      "id": {
+        "verdict": "copied",
+        "to": "holds.id",
+        "note": "cuid preserved"
+      },
+      "bookId": {
+        "verdict": "copied",
+        "to": "holds.bib_id"
+      },
+      "memberId": {
+        "verdict": "copied",
+        "to": "holds.patron_id"
+      },
+      "placedAt": {
+        "verdict": "copied",
+        "to": "holds.placed_at",
+        "note": "READ AS UTC"
+      },
+      "queuePosition": {
+        "verdict": "derived",
+        "to": "holds.queue_position",
+        "how": "ORDER always preserved; NUMBERS renumbered where 1.0 was not dense/1-based/unique, and the count reconciled — see the spec"
+      },
+      "status": {
+        "verdict": "derived",
+        "to": "holds.fulfilled_at / cancelled_at / expired_at",
+        "how": "ReservationStatus -> three NULL tests; 2.0 has no hold status enum"
+      },
+      "readyAt": {
+        "verdict": "derived",
+        "to": "holds.assigned_at and awaiting_pickup_since",
+        "how": ""
+      },
+      "expiresAt": {
+        "verdict": "copied",
+        "to": "holds.shelf_expires_at",
+        "note": "READ AS UTC. A ready hold without it leaves the shelf sweep nothing to act on and the shelf never clears."
+      },
+      "fulfilledAt": {
+        "verdict": "copied",
+        "to": "holds.fulfilled_at",
+        "note": "READ AS UTC"
+      },
+      "fulfilledByCopyId": {
+        "verdict": "copied",
+        "to": "holds.assigned_item_id"
+      },
+      "canceledAt": {
+        "verdict": "copied",
+        "to": "holds.cancelled_at",
+        "note": "READ AS UTC; note the 1.0 single-l spelling"
+      },
+      "notes": {
+        "verdict": "copied",
+        "to": "holds.note"
+      },
+      "placedByUserId": {
+        "verdict": "copied",
+        "to": "holds.placed_by_user_id"
+      },
+      "customFields": {
+        "verdict": "copied",
+        "to": "holds.custom_fields",
+        "note": "new column, prereq migration"
+      },
+      "createdAt": {
+        "verdict": "copied",
+        "to": "holds.created_at",
+        "note": "READ AS UTC"
+      },
+      "updatedAt": {
+        "verdict": "copied",
+        "to": "holds.updated_at",
+        "note": "READ AS UTC"
+      }
+    },
+    "fines": {
+      "id": {
+        "verdict": "copied",
+        "to": "fees.id",
+        "note": "cuid preserved"
+      },
+      "memberId": {
+        "verdict": "copied",
+        "to": "fees.patron_id",
+        "note": "and patron_accounts, one per (patron, currency)"
+      },
+      "loanId": {
+        "verdict": "copied",
+        "to": "fees.loan_id"
+      },
+      "amountCents": {
+        "verdict": "copied",
+        "to": "fees.amount_cents",
+        "note": "Int -> BigInt. A ZERO fine is SKIPPED and counted: fees_amount_is_positive refuses it and inventing a 1-cent debt is worse."
+      },
+      "currency": {
+        "verdict": "copied",
+        "to": "fees.currency"
+      },
+      "reason": {
+        "verdict": "copied",
+        "to": "fees.reason",
+        "note": "kept VERBATIM, and also classified into fee_type_id by fee-type-rules.json so the classification is auditable against the original"
+      },
+      "status": {
+        "verdict": "derived",
+        "to": "fees.status + the ledger",
+        "how": "FineStatus -> fee_status, plus a synthetic balanced journal per settled fine"
+      },
+      "paidAt": {
+        "verdict": "derived",
+        "to": "account_transactions.created_at + fee_allocations",
+        "how": "READ AS UTC; the settlement debits ledger_account.opening_balance, NOT cash_on_hand"
+      },
+      "resolvedByUserId": {
+        "verdict": "copied",
+        "to": "account_transactions.actor_user_id"
+      },
+      "notes": {
+        "verdict": "copied",
+        "to": "fees.notes",
+        "note": "a REAL new column added by the prereq migration"
+      },
+      "customFields": {
+        "verdict": "copied",
+        "to": "fees.custom_fields",
+        "note": "new column, prereq migration"
+      },
+      "createdAt": {
+        "verdict": "copied",
+        "to": "fees.created_at",
+        "note": "READ AS UTC"
+      },
+      "updatedAt": {
+        "verdict": "dropped",
+        "reason": "2.0 fees carry no updated_at; every change to a fee is an immutable allocation or journal row, which is a better record than a timestamp."
+      },
+      "archivedAt": {
+        "verdict": "copied",
+        "to": "fees.archived_at",
+        "note": "a REAL new column: the soft-delete fact is not the same as status=cancelled and folding them loses an archived PAID fine"
+      }
+    },
+    "member_number_counters": {
+      "year": {
+        "verdict": "copied",
+        "to": "patron_number_counters.year"
+      },
+      "nextSeq": {
+        "verdict": "derived",
+        "to": "patron_number_counters.next_seq",
+        "how": "MAX(copied counter, recomputed from max(memberNumber)). Recomputing alone re-issues a number that was minted, printed on a card, and whose member row was later hard-deleted."
+      }
+    },
+    "audit_log": {
+      "id": {
+        "verdict": "copied",
+        "to": "audit_log.id"
+      },
+      "actorType": {
+        "verdict": "copied",
+        "to": "audit_log.actor_kind"
+      },
+      "actorId": {
+        "verdict": "copied",
+        "to": "audit_log.actor_id"
+      },
+      "action": {
+        "verdict": "copied",
+        "to": "audit_log.action"
+      },
+      "targetType": {
+        "verdict": "copied",
+        "to": "audit_log.entity_kind"
+      },
+      "targetId": {
+        "verdict": "copied",
+        "to": "audit_log.entity_id"
+      },
+      "beforeJson": {
+        "verdict": "derived",
+        "to": "audit_log.detail",
+        "how": "folded into detail as {before, after, supportSessionId} — ONE representation, because the erase redactor has to learn its shape"
+      },
+      "afterJson": {
+        "verdict": "derived",
+        "to": "audit_log.detail",
+        "how": "as beforeJson"
+      },
+      "ip": {
+        "verdict": "copied",
+        "to": "audit_log.ip"
+      },
+      "userAgent": {
+        "verdict": "copied",
+        "to": "audit_log.user_agent"
+      },
+      "supportSessionId": {
+        "verdict": "derived",
+        "to": "audit_log.detail",
+        "how": "as beforeJson"
+      },
+      "occurredAt": {
+        "verdict": "copied",
+        "to": "audit_log.occurred_at",
+        "note": "READ AS UTC, and it is the PARTITION key — a row whose month has no partition aborts the transaction rather than vanishing"
+      }
+    },
+    "tenant_settings": {
+      "id": {
+        "verdict": "dropped",
+        "reason": "A singleton row id. 2.0 spreads these settings across circulation_settings, the five policy tables and the rules matrix, none of which has a use for it."
+      },
+      "currency": {
+        "verdict": "derived",
+        "to": "every *_cents currency + branches.currency",
+        "how": "the one place 1.0 recorded a currency, and 2.0 pairs one with every amount"
+      },
+      "loanPeriodDays": {
+        "verdict": "derived",
+        "to": "loan_policies.loan_period",
+        "how": ""
+      },
+      "maxRenewals": {
+        "verdict": "derived",
+        "to": "loan_policies.renewals_allowed",
+        "how": "copied VERBATIM. NULLIF is right for fineCapCents and maxActiveLoans and is a BUG here: 0 renewals allowed is a real setting, not a sentinel."
+      },
+      "finePerDayCents": {
+        "verdict": "derived",
+        "to": "overdue_fine_policies.amount_per_interval",
+        "how": "Int -> BigInt, interval 1 day"
+      },
+      "fineCapCents": {
+        "verdict": "derived",
+        "to": "overdue_fine_policies.maximum_fine",
+        "how": "NULLIF(x, 0) — 0 means uncapped in 1.0"
+      },
+      "holdPickupHours": {
+        "verdict": "derived",
+        "to": "hold_policies.shelf_expiry_period",
+        "how": "hours -> the policy duration"
+      },
+      "maxActiveLoans": {
+        "verdict": "derived",
+        "to": "patron_category_limits.max_active_loans",
+        "how": "NULLIF(x, 0) — 0 means unlimited in 1.0"
+      },
+      "defaultLocale": {
+        "verdict": "derived",
+        "to": "circulation_settings.default_locale",
+        "how": ""
+      },
+      "createdAt": {
+        "verdict": "dropped",
+        "reason": "As updatedAt: the singleton has no 2.0 successor row that could carry its age, and the policies it becomes are created by this migration rather than by the library."
+      },
+      "updatedAt": {
+        "verdict": "dropped",
+        "reason": "The settings singleton becomes rows in circulation_settings, five policy tables and the rules matrix; none of them is \"the settings row\" and giving one of them this timestamp would assert that it is."
+      },
+      "renewalsEnabled": {
+        "verdict": "derived",
+        "to": "loan_policies.renewable",
+        "how": ""
+      },
+      "overdueFinesEnabled": {
+        "verdict": "derived",
+        "to": "circulation_rules overdue_fine_policy_id",
+        "how": "when false, the wildcard rule points at a zero-amount policy rather than deleting the policy"
+      },
+      "lostItemFeesEnabled": {
+        "verdict": "derived",
+        "to": "lost_item_fee_policies.charge_basis",
+        "how": "THE ONE EVERY CANDIDATE DESIGN DROPPED. Pinning lf-default and leaving the seeded policy alone makes a library that charges 25 EUR silently charge the seed default."
+      },
+      "lostItemDefaultFeeCents": {
+        "verdict": "derived",
+        "to": "lost_item_fee_policies.fixed_amount_cents",
+        "how": "as lostItemFeesEnabled"
+      },
+      "reservationsEnabled": {
+        "verdict": "derived",
+        "to": "hold_policies + circulation_settings",
+        "how": "when false, holds are not disabled retroactively — existing reservations still migrate"
+      },
+      "notifyDueSoon": {
+        "verdict": "derived",
+        "to": "notice_policies / notice_triggers",
+        "how": "ALSO DROPPED BY EVERY CANDIDATE DESIGN. A library that had overdue notices ON must not come up OFF."
+      },
+      "dueSoonDays": {
+        "verdict": "derived",
+        "to": "notice_triggers lead time",
+        "how": "as notifyDueSoon"
+      },
+      "notifyOverdue": {
+        "verdict": "derived",
+        "to": "notice_policies / notice_triggers",
+        "how": "as notifyDueSoon"
+      },
+      "notifyHoldReady": {
+        "verdict": "derived",
+        "to": "notice_policies / notice_triggers",
+        "how": "as notifyDueSoon"
+      },
+      "notificationTemplates": {
+        "verdict": "derived",
+        "to": "notice_templates",
+        "how": "as notifyDueSoon"
+      }
+    },
+    "roles": "__COMPAT__",
+    "role_permissions": "__COMPAT__",
+    "staff_profiles": "__COMPAT__",
+    "staff_role_grants": "__COMPAT__",
+    "staff_permission_overrides": "__COMPAT__",
+    "field_definitions": "__COMPAT__",
+    "collections": "__COMPAT__",
+    "collection_fields": "__COMPAT__",
+    "collection_records": "__COMPAT__",
+    "_libriant_schema_state": "__COMPAT_INFRA__",
+    "_libriant_online_migrations": "__COMPAT_INFRA__"
+  }
+}

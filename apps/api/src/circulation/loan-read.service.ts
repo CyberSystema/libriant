@@ -166,7 +166,21 @@ export class LoanReadService {
 export type LoanStatusValue =
   'active' | 'recalled' | 'claims_returned' | 'claims_never_borrowed' | 'returned' | 'lost';
 
-export type ChannelValue = 'desk' | 'opac' | 'sip2' | 'ncip' | 'api' | 'offline' | 'kiosk';
+/**
+ * Every value `event_source` can hold, because this type is a READ.
+ *
+ * `migration` is in it and is NOT in the write-side unions in
+ * `circulation.types.ts`, `item-status.service.ts`, `holds.service.ts` and the
+ * six others. That asymmetry is deliberate and is the whole point of restating
+ * the shape here: a librarian at a desk cannot perform a `migration`, so the
+ * INPUT types must refuse it, while anything that reads a row the v1 to v2
+ * upgrade wrote has to be able to name what it finds.
+ *
+ * Widening the input types instead would let a caller post a loan event
+ * claiming to be the upgrade, months after the upgrade ran.
+ */
+export type ChannelValue =
+  'desk' | 'opac' | 'sip2' | 'ncip' | 'api' | 'offline' | 'kiosk' | 'migration';
 
 export type OpenLoanRow = {
   readonly id: string;

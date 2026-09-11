@@ -81,6 +81,43 @@ const EXEMPTIONS: Readonly<Record<string, string>> = {
 };
 const exemptionsUsed = new Set<string>();
 
+/**
+ * The eleven COMPAT TWINS, and the one reason all of them are exempt.
+ *
+ * These are 1.0 tables with no 2.0 successor that are still LIVE at the
+ * cutover: `public` becomes `v1_archive` and the 1.0 Prisma client keeps
+ * serving requests until phase 20 deletes it. That client resolves bare names
+ * through `search_path` and generates quoted camelCase (`"createdAt"`) and
+ * `TIMESTAMP(3)` bindings, so a twin written to the 2.0 conventions is a twin
+ * the surviving client cannot read — `PermissionGuard` runs on every request
+ * and would fail with `column "createdAt" does not exist`, locking a library
+ * out of its own roles table on cutover day.
+ *
+ * A TABLE-LEVEL carve-out rather than ninety column-level ones, because the
+ * decision is one decision made once. It is deliberately NOT the same mechanism
+ * as `EXEMPTIONS`: those are per-column judgements with per-column reasons, and
+ * a list of ninety identical strings would read as ninety decisions.
+ *
+ * What is NOT waived: a twin still needs a `BASELINE-SCOPE.json` entry, which is
+ * the half that matters — "this table exists and here is why" — and rule 7 below
+ * still fails an entry that has stopped describing the tree. Adding a table here
+ * that is not a 1.0 twin would be caught by the floor on the count.
+ */
+const COMPAT_TWINS: ReadonlySet<string> = new Set([
+  'roles',
+  'role_permissions',
+  'staff_profiles',
+  'staff_role_grants',
+  'staff_permission_overrides',
+  'field_definitions',
+  'collections',
+  'collection_fields',
+  'collection_records',
+  '_libriant_schema_state',
+  '_libriant_online_migrations',
+]);
+const MAX_COMPAT_TWINS = 11;
+
 /** True if this convention is deliberately waived here. */
 function exempt(key: string): boolean {
   if (!(key in EXEMPTIONS)) return false;
@@ -155,6 +192,7 @@ if (columnCount < MIN_COLUMNS) {
 // ---------------------------------------------------------------------------
 
 for (const t of tables) {
+  if (COMPAT_TWINS.has(t.name)) continue;
   for (const line of t.columns) {
     const col = /^"([^"]+)"/.exec(line)?.[1];
     if (!col) continue;
@@ -175,6 +213,7 @@ for (const t of tables) {
 // ---------------------------------------------------------------------------
 
 for (const t of tables) {
+  if (COMPAT_TWINS.has(t.name)) continue;
   for (const line of t.columns) {
     const col = /^"([^"]+)"/.exec(line)?.[1];
     if (!col) continue;
@@ -195,6 +234,7 @@ for (const t of tables) {
 // ---------------------------------------------------------------------------
 
 for (const t of tables) {
+  if (COMPAT_TWINS.has(t.name)) continue;
   let sawCents = false;
   for (const line of t.columns) {
     const col = /^"([^"]+)"/.exec(line)?.[1];
@@ -237,6 +277,7 @@ const migrationSql = existsSync(MIGRATIONS)
   : '';
 
 for (const t of tables) {
+  if (COMPAT_TWINS.has(t.name)) continue;
   const idLine = t.columns.find((l) => /^"id"\s/.test(l));
   if (!idLine) continue;
   if (/\bTEXT\b/.test(idLine)) continue;
@@ -340,6 +381,35 @@ if (manifest) {
       );
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// 6b. the compat-twin carve-out has not become somewhere to hide
+// ---------------------------------------------------------------------------
+//
+// Same discipline as rule 7 and as check:schema-drift's allowlist: a waiver that
+// has stopped describing the tree is a waiver nobody reads. Two ways this one
+// could rot — a name that matches no table (the twin was removed and the entry
+// was not), and the set growing past the eleven 1.0-only tables it was written
+// for, which is how "these are legacy" becomes "these are the ones we could not
+// be bothered to convert".
+
+for (const name of COMPAT_TWINS) {
+  if (!tables.some((t) => t.name === name)) {
+    fail(
+      `${name} is listed as a compat twin and no model renders it. The twin was removed and the ` +
+        'carve-out was not — and a carve-out that matches nothing waives nothing while reading ' +
+        'as a decision.',
+    );
+  }
+}
+if (COMPAT_TWINS.size > MAX_COMPAT_TWINS) {
+  fail(
+    `${COMPAT_TWINS.size} compat twins, above the ceiling of ${MAX_COMPAT_TWINS}. The carve-out ` +
+      'exists for the eleven 1.0 tables that outlive the cutover and are read by the surviving ' +
+      '1.0 client. A twelfth is either a new 1.0 table — which cannot happen, 1.0 is frozen — or ' +
+      'a 2.0 table being excused from the conventions, which is the thing this gate is for.',
+  );
 }
 
 // ---------------------------------------------------------------------------

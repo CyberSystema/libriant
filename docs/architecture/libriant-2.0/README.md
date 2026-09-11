@@ -3739,3 +3739,137 @@ concurrency claim there would be vacuous. The genuinely simultaneous cases —
 DATA-1's return racing the accrual sweep, and two desks closing one drawer —
 need their own harness on separate `pg` clients, which is phase 21's to write
 alongside the checkin that first calls `accrueWithin`.
+
+---
+
+## Phase 19a — the surface the upgrade lands on
+
+§6 gives phase 19 one line. It is 7,500–9,000 lines of work, two to three times a
+normal phase here, so it ships in two: **19a** builds everything the copy-forward
+needs to exist before it runs and cannot create for itself; **19b** writes the
+copy-forward, the ~40-assertion verifier, the fixture and the CI job. The split
+is not administrative — two of the three things in 19a are impossible to do in
+the same transaction as the migration that uses them.
+
+### The routing manifest is the real deliverable
+
+`prisma/upgrade/routing.json` gives every one of the 233 columns in the 1.0
+datamodel exactly one verdict — copied, derived, dropped with a reason, or
+carried verbatim as a compat twin — and `check:upgrade-coverage` fails the build
+on a column with no entry, an entry for a column that no longer exists, and a
+drop whose reason is a shrug.
+
+It exists because of a measurement, not a principle. Three independent designs
+for this phase were written from the same survey, and **all three silently lost
+the same four things**:
+
+| lost by all three                          | consequence                                                                        |
+| ------------------------------------------ | ---------------------------------------------------------------------------------- |
+| `tenant_settings.lostItemFeesEnabled`      | a library that charges €25 for a lost book                                         |
+| `tenant_settings.lostItemDefaultFeeCents`  | starts charging the seed default, unrecoverably                                    |
+| the four `notify*` settings                | overdue notices ON comes up OFF                                                    |
+| `book_authors.role` on the order-0 creator | a book whose first listed creator is a TRANSLATOR is migrated as having written it |
+
+None of those is a bug in a transformation. Each is a column nobody considered,
+and no amount of care finds the fifth one — the transformation is written from
+the 2.0 side ("what does `patrons` need?"), so a 1.0 column with no obvious home
+is never rejected, it is never mentioned. Writing the manifest also immediately
+found three defects in its own author's work.
+
+### `ALTER SCHEMA public RENAME` is more dangerous than §8 risk 3 says. MEASURED.
+
+Probe database, PG 16.15, three dependency shapes:
+
+| dependency                                      | after `ALTER EXTENSION … SET SCHEMA` |
+| ----------------------------------------------- | ------------------------------------ |
+| operator class in an index (`gin_trgm_ops`)     | **survives** — stored by OID         |
+| a function named inside another function's body | **breaks** — stored by name          |
+| an expression index over that wrapper           | **breaks, AND TAKES READS DOWN**     |
+| `citext` comparison semantics                   | **SILENTLY CHANGES**                 |
+
+With an unqualified expression index present, `SELECT count(*)` fails with
+`function public.unaccent(unknown, text) does not exist`. Dropping the index
+restores reads; `CREATE OR REPLACE` on the wrapper plus recreating the index
+restores everything. Risk 3 anticipated this.
+
+It did not anticipate the fourth row. The `=` OPERATOR is resolved through
+`search_path`, so with citext's operators off the path both sides are implicitly
+cast to `text`:
+
+    default search_path              mail = 'a@b.GR'  ->  FALSE
+    search_path incl. extensions     mail = 'a@b.GR'  ->  TRUE
+    explicit ::citext cast, default                   ->  FALSE
+
+Measured on a real tenant: the search_path is `"$user", public`, citext lives in
+`public`, `lbr2.patrons.email` IS citext, and `'ΑΒΓ@x.gr' = 'αβγ@x.gr'` is true
+today. `40-circulation.prisma` chose citext so that "a library that types
+`Α.Παπαδοπουλου@…` and one that types `a.papadopoulou@…` mean the same patron".
+Relocating it makes every Greek patron email lookup case-sensitive with NO ERROR,
+and after the rename `public` on the search_path names nothing, so doing nothing
+is not an option either. 19b needs an `ALTER DATABASE … SET search_path` in
+phase 17's UTC-pin shape and a verifier assertion that tests citext equality BOTH
+ways, because no row count would ever show this.
+
+### "Bit-exact queue positions" cannot survive, and that is a divergence
+
+§6 asks for bit-exact positions; the acceptance line says "contiguous and
+identical". 1.0 has no uniqueness on `(bookId, queuePosition)` and the blanket
+`> 0` decrement that phase 17 documented produces position 0 and duplicates —
+both of which `holds_position_is_one_based` and `holds_one_hold_per_position` now
+refuse. A bit-exact copy cannot commit.
+
+Two assertions replace the one: ORDER is preserved exactly, always; NUMBERS are
+identical for every bib whose 1.0 positions were already dense, 1-based and
+unique, and elsewhere are renumbered with the renumbered count reconciled against
+a recorded counter. The lossy half is visible rather than assumed away.
+
+### Why the compat twins are not snake_case
+
+Eleven 1.0 tables have no 2.0 successor and are still LIVE at the cutover: the
+authorization five, which every `PermissionGuard` call reads on every request;
+`field_definitions`; the collections three; and the two `_libriant_*` tables. At
+the cutover `public` becomes `v1_archive` and the 1.0 Prisma client keeps serving
+until phase 20 deletes it — resolving bare names through `search_path` and
+generating quoted camelCase and `CAST($1::text AS "PermissionEffect")`.
+
+So a conventions-abiding twin is a twin the surviving client cannot read, and the
+symptom is a library locked out of its own roles table on cutover day. The twins
+keep 1.0's physical shape verbatim, the three 1.0 enum types are recreated in
+`lbr2` under their 1.0 names, and `check:schema-conventions` carves the eleven
+out as a CLASS with one reason — plus a ceiling and a staleness check, so the
+carve-out cannot quietly become somewhere to put a 2.0 table.
+
+### Two enum values that cannot wait
+
+MEASURED on PG 16.15: `ALTER TYPE … ADD VALUE` inside a transaction is accepted
+and persists; USING the value in that same transaction raises `unsafe use of new
+value`, and the abort rolls the ADD VALUE back with it. The copy-forward is a
+single transaction by design, so it cannot add its own. `ledger_account.opening_balance`
+and `event_source.migration` land here, days earlier, and nothing in 19a uses
+them.
+
+`opening_balance` rather than `cash_on_hand`: a fine paid in 2019 did go into a
+till, but that till was counted and banked years ago, and posting it now would
+inflate the trial balance of a library that has just started keeping one by every
+fine it has ever taken.
+
+`migration` rather than `desk`: every other value names a place a human or a
+device acted, and labelling forty thousand migrated rows `desk` would put
+fictional counter activity into every report that groups by source. The value is
+added to the READ-side union in `loan-read.service.ts` and deliberately NOT to
+the nine write-side unions — a librarian cannot perform a migration, and widening
+the inputs would let a caller post an event claiming to be the upgrade months
+after it ran.
+
+### Five columns, and `owed_cents` learns about archiving
+
+`loans.notes` and `fees.notes` are real columns. Folding a loan's note into
+`loan_events.note` on the `returned` event — the tempting alternative — drops the
+note of every ACTIVE and every LOST loan, precisely the ones that say "borrower
+says posted back" and "lost report filed", and a note about a debt has nowhere
+else at all because `fees` has no event table.
+
+`fees.archived_at` is separate from `status = 'cancelled'`: 1.0 soft-deletes a
+fine, a PAID fine can be archived, and collapsing the two loses the archival and
+leaves a settled debt looking live. Phase 18's `owed_cents` is regenerated to
+read it, because a library's balance must not include debts it has filed away.

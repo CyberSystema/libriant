@@ -248,6 +248,20 @@ model Loan {
   /// NOT partial on `status`. A `WHERE status = 'active'` predicate cannot be
   /// used by the planner here for the enum-cast reason recorded on `Item` —
   /// which is the mistake `loans_active_dueAt_idx` made in 1.0.
+
+  /// The 1.0 loan note, carried by the phase-19 upgrade.
+  ///
+  /// A REAL COLUMN rather than a `loan_events.note` on the `returned` event,
+  /// which is the tempting alternative and drops the note of every ACTIVE and
+  /// every LOST loan — precisely the ones that say "borrower says posted back"
+  /// and "lost report filed".
+  notes String?
+
+  /// The library's own fields, through 1.0's `field_definitions`. `patrons`,
+  /// `items` and `bib_records` already had theirs; this one had no writer until
+  /// the upgrade.
+  customFields Json @default("{}") @db.JsonB @map("custom_fields")
+
   @@index([status, dueAt, id], map: "loans_status_due_id_idx")
   @@index([bibId])
   @@map("loans")

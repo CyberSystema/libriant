@@ -1,0 +1,300 @@
+// ---------------------------------------------------------------------------
+// The v1 → v2 upgrade surface (2.0 phase 19a)
+// ---------------------------------------------------------------------------
+//
+// Two kinds of thing live here and only one of them is 2.0.
+//
+// THE COMPAT TWINS are eleven 1.0 tables with no 2.0 successor that are still
+// LIVE at the cutover. `public` is renamed to `v1_archive` and the 1.0 Prisma
+// client keeps serving requests until phase 20 deletes it — so the tables it
+// reads have to exist where it looks, with the shape it generates SQL for.
+//
+// THEY KEEP 1.0's PHYSICAL SHAPE ON PURPOSE: quoted camelCase columns,
+// `TIMESTAMP(3)` without a zone, the 1.0 enum type names. Every one of those
+// violates a §3 convention, and a conventions-abiding twin would be a twin the
+// surviving client cannot read — `PermissionGuard` runs on every request and
+// would fail with `column "createdAt" does not exist`, locking a library out of
+// its own roles table on cutover day. `check:schema-conventions` scopes itself
+// to the `schema-v2` FOLDER rather than to a model allowlist, so these models
+// are held to the conventions and MUST therefore be exempted by name; each
+// exemption says this.
+//
+// THE TWO UPGRADE TABLES are 2.0 and follow every convention. They exist so that
+// "the upgrade did not carry this" is a ROW rather than a silence, which is what
+// lets the verifier assert count(v1) = count(v2) + count(not carried) as an
+// EQUALITY. An inequality passes when something is missing.
+
+/// A 1.0 role. COMPAT TWIN — see the file docblock.
+model LegacyRole {
+  id          String    @id
+  key         String
+  name        String
+  description String?
+  isSystem    Boolean   @default(false)
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now()) @db.Timestamp(3)
+  updatedAt   DateTime  @db.Timestamp(3)
+  archivedAt  DateTime? @db.Timestamp(3)
+
+  permissions LegacyRolePermission[]
+  grants      LegacyStaffRoleGrant[]
+
+  @@index([isSystem], map: "roles_isSystem_idx")
+  @@map("roles")
+}
+
+/// COMPAT TWIN.
+model LegacyRolePermission {
+  roleId        String
+  permissionKey String
+  limitNum      BigInt?
+
+  role LegacyRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionKey])
+  @@index([permissionKey], map: "role_permissions_permissionKey_idx")
+  @@map("role_permissions")
+}
+
+/// COMPAT TWIN.
+model LegacyStaffProfile {
+  userId      String    @id
+  displayName String?
+  notes       String?
+  createdAt   DateTime  @default(now()) @db.Timestamp(3)
+  updatedAt   DateTime  @db.Timestamp(3)
+  archivedAt  DateTime? @db.Timestamp(3)
+
+  @@map("staff_profiles")
+}
+
+/// COMPAT TWIN.
+model LegacyStaffRoleGrant {
+  userId          String
+  roleId          String
+  grantedByUserId String?
+  createdAt       DateTime @default(now()) @db.Timestamp(3)
+
+  role LegacyRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId], map: "staff_role_grants_roleId_idx")
+  @@map("staff_role_grants")
+}
+
+/// COMPAT TWIN.
+model LegacyStaffPermissionOverride {
+  userId          String
+  permissionKey   String
+  effect          LegacyPermissionEffect
+  limitNum        BigInt?
+  reason          String?
+  grantedByUserId String?
+  createdAt       DateTime @default(now()) @db.Timestamp(3)
+  updatedAt       DateTime @db.Timestamp(3)
+
+  @@id([userId, permissionKey])
+  @@index([permissionKey], map: "staff_permission_overrides_permissionKey_idx")
+  @@map("staff_permission_overrides")
+}
+
+/// COMPAT TWIN. 2.0's own custom fields live on each table's `custom_fields`.
+model LegacyFieldDefinition {
+  id             String                @id
+  entityKind     LegacyFieldEntityKind
+  fieldKey       String
+  labelJson      Json                  @db.JsonB
+  type           LegacyFieldType
+  required       Boolean               @default(false)
+  optionsJson    Json?                 @db.JsonB
+  validationJson Json?                 @db.JsonB
+  sortOrder      Int                   @default(0)
+  indexed        Boolean               @default(false)
+  archivedAt     DateTime?             @db.Timestamp(3)
+  createdAt      DateTime              @default(now()) @db.Timestamp(3)
+  updatedAt      DateTime              @db.Timestamp(3)
+
+  @@unique([entityKind, fieldKey], map: "field_definitions_entityKind_fieldKey_key")
+  @@index([entityKind, sortOrder], map: "field_definitions_entityKind_sortOrder_idx")
+  @@map("field_definitions")
+}
+
+/// COMPAT TWIN. 2.0 has no collections feature; §3 does not replace it.
+model LegacyCollection {
+  id                String    @id
+  slug              String
+  singularLabelJson Json      @db.JsonB
+  pluralLabelJson   Json      @db.JsonB
+  iconAssetRef      String?
+  sortOrder         Int       @default(0)
+  archivedAt        DateTime? @db.Timestamp(3)
+  createdAt         DateTime  @default(now()) @db.Timestamp(3)
+  updatedAt         DateTime  @db.Timestamp(3)
+
+  fields  LegacyCollectionField[]
+  records LegacyCollectionRecord[]
+
+  @@index([slug], map: "collections_slug_idx")
+  @@map("collections")
+}
+
+/// COMPAT TWIN.
+model LegacyCollectionField {
+  id             String          @id
+  collectionId   String
+  fieldKey       String
+  labelJson      Json            @db.JsonB
+  type           LegacyFieldType
+  required       Boolean         @default(false)
+  optionsJson    Json?           @db.JsonB
+  validationJson Json?           @db.JsonB
+  sortOrder      Int             @default(0)
+  indexed        Boolean         @default(false)
+  archivedAt     DateTime?       @db.Timestamp(3)
+  createdAt      DateTime        @default(now()) @db.Timestamp(3)
+  updatedAt      DateTime        @db.Timestamp(3)
+
+  collection LegacyCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, fieldKey], map: "collection_fields_collectionId_fieldKey_key")
+  @@index([collectionId, sortOrder], map: "collection_fields_collectionId_sortOrder_idx")
+  @@map("collection_fields")
+}
+
+/// COMPAT TWIN. A library's own free-form records — the one 1.0 feature with no
+/// §3 successor at all, which is why it is carried rather than converted.
+model LegacyCollectionRecord {
+  id              String    @id
+  collectionId    String
+  data            Json      @default("{}") @db.JsonB
+  searchText      String    @default("")
+  createdByUserId String?
+  createdAt       DateTime  @default(now()) @db.Timestamp(3)
+  updatedAt       DateTime  @db.Timestamp(3)
+  archivedAt      DateTime? @db.Timestamp(3)
+
+  collection LegacyCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+
+  @@index([collectionId, createdAt], map: "collection_records_collectionId_createdAt_idx")
+  @@index([collectionId, archivedAt], map: "collection_records_collectionId_archivedAt_idx")
+  @@map("collection_records")
+}
+
+/// COMPAT TWIN. The 1.0 schema-version singleton.
+model LegacySchemaState {
+  id            Int      @id @default(1)
+  schemaMajor   Int      @default(1)
+  onlinePending String?
+  createdAt     DateTime @default(now()) @db.Timestamp(3)
+  updatedAt     DateTime @db.Timestamp(3)
+
+  @@map("_libriant_schema_state")
+}
+
+/// COMPAT TWIN. The 1.0 online-migration ledger.
+model LegacyOnlineMigration {
+  name       String    @id
+  startedAt  DateTime  @default(now()) @db.Timestamp(3)
+  finishedAt DateTime? @db.Timestamp(3)
+  attempts   Int       @default(0)
+  cursor     String?
+  rowsDone   BigInt    @default(0)
+  lastError  String?
+
+  @@index([finishedAt], map: "_libriant_online_migrations_finishedAt_idx")
+  @@map("_libriant_online_migrations")
+}
+
+/// 1.0's `PermissionEffect`, recreated in lbr2 under its 1.0 name.
+///
+/// The 1.0 client casts with `CAST($1::text AS "PermissionEffect")` and resolves
+/// the type through `search_path`. The original lives in `public` and is renamed
+/// with it, so without this the surviving client casts to a type that no longer
+/// exists.
+enum LegacyPermissionEffect {
+  grant
+  deny
+
+  @@map("PermissionEffect")
+}
+
+/// 1.0's `FieldEntityKind`. Its values name 1.0 tables, which is why it does not
+/// become 2.0's field vocabulary.
+enum LegacyFieldEntityKind {
+  book
+  book_copy
+  member
+  loan
+  reservation
+  fine
+
+  @@map("FieldEntityKind")
+}
+
+/// 1.0's `FieldType`.
+enum LegacyFieldType {
+  short_text
+  long_text
+  number
+  boolean
+  date
+  datetime
+  select_one
+  select_many
+  url
+  email
+
+  @@map("FieldType")
+}
+
+/// Why the upgrade could not carry something.
+enum UpgradeExceptionKind {
+  /// Real content with no 2.0 column. Recorded rather than dropped so a library
+  /// can be told what it lost, in the specific.
+  no_target
+  /// 2.0 has a home and this row could not satisfy it — an ISBN that fails its
+  /// check digit, a language code outside ISO 639-2/B.
+  invalid_source
+  /// A shape 2.0 refuses: a zero-amount fine, a hold on a book that is gone.
+  refused_by_target
+
+  @@map("upgrade_exception_kind")
+}
+
+/// One thing the upgrade could not carry, with the value it could not carry.
+///
+/// The `note` CHECK requires a sentence. A one-way migration that discards a
+/// value and records `n/a` has recorded nothing, and the row would then be
+/// indistinguishable from the silence it exists to replace.
+model UpgradeException {
+  id           String               @id @default(cuid())
+  kind         UpgradeExceptionKind
+  sourceTable  String               @map("source_table")
+  sourceId     String               @map("source_id")
+  sourceColumn String?              @map("source_column")
+  /// The value itself, so this is a record and not a count.
+  value        Json?                @db.JsonB
+  note         String
+  recordedAt   DateTime             @db.Timestamptz(3) @map("recorded_at")
+
+  @@index([sourceTable, kind], map: "upgrade_exceptions_source_idx")
+  @@map("upgrade_exceptions")
+}
+
+/// A whole 1.0 row the upgrade did not carry, kept verbatim.
+///
+/// This is what makes the verifier's cardinality checks EQUALITIES:
+/// `count(v1) = count(v2) + count(dropped)`. An inequality passes when something
+/// is missing, which is the only failure that matters here.
+model UpgradeDroppedRow {
+  id          String   @id @default(cuid())
+  sourceTable String   @map("source_table")
+  sourceId    String   @map("source_id")
+  reason      String
+  /// The whole row, so a library that disputes a drop can be shown it.
+  row         Json     @db.JsonB
+  recordedAt  DateTime @db.Timestamptz(3) @map("recorded_at")
+
+  @@index([sourceTable], map: "upgrade_dropped_rows_source_idx")
+  @@map("upgrade_dropped_rows")
+}

@@ -197,6 +197,9 @@ model Hold {
   /// and reads this index in queue order. `priority DESC` leads because that is
   /// the order the queue is IN; `queue_position` is the tiebreak and the
   /// contiguous thing.
+  /// The library's own fields (2.0 phase 19a). `notes` above already existed.
+  customFields Json @default("{}") @db.JsonB @map("custom_fields")
+
   @@index([bibId, priority(sort: Desc), queuePosition], map: "holds_queue_idx")
   /// The reader's own list, and the count `evaluateBlocks` needs.
   @@index([patronId, placedAt], map: "holds_patron_idx")

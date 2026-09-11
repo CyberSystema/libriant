@@ -23,16 +23,16 @@
   "schema": "lbr2",
   "tables": {
     "_libriant_online_migrations": {
-      "status": "deferred",
-      "phase": "various",
+      "status": "created",
       "group": "Platform",
-      "reason": "Owned by the phase that first needs it; see §6."
+      "reason": "COMPAT TWIN (2.0 phase 19a). A 1.0 table with no 2.0 successor that is still LIVE at the cutover: `public` becomes `v1_archive` and the 1.0 Prisma client keeps serving requests until phase 20 deletes it. It is created in lbr2 with the 1.0 PHYSICAL shape verbatim — quoted camelCase, TIMESTAMP(3), the 1.0 enum type names — because that client resolves bare names through search_path and generates SQL for that shape. A conventions-abiding twin would be one it cannot read, and PermissionGuard runs on every request. check:schema-conventions carves these eleven out as a class, with that one reason.",
+      "basis": "legacy-shape"
     },
     "_libriant_schema_state": {
-      "status": "deferred",
-      "phase": "various",
+      "status": "created",
       "group": "Platform",
-      "reason": "Owned by the phase that first needs it; see §6."
+      "reason": "COMPAT TWIN (2.0 phase 19a). A 1.0 table with no 2.0 successor that is still LIVE at the cutover: `public` becomes `v1_archive` and the 1.0 Prisma client keeps serving requests until phase 20 deletes it. It is created in lbr2 with the 1.0 PHYSICAL shape verbatim — quoted camelCase, TIMESTAMP(3), the 1.0 enum type names — because that client resolves bare names through search_path and generates SQL for that shape. A conventions-abiding twin would be one it cannot read, and PermissionGuard runs on every request. check:schema-conventions carves these eleven out as a class, with that one reason.",
+      "basis": "legacy-shape"
     },
     "account_entries": {
       "status": "created",
@@ -391,21 +391,22 @@
       "reason": "§3 writes it \"`circulation_statistics` (partitioned)\" and nothing else. A ROLLUP, not a per-act stream: `loan_events` is already the per-act record, and a counter bumped inside the checkout transaction would be a hot row in exactly the transaction this phase is accepted on (25-way concurrent checkout of the same item) as well as costing one of the twelve statements a checkin is allowed. Rebuilt hourly from `loan_events` by `circulation-statistics-rollup`, so it can be repaired; an in-transaction counter can only be believed. The counters are COLUMNS rather than rows keyed by an enum, forced from three directions: a partitioned table's unique index must contain every partitioning column (0A000), the rollup is an ON CONFLICT DO UPDATE, and an enum-predicate arbiter raises 42P10 through Prisma. Partitioned monthly on `period_start` with no DEFAULT partition, like `audit_log`, and rolled forward by `partition-maintenance` — the job the baseline assigned to phase 16 by name. NOT `@replicated`: it is derived."
     },
     "collection_fields": {
-      "status": "deferred",
-      "phase": "various",
+      "status": "created",
       "group": "Platform",
-      "reason": "Owned by the phase that first needs it; see §6."
+      "reason": "COMPAT TWIN (2.0 phase 19a). A 1.0 table with no 2.0 successor that is still LIVE at the cutover: `public` becomes `v1_archive` and the 1.0 Prisma client keeps serving requests until phase 20 deletes it. It is created in lbr2 with the 1.0 PHYSICAL shape verbatim — quoted camelCase, TIMESTAMP(3), the 1.0 enum type names — because that client resolves bare names through search_path and generates SQL for that shape. A conventions-abiding twin would be one it cannot read, and PermissionGuard runs on every request. check:schema-conventions carves these eleven out as a class, with that one reason.",
+      "basis": "legacy-shape"
     },
     "collection_records": {
-      "status": "deferred",
-      "phase": "various",
+      "status": "created",
       "group": "Platform",
-      "reason": "Owned by the phase that first needs it; see §6."
+      "reason": "COMPAT TWIN (2.0 phase 19a). A 1.0 table with no 2.0 successor that is still LIVE at the cutover: `public` becomes `v1_archive` and the 1.0 Prisma client keeps serving requests until phase 20 deletes it. It is created in lbr2 with the 1.0 PHYSICAL shape verbatim — quoted camelCase, TIMESTAMP(3), the 1.0 enum type names — because that client resolves bare names through search_path and generates SQL for that shape. A conventions-abiding twin would be one it cannot read, and PermissionGuard runs on every request. check:schema-conventions carves these eleven out as a class, with that one reason.",
+      "basis": "legacy-shape"
     },
     "collections": {
-      "status": "legacy",
+      "status": "created",
       "group": "Platform",
-      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+      "reason": "COMPAT TWIN (2.0 phase 19a). A 1.0 table with no 2.0 successor that is still LIVE at the cutover: `public` becomes `v1_archive` and the 1.0 Prisma client keeps serving requests until phase 20 deletes it. It is created in lbr2 with the 1.0 PHYSICAL shape verbatim — quoted camelCase, TIMESTAMP(3), the 1.0 enum type names — because that client resolves bare names through search_path and generates SQL for that shape. A conventions-abiding twin would be one it cannot read, and PermissionGuard runs on every request. check:schema-conventions carves these eleven out as a class, with that one reason.",
+      "basis": "legacy-shape"
     },
     "consortia": {
       "status": "control-plane",
@@ -540,9 +541,10 @@
       "reason": "§3 or §2 gives it a full CREATE TABLE block."
     },
     "field_definitions": {
-      "status": "legacy",
+      "status": "created",
       "group": "Platform",
-      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+      "reason": "COMPAT TWIN (2.0 phase 19a). A 1.0 table with no 2.0 successor that is still LIVE at the cutover: `public` becomes `v1_archive` and the 1.0 Prisma client keeps serving requests until phase 20 deletes it. It is created in lbr2 with the 1.0 PHYSICAL shape verbatim — quoted camelCase, TIMESTAMP(3), the 1.0 enum type names — because that client resolves bare names through search_path and generates SQL for that shape. A conventions-abiding twin would be one it cannot read, and PermissionGuard runs on every request. check:schema-conventions carves these eleven out as a class, with that one reason.",
+      "basis": "legacy-shape"
     },
     "fines": {
       "status": "dropped",
@@ -1149,14 +1151,16 @@
       "reason": "M12, executed last."
     },
     "role_permissions": {
-      "status": "legacy",
+      "status": "created",
       "group": "Platform",
-      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+      "reason": "COMPAT TWIN (2.0 phase 19a). A 1.0 table with no 2.0 successor that is still LIVE at the cutover: `public` becomes `v1_archive` and the 1.0 Prisma client keeps serving requests until phase 20 deletes it. It is created in lbr2 with the 1.0 PHYSICAL shape verbatim — quoted camelCase, TIMESTAMP(3), the 1.0 enum type names — because that client resolves bare names through search_path and generates SQL for that shape. A conventions-abiding twin would be one it cannot read, and PermissionGuard runs on every request. check:schema-conventions carves these eleven out as a class, with that one reason.",
+      "basis": "legacy-shape"
     },
     "roles": {
-      "status": "legacy",
+      "status": "created",
       "group": "Platform",
-      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+      "reason": "COMPAT TWIN (2.0 phase 19a). A 1.0 table with no 2.0 successor that is still LIVE at the cutover: `public` becomes `v1_archive` and the 1.0 Prisma client keeps serving requests until phase 20 deletes it. It is created in lbr2 with the 1.0 PHYSICAL shape verbatim — quoted camelCase, TIMESTAMP(3), the 1.0 enum type names — because that client resolves bare names through search_path and generates SQL for that shape. A conventions-abiding twin would be one it cannot read, and PermissionGuard runs on every request. check:schema-conventions carves these eleven out as a class, with that one reason.",
+      "basis": "legacy-shape"
     },
     "saved_searches": {
       "status": "deferred",
@@ -1224,20 +1228,22 @@
       "reason": "M12, executed last."
     },
     "staff_permission_overrides": {
-      "status": "deferred",
-      "phase": "various",
+      "status": "created",
       "group": "Platform",
-      "reason": "Owned by the phase that first needs it; see §6."
+      "reason": "COMPAT TWIN (2.0 phase 19a). A 1.0 table with no 2.0 successor that is still LIVE at the cutover: `public` becomes `v1_archive` and the 1.0 Prisma client keeps serving requests until phase 20 deletes it. It is created in lbr2 with the 1.0 PHYSICAL shape verbatim — quoted camelCase, TIMESTAMP(3), the 1.0 enum type names — because that client resolves bare names through search_path and generates SQL for that shape. A conventions-abiding twin would be one it cannot read, and PermissionGuard runs on every request. check:schema-conventions carves these eleven out as a class, with that one reason.",
+      "basis": "legacy-shape"
     },
     "staff_profiles": {
-      "status": "legacy",
+      "status": "created",
       "group": "Platform",
-      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+      "reason": "COMPAT TWIN (2.0 phase 19a). A 1.0 table with no 2.0 successor that is still LIVE at the cutover: `public` becomes `v1_archive` and the 1.0 Prisma client keeps serving requests until phase 20 deletes it. It is created in lbr2 with the 1.0 PHYSICAL shape verbatim — quoted camelCase, TIMESTAMP(3), the 1.0 enum type names — because that client resolves bare names through search_path and generates SQL for that shape. A conventions-abiding twin would be one it cannot read, and PermissionGuard runs on every request. check:schema-conventions carves these eleven out as a class, with that one reason.",
+      "basis": "legacy-shape"
     },
     "staff_role_grants": {
-      "status": "legacy",
+      "status": "created",
       "group": "Platform",
-      "reason": "Exists in the 1.0 `public` schema and keeps serving from there until the phase-20 cutover promotes `lbr2`. Re-creating it now would fork the data."
+      "reason": "COMPAT TWIN (2.0 phase 19a). A 1.0 table with no 2.0 successor that is still LIVE at the cutover: `public` becomes `v1_archive` and the 1.0 Prisma client keeps serving requests until phase 20 deletes it. It is created in lbr2 with the 1.0 PHYSICAL shape verbatim — quoted camelCase, TIMESTAMP(3), the 1.0 enum type names — because that client resolves bare names through search_path and generates SQL for that shape. A conventions-abiding twin would be one it cannot read, and PermissionGuard runs on every request. check:schema-conventions carves these eleven out as a class, with that one reason.",
+      "basis": "legacy-shape"
     },
     "station_profiles": {
       "status": "control-plane",
@@ -1313,6 +1319,18 @@
       "basis": "skeleton",
       "group": "Bibliographic",
       "reason": "Created ONLY because §3 writes bib_records.work_cluster_id with a REFERENCES clause. An id and its timestamps, nothing else. Phase 40 owns clustering, and §5 already fixes the hard part of its design — cluster_key must carry an EXPRESSION key beneath the work key or the Greek original and the English translation of Zorba collapse into one cluster. Inventing that six phases early, with nothing to test it against, is the guess this program avoids. Every work_cluster_id is NULL until then and the FK is deliberately not created."
+    },
+    "upgrade_exceptions": {
+      "status": "created",
+      "basis": "invented",
+      "group": "Upgrade surface",
+      "reason": "INVENTED (2.0 phase 19a). One thing the upgrade could not carry, with the value it could not carry. A one-way migration's real failure mode is a row nobody mentioned, so \"we did not carry this\" is a ROW rather than a silence. The note CHECK requires a sentence: recording a drop as \"n/a\" records nothing and is indistinguishable from the silence the table exists to replace."
+    },
+    "upgrade_dropped_rows": {
+      "status": "created",
+      "basis": "invented",
+      "group": "Upgrade surface",
+      "reason": "INVENTED (2.0 phase 19a). A whole 1.0 row the upgrade did not carry, kept verbatim. This is what lets the verifier assert count(v1) = count(v2) + count(dropped) as an EQUALITY — an inequality passes when something is missing, which is the only failure that matters in a migration nobody can repeat."
     }
   }
 }

@@ -174,6 +174,12 @@ enum EventSource {
   api
   offline
   kiosk
+  /// Written by the v1 to v2 upgrade, not by anybody (2.0 phase 19a).
+  ///
+  /// Every other value names a place a human or a device acted. A migrated row
+  /// was nobody's action, and labelling forty thousand of them `desk` would put
+  /// fictional counter activity into every report that groups by source.
+  migration
 
   @@map("event_source")
 }
@@ -676,6 +682,15 @@ enum LedgerAccount {
   bad_debt_expense
   /// EXPENSE. A till that did not count. Never an adjustment to cash.
   cash_over_short
+  /// EQUITY, in effect. Where a settlement that happened BEFORE these books
+  /// began is debited (2.0 phase 19a).
+  ///
+  /// Not `cash_on_hand`: a fine paid in 2019 did go into a till, but that till
+  /// was counted and banked years ago. Posting it now would inflate the trial
+  /// balance of a library that has just started keeping one by every fine it has
+  /// ever taken. "This happened before our books began" is what an opening
+  /// balance is for, and a migrated settlement is exactly that.
+  opening_balance
 
   @@map("ledger_account")
 }

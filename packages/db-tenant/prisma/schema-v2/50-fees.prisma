@@ -74,6 +74,21 @@ model Fee {
   createdAt DateTime  @db.Timestamptz(3) @map("created_at")
   closedAt  DateTime? @db.Timestamptz(3) @map("closed_at")
 
+  /// The 1.0 fine note (2.0 phase 19a). `fees` has no event table, so a note
+  /// about a debt has nowhere else at all.
+  notes String?
+
+  /// 1.0 SOFT-DELETES a fine, and that is NOT `status = 'cancelled'`. A PAID
+  /// fine that was later archived has both facts, and collapsing them loses the
+  /// archival and leaves a settled debt looking live.
+  ///
+  /// `owed_cents` reads it: an archived fee is not owed, and a library's balance
+  /// must not include debts it has filed away.
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+
+  /// The library's own fields, through 1.0's `field_definitions`.
+  customFields Json @default("{}") @db.JsonB @map("custom_fields")
+
   /// Phase 18 gave `accountId` and `feeTypeId` the foreign keys this docblock
   /// promised, and the relations that go with them.
   account PatronAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)

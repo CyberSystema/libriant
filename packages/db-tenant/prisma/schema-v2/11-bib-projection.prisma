@@ -132,8 +132,16 @@ model BibRecord {
   suppressedFromOpac Boolean  @default(false) @map("suppressed_from_opac")
   itemCount          Int      @default(0) @map("item_count")
   availableCount     Int      @default(0) @map("available_count")
-  /// The 1.0 flat row, verbatim, for provenance. Phase 19 writes it once and it
-  /// is unreconstructible after `v1_archive` is dropped.
+  /// The 1.0 row, verbatim, for provenance. Phase 19 writes it once and it is
+  /// unreconstructible after `v1_archive` is dropped.
+  ///
+  /// `{ book, authors }`, not the books row alone. `to_jsonb(books)` contains no
+  /// author column at all, so a shape that held only the flat row would lose
+  /// `authors.sortName` — the 1.0 importer's natural key, unique among
+  /// non-archived rows, and the thing a post-cutover import needs to
+  /// find-or-create against — along with every author note and custom field.
+  /// Those have no home in a bib record's MARC and no authority store until
+  /// phase 45, so this column is the only place they can survive.
   legacyJson         Json?    @db.JsonB @map("legacy_json")
 
   createdAt DateTime @db.Timestamptz(3) @map("created_at")
