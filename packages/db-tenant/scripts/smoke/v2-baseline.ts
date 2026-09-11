@@ -30,7 +30,7 @@
  * honest shape while there are no services: there is nothing yet for a typed
  * client to be the client OF. Phase 10 brings one with the MARC store.
  */
-import { expectSqlstate, ok, note, v2Query, type SmokeModule } from './_lib.js';
+import { appPathQuery, expectSqlstate, ok, note, v2Query, type SmokeModule } from './_lib.js';
 
 /** The tables this baseline creates, per module. Both a checklist and the teardown order. */
 const TABLES: Readonly<Record<string, readonly string[]>> = {
@@ -278,6 +278,73 @@ export const v2Modules: SmokeModule[] = [
          VALUES ('reuse', 'SMOKE', 'x', 'Europe/Athens', pg_catalog.now())`,
       );
       ok('archiving a branch releases its code for reuse');
+
+      // A HIERARCHY, BUILT THE WAY THE APPLICATION BUILDS ONE.
+      //
+      // This is deliberately NOT run through `v2Query`, and that is the entire
+      // test. `v2Query` sets `search_path = lbr2, public`, which is a harness
+      // convenience — the application sets no search_path at all and reaches
+      // `lbr2` through the schema-qualified names Prisma emits. A PL/pgSQL
+      // trigger body is re-parsed at RUN TIME under the CALLING session's
+      // search_path, so `branches_guard_cycle` naming `branches` unqualified
+      // resolved under the harness and failed under the app:
+      //
+      //     ERROR: relation "branches" does not exist
+      //     CONTEXT: PL/pgSQL function lbr2.branches_guard_cycle()
+      //
+      // The bug shipped in the phase-9 baseline and survived because the ONLY
+      // path that reaches the lookup is a branch with a parent, and provisioning
+      // seeds exactly one root. The first library to open a second reading room
+      // would have found it. Fixed in 20260919100000 with TG_TABLE_SCHEMA — not
+      // a pinned search_path, which would break at the phase-20 rename.
+      await appPathQuery(
+        url(),
+        `INSERT INTO lbr2.branches (id, code, name, timezone, updated_at) VALUES
+           ('smk_h0','SMKH0','Root','Europe/Athens',pg_catalog.now()),
+           ('smk_h1','SMKH1','Child','Europe/Athens',pg_catalog.now()),
+           ('smk_h2','SMKH2','Grandchild','Europe/Athens',pg_catalog.now())`,
+      );
+      await appPathQuery(
+        url(),
+        `UPDATE lbr2.branches SET parent_branch_id = 'smk_h0' WHERE id = 'smk_h1'`,
+      );
+      await appPathQuery(
+        url(),
+        `UPDATE lbr2.branches SET parent_branch_id = 'smk_h1' WHERE id = 'smk_h2'`,
+      );
+      const depths = await v2Query<{ id: string; depth: number }>(
+        url(),
+        `SELECT id, depth FROM branches WHERE id LIKE 'smk_h%' ORDER BY id`,
+      );
+      const shape = depths.map((r) => `${r.id}=${r.depth}`).join(' ');
+      if (shape !== 'smk_h0=0 smk_h1=1 smk_h2=2') {
+        throw new Error(`branch depths are wrong: ${shape}`);
+      }
+      ok('a branch hierarchy builds under the APPLICATION search_path, and depth follows');
+
+      // Re-parenting must drag the descendants with it. This is decision 2 in
+      // the baseline's own docblock, and it is the half that gets skipped: a
+      // stale `depth` is invisible until a picker renders the tree at the wrong
+      // indent, long after the move that caused it.
+      await appPathQuery(
+        url(),
+        `UPDATE lbr2.branches SET parent_branch_id = NULL WHERE id = 'smk_h1'`,
+      );
+      const after = await v2Query<{ id: string; depth: number }>(
+        url(),
+        `SELECT id, depth FROM branches WHERE id = 'smk_h2'`,
+      );
+      if (after[0]?.depth !== 1) {
+        throw new Error(`a descendant kept a stale depth: ${JSON.stringify(after)}`);
+      }
+      ok('re-parenting recomputes every descendant depth, not just the row that moved');
+
+      await expectSqlstate(
+        url(),
+        `UPDATE lbr2.branches SET parent_branch_id = 'smk_h2' WHERE id = 'smk_h1'`,
+        '23514',
+        'a cycle is still refused — the fix changed how the table is named, not what it decides',
+      );
     },
     reset: teardown,
   },

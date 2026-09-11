@@ -109,6 +109,39 @@ export async function v2Query<T = Record<string, unknown>>(
   }
 }
 
+/**
+ * Run `sql` with NO search_path set — the way the application actually connects.
+ *
+ * {@link v2Query} puts `lbr2` on the path because it lets the 2.0 modules write
+ * unqualified SQL, and that convenience hides one whole class of defect. A
+ * PL/pgSQL trigger body is re-parsed at RUN TIME under the CALLING session's
+ * search_path, so a function naming a table unqualified resolves perfectly under
+ * the harness and fails under the application, which sets no path at all and
+ * reaches `lbr2` through the schema-qualified names Prisma emits.
+ *
+ * That is not hypothetical: it is how `branches_guard_cycle` shipped broken in
+ * the phase-9 baseline and stayed broken, because the only path that reaches its
+ * lookup is a branch WITH a parent and provisioning seeds exactly one root.
+ *
+ * So anything asserting on trigger behaviour uses this, and writes its SQL
+ * `lbr2.`-qualified like the application does. Everything else can keep using
+ * v2Query.
+ */
+export async function appPathQuery<T = Record<string, unknown>>(
+  url: string,
+  sql: string,
+  params: unknown[] = [],
+): Promise<T[]> {
+  const { Client } = await import('pg');
+  const client = new Client({ connectionString: url, options: PG_SESSION_OPTIONS });
+  await client.connect();
+  try {
+    return (await client.query(sql, params)).rows as T[];
+  } finally {
+    await client.end();
+  }
+}
+
 /** Assert `sql` fails with `sqlstate`, and say what the constraint protects. */
 export async function expectSqlstate(
   url: string,
