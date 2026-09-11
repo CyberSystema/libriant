@@ -3978,3 +3978,109 @@ outside ISO 639-2/B, a member with no email, duplicate queue positions, a `ready
 hold with no copy, a zero-amount fine, an archived-but-paid fine, audit rows
 spread across months. A fast fixture that is merely SMALLER tests a different
 library.
+
+## Phase 20a — the read surface, and three measurements phase 20b must act on
+
+### The Greek acceptance case was never asserted, and now is
+
+§9 names one acceptance case for the whole phase-1 programme —
+`foldGreek('ΠΟΛΙΣ') === foldGreek('πολισ')`, and §6 restates it as "Greek
+regression: `πολισ` now finds `Η ΠΟΛΙΣ ΕΑΛΩ`". Three tests circle it and none of
+them issues a query: `greek.test.ts` proves the function's arithmetic over 854
+vectors, `greek-folding-parity.spec.ts` proves the SQL twin agrees, and
+`bib-projection.spec.ts` proves `search_text` comes out with no final sigma.
+
+All three are true and none is the claim, because the claim is about a SEARCH and
+`lbr2` had no endpoint to search. That is exactly how the defect survived 1.0:
+the fold was a property of a column nobody interrogated.
+
+It needed NO migration, which is worth recording because the obvious move is
+wrong twice. `libriant_fold_greek` is installed by no migration — only by a spec
+that creates and rolls it back — so `WHERE libriant_fold_greek(search_text) LIKE
+…` would throw; and had it worked it would have defeated `bib_records_search_trgm`,
+which is on the column and not on a function of it. Both sides fold with the same
+function in Node. That is the design, and it is why the phase is additive.
+
+### G03 is vacuous. MEASURED.
+
+`03-verify.sql` assertion G03 — "no expression index is left pointing at a
+relocated function" — is one of the 42 the cutover's safety rests on, and it
+cannot fail. Measured on a real migrated tenant:
+
+    indexes in lbr2 mentioning unaccent, before any rename   0
+    G03 predicate, before the rename                         true
+    G03 predicate, after  the rename                         true
+    any index ANYWHERE rendering the text 'public.'          0
+
+Three independent reasons, each sufficient. It runs after `ALTER SCHEMA public
+RENAME TO v1_archive`, and at that moment no schema named `public` exists —
+`pg_get_indexdef` renders from OIDs, so no index in any schema can emit that
+substring. Even before the rename the string is not there: the poison lives in
+`pg_proc.prosrc`, which `indexdef` never renders, and the index itself is written
+unqualified. And `schemaname = 'lbr2'` excludes the only schema a surviving 1.0
+expression index could be in, which is `v1_archive`.
+
+This is worse than a missing assertion. It sits in the green list of 42 and reads
+as coverage for a class nothing checks. The same question over `pg_proc` DOES
+discriminate, and answering it across every tenant database on the host returns
+zero — so the class is empty in population as well as unchecked. Phase 20b should
+replace G03 with the `pg_proc` form and a pre-flight that REFUSES, rather than
+build the drop-and-recreate machinery §8 risk 3 promises for a case no database
+this repo produces is in.
+
+### `DROP SCHEMA v1_archive CASCADE` deletes live 2.0 data, as a NOTICE
+
+The one to act on. Every tenant extension lives in `public`, and an extension
+goes WITH its schema, so after the promotion they are all inside `v1_archive` —
+the schema phase 20b is meant to delete. Measured, on a clone of a real tenant,
+with `ON_ERROR_STOP=1` set and sailing straight through:
+
+    ALTER SCHEMA public RENAME TO v1_archive;
+    ALTER SCHEMA lbr2   RENAME TO public;
+    DROP SCHEMA v1_archive CASCADE;
+    NOTICE:  drop cascades to 44 other objects
+      drop cascades to column email of table patrons
+      drop cascades to index bib_records_search_trgm
+      drop cascades to index patrons_search_trgm
+      drop cascades to constraint calendar_hours_no_overlap on table calendar_hours
+      drop cascades to constraint calendar_exception_hours_no_overlap …
+      drop cascades to constraint fixed_due_date_ranges_no_overlap …
+
+Every patron email address in the LIVE 2.0 schema, both search indexes, and all
+three no-overlap invariants — including the one §3 introduces with the words
+"Double-booking is IMPOSSIBLE, not unlikely". Announced as a NOTICE, so nothing
+in a normal script stops.
+
+The cure is six statements, and they belong INSIDE the cutover transaction,
+between the promotion and the commit:
+
+    ALTER EXTENSION unaccent   SET SCHEMA public;   -- and pg_trgm, citext,
+    ALTER EXTENSION …          SET SCHEMA public;   -- pgcrypto, btree_gist, btree_gin
+
+Two consequences follow for 20b. The post-promotion assertions can and should run
+in the same transaction under `SET LOCAL search_path TO "$user", public` — that
+IS the application's path, so a citext lookup that has silently become
+case-sensitive fails the upgrade rather than being discovered by a librarian. And
+§6's rollback recipe needs rewriting a second time: `DROP SCHEMA public CASCADE;
+ALTER SCHEMA v1_archive RENAME TO public` destroys the 1.0 archive it exists to
+restore once the extensions have correctly moved. 19b already recorded that the
+recipe fails with `schema "public" does not exist`; this is the other half.
+
+### A live defect the cutover would have cured by accident
+
+`lbr2.branches_guard_cycle()` and `lbr2.branches_recompute_descendant_depth()`
+name `branches` unqualified. A PL/pgSQL body is re-parsed at RUN TIME under the
+CALLING session's search_path, so both resolved in the phase-9 migration session
+and have never resolved since: a library cannot save a second branch.
+
+Nothing caught it because the only path that reaches the lookup is a branch WITH
+a parent and provisioning seeds exactly one root — and because the smoke harness
+sets `search_path = lbr2, public`, which makes the trigger resolve perfectly in
+the place that is supposed to be checking it. The regression test now connects
+the way the application does, through `appPathQuery`.
+
+Fixed with `TG_TABLE_SCHEMA` rather than a pinned path, because a pin naming
+`lbr2` breaks at the rename. The point for the log is the timing: phase 20's
+promotion would have CURED this by accident, and a fix that arrives that way
+looks unnecessary and gets removed. It was found by investigating the rename and
+turned out to predate it.
