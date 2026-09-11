@@ -4084,3 +4084,120 @@ Fixed with `TG_TABLE_SCHEMA` rather than a pinned path, because a pin naming
 promotion would have CURED this by accident, and a fix that arrives that way
 looks unnecessary and gets removed. It was found by investigating the rename and
 turned out to predate it.
+
+## Phase 20b-i — the cutover made executable, and nothing deleted
+
+Phase 20 was one session in §6 and is now three. 20a built the read surface the
+cutover had nothing to repoint at. This is the mechanism: the upgrade can now
+actually commit, it promotes `lbr2` as §6 says, and the rollback is a script
+rather than a recipe. **Nothing is deleted and no tenant is cut over.** The five
+1.0 modules, the 35 screens and the thirteen consumers outside them are 20b-ii.
+
+### The promotion was kept, against the measurement, and here is that measurement
+
+`lbr2` is bound by one constant — `V2_SCHEMA` in `packages/db-tenant/src/v2.ts`
+— so promoting it to `public` is optional. Measured on clones of a real migrated
+tenant, not promoting is strictly safer and very much smaller:
+
+|                                                    | promote `lbr2` → `public`                                                             | archive only, keep `lbr2` |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------- |
+| `DROP SCHEMA v1_archive CASCADE` (extensions left) | 44 objects, incl. `patrons.email`, both trigram indexes, all 3 no-overlap constraints | 32 objects, all 1.0's own |
+| citext lookup after cutover                        | 1 → **0**, silently, via a Seq Scan                                                   | 1 → 1                     |
+| `lbr2.` references to rewrite                      | **186 across 39 files**                                                               | 0                         |
+
+The operator chose the promotion, which is §6's plan of record, and it is built
+that way. The record is here because the trade is real: the promotion is
+correct, it is not free, and every hazard below exists only because of it.
+
+### Extensions move with their schema, and that is the whole danger
+
+All six live in `public`, so `ALTER SCHEMA public RENAME TO v1_archive` carries
+them into the archive — where they are still the extensions the PROMOTED schema
+depends on. `patrons.email` is citext; both trigram indexes use `gin_trgm_ops`;
+all three no-overlap EXCLUDE constraints use `gist_*_ops`.
+
+Left there, `DROP SCHEMA v1_archive CASCADE` deletes live 2.0 data and says so
+as a **NOTICE**, which `ON_ERROR_STOP=1` does not stop. Verified by running it.
+
+So the cutover moves them, in the same transaction as the promotion:
+
+    ALTER SCHEMA lbr2 RENAME TO public;
+    ALTER EXTENSION unaccent|pg_trgm|citext|pgcrypto|btree_gist|btree_gin
+      SET SCHEMA public;
+
+Measured after: 147 tables in `public`, 23 in `v1_archive`, 0 extensions outside
+`public`, `patrons` readable unqualified, and `DROP SCHEMA v1_archive CASCADE`
+down to 32 objects that are all 1.0's own.
+
+The relocation is deliberately NOT a loop over `pg_extension`. That would
+silently move whatever a DBA had installed by hand; the six are enumerated, and
+a seventh is a refusal rather than a guess.
+
+### The post-promotion assertions run under the application's own search_path
+
+`03-verify.sql` asks whether the DATA came across, under the copy-forward's path.
+`04-promoted.sql` asks whether the database still WORKS, under `"$user", public`
+— which is what a tenant connection actually holds, and the only path under which
+the failure is visible at all. Phase 19a measured why:
+
+    default search_path             mail = 'a@b.GR'  ->  FALSE
+    search_path incl. extensions    mail = 'a@b.GR'  ->  TRUE
+
+The `=` operator resolves through search_path, so with citext's operators off it
+both sides cast to `text` and every duplicate-patron check in the product turns
+off at once, with no error. A qualified assertion would pass on a database where
+the application is already broken.
+
+Eight assertions, H01–H08, all inside the transaction so a failure rolls the
+whole cutover back.
+
+### G03 replaced, because it could not fail
+
+Measured three ways on a real tenant: 0 indexes in `lbr2` mention unaccent at
+all; the predicate is `true` before the rename and `true` after; and post-rename
+**no index anywhere in the database renders the text `public.`**, because
+`pg_get_indexdef` renders from OIDs and no schema by that name exists.
+
+The real question is over `pg_proc`. A SQL or PL/pgSQL body is stored as TEXT and
+re-resolved at RUN TIME — the only category a schema rename can break, which is
+why every trigram index and EXCLUDE constraint survives untouched. The new G03
+asks that, and it DISCRIMINATES: on a database poisoned with phase 2's own
+fixture shape the new form returns `false` where the old returns `true`.
+
+The same question also runs as a pre-flight, before `BEGIN`. It REFUSES rather
+than repairing: the correct rewrite of a library's own function body depends on
+what the author meant, and a wrong guess produces a function that runs and is
+wrong. Across every tenant database on the host it returns nothing, so it costs
+one statement and fires for no one — but it fires before the transaction rather
+than a hundred statements into the copy-forward with `regproc.c:1440`.
+
+### §6's rollback is wrong in both directions
+
+19b measured it failing with `schema "public" does not exist`, because that phase
+renamed `public` away and put nothing back. After the promotion a `public` exists
+again, so the statement now runs — and that is worse. It succeeds and destroys
+the archive it exists to restore:
+
+    NOTICE:  drop cascades to 148 other objects
+      drop cascades to extension unaccent / pg_trgm / citext / pgcrypto / …
+      drop cascades to column email of table v1_archive.members
+      drop cascades to index v1_archive.books_search_trgm  (and three more)
+
+The library comes back with no member email column, no search indexes, and
+plpgsql as its only extension.
+
+`scripts/tenant-rollback-v2.ts` sends the extensions home first, and it is a
+script rather than a runbook entry because a three-step recipe that must be run
+in order is a script. Measured: 6 extensions survive, `members.email` survives,
+all four 1.0 trigram indexes survive, citext still compares case-insensitively,
+and 1,000 books / 500 members / 800 loans read back unqualified. It refuses to
+run twice — the second run would drop the library it had just restored.
+
+### CI cuts a database over for real
+
+Every earlier step rehearsed and rolled back, which proves the copy-forward and
+nothing about the two statements that actually cut a library over. Two new jobs
+commit on disposable databases: one asserts the committed shape and then DROPS
+the archive to prove that is now safe, the other rolls back and reads the 1.0
+library out again. Both check that the flags refuse without `--yes`, and that a
+second rollback refuses.

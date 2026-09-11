@@ -34,27 +34,41 @@
  * A SQL port of each would be a second implementation whose only job is to agree
  * with the first. Atomicity is not the trade: `pg` gives the same one BEGIN.
  *
- * ## THE ROLLBACK, and why §6's recipe is not yet the right one
+ * ## THE ROLLBACK, and why §6's recipe is wrong in BOTH directions
  *
  * §6 writes the rollback as
  *
  *     DROP SCHEMA public CASCADE; ALTER SCHEMA v1_archive RENAME TO public;
  *
- * and MEASURED against a committed clone, that fails with `schema "public" does
- * not exist`. It has to: this phase renames `public` away and never puts
- * anything in its place, because promoting `lbr2` is phase 20's job. Until that
- * promotion there is no second `public` to drop.
+ * Phase 19b measured that failing with `schema "public" does not exist`, because
+ * that phase renamed `public` away and put nothing in its place — there was no
+ * second `public` to drop. Phase 20b promotes `lbr2`, so a `public` exists again
+ * and the statement now runs. It is still wrong, in a worse way: it succeeds and
+ * destroys the archive it exists to restore.
  *
- * Before the promotion the rollback is ONE statement:
+ *     NOTICE:  drop cascades to 148 other objects
+ *       drop cascades to extension unaccent / pg_trgm / citext / pgcrypto / …
+ *       drop cascades to column email of table v1_archive.members
+ *       drop cascades to index v1_archive.books_search_trgm  (and three more)
  *
+ * The cutover leaves all six extensions in `public` — which is precisely what
+ * makes the archive safe to DROP later — so `DROP SCHEMA public` takes them, and
+ * 1.0's own citext column and trigram indexes go with them. A NOTICE, so nothing
+ * stops.
+ *
+ * The correct rollback sends the extensions home first, and lives in
+ * `scripts/tenant-rollback-v2.ts` rather than in a runbook, because a three-step
+ * recipe that must be run in order is a script:
+ *
+ *     ALTER EXTENSION … SET SCHEMA v1_archive;   -- ×6
+ *     DROP SCHEMA public CASCADE;                -- 137 objects, all 2.0's own
  *     ALTER SCHEMA v1_archive RENAME TO public;
  *
- * Verified on a committed clone: 1,000 books, 500 members, 800 loans, 150 fines,
- * `roles` readable through the default search_path — which is what the surviving
- * 1.0 client does — a Greek title intact, and citext still comparing
- * case-insensitively. §6's two-step becomes correct the moment phase 20 renames
- * `lbr2` to `public`, and is the wrong instruction to leave in a runbook before
- * then.
+ * Measured on a committed clone: 6 extensions survive, `members.email` survives,
+ * all four 1.0 trigram indexes survive, citext still compares
+ * case-insensitively, and 1,000 books / 500 members / 800 loans read back
+ * through the default search_path. It refuses to run twice, because the second
+ * run would drop the library it had just restored.
  *
  * ## The precondition it refuses to paper over
  *
@@ -76,7 +90,7 @@ import {
   type V1Author,
   type V1Book,
 } from '@libriant/db-tenant/upgrade/marc-from-book';
-import { die, log, parseArgs } from './_lib/cli.js';
+import { die, isYes, log, parseArgs } from './_lib/cli.js';
 
 const NAME = 'tenant-upgrade-v2';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -92,17 +106,59 @@ const args = parseArgs({
     slug: { type: 'string' },
     clone: { type: 'string' },
     commit: { type: 'boolean' },
+    yes: { type: 'boolean' },
     report: { type: 'boolean' },
   },
   required: ['url'],
 });
 
-if (args.values.commit === true) {
+/**
+ * The six extensions every tenant database carries, and the order is irrelevant
+ * because each is independent.
+ *
+ * Enumerated rather than discovered, deliberately. A loop over `pg_extension`
+ * would silently relocate whatever a DBA had installed by hand — including
+ * something that belongs where it is — and the set a Libriant tenant has is
+ * fixed by `tenant-create.ts`, `TenantProvisioningService` and the 2.0 baseline.
+ * If a tenant has one this list does not name, the pre-flight says so and
+ * refuses rather than guessing.
+ */
+const RELOCATED_EXTENSIONS = [
+  'unaccent',
+  'pg_trgm',
+  'citext',
+  'pgcrypto',
+  'btree_gist',
+  'btree_gin',
+] as const;
+
+/**
+ * `--commit` is the cutover. It is guarded, not refused.
+ *
+ * Phase 19 refused it outright — "a rehearsal that can accidentally commit is
+ * not a rehearsal" — and that was right for a phase whose whole job was to
+ * rehearse. Phase 20b is the phase that performs it, so the refusal becomes a
+ * confirmation, in the shape `tenant-relocate.ts` already uses for
+ * `--drop-source`: the destructive flag plus an explicit `--yes`.
+ *
+ * Both are needed because they mean different things. `--commit` is the
+ * intention; `--yes` is the acknowledgement that this is one-way. There is no
+ * environment variable for either, and no default that performs it — a script
+ * that cuts a library over because someone forgot an argument is the failure
+ * mode this guard exists for.
+ */
+const commitMode = isYes(args.values.commit);
+if (commitMode && !isYes(args.values.yes)) {
   die(
     NAME,
-    'There is no --commit in phase 19. The cutover is phase 20, and a rehearsal that can ' +
-      'accidentally commit is not a rehearsal. Use --clone=<name> to upgrade a disposable copy.',
+    '--commit performs the cutover on the database you named. It renames `public` to ' +
+      '`v1_archive`, promotes `lbr2` to `public`, and is not undone by a failed later step ' +
+      'because there is no later step. Add --yes to confirm, or use --clone=<name> to ' +
+      'upgrade a disposable copy instead.',
   );
+}
+if (commitMode && args.values.clone !== undefined) {
+  die(NAME, '--commit and --clone are different things; pass one.');
 }
 
 const sqlFile = (f: string): string => readFileSync(path.join(UPGRADE_DIR, f), 'utf8');
@@ -174,6 +230,59 @@ async function main(): Promise<void> {
           `(ALTER DATABASE ... SET TimeZone TO 'UTC'), rebuild the partitions, and run again: ` +
           `back-filling UTC partitions beside local-midnight ones leaves a three-hour seam in ` +
           `which every audited write fails, and there is no DEFAULT partition to catch it.`,
+      );
+    }
+
+    // NO FUNCTION BODY MAY NAME A SCHEMA THE RENAME TAKES AWAY.
+    //
+    // A SQL or PL/pgSQL body is stored as TEXT and re-resolved at RUN TIME. That
+    // is the ONLY category a schema rename can break: an operator class inside an
+    // index is bound by OID and survives, which is why every trigram index and
+    // every EXCLUDE constraint comes through the promotion untouched.
+    //
+    // Reproduced, on a fresh backend, with phase 2's own fixture shape present:
+    //
+    //     ERROR:  text search dictionary "public.unaccent" does not exist
+    //     QUERY:  SELECT public.unaccent('public.unaccent'::regdictionary, $1)
+    //     CONTEXT:  SQL function "immutable_unaccent" during inlining
+    //     LOCATION: regdictionaryin, regproc.c:1440
+    //
+    // on a plain `SELECT count(*) FROM v1_archive.books` — a hundred statements
+    // into the copy-forward, naming nothing anyone would connect to a timezone of
+    // a schema rename.
+    //
+    // IT REFUSES RATHER THAN REPAIRING. Rewriting a library's own function body
+    // is not something an upgrade can do safely: the only correct rewrite depends
+    // on what the author meant, and guessing produces a function that runs and is
+    // wrong. Across every tenant database on the host this pre-flight returns
+    // nothing, so the refusal costs one statement and fires for no one — but it
+    // is the honest boundary, and it fires BEFORE BEGIN instead of halfway
+    // through a copy-forward.
+    //
+    // `prosqlbody IS NULL` excludes SQL-standard bodies (BEGIN ATOMIC), which are
+    // parsed at creation and stored by OID. The pg_depend clause excludes
+    // functions an extension owns — unaccent's own internals name `public.` and
+    // move with the extension.
+    const poisoned = await client.query<{ fn: string; body: string }>(`
+      SELECT n.nspname || '.' || p.proname AS fn,
+             pg_catalog.left(p.prosrc, 200) AS body
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname IN ('public', 'lbr2')
+         AND p.prosqlbody IS NULL
+         AND p.prosrc ~ '(^|[^A-Za-z0-9_."])public\\s*\\.'
+         AND NOT EXISTS (
+           SELECT 1 FROM pg_catalog.pg_depend d
+            WHERE d.objid = p.oid AND d.deptype = 'e')`);
+    if (poisoned.rows.length > 0) {
+      die(
+        NAME,
+        `${poisoned.rows.length} function body/bodies name \`public.\` and would be re-parsed ` +
+          `against a schema this upgrade renames away — e.g. ${poisoned.rows[0]?.fn}. ` +
+          `Re-create them schema-qualified against the schema they mean, or with ` +
+          `TG_TABLE_SCHEMA if they are triggers, and run again. This refuses rather than ` +
+          `rewriting them: the correct rewrite depends on what the author meant, and a wrong ` +
+          `guess produces a function that runs and is wrong.`,
       );
     }
 
@@ -469,9 +578,72 @@ async function main(): Promise<void> {
 
     log(NAME, `all ${verdicts.rows.length} assertions hold`);
 
-    if (args.values.clone === undefined) {
+    // -- 8. THE PROMOTION (2.0 phase 20b) ------------------------------------
+    //
+    // §6: "ALTER SCHEMA public RENAME TO v1_archive; ALTER SCHEMA lbr2 RENAME TO
+    // public." The first half happened at step 2, before anything was copied.
+    // This is the second, and the six statements after it are the ones §6 does
+    // not mention and without which the cutover is a data-loss bug.
+    //
+    // EXTENSIONS MOVE WITH THEIR SCHEMA. All six live in `public` and rode the
+    // step-2 rename into `v1_archive` — where they are still the extensions the
+    // promoted schema depends on. `lbr2.patrons.email` is citext; both trigram
+    // search indexes use `gin_trgm_ops`; all three no-overlap EXCLUDE
+    // constraints use `gist_*_ops`. Measured, on a clone of a real tenant:
+    //
+    //     DROP SCHEMA v1_archive CASCADE;
+    //     NOTICE:  drop cascades to 44 other objects
+    //       drop cascades to column email of table patrons
+    //       drop cascades to index bib_records_search_trgm
+    //       drop cascades to index patrons_search_trgm
+    //       drop cascades to constraint calendar_hours_no_overlap …
+    //
+    // A NOTICE. `psql -v ON_ERROR_STOP=1` goes straight through it, which was
+    // verified rather than assumed. With the six moved first, the same statement
+    // cascades to 32 objects and every one is 1.0's own.
+    //
+    // INSIDE THE SAME TRANSACTION, which Postgres allows and which is the only
+    // acceptable place: a promotion that committed before the relocation would
+    // leave a window in which the archive cannot be dropped safely and nothing
+    // says so.
+    await client.query('ALTER SCHEMA lbr2 RENAME TO public');
+    for (const ext of RELOCATED_EXTENSIONS) {
+      await client.query(`ALTER EXTENSION ${ext} SET SCHEMA public`);
+    }
+    log(NAME, `lbr2 promoted to public; ${RELOCATED_EXTENSIONS.length} extensions rehomed`);
+
+    // -- 9. the post-promotion verifier, under the APPLICATION's search_path --
+    //
+    // Not the copy-forward's path. The failure this catches is a RESOLUTION
+    // failure, and a resolution failure is invisible to any query that qualifies
+    // its names — so the assertions have to be asked the way a tenant connection
+    // asks them, which is `"$user", public` and nothing else.
+    await client.query(`SET LOCAL search_path TO "$user", public`);
+    const promoted = await client.query<Verdict>(sqlFile('04-promoted.sql'));
+    const promotedFailed = promoted.rows.filter((v) => !v.ok);
+    for (const v of promoted.rows) {
+      if (args.values.report === true || !v.ok) {
+        log(NAME, `${v.ok ? '✓' : '✗'} ${v.id} ${v.claim}${v.detail ? ` — ${v.detail}` : ''}`);
+      }
+    }
+    if (promotedFailed.length > 0) {
       await client.query('ROLLBACK');
-      log(NAME, 'DRY RUN — rolled back. Nothing was written. The cutover is phase 20.');
+      die(
+        NAME,
+        `${promotedFailed.length} of ${promoted.rows.length} post-promotion assertion(s) failed. ` +
+          `The transaction has been rolled back and the database is byte-identical to how it ` +
+          `started — including the schema names.`,
+      );
+    }
+    log(NAME, `all ${promoted.rows.length} post-promotion assertions hold`);
+
+    if (commitMode) {
+      await client.query('COMMIT');
+      log(NAME, 'COMMITTED. This tenant is now 2.0; 1.0 is readable in v1_archive.');
+      log(NAME, `To roll back: pnpm tsx scripts/tenant-rollback-v2.ts --url … --yes`);
+    } else if (args.values.clone === undefined) {
+      await client.query('ROLLBACK');
+      log(NAME, 'DRY RUN — rolled back. Nothing was written. Pass --commit --yes to cut over.');
     } else {
       await client.query('COMMIT');
       log(NAME, `committed to the clone. The original database was never opened for writing.`);

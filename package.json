@@ -63,6 +63,8 @@
     "catalog:verify": "tsx scripts/catalog-verify.ts",
     "catalog:import": "tsx scripts/catalog-import.ts",
     "seed:v1-fixture": "tsx scripts/seed-v1-fixture.ts",
+    "tenant:upgrade:v2": "tsx scripts/tenant-upgrade-v2.ts",
+    "tenant:rollback:v2": "tsx scripts/tenant-rollback-v2.ts",
     "tenant:relocate": "tsx scripts/tenant-relocate.ts",
     "tenant:rotate-db-creds": "tsx scripts/tenant-rotate-db-creds.ts",
     "storage:migrate": "tsx scripts/storage-migrate.ts",

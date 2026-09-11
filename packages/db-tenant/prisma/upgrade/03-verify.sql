@@ -350,11 +350,42 @@ g AS (
               AND NOT (p.email = pg_catalog.lower(p.email::text)::citext)),
          'if this fails, every duplicate-patron check silently became case-sensitive'
   UNION ALL
-  SELECT 'G03', 'no expression index is left pointing at a relocated function',
+  -- G03 REWRITTEN IN PHASE 20b. The old form could not fail.
+  --
+  -- It asked whether any index in `lbr2` rendered the text `public.unaccent`.
+  -- Measured on a real migrated tenant, that predicate is `true` before the
+  -- rename and `true` after it, and cannot be otherwise, for three independent
+  -- reasons. It runs AFTER `ALTER SCHEMA public RENAME TO v1_archive`, and at
+  -- that moment no schema named `public` exists — `pg_get_indexdef` renders from
+  -- OIDs, so no index in any schema can emit that substring (measured: 0 indexes
+  -- database-wide render `public.` post-rename). Even before the rename the
+  -- string is not there: the hazard lives in `pg_proc.prosrc`, which `indexdef`
+  -- never renders, and the index itself is written unqualified. And
+  -- `schemaname = 'lbr2'` excludes the only schema a surviving 1.0 expression
+  -- index could be in, which is `v1_archive`.
+  --
+  -- An assertion that cannot fail is worse than an absent one: it sat in the
+  -- green list of 42 and read as coverage for a class nothing checked.
+  --
+  -- THE REAL QUESTION IS OVER pg_proc. A SQL or PL/pgSQL body is stored as TEXT
+  -- and re-resolved at RUN TIME, which is the only category a schema rename can
+  -- break — an operator class in an index is bound by OID and survives. So this
+  -- asks whether any function a human put here names `public.` in its body,
+  -- in either schema. `prosqlbody IS NULL` excludes SQL-standard bodies
+  -- (BEGIN ATOMIC), which are parsed at creation and stored by OID; the
+  -- extension-owned exclusion keeps unaccent's own internals out of it.
+  SELECT 'G03', 'no function body names a schema the rename has taken away',
          NOT EXISTS (
-           SELECT 1 FROM pg_catalog.pg_indexes
-            WHERE schemaname = 'lbr2' AND indexdef LIKE '%public.unaccent%'),
-         'an unqualified expression index takes plain READS down after the move'
+           SELECT 1
+             FROM pg_catalog.pg_proc p
+             JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname IN ('lbr2', 'v1_archive')
+              AND p.prosqlbody IS NULL
+              AND p.prosrc ~ '(^|[^A-Za-z0-9_."])public\s*\.'
+              AND NOT EXISTS (
+                SELECT 1 FROM pg_catalog.pg_depend d
+                 WHERE d.objid = p.oid AND d.deptype = 'e')),
+         'a body naming public. is re-parsed at run time and there is no public until the promotion'
 )
 SELECT id, claim, ok, detail FROM a
 UNION ALL SELECT id, claim, ok, detail FROM b

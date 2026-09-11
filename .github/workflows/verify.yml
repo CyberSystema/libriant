@@ -879,6 +879,99 @@ jobs:
           [ "$BEFORE" = "$AFTER" ] || { echo "✗ the database changed: $BEFORE -> $AFTER"; exit 1; }
           echo "✓ refused, and the database is byte-identical ($AFTER)"
 
+      # THE CUTOVER ITSELF, COMMITTED AND THEN UNDONE (2.0 phase 20b).
+      #
+      # Every step above rehearses and rolls back, which proves the copy-forward
+      # and the 42 assertions and nothing about the two statements that actually
+      # cut a library over. Those are the promotion and the six extension moves,
+      # and their failure mode is silent: an extension left in `v1_archive` makes
+      # `DROP SCHEMA v1_archive CASCADE` delete live 2.0 columns, indexes and
+      # constraints, announced as a NOTICE that ON_ERROR_STOP does not catch.
+      #
+      # So this commits on a disposable database, asserts the shape a real
+      # library would be left in, drops the archive to prove that is now safe,
+      # and then rolls the whole thing back and reads the 1.0 library out again.
+      # A separate copy from the rehearsal above, because that one has a
+      # deliberately corrupted row in it.
+      - name: Cut over for real, drop the archive, and roll back
+        run: |
+          set -euo pipefail
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control \
+            -c "CREATE DATABASE libriant_cutover TEMPLATE libriant_demo"
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control \
+            -c "ALTER DATABASE libriant_cutover SET TimeZone TO 'UTC'"
+          URL=postgresql://libriant:libriant@localhost:5432/libriant_cutover
+          pnpm tenant:seed:defaults:v2 --url "$URL"
+          pnpm tsx scripts/seed-v1-fixture.ts --url "$URL" --profile ci
+
+          # --commit alone must refuse. A cutover that happens because somebody
+          # forgot an argument is the failure this guard exists for.
+          if pnpm tsx scripts/tenant-upgrade-v2.ts --url "$URL" --slug demo --commit; then
+            echo "✗ --commit cut over without --yes"; exit 1
+          fi
+          echo "✓ --commit alone refuses"
+
+          pnpm tsx scripts/tenant-upgrade-v2.ts --url "$URL" --slug demo --commit --yes --report
+
+          q() { PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_cutover -tAc "$1"; }
+          [ "$(q "SELECT count(*) FROM information_schema.tables WHERE table_schema='v1_archive' AND table_name='books'")" = 1 ] \
+            || { echo "✗ 1.0 is not readable in v1_archive"; exit 1; }
+          [ "$(q "SELECT count(*) FROM pg_extension e JOIN pg_namespace n ON n.oid=e.extnamespace WHERE n.nspname<>'public' AND e.extname<>'plpgsql'")" = 0 ] \
+            || { echo "✗ an extension was left outside public"; exit 1; }
+          [ "$(q "SELECT count(*) FROM patrons")" = 500 ] \
+            || { echo "✗ patrons are not readable unqualified after the promotion"; exit 1; }
+          echo "✓ committed: 2.0 in public, 1.0 in v1_archive, extensions rehomed"
+
+          # The archive must now be droppable WITHOUT taking 2.0 data with it.
+          # This is the assertion the whole extension-relocation exists for, and
+          # it is checked by doing it rather than by reasoning about it.
+          q "DROP SCHEMA v1_archive CASCADE" >/dev/null
+          [ "$(q "SELECT count(*) FROM patrons WHERE email IS NOT NULL OR email IS NULL")" = 500 ] \
+            || { echo "✗ dropping the archive took patron data with it"; exit 1; }
+          [ "$(q "SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname IN ('bib_records_search_trgm','patrons_search_trgm')")" = 2 ] \
+            || { echo "✗ dropping the archive took the search indexes"; exit 1; }
+          [ "$(q "SELECT count(*) FROM pg_constraint WHERE contype='x' AND conname LIKE '%no_overlap'")" = 3 ] \
+            || { echo "✗ dropping the archive took the no-overlap constraints"; exit 1; }
+          echo "✓ the archive dropped cleanly and took nothing from 2.0"
+
+      # The rollback, on its own copy — the one above dropped its archive, and a
+      # rollback needs the archive it restores from.
+      - name: The rollback restores a working 1.0 library
+        run: |
+          set -euo pipefail
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control \
+            -c "CREATE DATABASE libriant_rollback TEMPLATE libriant_demo"
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control \
+            -c "ALTER DATABASE libriant_rollback SET TimeZone TO 'UTC'"
+          URL=postgresql://libriant:libriant@localhost:5432/libriant_rollback
+          pnpm tenant:seed:defaults:v2 --url "$URL"
+          pnpm tsx scripts/seed-v1-fixture.ts --url "$URL" --profile ci
+          pnpm tsx scripts/tenant-upgrade-v2.ts --url "$URL" --slug demo --commit --yes
+
+          # Without --yes it must refuse, like the cutover.
+          if pnpm tenant:rollback:v2 --url "$URL"; then
+            echo "✗ the rollback ran without --yes"; exit 1
+          fi
+          echo "✓ the rollback alone refuses"
+
+          pnpm tenant:rollback:v2 --url "$URL" --yes
+
+          r() { PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_rollback -tAc "$1"; }
+          COUNTS=$(r "SELECT (SELECT count(*) FROM books)||','||(SELECT count(*) FROM members)||','||(SELECT count(*) FROM loans)")
+          [ "$COUNTS" = "1000,500,800" ] || { echo "✗ the restored library is wrong: $COUNTS"; exit 1; }
+          # §6's recipe would have taken these. That is why the script exists.
+          [ "$(r "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='members' AND column_name='email'")" = 1 ] \
+            || { echo "✗ the rollback destroyed members.email"; exit 1; }
+          [ "$(r "SELECT count(*) FROM pg_extension WHERE extname <> 'plpgsql'")" = 6 ] \
+            || { echo "✗ the rollback destroyed the extensions"; exit 1; }
+          echo "✓ 1.0 restored whole: $COUNTS, with members.email and all six extensions"
+
+          # Twice must refuse, or it drops the library it just restored.
+          if pnpm tenant:rollback:v2 --url "$URL" --yes; then
+            echo "✗ a second rollback was allowed"; exit 1
+          fi
+          echo "✓ a second rollback refuses"
+
       # The Prisma schema and the migrations must still describe the same
       # database. They drift in one direction almost every time and always
       # silently: a model or field is added, `prisma generate` emits a client
