@@ -122,6 +122,21 @@ export const PERMISSIONS: readonly PermissionDescriptor[] = [
   // desk without handing over the whole balance sheet.
   def('circ.fee.waive', 'circ', 'Waive a fee, up to a limit', 'limit'),
   def('circ.fee.void', 'circ', 'Void a fee, up to a limit', 'limit'),
+  // The two the ledger added (2.0 phase 18), and they are separate from waive
+  // for the reason `FeeStatus` separates waived from cancelled: these are four
+  // different things a library does to a debt and an auditor asks which one
+  // happened first.
+  //
+  // A REFUND MOVES MONEY OUTWARD and is the only verb here that does. It carries
+  // a ceiling for the same reason waiving does — a desk can be trusted with
+  // small sums without being trusted with the balance sheet.
+  def('circ.fee.refund', 'circ', 'Refund money already taken, up to a limit', 'limit'),
+  // Writing off is giving up on collection. It is not forgiveness and it is not
+  // a correction, and a library reports the three separately.
+  def('circ.fee.write_off', 'circ', 'Write off a debt as uncollectable, up to a limit', 'limit'),
+  // The till. One key for opening and closing, because a librarian who may open
+  // a drawer and not close it leaves one open at the end of every shift.
+  def('circ.drawer.operate', 'circ', 'Open and close a cash drawer'),
   // The rules matrix and the five policies behind it (2.0 phase 13). READ is
   // separate from MANAGE because `/circulation/explain` — "why is this book due
   // on the 19th?" — is a question a librarian at the desk has to be able to
@@ -316,6 +331,7 @@ const LIBRARIAN: readonly string[] = [
   'circ.hold.expire',
   'circ.hold.fulfill',
   'circ.fee.pay',
+  'circ.drawer.operate',
   'circ.item.status',
   'circ.item.transfer',
   // Read, not manage. A librarian must be able to answer "why is this due on the
@@ -338,6 +354,8 @@ const ADMIN: readonly string[] = [
   'cat.file.delete',
   'circ.fee.waive',
   'circ.fee.void',
+  'circ.fee.refund',
+  'circ.fee.write_off',
   'circ.policy.manage',
   'patron.erase',
   'patron.merge',

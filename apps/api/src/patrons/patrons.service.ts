@@ -217,9 +217,16 @@ export class PatronsService {
     if (patron === null) throw new NotFoundException(`No patron with id ${patronId}.`);
 
     const balances = await client.$queryRaw<{ currency: string; outstanding: bigint }[]>`
-      SELECT currency, pg_catalog.sum(outstanding_cents)::bigint AS outstanding
+      -- owed_cents, NOT outstanding_cents (2.0 phase 18). The two differ for
+      -- exactly one row: a CANCELLED charge is closed without its settlement
+      -- counters moving, so outstanding_cents stays positive on a debt nobody
+      -- owes. This query and circulation-state.ts's checkout gate used to filter
+      -- differently -- outstanding_cents > 0 here, closed_at IS NULL there --
+      -- and agreed only because nothing wrote fees yet. From the first void they
+      -- would have shown a patron two different balances at one desk.
+      SELECT currency, pg_catalog.sum(owed_cents)::bigint AS outstanding
         FROM lbr2.fees
-       WHERE patron_id = ${patronId} AND outstanding_cents > 0
+       WHERE patron_id = ${patronId} AND owed_cents > 0
        GROUP BY currency
        ORDER BY currency`;
 

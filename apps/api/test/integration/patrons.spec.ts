@@ -427,9 +427,19 @@ describe('balances sum PER CURRENCY', () => {
         .expect(201)
     ).body.id as string;
 
-    // Phase 18 owns the ledger and nothing writes `lbr2.fees` yet, so the rows
-    // are seeded directly. What phase 14 owes is the SHAPE, and it is the shape
-    // phase 18 inherits.
+    // The rows are seeded directly rather than charged through FeesService,
+    // because what phase 14 asserts is the SHAPE of the answer and not the
+    // ledger behind it. Phase 18 gave `account_id` and `fee_type_id` real
+    // foreign keys, so the seed now has to name real rows — an account per
+    // currency, which is what `patron_accounts_one_per_currency` requires — and
+    // `feetype_overdue`, which the phase-18 migration seeds into every tenant.
+    for (const cur of ['EUR', 'GBP', 'USD']) {
+      await sql(
+        `INSERT INTO lbr2.patron_accounts (id, patron_id, currency, opened_at)
+         VALUES ($1, $2, $3, pg_catalog.now())`,
+        [`acc-${tag}-${cur}`, patron, cur],
+      );
+    }
     for (const [i, [cur, cents]] of [
       ['EUR', 674],
       ['EUR', 100],
@@ -440,8 +450,8 @@ describe('balances sum PER CURRENCY', () => {
       await sql(
         `INSERT INTO lbr2.fees (id, account_id, patron_id, fee_type_id, currency, branch_id,
                                 amount_cents, reason, created_at)
-         VALUES ($1, 'acc', $2, 'ft', $3, 'br', $4, 'overdue', pg_catalog.now())`,
-        [`fee-${tag}-${i}`, patron, cur, cents],
+         VALUES ($1, $2, $3, 'feetype_overdue', $4, 'br', $5, 'overdue', pg_catalog.now())`,
+        [`fee-${tag}-${i}`, `acc-${tag}-${cur}`, patron, cur, cents],
       );
     }
 
@@ -482,11 +492,16 @@ describe('balances sum PER CURRENCY', () => {
       ),
     );
     await sql(
+      `INSERT INTO lbr2.patron_accounts (id, patron_id, currency, opened_at)
+       VALUES ($1, $2, 'EUR', pg_catalog.now()), ($3, $4, 'GBP', pg_catalog.now())`,
+      [`fmacc-${tag}-1`, loser, `fmacc-${tag}-2`, survivor],
+    );
+    await sql(
       `INSERT INTO lbr2.fees (id, account_id, patron_id, fee_type_id, currency, branch_id,
                               amount_cents, reason, created_at)
-       VALUES ($1,'acc',$2,'ft','EUR','br',500,'a',pg_catalog.now()),
-              ($3,'acc',$4,'ft','GBP','br',300,'b',pg_catalog.now())`,
-      [`fm-${tag}-1`, loser, `fm-${tag}-2`, survivor],
+       VALUES ($1,$2,$3,'feetype_overdue','EUR','br',500,'a',pg_catalog.now()),
+              ($4,$5,$6,'feetype_overdue','GBP','br',300,'b',pg_catalog.now())`,
+      [`fm-${tag}-1`, `fmacc-${tag}-1`, loser, `fm-${tag}-2`, `fmacc-${tag}-2`, survivor],
     );
 
     await api()

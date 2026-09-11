@@ -334,6 +334,14 @@ export const METRICS = [
     why: 'Zero is the normal and correct value — a month passes once a month, so this is non-zero on about one tick in thirty. A threshold on it would page on a working system, and the failure it would supposedly catch (the window running out) is what libriant_partition_headroom_months alerts on, from the other end and with time to act.',
   }),
   defineMetric({
+    name: 'libriant_circ_ledger_drift_total',
+    help: 'Open ledger discrepancies: transactions that do not balance, fees whose counters disagree with their allocations, and accounts whose balance disagrees with the fees behind them.',
+    type: 'gauge',
+    labels: ['identity'],
+    source: 'worker',
+    alert: true,
+  }),
+  defineMetric({
     name: 'libriant_hold_transit_overdue_total',
     help: 'Copies sent to a branch FOR A READER that have passed their expected arrival and not been received.',
     type: 'gauge',

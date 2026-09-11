@@ -55,11 +55,11 @@ model Fee {
   bookingId String? @map("booking_id")
   branchId  String  @map("branch_id")
 
-  amountCents      BigInt @map("amount_cents")
-  taxCents         BigInt @default(0) @map("tax_cents")
-  paidCents        BigInt @default(0) @map("paid_cents")
-  waivedCents      BigInt @default(0) @map("waived_cents")
-  writtenOffCents  BigInt @default(0) @map("written_off_cents")
+  amountCents     BigInt @map("amount_cents")
+  taxCents        BigInt @default(0) @map("tax_cents")
+  paidCents       BigInt @default(0) @map("paid_cents")
+  waivedCents     BigInt @default(0) @map("waived_cents")
+  writtenOffCents BigInt @default(0) @map("written_off_cents")
 
   status FeeStatus @default(outstanding)
 
@@ -74,7 +74,344 @@ model Fee {
   createdAt DateTime  @db.Timestamptz(3) @map("created_at")
   closedAt  DateTime? @db.Timestamptz(3) @map("closed_at")
 
+  /// Phase 18 gave `accountId` and `feeTypeId` the foreign keys this docblock
+  /// promised, and the relations that go with them.
+  account PatronAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  feeType FeeType       @relation(fields: [feeTypeId], references: [id], onDelete: Restrict)
+
+  entries     AccountEntry[]
+  allocations FeeAllocation[]
+
   @@index([patronId, status])
   @@index([loanId])
   @@map("fees")
+}
+
+// ---------------------------------------------------------------------------
+// The ledger (2.0 phase 18)
+// ---------------------------------------------------------------------------
+//
+// `fees` above is the SUBJECT — what a borrower owes. Everything below is the
+// RECORD of what happened to it, and the two are reconciled nightly rather than
+// trusted. Read the migration header (20260916090000_fees_ledger) for the six
+// decisions; the docblocks here carry only what a reader of the datamodel needs.
+
+/// What a library charges for, and therefore which revenue label it lands on.
+///
+/// INVENTED — §3 names the table and gives no DDL.
+///
+/// NO AMOUNT COLUMN. An overdue amount comes from the resolved policy, a
+/// replacement amount from the copy, a manual amount from the librarian typing
+/// it. A `default_amount_cents` here would be a fourth source of truth for a
+/// number three other places already own.
+model FeeType {
+  id   String @id @default(cuid())
+  code String
+  name String
+
+  category FeeCategory
+
+  /// The one thing about the chart of accounts a library configures. A CHECK in
+  /// the migration holds it to the three revenue labels.
+  revenueAccount LedgerAccount @map("revenue_account")
+
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+  createdAt  DateTime  @db.Timestamptz(3) @map("created_at")
+
+  fees Fee[]
+
+  @@map("fee_types")
+}
+
+/// A borrower's account, ONE PER CURRENCY.
+///
+/// Not one per patron. §6 requires that balances sum PER CURRENCY and the phase
+/// 14 suite already asserts the currency-blind answer as a negative: a patron
+/// with EUR 774, GBP 640 and USD 710 has three balances, and 2124 is a number of
+/// nothing.
+///
+/// NO `balance_cents`. A stored balance is a fourth representation of a number
+/// `fees` already holds and the ledger already proves. The balance is I3.
+model PatronAccount {
+  id       String @id @default(cuid())
+  patronId String @map("patron_id")
+  currency String @db.Char(3)
+
+  openedAt DateTime @db.Timestamptz(3) @map("opened_at")
+
+  patron Patron @relation(fields: [patronId], references: [id], onDelete: Restrict)
+
+  fees         Fee[]
+  transactions AccountTransaction[]
+  entries      AccountEntry[]
+
+  @@unique([patronId, currency], map: "patron_accounts_one_per_currency")
+  @@map("patron_accounts")
+}
+
+/// How money physically arrived.
+model PaymentMethod {
+  id   String @id @default(cuid())
+  code String
+  name String
+
+  kind PaymentMethodKind
+
+  /// Which asset account the money lands in. Cash in the till, a card in the
+  /// acquirer's clearing balance, a transfer in the bank.
+  settlementAccount LedgerAccount @map("settlement_account")
+  requiresDrawer    Boolean       @default(false) @map("requires_drawer")
+
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+  createdAt  DateTime  @db.Timestamptz(3) @map("created_at")
+
+  transactions AccountTransaction[]
+
+  @@map("payment_methods")
+}
+
+/// A desk. THE DRAWER'S HALF ONLY.
+///
+/// Its BASELINE-SCOPE entry says a service point "earns its columns from the
+/// CASH DRAWER (§6 phase 18) and from the branch/desk switcher (§6 phase 23)".
+/// This is the first half: identity, branch, name, and nothing a switcher would
+/// need. `loans.checkout_service_point_id` stays NULL until phase 23 has a
+/// caller for it.
+model ServicePoint {
+  id       String @id @default(cuid())
+  branchId String @map("branch_id")
+  code     String
+  name     String
+
+  archivedAt DateTime? @db.Timestamptz(3) @map("archived_at")
+  createdAt  DateTime  @db.Timestamptz(3) @map("created_at")
+
+  branch         Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  drawerSessions CashDrawerSession[]
+
+  @@map("service_points")
+}
+
+/// A till, from opening float to counted close.
+///
+/// `expectedCents` and `varianceCents` are SNAPSHOTS taken at close, not
+/// generated columns. That is the acceptance criterion: the expected total is
+/// what the journal said AT THE MOMENT THE DRAWER WAS COUNTED. A generated
+/// column would re-answer the question every time somebody looked, so a
+/// late-posted transaction would rewrite history and a variance that had been
+/// investigated would quietly disappear.
+///
+/// A DRAWER CLOSE WITH A VARIANCE RECORDS IT. It never adjusts the till: the
+/// journal is what happened and the count is what is there, and the gap between
+/// them is the finding. `cash_over_short` is where it posts.
+///
+/// No status enum — a drawer is open when `closedAt` is NULL.
+model CashDrawerSession {
+  id             String @id @default(cuid())
+  servicePointId String @map("service_point_id")
+  branchId       String @map("branch_id")
+  currency       String @db.Char(3)
+
+  openedAt          DateTime @db.Timestamptz(3) @map("opened_at")
+  openedByUserId    String?  @map("opened_by_user_id")
+  openingFloatCents BigInt   @default(0) @map("opening_float_cents")
+
+  closedAt       DateTime? @db.Timestamptz(3) @map("closed_at")
+  closedByUserId String?   @map("closed_by_user_id")
+  countedCents   BigInt?   @map("counted_cents")
+  expectedCents  BigInt?   @map("expected_cents")
+  varianceCents  BigInt?   @map("variance_cents")
+  closeNote      String?   @map("close_note")
+
+  servicePoint ServicePoint         @relation(fields: [servicePointId], references: [id], onDelete: Restrict)
+  branch       Branch               @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  transactions AccountTransaction[]
+
+  @@index([branchId, openedAt], map: "cash_drawer_branch_opened_idx")
+  @@map("cash_drawer_sessions")
+}
+
+/// A journal header. APPEND-ONLY — a trigger refuses UPDATE and DELETE.
+///
+/// `totalCents` is a convenience for reading and for receipts. It cannot become
+/// a third opinion: the I1 trigger asserts the legs against it.
+model AccountTransaction {
+  id       String       @id @default(cuid())
+  kind     LedgerTxKind
+  currency String       @db.Char(3)
+
+  totalCents BigInt @map("total_cents")
+
+  accountId       String? @map("account_id")
+  branchId        String  @map("branch_id")
+  drawerSessionId String? @map("drawer_session_id")
+  paymentMethodId String? @map("payment_method_id")
+
+  /// A correction names what it corrects. UNIQUE in the migration: two clerks
+  /// who both decide a payment was a mistake would otherwise credit the patron
+  /// twice, and every identity would still hold because each reversal balances.
+  reversesTransactionId String? @unique(map: "account_transactions_one_reversal_per_original") @map("reverses_transaction_id")
+
+  actorUserId    String?     @map("actor_user_id")
+  source         EventSource @default(desk)
+  deviceId       String?     @map("device_id")
+  /// The phase-16 replay key. A retried payment must not charge twice.
+  clientChangeId String?     @unique(map: "account_transactions_client_change_unique") @db.Uuid @map("client_change_id")
+
+  note      String?
+  createdAt DateTime @db.Timestamptz(3) @map("created_at")
+
+  account       PatronAccount?      @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  branch        Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  drawerSession CashDrawerSession?  @relation(fields: [drawerSessionId], references: [id], onDelete: Restrict)
+  paymentMethod PaymentMethod?      @relation(fields: [paymentMethodId], references: [id], onDelete: Restrict)
+  reverses      AccountTransaction? @relation("TransactionReversal", fields: [reversesTransactionId], references: [id], onDelete: Restrict)
+  reversedBy    AccountTransaction? @relation("TransactionReversal")
+
+  entries     AccountEntry[]
+  allocations FeeAllocation[]
+  receipt     Receipt?
+
+  @@index([accountId, createdAt], map: "account_transactions_account_idx")
+  @@map("account_transactions")
+}
+
+/// One leg. APPEND-ONLY.
+///
+/// TWO NON-NEGATIVE COLUMNS, exactly one positive — an XOR in the migration, not
+/// a convention a reviewer checks. §3 states the identity as
+/// `SUM(debit) = SUM(credit)`, a trial balance prints two columns, and a
+/// zero-amount leg becomes unrepresentable, which one signed column cannot do
+/// because 0 is a legal signed value and a meaningless leg.
+///
+/// A REVERSAL SWAPS THE SIDES. No negative number ever appears here.
+model AccountEntry {
+  id            String        @id @default(cuid())
+  transactionId String        @map("transaction_id")
+  account       LedgerAccount
+
+  /// Set exactly when the account is a patron subsidiary one — a CHECK enforces
+  /// the iff. This is what makes I3 a per-account question.
+  accountId String? @map("account_id")
+
+  currency    String @db.Char(3)
+  debitCents  BigInt @default(0) @map("debit_cents")
+  creditCents BigInt @default(0) @map("credit_cents")
+
+  /// Which charge this leg concerns, when it concerns one. A cash leg belongs to
+  /// the till, not to a fee.
+  feeId String? @map("fee_id")
+
+  createdAt DateTime @db.Timestamptz(3) @map("created_at")
+
+  transaction   AccountTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  patronAccount PatronAccount?     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  fee           Fee?               @relation(fields: [feeId], references: [id], onDelete: Restrict)
+
+  @@index([transactionId], map: "account_entries_transaction_idx")
+  @@map("account_entries")
+}
+
+/// What one transaction did to one fee. APPEND-ONLY, and THE ONLY SIGNED AMOUNT.
+///
+/// The four kinds are exactly the three settlement counters on `fees` plus the
+/// one that can be negative — the two vocabularies are the same vocabulary on
+/// purpose, because I2 asserts that the sum of allocations of each kind equals
+/// the counter of that name.
+///
+/// A refund is a NEGATIVE `payment` allocation rather than a fourth counter, so
+/// `paidCents` stays a single sum that goes up and down. `refund` exists as a
+/// kind so a report can tell a net zero from EUR 10 paid and EUR 10 refunded.
+model FeeAllocation {
+  id            String            @id @default(cuid())
+  transactionId String            @map("transaction_id")
+  feeId         String            @map("fee_id")
+  kind          FeeAllocationKind
+  currency      String            @db.Char(3)
+
+  amountCents BigInt @map("amount_cents")
+
+  createdAt DateTime @db.Timestamptz(3) @map("created_at")
+
+  transaction AccountTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  fee         Fee                @relation(fields: [feeId], references: [id], onDelete: Restrict)
+
+  @@index([feeId, kind], map: "fee_allocations_fee_idx")
+  @@index([transactionId], map: "fee_allocations_transaction_idx")
+  @@map("fee_allocations")
+}
+
+/// Rendered once, stored as bytes, reprinted verbatim. APPEND-ONLY.
+///
+/// The bytes ARE the record. A reprint re-serves this column; it does not
+/// re-render, because re-rendering picks up today's branding, today's locale
+/// file and today's policy text, and the acceptance criterion is that a reprint
+/// is BYTE-IDENTICAL. `renderedSha256` lets a reprint prove it.
+model Receipt {
+  id            String @id @default(cuid())
+  number        String @unique(map: "receipts_number_unique")
+  transactionId String @map("transaction_id")
+  branchId      String @map("branch_id")
+  currency      String @db.Char(3)
+  totalCents    BigInt @map("total_cents")
+
+  contentType    String   @map("content_type")
+  locale         String
+  renderedBytes  Bytes    @map("rendered_bytes")
+  renderedSha256 Bytes    @map("rendered_sha256")
+  renderedAt     DateTime @db.Timestamptz(3) @map("rendered_at")
+
+  transaction AccountTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  branch      Branch             @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@unique([transactionId], map: "receipts_one_per_transaction")
+  @@map("receipts")
+}
+
+/// The receipt book, per branch per year.
+///
+/// The one mutable table in the module. A sequence would be simpler and would
+/// give the whole library one run of numbers, which is wrong the moment two
+/// branches print at once and a gap in one branch's book has to be explained.
+model ReceiptNumberCounter {
+  branchId  String @map("branch_id")
+  year      Int
+  nextValue BigInt @default(1) @map("next_value")
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@id([branchId, year])
+  @@map("receipt_number_counters")
+}
+
+/// What the nightly reconciler FOUND. It reports; it never repairs.
+///
+/// §8 risk 7: a self-healing reconciler hides the bug that caused the drift. So
+/// a row here is a question for a human, and `resolvedAt` needs a note beside it
+/// — a CHECK enforces the pair, because closing a row with no explanation is how
+/// a drift that was never understood becomes a drift that was never recorded.
+///
+/// NO FOREIGN KEY on `subjectId`, deliberately. A report about a row that should
+/// not exist must stay readable; an FK would make the reconciler unable to
+/// record the most interesting failure it can find.
+///
+/// `differenceCents` is a GENERATED column and is therefore absent from this
+/// model — it lives in the migration SQL and is allowlisted in
+/// `check:schema-drift`, the same way `fees.outstanding_cents` is.
+model LedgerDiscrepancy {
+  id        String                @id @default(cuid())
+  kind      LedgerDiscrepancyKind
+  subjectId String                @map("subject_id")
+  currency  String                @db.Char(3)
+
+  expectedCents BigInt @map("expected_cents")
+  actualCents   BigInt @map("actual_cents")
+
+  detail Json @default("{}") @db.JsonB
+
+  detectedAt     DateTime  @db.Timestamptz(3) @map("detected_at")
+  resolvedAt     DateTime? @db.Timestamptz(3) @map("resolved_at")
+  resolutionNote String?   @map("resolution_note")
+
+  @@map("ledger_discrepancies")
 }

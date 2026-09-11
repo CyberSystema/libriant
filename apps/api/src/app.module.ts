@@ -25,6 +25,7 @@ import { PolicyModule } from './policy/policy.module.js';
 import { CirculationModule } from './circulation/circulation.module.js';
 import { ItemsModule } from './items/items.module.js';
 import { HoldsModule } from './holds/holds.module.js';
+import { FeesModule } from './fees/fees.module.js';
 import { PatronsModule } from './patrons/patrons.module.js';
 import { HelpModule } from './help/help.module.js';
 import { ImportModule } from './import/import.module.js';
@@ -92,6 +93,7 @@ import { ApplicationsModule } from './applications/applications.module.js';
     ItemsModule,
     CirculationModule,
     HoldsModule,
+    FeesModule,
     ReservationsModule,
     TenantSettingsModule,
     AuditModule,

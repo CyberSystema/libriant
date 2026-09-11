@@ -38,7 +38,17 @@ const TABLES: Readonly<Record<string, readonly string[]>> = {
   'v2-org': ['iana_timezones', 'branches', 'shelving_locations'],
   'v2-holdings-items': ['holdings_records', 'item_types', 'material_types', 'items'],
   'v2-circulation': ['patrons', 'loans'],
-  'v2-fees': ['fees'],
+  'v2-fees': [
+    'fees',
+    'patron_accounts',
+    'account_transactions',
+    'account_entries',
+    'fee_allocations',
+    'cash_drawer_sessions',
+    'receipts',
+    'receipt_number_counters',
+    'ledger_discrepancies',
+  ],
   'v2-platform': ['change_events', 'change_consumers', 'sync_client_changes', 'audit_log'],
   'v2-bib-projection': ['bib_records', 'bib_identifiers', 'bib_classifications', 'work_clusters'],
   'v2-patrons': [
@@ -144,7 +154,20 @@ async function seedMinimalChain(): Promise<void> {
      -- relied on it being one. (No backticks in here -- the whole statement is a
      -- JS template literal, and one would end it mid-comment.)
      INSERT INTO patrons (id, full_name, sort_name, search_text, updated_at)
-     VALUES ('smk_p', 'Smoke Patron', 'smoke patron', 'smoke patron', pg_catalog.now());`,
+     VALUES ('smk_p', 'Smoke Patron', 'smoke patron', 'smoke patron', pg_catalog.now());
+     -- Phase 18 gave fees.account_id and fees.fee_type_id the foreign keys the
+     -- phase-9 model docblock promised them, so a fee can no longer be written
+     -- against the strings acc and ft. This seed is what noticed, which is the
+     -- smoke suite doing its job: a column that stops being bare text breaks
+     -- every fixture that relied on it being bare text.
+     --
+     -- fee_types is NOT seeded here. The migration ships six system rows and
+     -- feetype_overdue is one of them; seeding a seventh here would hide a
+     -- migration that had stopped shipping them.
+     INSERT INTO patron_accounts (id, patron_id, currency, opened_at)
+     VALUES ('smk_acc', 'smk_p', 'EUR', pg_catalog.now());
+     INSERT INTO service_points (id, branch_id, code, name, created_at)
+     VALUES ('smk_sp', 'smk_b', 'DESK', 'Grafeio', pg_catalog.now());`,
   );
 }
 
@@ -166,7 +189,10 @@ export async function teardown(): Promise<void> {
               patron_number_counters, patron_cards, patron_identifiers, patron_addresses,
               patron_relationships, patron_blocks, patron_messages, patron_notes, patron_merges,
               item_status_reasons, item_status_history, item_transfers, item_notes,
-              loan_events, circulation_statistics, holds, hold_groups
+              loan_events, circulation_statistics, holds, hold_groups,
+              patron_accounts, account_transactions, account_entries, fee_allocations,
+              service_points, cash_drawer_sessions, receipts, receipt_number_counters,
+              ledger_discrepancies
      RESTART IDENTITY CASCADE`,
   );
   // The two singletons are NOT truncated. They are seeded by the migration
@@ -338,7 +364,7 @@ export const v2Modules: SmokeModule[] = [
         url(),
         `INSERT INTO fees (id, account_id, patron_id, fee_type_id, currency, branch_id,
                            amount_cents, reason, created_at)
-         VALUES ('f1', 'acc', 'smk_p', 'ft', 'EUR', 'smk_b', 500, 'overdue', pg_catalog.now())`,
+         VALUES ('f1', 'smk_acc', 'smk_p', 'feetype_overdue', 'EUR', 'smk_b', 500, 'overdue', pg_catalog.now())`,
       );
       const balance = async () =>
         Number(
@@ -364,7 +390,7 @@ export const v2Modules: SmokeModule[] = [
         url(),
         `INSERT INTO fees (id, account_id, patron_id, fee_type_id, currency, branch_id,
                            amount_cents, reason, created_at)
-         VALUES ('f0', 'acc', 'smk_p', 'ft', 'EUR', 'smk_b', 0, 'nothing', pg_catalog.now())`,
+         VALUES ('f0', 'smk_acc', 'smk_p', 'feetype_overdue', 'EUR', 'smk_b', 0, 'nothing', pg_catalog.now())`,
         '23514',
         'a fee of zero is not a fee',
       );

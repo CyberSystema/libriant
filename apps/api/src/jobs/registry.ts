@@ -18,6 +18,7 @@ import {
 } from './circulation-statistics-rollup.job.js';
 import { HOLD_EXPIRY_JOB, sweepHoldExpiry } from './hold-expiry.job.js';
 import { HOLD_TRANSIT_TIMEOUT_JOB, checkHoldTransitTimeouts } from './hold-transit-timeout.job.js';
+import { LEDGER_RECONCILE_JOB, reconcileLedger } from './ledger-reconcile.job.js';
 import type { ScheduledJob } from './jobs.types.js';
 
 /**
@@ -225,5 +226,24 @@ export const SCHEDULED_JOBS: ScheduledJob[] = [
     name: HOLD_TRANSIT_TIMEOUT_JOB,
     intervalMs: 24 * 60 * 60_000,
     handler: () => checkHoldTransitTimeouts(),
+  },
+  {
+    /**
+     * Is the ledger still true? (2.0 phase 18.)
+     *
+     * DAILY, and the interval is the interesting part. More often would not
+     * find anything sooner in any useful sense — the three identities are
+     * whole-table aggregates, and a drift that appears at 11:00 is a drift
+     * somebody has to investigate during working hours either way. Less often
+     * would let a bug run for days against a number a library balances its
+     * books on.
+     *
+     * It REPORTS. §8 risk 7: a self-healing reconciler hides the bug that
+     * caused the drift, so this job's only writes are to
+     * `ledger_discrepancies` and its only effect on the ledger is none.
+     */
+    name: LEDGER_RECONCILE_JOB,
+    intervalMs: 24 * 60 * 60_000,
+    handler: () => reconcileLedger(),
   },
 ];

@@ -110,6 +110,20 @@ export const LOCK_DOMAIN_RANK = {
   patron: 1,
   bib: 2,
   item: 3,
+  /**
+   * A cash drawer (2.0 phase 18). LAST, and the ordering is settled by which
+   * paths can meet rather than by importance.
+   *
+   * A payment holds `patron:` (whose account the money settles) and `drawer:`
+   * (which till it went into). A checkin holds `patron:`, `bib:` and `item:`,
+   * and never a drawer — phase 18 charges an overdue at the desk but does not
+   * take the money in the same transaction, because a fine a reader disputes
+   * must not be able to abort the return of the book. So no path holds `item:`
+   * and `drawer:` together today, and putting the drawer after item costs
+   * nothing while keeping the rank a total order that phase 21's till-side
+   * refund can extend without renumbering.
+   */
+  drawer: 4,
 } as const;
 
 export type LockDomain = keyof typeof LOCK_DOMAIN_RANK;

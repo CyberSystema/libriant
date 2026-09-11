@@ -130,6 +130,13 @@ model Branch {
   loanEvents        LoanEvent[]
   holdPickups       Hold[]
 
+  /// The fee ledger (2.0 phase 18).
+  servicePoints       ServicePoint[]
+  drawerSessions      CashDrawerSession[]
+  accountTransactions AccountTransaction[]
+  receipts            Receipt[]
+  receiptCounters     ReceiptNumberCounter[]
+
   @@index([parentBranchId])
   @@map("branches")
 }

@@ -619,3 +619,155 @@ enum HoldLevel {
 
   @@map("hold_level")
 }
+
+/// Where a leg of a journal lands. THE CHART OF ACCOUNTS, and it is an enum
+/// rather than a table.
+///
+/// INVENTED. §3 names the double-entry trio and gives no DDL, so what an
+/// "account" is was phase 18's to settle. A configurable `ledger_accounts` table
+/// is the obvious alternative and is refused: a tenant that can delete an
+/// account is a fee that posts nowhere, every `postJournal` becomes a lookup,
+/// and every migration needs a seed. As an enum, crediting an account that does
+/// not exist is a type error at the call site and a `22P02` at the database.
+/// What a library genuinely configures is which of the three revenue labels a
+/// `fee_type` posts to — one column, three legal values, one CHECK.
+///
+/// `refunds_payable` IS DELIBERATELY ABSENT. A refunds-payable liability earns
+/// its place only when the library owes a refund across a boundary it does not
+/// control — when the ILS initiates a payout and must carry the obligation until
+/// a processor settles. Phase 18 initiates no payout: a card refund at a Greek
+/// desk is made on a standalone terminal and OBSERVED, so the credit lands on
+/// `card_clearing` in the same instant the receivable is debited and there is no
+/// float to carry. The account would never hold a non-zero balance. It lands
+/// with `fee_payment_intents` in phase 33, and `ALTER TYPE … ADD VALUE` is legal
+/// then — the manifest entry for that table names it.
+///
+/// `tax_payable` exists and NOTHING POSTS TO IT YET. Phase 18 charges with
+/// `tax_cents = 0`. The label is here so the leg set does not change shape when
+/// the first library that charges VAT arrives; see the `fees` docblock.
+enum LedgerAccount {
+  /// ASSET. What a borrower owes. The subsidiary ledger — every entry on this
+  /// account carries an `account_id`, and I3 reconciles it against `fees`.
+  patron_receivable
+  /// LIABILITY. What a borrower has paid that is not yet applied to a charge —
+  /// an overpayment. Also carries an `account_id`.
+  patron_credit
+  /// ASSET. The till. Its balance for one drawer session is what the librarian
+  /// counts at closing, and the count is an INDEPENDENT check on this number.
+  cash_on_hand
+  /// ASSET. The safe, or the library's bank account.
+  bank
+  /// ASSET. Money taken on a terminal and not yet settled by the acquirer.
+  card_clearing
+  /// REVENUE. Overdue fines.
+  fine_revenue
+  /// REVENUE. Replacement and processing charges for a lost copy.
+  replacement_revenue
+  /// REVENUE. Everything a library sells that is not a fine or a replacement —
+  /// printing, a hold that was not collected, a manual charge.
+  service_revenue
+  /// LIABILITY. VAT collected on behalf of the state. Unused in phase 18.
+  tax_payable
+  /// EXPENSE. Debt the library CHOSE to forgive. Separate from bad debt because
+  /// a waiver is a decision somebody made and a write-off is a decision nobody
+  /// made — and the first question an auditor asks is which of the two happened.
+  waiver_expense
+  /// EXPENSE. Debt the library gave up collecting.
+  bad_debt_expense
+  /// EXPENSE. A till that did not count. Never an adjustment to cash.
+  cash_over_short
+
+  @@map("ledger_account")
+}
+
+/// Why a journal was posted.
+///
+/// INVENTED. The kind is not derivable from the legs — a payment and a refund
+/// touch the same two accounts in opposite directions, and so do a charge and a
+/// cancellation — so it is recorded rather than inferred.
+enum LedgerTxKind {
+  /// A fee was raised. Debits the receivable, credits revenue.
+  charge
+  /// Money arrived. Debits a settlement account, credits the receivable.
+  payment
+  /// A debt was forgiven. Debits `waiver_expense`, credits the receivable.
+  waiver
+  /// A debt was abandoned. Debits `bad_debt_expense`, credits the receivable.
+  write_off
+  /// Money went back. The mirror of a payment.
+  refund
+  /// A charge that should never have been raised is un-charged. Debits revenue,
+  /// credits the receivable. NOT a write-off — see `FeeStatus`.
+  cancellation
+  /// A correction. Its legs are another transaction's with the sides swapped,
+  /// and `reverses_transaction_id` names the original.
+  reversal
+  /// A drawer that did not count. Recorded, never used to adjust the till.
+  cash_over_short
+
+  @@map("ledger_tx_kind")
+}
+
+/// What a movement against one fee DID to it.
+///
+/// INVENTED. These four are exactly the three settlement counters on `fees` plus
+/// the one that can be negative, which is the whole point: I2 asserts that the
+/// sum of allocations of each kind equals the counter of that name, so the two
+/// vocabularies are the same vocabulary on purpose.
+///
+/// A refund is a NEGATIVE `payment` allocation rather than a fourth counter, so
+/// `paid_cents` stays a single sum that goes up and down. `refund` is here as a
+/// kind so a report can tell a €0 net from a €10 paid and a €10 refunded.
+enum FeeAllocationKind {
+  payment
+  waiver
+  write_off
+  refund
+
+  @@map("fee_allocation_kind")
+}
+
+/// What a library is charging FOR, and therefore which revenue label it lands on.
+enum FeeCategory {
+  overdue
+  replacement
+  processing
+  hold
+  printing
+  manual
+
+  @@map("fee_category")
+}
+
+/// How money physically arrived.
+///
+/// The KIND is what the software reasons about; the `payment_methods` row is
+/// what the library names it. A library that takes cash at two desks has one
+/// kind and may have two rows.
+enum PaymentMethodKind {
+  cash
+  card
+  bank_transfer
+  cheque
+  online
+  other
+
+  @@map("payment_method_kind")
+}
+
+/// Which identity the nightly reconciler found broken.
+///
+/// One value per identity, because the first thing an operator needs to know is
+/// WHICH of the three failed — they have different causes and different repairs.
+enum LedgerDiscrepancyKind {
+  /// I1. A transaction whose legs do not sum. The balance trigger makes this
+  /// unwritable, so a row here means the trigger was dropped, bypassed by a
+  /// superuser, or the data arrived from somewhere that is not this application.
+  transaction_unbalanced
+  /// I2. A fee whose allocations disagree with its own counters.
+  fee_allocation_mismatch
+  /// I3. An account whose receivable balance disagrees with the fees behind it.
+  account_balance_mismatch
+
+  @@map("ledger_discrepancy_kind")
+}

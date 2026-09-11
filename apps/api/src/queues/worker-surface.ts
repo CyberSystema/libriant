@@ -6,6 +6,7 @@ import {
   PARTITION_MAINTENANCE_JOB,
 } from '../jobs/partition-maintenance.job.js';
 import { HOLD_EXPIRY_COUNTS, HOLD_EXPIRY_JOB } from '../jobs/hold-expiry.job.js';
+import { LEDGER_RECONCILE_COUNTS, LEDGER_RECONCILE_JOB } from '../jobs/ledger-reconcile.job.js';
 import {
   HOLD_TRANSIT_TIMEOUT_COUNTS,
   HOLD_TRANSIT_TIMEOUT_JOB,
@@ -180,6 +181,7 @@ export function renderWorkerMetrics(input: {
     ),
     ...renderPartitionMetrics(jobResults(states)),
     ...renderHoldMetrics(jobResults(states)),
+    ...renderLedgerMetrics(jobResults(states)),
     ...renderCatalogProjectionMetrics(jobResults(states)),
   ];
   return lines.join('\n');
@@ -261,6 +263,38 @@ function renderPartitionMetrics(results: Record<string, unknown>): string[] {
  * is alerted, and a gauge that read 0 on a worker that has not swept yet would
  * be an assertion that no crate is late — made by a process that has not looked.
  */
+/**
+ * Ledger drift, one series per identity (2.0 phase 18).
+ *
+ * THREE LABELS, ONE METRIC, because the three identities fail for different
+ * reasons and need different repairs — an operator's first question is which of
+ * them broke — while the alert only ever asks whether any of them is non-zero.
+ *
+ * ABSENT rather than zero before the first run, for the reason the hold block
+ * below states: this gauge is alerted, and a 0 emitted by a worker that has not
+ * reconciled yet is an assertion that the library's books balance, made by a
+ * process that has not looked.
+ */
+function renderLedgerMetrics(results: Record<string, unknown>): string[] {
+  const run = results[LEDGER_RECONCILE_JOB] as { counts?: Record<string, number> } | undefined;
+  const counts = run?.counts;
+  // The HELP and TYPE lines are emitted whether or not the job has run; only
+  // the SERIES is absent before the first reconciliation. The worker-surface
+  // suite asserts completeness totally — every metric the registry declares for
+  // this process must appear in the body — and an early return here would have
+  // made this metric declared, alerted and invisible.
+  const at = (key: string, identity: string): string[] =>
+    counts !== undefined && typeof counts[key] === 'number'
+      ? [metricLine('libriant_circ_ledger_drift_total', counts[key], { identity })]
+      : [];
+  return [
+    ...metricHeader('libriant_circ_ledger_drift_total'),
+    ...at(LEDGER_RECONCILE_COUNTS.unbalanced, 'transaction_unbalanced'),
+    ...at(LEDGER_RECONCILE_COUNTS.feeCounterDrift, 'fee_allocation_mismatch'),
+    ...at(LEDGER_RECONCILE_COUNTS.accountBalanceDrift, 'account_balance_mismatch'),
+  ];
+}
+
 function renderHoldMetrics(results: Record<string, unknown>): string[] {
   const expiry = results[HOLD_EXPIRY_JOB] as { counts?: Record<string, number> } | undefined;
   const transit = results[HOLD_TRANSIT_TIMEOUT_JOB] as

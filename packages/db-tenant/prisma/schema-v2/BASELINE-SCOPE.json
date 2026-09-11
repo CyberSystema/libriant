@@ -35,16 +35,16 @@
       "reason": "Owned by the phase that first needs it; see §6."
     },
     "account_entries": {
-      "status": "deferred",
-      "phase": "9d/18",
+      "status": "created",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "INVENTED. The legs. Two non-negative columns with exactly one positive (an XOR, not a convention): §3 states the identity as SUM(debit)=SUM(credit), a trial balance prints two columns, and a zero-amount leg becomes unrepresentable, which one signed column cannot do. A statement-level trigger makes \"every transaction balances\" a database law rather than a nightly report.",
+      "basis": "invented"
     },
     "account_transactions": {
-      "status": "deferred",
-      "phase": "9d/18",
+      "status": "created",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "INVENTED. The journal header, append-only by trigger. `reverses_transaction_id` is UNIQUE so a payment cannot be reversed twice — two clerks who both decide it was a mistake would otherwise credit the patron twice with every identity still holding.",
+      "basis": "invented"
     },
     "acq_budget_balances": {
       "status": "deferred",
@@ -326,16 +326,15 @@
       "reason": "Re-phased by 17, which owns `holds` and deliberately did NOT create it. `holds.cancelled_reason` is free text, because what phase 17 owes is that a job-written cancellation is READABLE, and a sentence is. Phase 21 already owns `override_reasons`, which is the same shape of librarian-configurable vocabulary table, and phase 15 sent the three item condition codes there for the same reason: the machinery should be built once, by the phase that has two callers for it."
     },
     "cash_drawer_movements": {
-      "status": "deferred",
-      "phase": "9d/18",
+      "status": "dropped",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "DESIGNED AWAY BY PHASE 18, not deferred. Every cash movement is already an `account_entries` row on `cash_on_hand` whose transaction names the drawer session, so the expected total is `opening_float_cents + SUM(debit_cents - credit_cents)` over that session. A movements table would be a SECOND recording of the same fact, and the whole value of a cash count is that it is an INDEPENDENT check on the journal rather than a comparison of the journal with itself. A till tape is a query over `account_entries`, not a table."
     },
     "cash_drawer_sessions": {
-      "status": "deferred",
-      "phase": "9d/18",
+      "status": "created",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "INVENTED. `expected_cents` and `variance_cents` are SNAPSHOTS taken at close, not generated columns — the acceptance criterion is that the expected total is what the journal said AT THE MOMENT THE DRAWER WAS COUNTED, and a generated column would let a late-posted transaction rewrite history and make an investigated variance disappear. A close with a variance RECORDS it; it never adjusts the till.",
+      "basis": "invented"
     },
     "catalog_settings": {
       "status": "deferred",
@@ -517,22 +516,22 @@
       "reason": "A control-plane table. Not in a tenant database at all."
     },
     "fee_allocations": {
-      "status": "deferred",
-      "phase": "9d/18",
+      "status": "created",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "INVENTED. The subsidiary ledger, append-only, and the ONLY signed amount in the module — there the sign is the difference between a payment and a refund of it, which keeps the three settlement counters on `fees` three plain sums. Its four kinds are exactly those counters plus refund, on purpose: I2 asserts one against the other.",
+      "basis": "invented"
     },
     "fee_payment_intents": {
       "status": "deferred",
-      "phase": "9d/18",
+      "phase": "33",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "RE-PHASED BY PHASE 18, from 9d/18 to 33. Phase 18 takes money at a desk with a librarian present, so there is no intent to hold: a card payment is made on a standalone terminal and OBSERVED, and the credit lands on `card_clearing` in the same instant the receivable is debited. An intent exists only when a READER pays with nobody at the counter, which is phase 33 (OPAC part 3). Guessing a PSP vocabulary now would put a wrong guess in a PCI-adjacent table, which is worse than an absent one. The `refunds_payable` chart-of-accounts label lands with this table."
     },
     "fee_types": {
-      "status": "deferred",
-      "phase": "9d/18",
+      "status": "created",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "INVENTED. §3 names it with no DDL. No amount column: an overdue amount comes from the resolved policy, a replacement from the copy, a manual one from the librarian. `revenue_account` is the ONE thing about the chart of accounts a library configures, held to the three revenue labels by a CHECK.",
+      "basis": "invented"
     },
     "fees": {
       "status": "created",
@@ -712,10 +711,10 @@
       "reason": "§3 or §2 gives it a full CREATE TABLE block."
     },
     "ledger_discrepancies": {
-      "status": "deferred",
-      "phase": "9d/18",
+      "status": "created",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "INVENTED. What the nightly reconciler FOUND. §8 risk 7: it reports and never repairs, because a self-healing reconciler hides the bug that caused the drift. NO foreign key on `subject_id` — a report about a row that should not exist must stay readable. `resolved_at` requires a note, because closing a row with no explanation is how a drift nobody understood becomes a drift nobody recorded.",
+      "basis": "invented"
     },
     "licence_activations": {
       "status": "control-plane",
@@ -909,10 +908,10 @@
       "reason": "The calendar model and the rules matrix are phases 12-13 design."
     },
     "patron_accounts": {
-      "status": "deferred",
-      "phase": "9d/18",
+      "status": "created",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "INVENTED. ONE PER PATRON PER CURRENCY, because §6 requires balances to sum per currency and phase 14 already asserts the currency-blind answer as a negative. No `balance_cents`: a stored balance is a fourth representation of a number `fees` holds and the ledger proves, and it would need its own identity to stay true.",
+      "basis": "invented"
     },
     "patron_addresses": {
       "status": "created",
@@ -1059,16 +1058,16 @@
       "reason": "NO LONGER A SKELETON, WHICH IS WHY THE BASIS CHANGED: the baseline created this table because `loans.patron_id text REFERENCES patrons(id)` forced its primary key, and its entry said the columns were deliberately incomplete. Phase 14 filled them in, so that sentence is now false. §3 names `patrons` in the record-side inventory line and mentions it nine times, every one about BEHAVIOUR — anonymisation on return, merge resolving in one hop, minting by `UPDATE … RETURNING` rather than `max()+1` — and none about a column, so every column here is designed. They are 1.0's `members`, which is not a shortcut: those are the fields this product already collects from Greek libraries, and a 2.0 patron holding different ones would make phase 19's copy-forward lossy for nothing. What is NEW is `merged_into_id`, `expires_at`, `erased_at` as a first-class column, and the address, the card and the identifiers moving OUT into satellite tables. TWO INDEXES ON `patron_number`, AND THEY CANNOT BE ONE: measured on 50,000 rows where the prefix selects 10%, a plain btree under `en_US.UTF-8`, `el_GR.UTF-8` and ICU el-GR seq-scans `LIKE 'M-2026-%'` at 319 buffers and STILL seq-scans with `enable_seqscan = off` — no index path exists, it is not a costing preference — while `text_pattern_ops` bitmap-scans at 21. The uniqueness index stays PARTIAL (`WHERE archived_at IS NULL`) so an archived card's number is re-issuable, and `patrons_number_pattern_idx` is deliberately NOT partial, because the counter seed must see archived numbers and a partial predicate is not implied by an unqualified query (Seq Scan, 337 buffers against 21). No third index for equality: `text_pattern_ops` carries `=(text,text)` at btree strategy 3, checked in `pg_amop`. And NOT `COLLATE \"C\"`, which is phase 13's precedent for `circulation_rules_listing_idx` and the obvious thing to copy — as the only index it makes `LIKE` work and `patron_number = $1` SEQ SCAN, because the equality takes its collation from the column. The one-hop merge invariant is a DEFERRABLE constraint trigger with two clauses plus sorted `patron:` locks, because measured over 60 concurrent pairs the trigger alone let 59 of 60 chains form — each transaction's deferred check passes on a snapshot that cannot see the other's uncommitted row — and trigger + sorted locks let 0 of 60. A chain is not a latency problem: the lookup is a fixed 12 buffers at any depth and returns the WRONG patron, and the desk then charges the loan to a record with no cards, no blocks and a balance nobody sees."
     },
     "payment_methods": {
-      "status": "deferred",
-      "phase": "9d/18",
+      "status": "created",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "INVENTED. How money physically arrived. The KIND is what the software reasons about; the row is what the library names it. `settlement_account` is held to the three asset labels and `requires_drawer` to cash, so a bank transfer that arrived while the desk was shut can still be recorded.",
+      "basis": "invented"
     },
     "payment_terminals": {
       "status": "deferred",
-      "phase": "9d/18",
+      "phase": "34",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "RE-PHASED BY PHASE 18, from 9d/18 to 34. A terminal is hardware, and phase 34 is the phase that owns hardware — ESC/POS with Greek codepages, the drawer kick, ZPL. Phase 18 records that a payment arrived by card; it does not speak to the device that took it, and a device protocol invented without one to test against is invented wrong."
     },
     "plan_modules": {
       "status": "control-plane",
@@ -1121,16 +1120,16 @@
       "reason": "M12, executed last."
     },
     "receipt_number_counters": {
-      "status": "deferred",
-      "phase": "9d/18",
+      "status": "created",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "INVENTED. Per branch per year, which is how a receipt number reads on paper and how an auditor asks for one. The one mutable table in the module. A sequence would give the whole library one run of numbers, which is wrong the moment two branches print at once and a gap in one branch book has to be explained.",
+      "basis": "invented"
     },
     "receipts": {
-      "status": "deferred",
-      "phase": "9d/18",
+      "status": "created",
       "group": "Fees",
-      "reason": "The double-entry invariant is phase 18 design."
+      "reason": "INVENTED. Rendered once, stored as bytes, reprinted verbatim — a reprint re-serves `rendered_bytes` rather than re-rendering, because re-rendering picks up today branding, today locale file and today policy text. Append-only, one per transaction.",
+      "basis": "invented"
     },
     "reservations": {
       "status": "dropped",
@@ -1207,10 +1206,10 @@
       "reason": "M7, executed eleventh."
     },
     "service_points": {
-      "status": "deferred",
-      "phase": "18/23",
+      "status": "created",
       "group": "Platform",
-      "reason": "RE-PHASED BY PHASE 16, from \"various\" to 18/23, having reached the first phase that could plausibly have needed it. `loans.checkout_service_point_id` exists and phase 16 leaves it NULL: a service point earns its columns from the CASH DRAWER (§6 phase 18, \"payment methods, cash drawer, receipts\") and from the branch/desk switcher (§6 phase 23, multi-branch operations), and phase 16 has neither. Inventing them now would be inventing them with no caller, no UI and no fixture — the same failure phase 15 refused for `floating_rules` and phase 14 for the patron identity side."
+      "reason": "THE DRAWER HALF, as this entry predicted when phase 16 re-phased it to 18/23. Identity, branch, code, name — what a `cash_drawer_sessions` row must point at. The switcher half (kind, is_cash_point, desk switching, CRUD) stays with phase 23, and `loans.checkout_service_point_id` stays NULL until that phase has a caller for it.",
+      "basis": "invented"
     },
     "shelving_locations": {
       "status": "created",

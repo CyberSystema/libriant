@@ -143,6 +143,27 @@ export const PATRON_DATA_TABLES: readonly PatronDataTable[] = [
     // open rather than deciding for the library.
     onErase: 'anonymise',
   },
+  {
+    // The ledger account itself (2.0 phase 18). It carries a patron id and a
+    // currency and NOTHING ELSE — no balance, no name, no amount — because the
+    // balance is `fees` and the journal behind it.
+    table: 'patron_accounts',
+    patronColumn: 'patron_id',
+    // IN THE BUNDLE, even though it holds no figure a reader would recognise.
+    // "Which accounts does this library hold for me, and in what currencies"
+    // is a question about the reader, and answering it with silence because the
+    // row looks like plumbing is exactly the omission this map exists to stop.
+    verdict: 'in_bundle',
+    // ANONYMISE, not delete, and the asymmetry with `patron_cards` is the point.
+    // Deleting the account would orphan every `account_entries` row on
+    // `patron_receivable` that names it — the immutable general ledger, which a
+    // trigger refuses to let anything delete and which a library's own auditor
+    // reads. Nulling the patron id leaves the accounting whole and the person
+    // unidentifiable, which is what anonymisation is for. `fees` above takes the
+    // same verdict for the same reason, and the erase path already refuses while
+    // a balance is open.
+    onErase: 'anonymise',
+  },
 
   // -- Not in the bundle, deliberately ---------------------------------------
   {

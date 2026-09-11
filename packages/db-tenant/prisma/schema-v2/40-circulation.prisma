@@ -129,6 +129,8 @@ model Patron {
   relationsTo   PatronRelationship[] @relation("RelationshipTo")
   mergesAsLoser    PatronMerge[] @relation("MergeLoser")
   mergesAsSurvivor PatronMerge[] @relation("MergeSurvivor")
+  /// One account per currency (2.0 phase 18).
+  accounts         PatronAccount[]
 
   @@index([patronCategoryId])
   @@index([sortName, id], map: "patrons_sort_name_id_idx")

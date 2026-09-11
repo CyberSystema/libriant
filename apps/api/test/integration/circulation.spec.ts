@@ -690,9 +690,11 @@ describe('the checkin budget', () => {
     expect(history).toBe(3);
     const loanEvents = await v2.loanEvent.count({ where: { loanId: out.loanId } });
     expect(loanEvents).toBe(2);
-    // And NOTHING touched `fees`. Phase 18 owns the ledger; a checkin that wrote
-    // a fee would have had to invent an `account_id`, which is inventing the
-    // double-entry invariant a phase early.
+    // And NOTHING touched `fees`. Phase 18 built the ledger, and this assertion
+    // did NOT become `toBe(1)`: the fixture checks the copy out and back in
+    // within one call, so the loan is not overdue and there is nothing to
+    // charge. Zero is still the right answer, for a different reason than it
+    // was — the charge path now exists and correctly declines to fire.
     expect(await v2.fee.count()).toBe(0);
   });
 

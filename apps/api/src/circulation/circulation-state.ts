@@ -129,8 +129,12 @@ export async function countCirculationState(
       -- COALESCE is a SQL construct and cannot be schema-qualified; sum is a
       -- real function and is. The ::bigint cast is because sum(bigint)
       -- returns NUMERIC, which Prisma hands back as a string.
-      (SELECT COALESCE(pg_catalog.sum(outstanding_cents), 0)::bigint FROM lbr2.fees
-        WHERE patron_id = ${input.patronId} AND closed_at IS NULL
+      -- owed_cents (2.0 phase 18): the generated column that is the balance when
+      -- the row is open and 0 when it is closed. It replaces the pair
+      -- outstanding_cents + closed_at IS NULL, which was one of TWO spellings of
+      -- this question in the codebase.
+      (SELECT COALESCE(pg_catalog.sum(owed_cents), 0)::bigint FROM lbr2.fees
+        WHERE patron_id = ${input.patronId}
           AND currency = ${input.currency}) AS owed,
       -- THE HOLD COUNTS. "Open" is three NULL tests and never a status enum —
       -- 45-items.prisma has the measurement: a parameterised enum predicate

@@ -113,10 +113,21 @@ const PACKAGES: Pkg[] = [
         '`status = CAST($1::text AS item_status)` and `enum_in` is only STABLE, so the planner ' +
         'can never prove an enum-predicate partial index — the reason `loans_active_dueAt_idx` ' +
         'had to be dropped in 1.0.',
-      'ALTER TABLE "fees" DROP COLUMN "outstanding_cents";':
-        'A STORED generated column: amount + tax - paid - waived - written_off. Generated so ' +
-        'that two code paths cannot compute a balance differently, which is the most damaging ' +
-        'bug class available in a fee ledger.',
+      'ALTER TABLE "fees" DROP COLUMN "outstanding_cents", DROP COLUMN "owed_cents";':
+        'TWO STORED generated columns, and the diff names them in one statement. ' +
+        '`outstanding_cents` is amount + tax - paid - waived - written_off, generated so that two ' +
+        'code paths cannot compute a balance differently — the most damaging bug class available ' +
+        'in a fee ledger. `owed_cents` (2.0 phase 18) is that number when the row is open and 0 ' +
+        'when it is closed, and it exists because two readers already disagreed: ' +
+        'patrons.service.ts summed `outstanding_cents > 0` while circulation-state.ts — the gate ' +
+        'that blocks a checkout — summed `closed_at IS NULL`. They agree only while nothing writes ' +
+        'fees. A CANCELLED charge closes the row without moving a settlement counter, so from the ' +
+        'first void the same patron has two different balances at one desk. `owed_cents` is the ' +
+        'only predicate a reader should ask.',
+      'ALTER TABLE "ledger_discrepancies" DROP COLUMN "difference_cents";':
+        'A STORED generated column: actual - expected. The reconciler writes what it measured and ' +
+        'what it expected; the gap between them is arithmetic, and a third column somebody fills ' +
+        'in by hand is a third opinion about a number that exists to be trusted.',
       'ALTER TABLE "circulation_rules" DROP COLUMN "specificity";':
         'A STORED generated column: the six selectors weighted 32/16/8/4/2/1, so a narrower rule ' +
         'always outranks a vaguer one. Prisma has no generated-column concept. It is a column ' +

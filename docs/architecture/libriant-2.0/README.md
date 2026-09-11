@@ -3619,3 +3619,123 @@ the session is UTC and the exposure is latent rather than live. The host is
 Berlin (RUNBOOK) — which affects the app container's clock, not the Postgres
 session — so one `SHOW TimeZone` against the production database is the cheap way
 to be certain rather than persuaded.
+
+---
+
+## Phase 18 — the fees ledger
+
+Eleven tables, six enums, one generated column added to a table phase 9 left
+waiting, and the two foreign keys `fees.account_id` and `fees.fee_type_id` have
+been carrying as bare text since the baseline. The migration header
+(`20260916090000_fees_ledger`) carries the six decisions; this entry records
+where the phase DIVERGED from §3 and §6, and the one measurement that changed
+the design.
+
+### THE ACCRUAL IS A RECOMPUTED TOTAL, NEVER AN ADDED WINDOW
+
+`accrueOverdue` takes an optional `since`, and its own docblock offers it as
+"`fees.accrued_through` for an increment". That documented usage is
+arithmetically wrong. Measured on this tree, six nights overdue at EUR 1.00 per
+interval, recomputed-total against nightly-windowed:
+
+| policy                           | total | windowed |                                 |
+| -------------------------------- | ----- | -------- | ------------------------------- |
+| daily, `chargeAt: intervalEnd`   | 600   | 600      | agree                           |
+| daily, `chargeAt: intervalStart` | 700   | 1200     | **+EUR 5.00**                   |
+| every 3 days, `intervalEnd`      | 200   | **0**    | **the patron is never charged** |
+| every 3 days, `intervalStart`    | 300   | 600      | **doubled**                     |
+| daily + `minimumFine` EUR 2.00   | 600   | 1200     | **doubled**                     |
+
+Three independent causes, all in `packages/circ-policy/src/fines.ts`:
+`completed` is `floor(elapsed) + 1` for `chargeAt: 'intervalStart'`, so a nightly
+window adds a spurious interval EVERY night; `intervalsBetween` returns a
+FRACTION, so floor is not additive — `floor(4/3)` is 1 while
+`floor(2/3) + floor(2/3)` is 0; and `minimumFine` is a per-call floor, so a
+nightly sweep applies the library's minimum once a night.
+
+**No reconciliation identity catches this.** The ledger balances perfectly on a
+number that is double, which is why it is recorded here rather than in a commit
+message. `fee-accrual.ts` recomputes the total from `dueAt` every tick and posts
+`total − what the receivable already carries`; the delta is derived from the
+LEDGER rather than from a remembered number, so the DATA-1 race cannot double it.
+
+### `fees.owed_cents`, because two readers already disagreed
+
+`patrons.service.ts` summed fees `WHERE outstanding_cents > 0`.
+`circulation-state.ts` — the gate that blocks a checkout — summed them
+`WHERE closed_at IS NULL`. They agreed only because nothing wrote `fees`. A
+CANCELLED charge closes the row without moving a settlement counter, so from the
+first void the same patron would have had two different balances at one desk.
+A second generated column deletes the class; both readers now ask it, and so
+does identity I3.
+
+### Divergences from §3
+
+**`cash_drawer_movements` is DESIGNED AWAY, not deferred** (`dropped` in
+BASELINE-SCOPE). Every cash movement is already an `account_entries` row on
+`cash_on_hand` whose transaction names the session, so the expected total is
+`opening_float_cents + SUM(debit_cents − credit_cents)`. A movements table would
+be a SECOND recording of the same fact, and a cash count is worth taking only
+because it is an INDEPENDENT check on the journal.
+
+**`fee_payment_intents` → phase 33, `payment_terminals` → phase 34.** Phase 18
+takes money at a desk with a librarian present, so there is no intent to hold and
+no device to speak to. A wrong guess in a PCI-adjacent table is worse than an
+absent one. `refunds_payable` lands with the first of those.
+
+**The chart of accounts is an ENUM, not a `ledger_accounts` table.** A tenant
+that can delete an account is a fee that posts nowhere. What a library actually
+configures is which of three revenue labels a `fee_type` posts to.
+
+**Tax is not wired.** Every charge posts `tax_cents = 0`. All three candidate
+designs for this phase credited VAT at charge time and never reversed it on a
+waiver, a write-off or a refund, so the library would have remitted tax on money
+it never collected. The column and the `tax_payable` label stay so the leg set
+does not change shape later.
+
+### I1 is a database law, and the shape that follows from it
+
+`account_entries_balance` is a STATEMENT-level `AFTER INSERT` trigger with a
+transition table, not a nightly report and not a `DEFERRABLE INITIALLY DEFERRED`
+constraint trigger. The deferred form is also a law but fires at COMMIT, so a
+mistake in the fee module would abort the librarian's CHECKIN with a stack trace
+pointing at the commit — handing back exactly what phase 16 spent a design on.
+
+The side effect is the point: a journal must be posted in ONE insert, so
+`postJournalWithin` is the only way to write an entry.
+
+**Its body resolves through `TG_TABLE_SCHEMA`.** It was first written with
+unqualified names — the identical mistake phase 9 made in
+`lbr2_write_change_event()` — and the psql probes passed because they set a
+`search_path`. The integration suite caught it on the first application write.
+A pinned `search_path` also works and is refused for `20260908090000`'s reason:
+it stores the schema NAME, which phase 20's `ALTER SCHEMA lbr2 RENAME TO public`
+invalidates.
+
+### Waiving an accruing fine stops the clock — a product decision, recorded
+
+`fees_one_open_accrual_per_loan` is predicated on `closed_at IS NULL`, so a
+waived accrual leaves the arbiter while the loan is still open and the next sweep
+raises a SECOND fine against the same loan: the reader is forgiven and charged
+again the same night. Two honest fixes exist and they are different products.
+Keeping the row open with a zero balance lets the fine keep growing and breaks
+"closed_at means settled". Stopping the accrual says that forgiving an overdue is
+a decision about THIS LOAN, which is what a librarian means when they waive a
+fine for a reader who was ill. `waive` therefore sets `is_accruing = false`.
+
+### What the tests prove, and what they cannot
+
+The 10,000-operation property test is DETERMINISTIC (a fixed LCG seed), so a
+failure is reproducible. The identities are asserted at intervals and at the end
+rather than after every operation: they are whole-table aggregates and asserting
+each step is quadratic, while a drift introduced at step 4,000 is still there at
+step 10,000. It was falsified once — planting a one-cent gap between an
+allocation and its counter makes I2 report three fees while I1 and I3 stay clean,
+which is the right diagnosis and not merely a failure.
+
+**Concurrency is NOT asserted inside it.** The per-tenant pool is clamped to one
+connection, so `Promise.all` over services queues rather than interleaves; a
+concurrency claim there would be vacuous. The genuinely simultaneous cases —
+DATA-1's return racing the accrual sweep, and two desks closing one drawer —
+need their own harness on separate `pg` clients, which is phase 21's to write
+alongside the checkin that first calls `accrueWithin`.

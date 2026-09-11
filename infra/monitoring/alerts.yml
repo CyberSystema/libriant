@@ -449,6 +449,49 @@ groups:
       # The metric counts ONLY transfers with a `hold_id`. A float or a
       # rebalancing move that is late has no reader waiting at the far end and
       # belongs to phase 23's transit desk.
+      # THE LIBRARY'S BOOKS DO NOT BALANCE (2.0 phase 18).
+      #
+      # Three identities, one metric, one rule. `identity` says which broke:
+      #   transaction_unbalanced   a journal whose legs do not sum. The balance
+      #                            trigger makes this unwritable through the
+      #                            application, so a non-zero here means the
+      #                            trigger was dropped, a superuser wrote around
+      #                            it, or the rows came from somewhere that is
+      #                            not this application — phase 19's copy-forward
+      #                            being exactly such a somewhere.
+      #   fee_allocation_mismatch  a fee whose counters disagree with the
+      #                            allocations behind them. This is the one an
+      #                            application bug produces.
+      #   account_balance_mismatch an account whose receivable disagrees with the
+      #                            fees behind it. This is the number a patron is
+      #                            told at a desk.
+      #
+      # THE THRESHOLD IS ZERO AND `for` IS SHORT, which is the opposite of the
+      # transit rule below and deliberately so. A late crate is a physical fact
+      # that resolves itself when the van arrives; a ledger that does not balance
+      # does not get better by being left, and every hour it runs is another
+      # day's receipts printed against a number nobody can reproduce.
+      #
+      # NOTHING IS REPAIRED AUTOMATICALLY. §8 risk 7: a self-healing reconciler
+      # hides the bug that caused the drift. The row in `ledger_discrepancies`
+      # carries the FIRST measurement, not the latest, so the responder can see
+      # when it started and how big it was then.
+      - alert: LibriantLedgerDrift
+        expr: libriant_circ_ledger_drift_total > 0
+        for: 15m
+        labels: { severity: critical }
+        annotations:
+          summary: '{{ $value }} ledger discrepancy/ies ({{ $labels.identity }})'
+          description: >-
+            The nightly reconciliation found the fee ledger disagreeing with
+            itself. Read lbr2.ledger_discrepancies for the subject ids, the
+            expected and actual amounts and when it was first seen. Do not
+            "fix" the numbers before understanding them: the discrepancy rows
+            are the evidence, and resolving one requires a written note saying
+            what happened. A non-zero transaction_unbalanced means a database
+            guarantee is gone and should be treated as an integrity incident
+            rather than a bug.
+
       - alert: LibriantHoldTransitOverdue
         expr: libriant_hold_transit_overdue_total > 0
         for: 24h
