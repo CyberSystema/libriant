@@ -916,7 +916,6 @@ jobs:
         env:
           SHADOW_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_shadow
 
-
   # ---------------------------------------------------------------------------
   # supply-chain-03 + supply-chain-06.
   #
