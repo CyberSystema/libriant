@@ -55,6 +55,7 @@
     "db:reset": "pnpm --filter @libriant/db-control prisma:migrate:reset",
     "tenant:migrate:deploy": "pnpm --filter @libriant/db-tenant prisma:migrate:deploy",
     "tenant:seed:defaults": "pnpm --filter @libriant/db-tenant seed:defaults",
+    "tenant:seed:defaults:v2": "tsx scripts/tenant-seed-v2-defaults.ts",
     "tenant:smoke": "pnpm --filter @libriant/db-tenant smoke",
     "tenant:create": "tsx scripts/tenant-create.ts",
     "tenant:migrate": "tsx scripts/tenant-migrate.ts",

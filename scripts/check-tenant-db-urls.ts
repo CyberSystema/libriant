@@ -73,6 +73,9 @@ const ADMIN_CLIENT_OPENERS: Record<string, string> = {
   'scripts/tenant-migrate.ts': 'reads _prisma_migrations, which the runtime role cannot see',
   'scripts/tenant-online.ts': 'runs the online migration track as the superuser',
   'scripts/seed-v1-fixture.ts': 'builds a 1.0 fixture database from scratch',
+  'scripts/tenant-seed-v2-defaults.ts':
+    'the lbr2 twin of seed-defaults.ts — operator seed, run against an explicit url, on a ' +
+    'database that may have no per-tenant role yet (CI makes libriant_demo with createdb)',
 };
 
 /** Files allowed to touch the sealed password column. */

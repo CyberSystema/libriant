@@ -136,6 +136,47 @@ async function main(): Promise<void> {
       die(NAME, 'lbr2 has no rule-default. The provisioning defaults have not been seeded.');
     }
 
+    // EVERY EXISTING audit_log PARTITION MUST BE ON UTC MIDNIGHT.
+    //
+    // The baseline migration creates its 27 partitions with a bare %L on a date,
+    // which Postgres resolves in the SESSION's TimeZone. On a database migrated
+    // before phase 17's ALTER DATABASE ... SET TimeZone TO 'UTC' — or by any
+    // path that skips it — the bounds are LOCAL midnight:
+    //
+    //   audit_log_2026_06 FROM '2026-05-31 21:00+00'   (Athens)
+    //
+    // The upgrade back-fills partitions for the months the 1.0 audit log
+    // actually spans, on UTC midnight, and a UTC May then OVERLAPS an Athens
+    // June. Postgres refuses the CREATE and the whole upgrade fails on a
+    // detail nobody would connect to a timezone.
+    //
+    // It REFUSES rather than adapting, which is phase 17's own decision applied
+    // one table along: `assertBoundsAreUtc` in partition-maintenance.job.ts
+    // takes the same position, and for the same reason — a mixed convention is a
+    // three-hour seam in which audited writes fail with 23514 and there is no
+    // DEFAULT partition to catch them. Rewriting an existing partition's bounds
+    // is a data move, not something an upgrade should do on the way past.
+    const skewed = await client.query<{ name: string; bound: string }>(`
+      SELECT c.relname AS name, pg_catalog.pg_get_expr(c.relpartbound, c.oid) AS bound
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_inherits i ON i.inhrelid = c.oid
+        JOIN pg_catalog.pg_class pt ON pt.oid = i.inhparent
+        JOIN pg_catalog.pg_namespace n ON n.oid = pt.relnamespace
+       WHERE n.nspname = 'lbr2' AND pt.relname = 'audit_log'
+         AND pg_catalog.pg_get_expr(c.relpartbound, c.oid) <> 'DEFAULT'
+         AND pg_catalog.pg_get_expr(c.relpartbound, c.oid) NOT LIKE '%00:00:00+00%'`);
+    if (skewed.rows.length > 0) {
+      die(
+        NAME,
+        `${skewed.rows.length} audit_log partition(s) are not on UTC midnight — e.g. ` +
+          `${skewed.rows[0]?.name} ${skewed.rows[0]?.bound}. This database was migrated before ` +
+          `the phase-17 UTC pin, or by a path that skips it. Pin the database ` +
+          `(ALTER DATABASE ... SET TimeZone TO 'UTC'), rebuild the partitions, and run again: ` +
+          `back-filling UTC partitions beside local-midnight ones leaves a three-hour seam in ` +
+          `which every audited write fails, and there is no DEFAULT partition to catch it.`,
+      );
+    }
+
     // lbr2 MUST HOLD NO DATA. Provisioned, seeded with defaults, and empty of
     // anything a library put there.
     //
@@ -348,6 +389,18 @@ async function main(): Promise<void> {
                pg_catalog.date_trunc('month', pg_catalog.max("occurredAt"))::date
           INTO m, hi FROM v1_archive.audit_log;
         WHILE m IS NOT NULL AND m <= hi LOOP
+          -- IF NOT EXISTS skips a month the baseline already made, which is most
+          -- of them: the baseline creates 27 around the migration date and the
+          -- 1.0 log usually reaches back before that.
+          --
+          -- It skips BY NAME, and that is the whole of what it can do. A
+          -- partition whose range overlaps this month under a DIFFERENT name is
+          -- not caught here and would abort the CREATE — which is the exact
+          -- failure a local-midnight audit_log_2026_06 produces against a
+          -- UTC-midnight May. The precondition above refuses that database
+          -- before BEGIN rather than letting it fail here, where the error
+          -- ("would overlap partition") names no cause anyone would connect to a
+          -- session timezone.
           EXECUTE pg_catalog.format(
             'CREATE TABLE IF NOT EXISTS lbr2.audit_log_%s PARTITION OF lbr2.audit_log '
             || 'FOR VALUES FROM (TIMESTAMPTZ %L) TO (TIMESTAMPTZ %L)',

@@ -96,10 +96,21 @@ test('support is exactly admin minus the four denied keys', () => {
   }
 });
 
-test('only the two fee keys carry a ceiling', () => {
+test('only the money-out keys carry a ceiling', () => {
   // A limit is meaningless on a key with no amount, and `check:permissions`
   // refuses `limitFrom` on an action key — so this is the other half of that.
-  assert.deepEqual([...LIMIT_PERMISSION_KEYS].sort(), ['circ.fee.void', 'circ.fee.waive']);
+  //
+  // FOUR since 2.0 phase 18, not two: waiving forgives a debt correctly owed,
+  // voiding corrects a charge that should never have been raised, writing off
+  // gives up on collecting one, and refunding hands money back. They are four
+  // different acts an auditor asks about separately, and each is a sum a desk
+  // can be trusted with up to a point and not beyond.
+  assert.deepEqual([...LIMIT_PERMISSION_KEYS].sort(), [
+    'circ.fee.refund',
+    'circ.fee.void',
+    'circ.fee.waive',
+    'circ.fee.write_off',
+  ]);
   for (const p of PERMISSIONS) {
     assert.ok(p.kind === 'action' || p.kind === 'limit', p.key);
   }
