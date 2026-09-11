@@ -494,6 +494,8 @@ Money inside this ledger only is `numeric(19,4)` + currency + `base_amount` + `e
 
 `books` · `authors` · `book_authors` · `book_copies` · `members` · `loans` (1.0) · `reservations` · `fines` · `member_number_counters` — and with them `books_isbn13_unique_active` and `authors_sortname_unique_active`.
 
+_Amended._ "Dropped" is the wrong word and the list is short. The cutover RENAMES the 1.0 schema to `v1_archive` and drops nothing; the archive is what the rollback restores from, and it holds **23** tables, not nine. Besides those above it carries `tenant_settings`, `field_definitions`, `collections`, `collection_fields`, `collection_records`, `audit_log`, `roles`, `role_permissions`, `staff_profiles`, `staff_role_grants`, `staff_permission_overrides`, and the three migration-ledger tables. Several have 2.0 equivalents already; the customization trio and the import engine's write path do not, which is what phase 20b-ii exists to settle. Dropping `v1_archive` is a separate, later decision, and it is only safe once the six extensions have been rehomed into the promoted `public` (§8 risk 3).
+
 ---
 
 ## 4. Cross-cutting contracts
@@ -787,13 +789,154 @@ _Accept:_ Property test: 10,000 random charge/pay/waive/refund/write-off sequenc
 
 ### M2 — The cutover (phases 19–20)
 
-**19. Upgrade script and verifier (dry runs only).** `prisma/upgrade/v1_to_v2.sql` (PL/pgSQL copy-forward: MARC synthesised from every `books` row with 001 = the existing cuid so every permalink and audit target still resolves, 003 = `LBR-<slug>`, **005 from `updated_at`**, **008/00-05 from `created_at`**, a computed non-filing indicator from the Greek and English article tables, holdings per distinct shelf location, an item per copy, patrons + a primary card, loans with `closed_at` back-filled and `policy_snapshot` synthesised from `tenant_settings` as it stands, reservations → title holds with **bit-exact** queue positions, fines → fees + synthetic transactions/entries/allocations, `audit_log` routed to monthly partitions, `field_definitions` remapped); `v1_to_v2_verify.sql` (~40 assertions); `scripts/tenant-upgrade-v2.ts` (extension relocation → `ALTER SCHEMA public RENAME TO v1_archive` → baseline → copy-forward → verify → commit, with a 30-day `v1_archive_drop_after`); `scripts/verify-v2.ts`; a CI job that seeds a v1 fixture and upgrades it on every commit.
-_Depends on:_ 18.
-_Accept:_ On a 50,000-book / 12,000-author / 80,000-copy / 40,000-loan fixture: all assertions pass — row counts exact, `SUM(v1 outstanding fines) = SUM(v2 fee balances)` **to the cent**, every active loan has exactly one item in `checked_out`, hold positions contiguous and identical, every cuid preserved, every converted instant within 1 s of the v1 value read as UTC, every reconstructed record validates clean under the AACR2 pack. Every index expression referencing `immutable_unaccent` is dropped before the extension move and recreated fully qualified. A deliberately corrupted fixture aborts the transaction leaving the database byte-identical. `DROP SCHEMA public CASCADE; ALTER SCHEMA v1_archive RENAME TO public;` restores a fully working 1.0 tenant.
+> **Amended after building it.** Phase 19 became 19a + 19b and phase 20 became
+> four, because the original text was written before phases 10–18 existed and
+> assumed a parity between 1.0 and 2.0 that those phases did not produce. The
+> measurements behind every change here are in the divergence log
+> (`README.md`, sections "Phase 19b", "Phase 20a", "Phase 20b-i" and
+> "What 20b-ii faces"). Phase NUMBERS remain stable identifiers; the letters
+> are sub-phases of one deliverable.
 
-**20. THE CUTOVER.** One session, one commit: run the upgrade on the demo tenant; delete `apps/api/src/{catalog,loans,reservations,fines,members}` and their specs; repoint the staff UI (catalogue, members, loans, reservations lists) at the 2.0 read models; run the Greek `search_text`/`sort_name` backfill inside the same window; drop `books_isbn13_unique_active` and `authors_sortname_unique_active`; retire the `loans`/`members`/`reservations` locale namespaces in both locales together; rewrite the four `apps/site/content/pages.{en,el}.json` claims that say MARC does not come out and there is no public catalogue.
-_Depends on:_ 19.
-_Accept:_ Greek regression: `πολισ` now finds `Η ΠΟΛΙΣ ΕΑΛΩ`. Two ISBN-sharing books that the 1.0 constraint refused both migrate and appear as one duplicate candidate. All 10 CI gates green, full unit + integration + smoke + both builds pass, `check:translations` green after the namespace retirement. There is no intermediate state: before this session the system runs 1.0, after it runs 2.0.
+**19a. The upgrade surface.** ✅ **Shipped** (`0af96b3`). `prisma/upgrade/routing.json`
+routes all 233 1.0 columns as `copied` / `derived` / `dropped` (with a reason) /
+`compat`, gated by a new `check:upgrade-coverage` that fires on a missing, stale
+or unreasoned entry and on an unrouted table. Eleven **compat twins** in 1.0's
+physical shape for the columns 2.0 has no home for yet, plus `ledger_account.opening_balance`,
+`event_source.migration`, `loans.notes`, `fees.notes`, `fees.archived_at` and three
+custom-field columns.
+_Depends on:_ 18.
+_Accept:_ `check:upgrade-coverage` fails on a column added to 1.0 and not routed.
+
+**19b. The copy-forward and the verifier (dry runs only).** ✅ **Shipped** (`1f5bd06`).
+`packages/db-tenant/prisma/upgrade/{01-pre-catalog,02-post-catalog,03-verify}.sql`
+plus `scripts/tenant-upgrade-v2.ts` as the orchestrator — **not** a single
+`v1_to_v2.sql`, because MARC synthesis runs through the real `packages/marc`
+codec in Node rather than a SQL port of it that would only ever have to agree
+with the first implementation. MARC built from every `books` row with 001 = the
+existing cuid so every permalink and audit target still resolves, 005 from
+`updated_at`, 008/00-05 from `created_at`, computed non-filing indicators,
+holdings per shelf location, an item per copy, loans with `closed_at`
+back-filled and `policy_snapshot` synthesised, reservations → title holds, fines
+→ fees with synthetic transactions, `audit_log` routed to monthly partitions.
+**42** assertions, not ~40. `scripts/seed-v1-fixture.ts` builds the fixture in
+two profiles (`ci`, `acceptance`); CI seeds and upgrades it on every commit.
+There is no `--commit` in this phase by design.
+_Depends on:_ 19a.
+_Accept:_ All 42 assertions hold on the `ci` profile — row counts exact,
+outstanding money identical to the cent, every cuid preserved, every instant
+within 1 s of the v1 value read as UTC, hold ORDER preserved exactly. A
+deliberately corrupted fixture aborts and leaves the database byte-identical.
+
+> **Two corrections this phase measured.** "Bit-exact queue positions" cannot
+> survive and is a stated divergence — 1.0 permits duplicates and gaps that
+> 2.0's constraints refuse, so the ORDER is preserved and the NUMBERS are
+> renumbered. And the rollback is one statement at this point,
+> `ALTER SCHEMA v1_archive RENAME TO public`, because §6's two-step recipe fails
+> with `schema "public" does not exist` until the promotion exists.
+
+**20a. The 2.0 read surface.** ✅ **Shipped** (`96adbd8`). The cutover had nothing
+to repoint AT: `lbr2` had no list or search endpoint for anything. Twelve read
+routes — catalogue search, patron roster, items by bib and by barcode, loans,
+holds, fees, branches, locations — with **zero new permission keys**, one shared
+keyset helper (`platform/list.ts`) so eleven lists cannot each drop the tie tier,
+and `platform/like.ts` because Prisma's `contains` does not escape LIKE
+metacharacters. Six keyset indexes; a seventh was written, measured to displace
+`items_shelf_available_idx` on the hold-promotion path, and removed.
+_Depends on:_ 19b.
+_Accept:_ **§9's Greek case, over HTTP:** `πολισ` finds `Η ΠΟΛΙΣ ΕΑΛΩ`, as do
+`ΠΟΛΙΣ`, `πόλις` and `ΠΌΛΙΣ`. It needs **no migration**: `search_text` is already
+folded and trigram-indexed, and `libriant_fold_greek` is installed by no
+migration so calling it would throw. Four records tying exactly on `sort_title`
+walk at `limit: 1` with no row repeated and none skipped.
+
+**20b-i. The cutover mechanism.** ✅ **Shipped** (`5947033`). `--commit`, guarded
+by an explicit `--yes`. The promotion `ALTER SCHEMA lbr2 RENAME TO public` **plus
+six `ALTER EXTENSION … SET SCHEMA public` in the same transaction** — without
+them `DROP SCHEMA v1_archive CASCADE` deletes `patrons.email`, both trigram
+indexes and all three no-overlap constraints, announced as a NOTICE that
+`ON_ERROR_STOP` does not stop. `04-promoted.sql` adds **8** assertions run under
+the application's own `"$user", public`, which is the only path under which the
+citext failure is visible at all. `scripts/tenant-rollback-v2.ts`, because after
+the promotion §6's recipe SUCCEEDS and destroys the archive it exists to restore.
+A `pg_proc` pre-flight refuses a database whose function bodies name `public.`
+rather than rewriting them.
+_Depends on:_ 20a.
+_Accept:_ CI cuts a disposable database over for real, asserts the committed
+shape, DROPS the archive to prove that is now safe, then rolls back on a second
+copy and reads 1,000 books / 500 members / 800 loans out again. Both flags
+refuse without `--yes`; a second rollback refuses.
+
+**20b-ii. Parity — what 1.0 does and 2.0 cannot.** The phase the original text
+did not know it needed. Of the 46 1.0 routes, **zero have a clean drop-in
+equivalent and 21 have none at all**; deleting the five modules before this is
+built takes a Greek library's GDPR compliance offline. Build, in this order:
+the **Article 15/20 subject-access bundle** over 2.0 (`patron-data-map.ts` is the
+specification and `BUNDLE_TABLES` has zero consumers — the bundle must be
+written, not repointed) and the **Article 17 erase** (2.0 writes
+`patrons.erased_at` nowhere); patron read-by-id, update, status change and
+archive; bib delete/archive; cover upload and patron photo; the overdue-fine
+sweep, without which a patron holding an overdue book shows a zero balance at
+the desk; and the import engine's 2.0 write path. Move the five integration
+specs that hard-code `table_schema = 'lbr2'` onto a shared constant, or they go
+green and vacuous the moment 20b-iii promotes.
+
+And the piece no earlier text noticed: **the deletion is fleet-wide and the
+upgrade is one database at a time.** `tenant-upgrade-v2.ts` takes a single
+`--url`; deleting the 1.0 modules is one deploy that reaches every tenant at
+once. Between the two, an un-upgraded tenant is served by code that cannot read
+its schema. The flag for this already exists and nothing uses it:
+`TenantSchemaState.schemaMajor` is documented as "1 = the pre-2.0 shape; the 2.0
+upgrade sets 2", `scripts/tenant-migrate.ts` reads and caches it, and
+`tenant-upgrade-v2.ts` never writes it. So 20b-ii makes the upgrade stamp it, and
+gives the app a routing decision keyed on it — or 20b-iii must upgrade every
+tenant inside the same window as the deploy, which is not a thing a deploy can
+promise.
+_Depends on:_ 20b-i.
+_Accept:_ Every 1.0 route either has a named 2.0 successor or a written decision
+that the capability is deliberately lost. A DSAR bundle and an erase run against
+a 2.0 tenant and are asserted by an integration spec. `check:dsar-coverage` —
+promised by §5 at phases 33/96 and never built — lands here instead, because the
+cutover is the moment a patron-referencing table can silently escape the bundle.
+
+> **Deliberately lost, and stated rather than discovered:** authors as an entity.
+> 2.0 has no `Author` model and an authority MARC record gets no projection row,
+> so the five 1.0 author routes do not come back; contributors live inside the
+> MARC record until the authority store lands at phase 45. Mark-lost and
+> claims-returned stay assigned to phase 21 and the loan-detail buttons go with
+> them until then.
+
+**20b-iii. THE CUTOVER.** One session, one commit: run the upgrade on the demo
+tenant with `--commit --yes`; delete `apps/api/src/{catalog,loans,reservations,fines,members}`
+and their specs; repoint the staff UI at the 2.0 routes; rename `V2_SCHEMA` to
+`public` and rewrite the **377 `lbr2.` literals across 57 files** (189 in source,
+188 in tests) that the promotion invalidates; retire the 1.0 locale namespaces —
+which means **creating** the 2.0-shaped ones first, since none exists to retire
+into.
+
+_Two corrections to the original instruction._ "Drop `books_isbn13_unique_active`
+and `authors_sortname_unique_active`" is a **no-op**: both sit on `books` and
+`authors`, which the rename carries into `v1_archive` index and all, and `lbr2`
+has no ISBN uniqueness to begin with — §3's "deliberately not unique in 2.0" is
+already true by construction. And `check:translations` is **not** the gate for
+the namespace work: it reads `locales/` only and never opens a source file, so it
+passes cleanly on a namespace deleted while code still calls its keys. The
+failure is silent — `createTranslator` returns the key id and `loadNamespace`
+swallows ENOENT — so the namespace retirement needs a gate that reads source, or
+it needs doing by grep and reviewing.
+_Depends on:_ 20b-ii.
+_Accept:_ Two ISBN-sharing books that the 1.0 constraint refused both migrate and
+appear as one duplicate candidate. All CI gates green, full unit + integration +
+smoke + both builds pass, and every retired locale key proved unreferenced by a search of the source rather than by `check:translations`, which cannot see it.
+Before this session the system runs 1.0; after it runs 2.0.
+
+> **On the marketing claims.** §6 said "rewrite the four `pages.{en,el}.json`
+> claims that say MARC does not come out and there is no public catalogue".
+> There are **twenty**, not four — ten MARC and eleven catalogue strings per
+> locale — and the instruction conflates two claims of which only one is false.
+> The MARC claims were already false before this milestone, because
+> `catalog_marc` has been a bulk export format since phase 11. **The
+> public-catalogue claims must stay**: the OPAC is phase 31, and rewriting them
+> here would make the site advertise something that does not exist.
 
 > **After M2 — a real library can:** hold a full MARC 21 record as the system of record, export it as ISO 2709 / MARCXML / MARC-in-JSON that round-trips, see every version of every record with a field-level diff and restore any of them, run circulation under a real rules matrix with per-branch calendars and timezones so due dates roll off closed days and fines are calendar-day rather than 24-hour blocks, ask _why_ a book is due on a given date and get the rule that decided it, and take a partial payment against a real double-entry ledger. **Koha, Alma and FOLIO cannot answer the "why this due date" question at all.**
 
@@ -965,7 +1108,7 @@ _All demand-gated._
 
 2. **Timestamp conversion silently shifts every date by three hours.** Prisma's generated `ALTER COLUMN … TYPE timestamptz` casts through the session TimeZone, which on this production host is Europe/Athens. _Mitigation:_ every conversion hand-written `USING col AT TIME ZONE 'UTC'`; `check:migration-safety` fails any bare cast; the verifier asserts every converted instant is within 1 s of the v1 value read as UTC.
 
-3. **The extension relocation breaks a live database.** Moving `unaccent`/`pg_trgm` out of `public` invalidates every unqualified index expression — this repo has already shipped `20260825200000_qualify_immutable_unaccent` for exactly that and lost a control-plane restore to an unqualified `gen_random_uuid`. _Mitigation:_ the upgrade drops and recreates every affected index fully qualified; the CI fixture deliberately includes an `immutable_unaccent` expression index; `check:migration-safety` rejects unqualified calls.
+3. **The schema rename breaks a live database — and the real mechanism is not the one this risk named.** _Amended after measuring it in 20b-i._ An operator class inside an index is bound by OID and survives a rename untouched, so every trigram index and every EXCLUDE constraint comes through intact; the only category a rename can break is a SQL or PL/pgSQL body, which is stored as TEXT and re-resolved at run time. That class is EMPTY in every tenant database this repo produces — the `immutable_unaccent` wrapper exists only in the control plane — so the upgrade does not drop and recreate anything. It REFUSES instead: a `pg_proc` pre-flight before `BEGIN` names any function body containing `public.` and stops, because the correct rewrite depends on what the author meant and a wrong guess produces a function that runs and is wrong. **The actual hazard is that extensions move WITH their schema:** all six ride `ALTER SCHEMA public RENAME TO v1_archive` into the archive, where they are still what the promoted schema depends on, and `DROP SCHEMA v1_archive CASCADE` then deletes `patrons.email`, both trigram indexes and all three no-overlap constraints — as a NOTICE, which `ON_ERROR_STOP` does not stop. _Mitigation:_ six `ALTER EXTENSION … SET SCHEMA public` inside the cutover transaction, eight post-promotion assertions run under the application's own `"$user", public`, and a CI job that commits a real cutover and then drops the archive to prove it is safe. `check:migration-safety` still rejects unqualified calls in migrations.
 
 4. **The hand-rolled BER decoder is unauthenticated attacker-chosen binary on a public port.** _Mitigation:_ `BER_LIMITS` enforced before any allocation; decode-to-typed-error with no throw/catch control flow; a CI fuzz corpus of 50,000 mutated real captures as a merge gate; process isolation so a failure kills the gateway and not the API; a written escape hatch to a Rust napi decoder behind the same pure signature.
 
@@ -979,7 +1122,7 @@ _All demand-gated._
 
 9. **A hardware polarity or protocol-direction error humiliates the library in front of patrons.** AFI inverted alarms the gate on every checked-out book; SIP2 96/97 reversed drops every self-check connection. _Mitigation:_ both corrected in this document; read-back verification before a checkout completes; golden tests from the ISO 28560-2 worked examples and recorded vendor SIP2 transcripts; simulators so CI covers it with no physical device.
 
-10. **Scope kills the launch.** 105 spec phases is two years before a Greek library borrows a book, with a campaign already queued. _Mitigation:_ the launch line is drawn at phase 35 (~35 sessions); everything after M4 is explicitly demand-gated; acquisitions/ERM/ILL, the protocol servers, Tauri, consortium, plugins, digital lending and mobile are all out of v1 by decision, not by slippage; each of M0–M4's phases ships something independently validated, and only phase 20 is a cutover.
+10. **Scope kills the launch.** 105 spec phases is two years before a Greek library borrows a book, with a campaign already queued. _Mitigation:_ the launch line is drawn at phase 35 (~35 sessions); everything after M4 is explicitly demand-gated; acquisitions/ERM/ILL, the protocol servers, Tauri, consortium, plugins, digital lending and mobile are all out of v1 by decision, not by slippage; each of M0–M4's phases ships something independently validated, and only phase 20b-iii is a cutover — 20a, 20b-i and 20b-ii are each additive and leave the product working.
 
 _Runners-up worth naming:_ the sizing of the merged stack against a shared 128 MB `shared_buffers` box (mitigated by profiles-off-by-default and a per-phase deployment budget as an acceptance criterion); `@node-saml/node-saml`'s transitive XML tree, the dependency with the highest ongoing maintenance obligation in the design; and the marketing site's four claims that become untrue at phase 31 — one of which, at line 806, would become an untrue _security_ claim.
 
@@ -1023,7 +1166,7 @@ scripts/check-currencies.mjs                        # NEW GATE (modelled on chec
 
 - `packages/shared/package.json` — add `"./greek"`, `"./callnumber"`, `"./money"`, `"./currencies"` to `exports` (`check:shared-imports` requires the subpath to be declared before `apps/web` may import it).
 - `packages/shared/src/search.ts` — add `SEARCH_MIN_CHARS_INDEXED = 1` and `minCharsFor(capabilities)` beside the existing `SEARCH_MIN_CHARS = 3`, so the UI can never disagree with whichever backend is serving it. Keep the existing constant and its comment verbatim.
-- `apps/api/src/catalog/normalize.ts` — `normalizeText` becomes `foldGreek` re-exported from `@libriant/shared/greek`. **Do not change any stored data in this phase**; the projection rebuild in phase 20 recomputes `searchText`/`sortName`/`sortTitle` once. Add a comment recording that the function's output changed and pointing at phase 20.
+- `apps/api/src/catalog/normalize.ts` — `normalizeText` becomes `foldGreek` re-exported from `@libriant/shared/greek`. **Do not change any stored data in this phase**; the projection rebuild in phase **20b-iii** recomputes `searchText`/`sortName`/`sortTitle` once. Add a comment recording that the function's output changed and pointing at phase 20. _(Shipped. Phase 20a later moved `classifySearchTerm` out of this module into `@libriant/shared/search` and left a forward, because two of its three callers survive the cutover and this module does not.)_
 - `package.json` — add `"check:greek-folding": "node scripts/check-greek-folding.mjs"` and `"check:currencies": "node scripts/check-currencies.mjs"`, and insert both into `check:all` between `check:countries` and `typecheck`.
 - `.github/workflows/verify.yml` — two new steps in the `Static checks` job, mirroring the existing `Country list matches ICU and libphonenumber` step's shape.
 
