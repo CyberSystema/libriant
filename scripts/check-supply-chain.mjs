@@ -152,7 +152,12 @@ const LICENCE_DECISIONS = {
   // they are one library, one licence, one decision, and which of them is on
   // disk is decided by the machine running this check rather than by anything
   // Libriant chose.
-  '@img/sharp-libvips-*@1.3.2':
+  // Re-opened at 1.3.3, as the keying rule above requires rather than
+  // permits: next 16.3.4 raises sharp's optional floor to ^0.35.4, which moves
+  // this family 1.3.2 -> 1.3.3. Checked the resolved 1.3.3 package directly —
+  // `license` is still LGPL-3.0-or-later and the tarball still ships no licence
+  // file — so the 1.3.2 decision carries over unchanged.
+  '@img/sharp-libvips-*@1.3.3':
     'LGPL-3.0-or-later — server-side only, not conveyed; re-check if ever bundled into apps/desktop',
 
   // The browser-support database, not code. CC-BY-4.0 asks for attribution and
