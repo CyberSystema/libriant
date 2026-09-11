@@ -203,6 +203,9 @@ model Hold {
   @@index([bibId, priority(sort: Desc), queuePosition], map: "holds_queue_idx")
   /// The reader's own list, and the count `evaluateBlocks` needs.
   @@index([patronId, placedAt], map: "holds_patron_idx")
+  /// `GET /t/:slug/holds` unfiltered (2.0 phase 20a). The patron-filtered form
+  /// already walks the index above.
+  @@index([placedAt, id], map: "holds_placed_id_idx")
   @@map("holds")
 }
 

@@ -13,6 +13,15 @@ import type { TenantContext } from '../tenancy/tenant-context.js';
 import type { TxV2 } from '../tenancy/tenant-tx-v2.js';
 import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
+import {
+  clampLimit,
+  keysetCursorValues,
+  keysetPredicate,
+  pageOf,
+  readKeysetCursor,
+  type KeysetBoundary,
+  type ListResult,
+} from '../platform/list.js';
 import { acquireLocks, lockKey } from '../platform/locks.js';
 import { TenantClockService } from '../policy/tenant-clock.service.js';
 import { PolicySnapshotService } from '../policy/policy-snapshot.service.js';
@@ -689,6 +698,168 @@ export class HoldsService {
     return rows.map(toSummary);
   }
 
+  /**
+   * The hold list — filter, page (2.0 phase 20a).
+   *
+   * ## THERE IS NO STATUS COLUMN, SO THERE IS NOTHING TO SORT A STATE BY
+   *
+   * 1.0's reservations list paged over a STATUS_RANK keyset, and it could:
+   * `reservations` carries a real enum column, so "queued, then ready, then
+   * collected" is an order an index is physically in, and its cursor carries
+   * four values (`status`, `queuePosition`, `placedAt`, `id`) to resume inside
+   * it. `lbr2.holds` deliberately carries no such column — a hold is open when
+   * `fulfilled_at`, `cancelled_at` and `expired_at` are all NULL, which phase 15
+   * measured at 2 buffers against 1470 for the enum predicate it replaced — so
+   * the state of a hold is a FUNCTION of six nullable columns and exists nowhere
+   * on disk. A keyset over it would have to compute that function for every row
+   * of the table before it could find a start key, which is the sequential scan
+   * the column shape was chosen to avoid.
+   *
+   * So the order is `(placed_at DESC, id DESC)` — when the reader asked, newest
+   * first — and the state is a FILTER instead. The tie tier is `id` and not
+   * another timestamp for the usual reason: `placed_at` defaults to
+   * `CURRENT_TIMESTAMP`, which is the TRANSACTION's start time, so two holds
+   * placed by one import or one double-click share it exactly, and a keyset
+   * without the tie tier would drop whichever of them fell across a page edge.
+   *
+   * ## THE INDEX THIS WALKS, AND THE ONE IT WANTS
+   *
+   * `holds_patron_idx (patron_id, placed_at)` serves the `patronId` filter
+   * exactly — equality then a range on the leading sort key, which is the start
+   * key `keysetPredicate` exists to produce. NOTHING serves the unfiltered list:
+   * there is no index on `(placed_at, id)` today, so the general case sorts the
+   * whole table. The index this wants is
+   * `CREATE INDEX holds_placed_idx ON holds (placed_at, id)` — ascending, and
+   * scanned backwards for this order, because a btree serves a uniform DESC
+   * ORDER BY from a plain ASC index and a second one would be dead weight. It is
+   * not created here: a list endpoint does not get to write a migration.
+   *
+   * ## `state` IS A FILTER, NOT A PARTITION
+   *
+   * `suspended` is a subset of `waiting`, and `open` contains four of the other
+   * values. That is what derived states are: a suspended hold IS waiting — it
+   * is a reader who is not ready, keeping their place — and saying otherwise
+   * would mean inventing a precedence the database does not have. A UI drawing
+   * these as tabs has to choose which ones it draws.
+   */
+  async list(tenant: TenantContext, opts: HoldListOptions = {}): Promise<ListResult<HoldSummary>> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const limit = clampLimit(opts.limit);
+
+    const where: Record<string, unknown> = {};
+    if (opts.patronId !== undefined) where['patronId'] = opts.patronId;
+    if (opts.bibId !== undefined) where['bibId'] = opts.bibId;
+    if (opts.pickupBranchId !== undefined) where['pickupBranchId'] = opts.pickupBranchId;
+    if (opts.state !== undefined) {
+      Object.assign(where, await this.stateWhere(client, opts.state, opts.pickupBranchId));
+    }
+
+    const after = await this.decodeListCursor(client, opts.after);
+    if (after) {
+      // `desc`, and it MUST be: `keysetPredicate` builds `lte` + the strict
+      // boundary for a descending list and `gte` for an ascending one, and the
+      // mismatched pair is silent — the page still renders, filled with the rows
+      // BEFORE the cursor, so "Load more" walks a librarian back towards the
+      // newest request instead of onwards through the list.
+      where['AND'] = keysetPredicate({ sortField: 'placedAt', direction: 'desc', after });
+    }
+
+    // EXPLICIT SELECT, and it is the same `HOLD_SUMMARY` every other hold
+    // surface reads through. Three columns on this table are fat and none of
+    // them is in it: `policy_snapshot` is an entire pinned hold policy as jsonb,
+    // `notes` is free text a librarian typed, and `custom_fields` is the
+    // library's own jsonb. A default `findMany` selects all three, which is
+    // kilobytes a page of 25 does not need and a reader never sees.
+    const rows = await client.hold.findMany({
+      where: where as never,
+      orderBy: [{ placedAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      select: HOLD_SUMMARY,
+    });
+
+    return pageOf(rows, limit, toSummary, (r) => keysetCursorValues(r.placedAt, r.id));
+  }
+
+  /**
+   * One request, in the row shape the list draws.
+   *
+   * Deliberately `HOLD_SUMMARY` and not a fatter detail projection: a reader
+   * opening a row from the list must not see different facts from the ones the
+   * row showed, and a second select over the same table is how the two drift.
+   * When a detail screen needs `notes` or the pinned policy, it gets its own
+   * named route rather than widening this one for every caller.
+   */
+  async read(tenant: TenantContext, holdId: string): Promise<HoldSummary> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const row = await client.hold.findUnique({ where: { id: holdId }, select: HOLD_SUMMARY });
+    if (row === null) throw new NotFoundException('No such hold.');
+    return toSummary(row);
+  }
+
+  /**
+   * Turn `?after=` back into the two values {@link list} pages on.
+   *
+   * A bare hold id is accepted as well as a token we minted, for the reason
+   * `decodeCursor` states: `?after=` was an id before the keyset landed, and a
+   * librarian clicking "Load more" across a deploy must not be handed a 400
+   * halfway down the list. A cursor naming a hold that has since been purged
+   * resolves to `null`, which restarts them at page one — a visible repeat
+   * rather than an error.
+   */
+  private async decodeListCursor(
+    client: ReturnType<TenantPrismaService['getClientV2']>,
+    after: string | undefined,
+  ): Promise<KeysetBoundary | null> {
+    if (after === undefined || after.length === 0) return null;
+    const parts = readKeysetCursor(after, { sortIsDate: true });
+    if (parts) return parts;
+    const row = await client.hold.findUnique({
+      where: { id: after },
+      select: { placedAt: true, id: true },
+    });
+    return row ? { sort: row.placedAt, id: row.id } : null;
+  }
+
+  /**
+   * A state name, as the timestamp predicates that actually define it.
+   *
+   * `suspended` is the only one that needs a clock, and it is written to match
+   * `hold-promotion.ts`'s skip EXACTLY —
+   * `suspended_until IS NOT NULL AND suspended_until >= today` — because a list
+   * that disagreed with the promoter would be a list telling a librarian a
+   * request is paused while a returned copy is being offered to it. Note what
+   * that predicate does NOT cover: a suspension with no end date, which
+   * `SuspendHoldDto` accepts as "until the reader lifts it", is not skipped by
+   * the promoter either, so it is not reported as suspended here. That is a
+   * disagreement between the DTO's docblock and the promoter that predates this
+   * method; the list reports what the queue DOES, and the fix belongs where the
+   * skip is written.
+   *
+   * THE CIVIL DAY NEEDS A ZONE AND A LIST SPANNING BRANCHES HAS NONE. When the
+   * caller has filtered to one pickup branch, that branch's zone is the right
+   * one and the lookup is a primary key read. Otherwise this falls back to UTC,
+   * which for a Greek library can only misjudge a suspension ending TODAY, and
+   * only between 21:00 and midnight UTC — 00:00 to 03:00 in Athens, when the
+   * desk is shut. Every other row is the same either way, because the columns
+   * being compared are civil dates and not instants.
+   */
+  private async stateWhere(
+    client: ReturnType<TenantPrismaService['getClientV2']>,
+    state: HoldListState,
+    pickupBranchId: string | undefined,
+  ): Promise<Record<string, unknown>> {
+    if (state !== 'suspended') return settledStateWhere(state);
+    const branch =
+      pickupBranchId === undefined
+        ? null
+        : await client.branch.findUnique({
+            where: { id: pickupBranchId },
+            select: { timezone: true },
+          });
+    const today = civilToday(this.clock.now(), branch?.timezone ?? 'UTC');
+    return { ...HOLD_IS_OPEN, suspendedUntil: { gte: civilDate(today) } };
+  }
+
   // -------------------------------------------------------------------------
 
   /**
@@ -863,6 +1034,107 @@ export class HoldsService {
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * The nine things a librarian can ask a hold list for (2.0 phase 20a).
+ *
+ * THE VOCABULARY LIVES BESIDE THE PREDICATES THAT IMPLEMENT IT, and it is
+ * imported by `holds.dto.ts` rather than retyped there. A second copy in the
+ * DTO is exactly how a value comes to be ACCEPTED by validation and matched by
+ * nothing: `@IsIn` would pass it, `settledStateWhere` would never have heard of
+ * it, and the answer would be a page of holds in no state the caller asked for.
+ * One list, one switch, and TypeScript's exhaustiveness check between them.
+ *
+ *   open         not fulfilled, not cancelled, not expired — the three NULL
+ *                tests `holds_one_ending` makes meaningful
+ *   waiting      open and no copy set aside yet (`queue_position IS NOT NULL`
+ *                says the same thing, by `holds_position_iff_waiting`)
+ *   in-progress  open, a copy assigned, not yet collectable — in a librarian's
+ *                hand or in a van. The gap `/holds/in-progress` already names
+ *   ready        open and collectable: on the shelf, waiting for a name
+ *   suspended    open and inside a live suspension window
+ *   fulfilled    collected
+ *   cancelled    called off
+ *   expired      never collected, or never filled — `expired_kind` says which
+ *   closed       any of the last three. One row can only be in one of them,
+ *                because `holds_one_ending` allows at most one ending
+ */
+export const HOLD_LIST_STATES = [
+  'open',
+  'waiting',
+  'in-progress',
+  'ready',
+  'suspended',
+  'fulfilled',
+  'cancelled',
+  'expired',
+  'closed',
+] as const;
+
+export type HoldListState = (typeof HOLD_LIST_STATES)[number];
+
+/** What the hold list accepts. Validated by `HoldListQueryDto`. */
+export type HoldListOptions = {
+  readonly patronId?: string;
+  readonly bibId?: string;
+  readonly pickupBranchId?: string;
+  readonly state?: HoldListState;
+  readonly after?: string;
+  readonly limit?: number;
+};
+
+/**
+ * "Open", spelled the one way this schema spells it.
+ *
+ * Three NULL tests and never a status comparison — the measurement is in
+ * `45-items.prisma` and in the holds migration's own header: the parameterised
+ * enum predicate seq-scans at 1470 buffers against 2 for this, still seq-scans
+ * with `enable_seqscan = off`, and raises `42P10` as an `ON CONFLICT` arbiter.
+ */
+const HOLD_IS_OPEN = { fulfilledAt: null, cancelledAt: null, expiredAt: null } as const;
+
+/**
+ * Every state whose predicate is pure — which is all of them but `suspended`,
+ * the one that has to know what day it is in some branch's zone.
+ *
+ * `Exclude<HoldListState, 'suspended'>` rather than a `default:` arm, so adding
+ * a tenth state to {@link HOLD_LIST_STATES} fails the typecheck here instead of
+ * quietly falling through to an unfiltered page — which reads at a desk as a
+ * filter that does nothing rather than as a bug.
+ */
+function settledStateWhere(state: Exclude<HoldListState, 'suspended'>): Record<string, unknown> {
+  switch (state) {
+    case 'open':
+      return { ...HOLD_IS_OPEN };
+    case 'waiting':
+      return { ...HOLD_IS_OPEN, assignedItemId: null };
+    case 'in-progress':
+      // `awaiting_pickup_since IS NULL` is the whole of "not collectable yet",
+      // and `holds_collectable_implies_assigned` is why it can be read that
+      // simply: a hold cannot be on a shelf without a copy on it.
+      return { ...HOLD_IS_OPEN, assignedItemId: { not: null }, awaitingPickupSince: null };
+    case 'ready':
+      return { ...HOLD_IS_OPEN, awaitingPickupSince: { not: null } };
+    case 'fulfilled':
+      return { fulfilledAt: { not: null } };
+    case 'cancelled':
+      return { cancelledAt: { not: null } };
+    case 'expired':
+      return { expiredAt: { not: null } };
+    case 'closed':
+      // Top-level `OR`, which Prisma ANDs with everything else in the `where` —
+      // including the keyset clauses under `AND`. The three cannot be collapsed
+      // into one column test, because "closed" is precisely the absence of the
+      // status column this table does not have.
+      return {
+        OR: [
+          { fulfilledAt: { not: null } },
+          { cancelledAt: { not: null } },
+          { expiredAt: { not: null } },
+        ],
+      };
+  }
+}
 
 export const HOLD_SUMMARY = {
   id: true,

@@ -1,4 +1,14 @@
-import { Body, Controller, Get, HttpCode, Inject, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Inject,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { validateDto } from '../auth/validate-dto.js';
 import { RequirePermission } from '../authz/permission.decorator.js';
 import { PermissionGuard } from '../authz/permission.guard.js';
@@ -13,6 +23,7 @@ import { ReceiptsService } from './receipts.service.js';
 import {
   ChargeFeeDto,
   CloseDrawerDto,
+  FeeListQueryDto,
   OpenDrawerDto,
   RefundFeesDto,
   SettleFeesDto,
@@ -44,6 +55,45 @@ export class FeesController {
     @Inject(CashDrawerService) private readonly drawers: CashDrawerService,
     @Inject(ReceiptsService) private readonly receipts: ReceiptsService,
   ) {}
+
+  /**
+   * One patron's fees, or one loan's (2.0 phase 20a).
+   *
+   * Declared FIRST among the GETs. `@Get()` matches the empty path and cannot be
+   * shadowed, so this is convention rather than necessity here — but `@Get(':id')`
+   * at the foot of this class is neither, and the two are read together.
+   *
+   * `circ.fee.read` — the SAME key that already guards `balances` and the receipt
+   * reprint. A member of staff who may see what a reader owes may see the charges
+   * that add up to it; inventing `circ.fee.list` would mean editing all four role
+   * templates, and `permissions.test.ts` asserts owner's key count against
+   * `PERMISSION_KEYS.length` and the strict volunteer ⊂ librarian ⊂ admin ⊂ owner
+   * nesting, so a new key is four edits and a fixture, for no new decision.
+   *
+   * NO TENANT-WIDE SUMMARY IN THE ENVELOPE. 1.0's fines list attached one — an
+   * unindexed aggregate over every fine in the library, recomputed on EVERY
+   * request no matter how the list was filtered, and carrying a single scalar
+   * `currency` that is a lie in any library with two. What a patron owes is
+   * `GET fees/balances/:patronId`, which answers PER CURRENCY and is the one
+   * aggregate this module has; asking for it is a second request, and a second
+   * request is cheaper than a whole-table scan attached to every first one.
+   */
+  @RequirePermission('circ.fee.read')
+  @Get()
+  async list(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {
+    const q = await validateDto(FeeListQueryDto, rawQuery ?? {});
+    return this.fees.list(tenant, {
+      patronId: q.patronId,
+      loanId: q.loanId,
+      status: q.status,
+      // Presence is the signal. The DTO already refused everything but '1' and
+      // 'true', so there is no string here that could mean "no" — which is the
+      // whole reason it is not a boolean.
+      includeArchived: q.includeArchived !== undefined,
+      after: q.after,
+      limit: q.limit,
+    });
+  }
 
   /** What a patron owes, PER CURRENCY. A set of rows, never a scalar. */
   @RequirePermission('circ.fee.read')
@@ -235,5 +285,20 @@ export class FeesController {
       contentType: out.contentType,
       body: out.bytes.toString('utf8'),
     };
+  }
+
+  /**
+   * One fee.
+   *
+   * DECLARED LAST, and it has to be. `@Get(':id')` matches a single path
+   * segment, so it cannot swallow `balances/:patronId` or `receipts/:id`, which
+   * are two — but the next literal one-segment GET added to this controller
+   * would be swallowed if it were declared below this line, and the only defence
+   * against that is that there is nothing below this line.
+   */
+  @RequirePermission('circ.fee.read')
+  @Get(':id')
+  async read(@TenantCtx() tenant: TenantContext, @Param('id') feeId: string) {
+    return this.fees.read(tenant, feeId);
   }
 }

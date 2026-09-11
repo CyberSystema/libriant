@@ -24,6 +24,7 @@ import { PATRON_DATA_TABLES } from './patron-data-map.js';
 import {
   ClearBlockDto,
   CreatePatronDto,
+  ListPatronsQueryDto,
   MergePatronsDto,
   PlaceBlockDto,
   ReplaceCardDto,
@@ -50,6 +51,43 @@ export class PatronsController {
     @Inject(PatronBlocksService) private readonly blocks: PatronBlocksService,
     @Inject(TenantClockService) private readonly clock: TenantClockService,
   ) {}
+
+  /**
+   * The roster (2.0 phase 20a).
+   *
+   * Declared FIRST among the GETs. `@Get()` matches the empty path and cannot
+   * be shadowed by a sibling, and this controller has no `@Get(':id')` at all
+   * today — but `by-card` and `data-map` are literal paths that WOULD be
+   * swallowed by one, so the ordering convention is worth keeping visible on
+   * the day somebody adds it.
+   *
+   * `patron.read`, the key the whole read surface already uses — `by-card`,
+   * `:id/desk` and `:id/blocks` are all behind it. No new permission:
+   * `permissions.test.ts` asserts that the owner template's count equals
+   * `PERMISSION_KEYS.length` and that volunteer ⊆ librarian ⊆ admin ⊆ owner
+   * strictly, so inventing `patron.list` means editing all four templates for a
+   * distinction nobody has asked for — a librarian who may open a patron may
+   * list patrons. Note what that DOES mean: `patron.read` is in the volunteer
+   * template, so a volunteer can page this roster, which is why `staff_notes`
+   * is not among the columns `PatronsService.list` selects.
+   */
+  @RequirePermission('patron.read')
+  @Get()
+  async list(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {
+    const q = await validateDto(ListPatronsQueryDto, rawQuery ?? {});
+    return this.patrons.list(tenant, {
+      q: q.q,
+      status: q.status,
+      after: q.after,
+      limit: q.limit,
+      // THE ONE PLACE the string becomes a boolean. The DTO accepts only `'1'`
+      // and `'true'` because `class-transformer` turns the string `"false"`
+      // into `true`; converting here, once, by PRESENCE rather than by value
+      // means no later reader has to wonder whether some other spelling leaks
+      // through and switches the archive on.
+      includeArchived: q.includeArchived !== undefined,
+    });
+  }
 
   @RequirePermission('patron.write')
   @Post()

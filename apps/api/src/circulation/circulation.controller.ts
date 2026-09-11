@@ -23,7 +23,13 @@ import { CheckinService } from './checkin.service.js';
 import { CheckoutService } from './checkout.service.js';
 import { LoanReadService } from './loan-read.service.js';
 import { RenewService } from './renew.service.js';
-import { CheckinDto, CheckoutDto, RenewDto, RenewManyDto } from './circulation.dto.js';
+import {
+  CheckinDto,
+  CheckoutDto,
+  LoanListQueryDto,
+  RenewDto,
+  RenewManyDto,
+} from './circulation.dto.js';
 
 /**
  * The circulation desk (2.0 phase 16).
@@ -155,6 +161,60 @@ export class CirculationController {
   @Get('patrons/:patronId/loans')
   async openLoans(@TenantCtx() tenant: TenantContext, @Param('patronId') patronId: string) {
     return this.loans.openLoansFor(tenant, patronId);
+  }
+
+  /**
+   * The loan list (2.0 phase 20a).
+   *
+   *   GET /t/:slug/circulation/loans?patronId=&itemId=&bibId=&status=&overdue=1&after=&limit=
+   *
+   * `circ.loan.read` — the key this controller's other four reads already use.
+   * No new permission: a librarian who may open one loan may list loans, and
+   * minting `circ.loan.list` would mean editing all four role templates
+   * (`permissions.test.ts` asserts owner's count equals `PERMISSION_KEYS.length`
+   * and enforces volunteer ⊂ librarian ⊂ admin ⊂ owner) for a distinction
+   * nobody has asked for.
+   *
+   * ## The prefix this controller shares
+   *
+   * `t/:slug/circulation` is ALSO `PolicyController`'s prefix, and that
+   * controller mounts `explain`, `preview`, `policy`, `policy/seed`, `rules`,
+   * `rules/:id` and `mode`. None of them is `loans`, and none of them is a
+   * one-segment wildcard, so `loans` cannot be swallowed by a policy route or
+   * swallow one. Within THIS controller the route is declared before
+   * `@Get('loans/:id')` — Nest matches in declaration order, and while a
+   * one-segment path cannot be captured by a two-segment pattern, the ordering
+   * is the same convention `renew-many` follows above and is worth keeping
+   * visible rather than re-derived.
+   */
+  @RequirePermission('circ.loan.read')
+  @Get('loans')
+  async loanList(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {
+    const q = await validateDto(LoanListQueryDto, rawQuery ?? {});
+    const overdue = q.overdue !== undefined;
+    if (overdue && q.status !== undefined && q.status !== 'active') {
+      // A contradiction, refused rather than resolved. `?overdue=1` IS
+      // `status='active'`, so pairing it with any other status can only return
+      // nothing — and an empty page reads at a desk as "nothing is overdue",
+      // which is the one answer a work queue must never give wrongly.
+      throw new BadRequestException(
+        `overdue=1 is the active-and-past-due queue, so it cannot also ask for status=` +
+          `${q.status}. Drop one of the two: that pair matches no loan that can exist.`,
+      );
+    }
+    return this.loans.list(tenant, {
+      ...(q.patronId === undefined ? {} : { patronId: q.patronId }),
+      ...(q.itemId === undefined ? {} : { itemId: q.itemId }),
+      ...(q.bibId === undefined ? {} : { bibId: q.bibId }),
+      ...(q.status === undefined ? {} : { status: q.status }),
+      ...(q.after === undefined ? {} : { after: q.after }),
+      ...(q.limit === undefined ? {} : { limit: q.limit }),
+      overdue,
+      // Read ONCE, here, and passed down — the same seam `overdue()` below
+      // uses. A cut-off re-read inside the query could move between the keyset
+      // boundary and the page, which shows a loan on two consecutive pages.
+      asOf: this.clock.now(),
+    });
   }
 
   /** Everything overdue, oldest first. The morning list. */

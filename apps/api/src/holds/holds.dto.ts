@@ -1,5 +1,6 @@
 import { Transform } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
+import { HOLD_LIST_STATES, type HoldListState } from './holds.service.js';
 
 const trim = () =>
   Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value));
@@ -84,6 +85,62 @@ export class HoldShelfQueryDto {
   @Min(1)
   @Max(1000)
   take?: number;
+}
+
+/**
+ * A query-string integer, which is the only kind there is (2.0 phase 20a).
+ *
+ * A query string has no types: `?limit=25` arrives as the STRING `'25'`, and
+ * `validateDto` runs `enableImplicitConversion: false` deliberately, so `@IsInt`
+ * alone would reject every page size a client could possibly send. The transform
+ * ahead of it is what makes the declared `number` true.
+ *
+ * `Number('')` is 0 and `Number('abc')` is NaN, so a blank param becomes
+ * `undefined` and lets the default stand, while a non-numeric one becomes NaN
+ * and is REFUSED by `@IsInt` — rather than reaching Prisma as `take: NaN`,
+ * which is a 500 with nothing in it that names the bad parameter.
+ */
+const toInt = () =>
+  Transform(({ value }: { value: unknown }) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.trunc(n) : Number.NaN;
+  });
+
+/**
+ * The hold list's query string (2.0 phase 20a).
+ *
+ * `validateDto` runs `whitelist: true, forbidNonWhitelisted: true`, so a
+ * parameter not declared here is a 400 rather than a silently ignored extra —
+ * which is the right way round, because a mistyped filter that quietly returned
+ * every hold in the library is the failure a librarian cannot see.
+ *
+ * There is no `q`. Nothing on `holds` is text a person would search: the reader
+ * and the record are named by id, and searching them by NAME is a search of
+ * `patrons` or `bib_records` whose answer is then a filter here. Adding a `q`
+ * that did a join would be a second patron search with different rules from the
+ * one phase 14 already owns.
+ */
+export class HoldListQueryDto {
+  @IsOptional() @IsString() @Length(1, 64) patronId?: string;
+  @IsOptional() @IsString() @Length(1, 64) bibId?: string;
+  @IsOptional() @IsString() @Length(1, 64) pickupBranchId?: string;
+
+  /**
+   * One of the nine derived states, spelled once in `holds.service.ts`.
+   *
+   * NOT a boolean `includeClosed`, which is what `PatronHoldsQueryDto` has and
+   * what a list wants one more of every time somebody adds a tab. `state=closed`
+   * says the same thing and leaves room for the eight answers a boolean cannot
+   * give — and it sidesteps the `"false"`-is-truthy trap that forces every
+   * boolean query param in this codebase to be `@IsIn(['1'])`.
+   */
+  @IsOptional() @IsIn(HOLD_LIST_STATES) state?: HoldListState;
+
+  /** An opaque token from a previous page, or (still) a bare hold id. */
+  @IsOptional() @IsString() @Length(1, 512) after?: string;
+
+  @IsOptional() @toInt() @IsInt() @Min(1) limit?: number;
 }
 
 export class PatronHoldsQueryDto {

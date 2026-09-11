@@ -154,6 +154,63 @@ export class ShelfListQueryDto {
   take?: number;
 }
 
+/**
+ * A query-string integer (2.0 phase 20a).
+ *
+ * NUMBERS ARRIVE AS STRINGS. `validateDto` runs `enableImplicitConversion:
+ * false` on purpose, so `@IsInt` alone rejects `?limit=25` outright and the
+ * declared type is a lie without a transform ahead of it.
+ *
+ * Blank is `undefined` rather than `0`: `?limit=` is what an empty form field
+ * and a cleared query param both send, and `Number('')` is 0, which would fail
+ * `@Min(1)` and answer a 400 to a caller who asked for nothing in particular.
+ * Anything else non-numeric stays `NaN` so `@IsInt` refuses it — never
+ * `undefined`, which would silently substitute the default for a typo.
+ *
+ * `ShelfListQueryDto` below keeps its own inline transform. It is a different
+ * decision (blank is a 400 there) on a route with a frozen query plan that
+ * `items.spec.ts` asserts, and retrofitting it would change an answer nobody
+ * asked to change.
+ */
+const toInt = () =>
+  Transform(({ value }: { value: unknown }) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.trunc(n) : Number.NaN;
+  });
+
+/**
+ * The copies list's query string (2.0 phase 20a).
+ *
+ * `bibId` is REQUIRED, and its absence is a 400 rather than a library-wide copy
+ * list: nothing indexes one, no screen wants one, and `ItemsService.copies`
+ * carries the argument. `validateDto` runs `forbidNonWhitelisted`, so a filter
+ * that is not declared here is refused rather than ignored — a typo in a
+ * parameter quietly returning the unfiltered list is the worse failure.
+ */
+export class ItemListQueryDto {
+  @IsString() @Length(1, 64) bibId!: string;
+
+  /** An opaque token from a previous page, or (still) a bare item id. */
+  @IsOptional() @IsString() @Length(1, 512) after?: string;
+
+  @IsOptional() @toInt() @IsInt() @Min(1) limit?: number;
+}
+
+/**
+ * The barcode a scanner just read (2.0 phase 20a).
+ *
+ * Trimmed here, then folded and uppercased in the service: the normalisation is
+ * the items-side rule, on `barcode_norm`, and it is deliberately not the
+ * patron-card one. 64 characters is the widest thing a library puts on a spine —
+ * a 14-digit ISO 28560 tag and a legacy Greek accession number both fit several
+ * times over — and it is bounded so the parameter cannot become a place to
+ * smuggle a payload.
+ */
+export class ItemByBarcodeQueryDto {
+  @trim() @IsString() @Length(1, 64) barcode!: string;
+}
+
 export class CreateStatusReasonDto {
   @trim() @IsString() @Length(1, 64) code!: string;
   @trim() @IsString() @Length(1, 200) name!: string;

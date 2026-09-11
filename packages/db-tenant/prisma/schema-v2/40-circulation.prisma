@@ -263,6 +263,19 @@ model Loan {
   customFields Json @default("{}") @db.JsonB @map("custom_fields")
 
   @@index([status, dueAt, id], map: "loans_status_due_id_idx")
+  /// The three orders `GET /t/:slug/circulation/loans` pages over (2.0 phase
+  /// 20a). Ascending though the list sorts descending: a btree is scanned
+  /// backwards just as cheaply, and only a MIXED order would need an explicit
+  /// direction. Measured on 200,000 rows, the deep page is 4 buffers with the
+  /// first of these and 1,339 with none of them.
+  ///
+  /// The patron and item ones are not covered by the partial indexes that
+  /// already exist: `loans_patron_open_idx` and `loans_one_open_per_item` are
+  /// both `WHERE closed_at IS NULL`, so they answer "what is out" and cannot
+  /// answer "what was ever borrowed", which is the history screen.
+  @@index([loanedAt, id], map: "loans_loaned_at_id_idx")
+  @@index([patronId, loanedAt, id], map: "loans_patron_loaned_idx")
+  @@index([itemId, loanedAt, id], map: "loans_item_loaned_idx")
   @@index([bibId])
   @@map("loans")
 }

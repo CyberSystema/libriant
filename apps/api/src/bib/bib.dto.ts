@@ -270,3 +270,47 @@ export class AcquireLockDto extends LockSessionDto {
   @Length(8, 100)
   seenSessionId?: string;
 }
+
+/**
+ * The catalogue list's query string (2.0 phase 20a).
+ *
+ * `validateDto` runs with `whitelist: true, forbidNonWhitelisted: true`, so a
+ * parameter that is not declared here is a 400 rather than an ignored extra.
+ * That is the right default — a typo in a filter silently returning the
+ * unfiltered catalogue is worse than an error — but it means this class is a
+ * promise about what callers may send, and adding a filter to a screen means
+ * adding it here in the same change.
+ *
+ * NUMBERS ARRIVE AS STRINGS. A query string has no types, so `@IsInt` alone
+ * rejects `?limit=25` outright; the `@Transform` ahead of it is what makes the
+ * declared type true. `Number('')` is 0 and `Number('abc')` is NaN, so the
+ * transform maps anything non-finite to `undefined` and lets the default stand
+ * rather than letting NaN reach Prisma as `take: NaN`.
+ */
+const toInt = () =>
+  Transform(({ value }) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.trunc(n) : Number.NaN;
+  });
+
+export class BibListQueryDto {
+  /**
+   * The search term, folded and measured server-side.
+   *
+   * Not `@Length(3, …)`: a two-character term is a legitimate request that gets
+   * a documented "keep typing" answer carrying `minQueryChars`, not a 400. The
+   * floor is a search policy, and policies belong in the service where the
+   * answer can explain itself.
+   */
+  @IsOptional() @trim() @IsString() @Length(1, 200) q?: string;
+
+  /** An opaque token from a previous page, or (still) a bare bib id. */
+  @IsOptional() @IsString() @Length(1, 512) after?: string;
+
+  @IsOptional() @toInt() @IsInt() @Min(1) limit?: number;
+
+  /** Inclusive publication-year bounds. `@db.SmallInt`, hence the range. */
+  @IsOptional() @toInt() @IsInt() @Min(-9999) yearFrom?: number;
+  @IsOptional() @toInt() @IsInt() @Min(-9999) yearTo?: number;
+}

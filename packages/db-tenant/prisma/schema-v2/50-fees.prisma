@@ -99,6 +99,12 @@ model Fee {
 
   @@index([patronId, status])
   @@index([loanId])
+  /// `GET /t/:slug/fees`, which REQUIRES one of patronId or loanId (2.0 phase
+  /// 20a) — so both get an index. The two above carry no sort column and stay
+  /// for what they are good at: the outstanding-balance predicate the desk
+  /// asks on every checkout is an equality on both columns and not a list.
+  @@index([patronId, createdAt, id], map: "fees_patron_created_idx")
+  @@index([loanId, createdAt, id], map: "fees_loan_created_idx")
   @@map("fees")
 }
 

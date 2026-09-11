@@ -24,6 +24,7 @@ import {
   CancelHoldDto,
   CreateHoldGroupDto,
   FetchHoldDto,
+  HoldListQueryDto,
   HoldShelfQueryDto,
   PatronHoldsQueryDto,
   PlaceHoldDto,
@@ -78,6 +79,27 @@ export class HoldsController {
   }
 
   /**
+   * The hold list — filter, page (2.0 phase 20a).
+   *
+   * `circ.hold.read`, the key the five reads below already use. A librarian who
+   * may open the hold shelf may list holds, and there is no such thing as a
+   * hold they may see on one screen and not on another; inventing
+   * `circ.hold.list` would mean editing all four role templates for a
+   * distinction no library makes, and `permissions.test.ts` asserts owner's key
+   * count equals `PERMISSION_KEYS.length` precisely so that cost is visible.
+   *
+   * Declared FIRST among the GETs. `@Get()` matches the empty path and cannot
+   * be shadowed by `@Get(':id')`, so this is convention rather than necessity —
+   * but the convention is what makes the ordering rule below readable.
+   */
+  @RequirePermission('circ.hold.read')
+  @Get()
+  async list(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {
+    const q = await validateDto(HoldListQueryDto, rawQuery ?? {});
+    return this.holds.list(tenant, q);
+  }
+
+  /**
    * The pull list, the shelf and the in-between.
    *
    * All three declared BEFORE `:id`, because Nest matches routes in declaration
@@ -118,6 +140,22 @@ export class HoldsController {
   @Get('queue/:bibId')
   async queue(@TenantCtx() tenant: TenantContext, @Param('bibId') bibId: string) {
     return this.holds.queueFor(tenant, bibId);
+  }
+
+  /**
+   * One request.
+   *
+   * LAST among the GETs, and that is the whole of the comment: `:id` matches any
+   * single segment, so declared any earlier it would swallow `pull-list`,
+   * `shelf`, `in-progress` and `for-patron` — each of which would then answer
+   * "No such hold" for a route that exists, which is the kind of 404 nobody
+   * debugs because it reads like missing data. (`queue/:bibId` is two segments
+   * and could not collide; it is above for symmetry, not for safety.)
+   */
+  @RequirePermission('circ.hold.read')
+  @Get(':id')
+  async read(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
+    return this.holds.read(tenant, id);
   }
 
   // -------------------------------------------------------------------------

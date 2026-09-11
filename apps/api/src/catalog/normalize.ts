@@ -1,4 +1,5 @@
 import { SEARCH_MIN_CHARS } from '@libriant/shared';
+import { classifySearchTerm as sharedClassify, type SearchTerm } from '@libriant/shared/search';
 import { foldGreek } from '@libriant/shared/greek';
 
 /**
@@ -99,17 +100,15 @@ export { SEARCH_MIN_CHARS };
  * Counted in code points, not UTF-16 units, so a three-character Greek term is
  * three characters here as well.
  */
-export type SearchTerm =
-  { kind: 'none' } | { kind: 'short'; minChars: number } | { kind: 'term'; value: string };
+export type { SearchTerm };
 
+/**
+ * The implementation moved to `@libriant/shared/search` in 2.0 phase 20a, ahead
+ * of the cutover that deletes this module. This is a thin forward so the two
+ * surviving callers keep working unchanged until phase 20b repoints them.
+ */
 export function classifySearchTerm(q: string | null | undefined): SearchTerm {
-  if (q === null || q === undefined) return { kind: 'none' };
-  const normalized = normalizeText(q);
-  if (normalized.length === 0) return { kind: 'none' };
-  if ([...normalized].length < SEARCH_MIN_CHARS) {
-    return { kind: 'short', minChars: SEARCH_MIN_CHARS };
-  }
-  return { kind: 'term', value: normalized };
+  return sharedClassify(q, normalizeText);
 }
 
 /** Strip everything that's not a digit (or X for ISBN-10). */

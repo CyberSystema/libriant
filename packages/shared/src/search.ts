@@ -56,3 +56,44 @@ export interface SearchCapabilities {
 export function minCharsFor(capabilities: SearchCapabilities): number {
   return capabilities.invertedIndex ? SEARCH_MIN_CHARS_INDEXED : SEARCH_MIN_CHARS;
 }
+
+/**
+ * What a caller's query string is, once it has been folded and measured.
+ *
+ * Moved here from `apps/api/src/catalog/normalize.ts` by 2.0 phase 20a, ahead of
+ * the cutover that deletes that module. Two of its three consumers —
+ * `customization/collection-records.service.ts` and `import/engine/import-engine.ts`
+ * — survive 1.0, so the classifier could not simply go with it, and the 2.0 list
+ * endpoints need the same floor for the same reason.
+ *
+ * It belongs beside `SEARCH_MIN_CHARS` rather than in the API for the reason
+ * that constant is here at all: it is a CONTRACT between the endpoint and the
+ * UI, and the two drifted once already.
+ */
+export type SearchTerm =
+  { kind: 'none' } | { kind: 'short'; minChars: number } | { kind: 'term'; value: string };
+
+/**
+ * Fold a query and decide whether it is long enough to look for.
+ *
+ * `short` is NOT "no results": it is "keep typing", and the endpoints return it
+ * as `minQueryChars` so the UI can say so. Answering an unfiltered page instead
+ * would hand back the whole catalogue for "ab", which reads as a broken filter;
+ * answering an empty one with no explanation reads as "the book is not here",
+ * which is a lie about a book that is on the shelf.
+ *
+ * Counted in CODE POINTS, not UTF-16 units, so a three-character Greek term is
+ * three characters here too.
+ */
+export function classifySearchTerm(
+  q: string | null | undefined,
+  fold: (s: string) => string,
+): SearchTerm {
+  if (q === null || q === undefined) return { kind: 'none' };
+  const normalized = fold(q);
+  if (normalized.length === 0) return { kind: 'none' };
+  if ([...normalized].length < SEARCH_MIN_CHARS) {
+    return { kind: 'short', minChars: SEARCH_MIN_CHARS };
+  }
+  return { kind: 'term', value: normalized };
+}

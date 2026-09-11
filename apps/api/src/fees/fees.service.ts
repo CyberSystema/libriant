@@ -8,6 +8,154 @@ import { TenantClockService } from '../policy/tenant-clock.service.js';
 import { acquireLocks, lockKey } from '../platform/locks.js';
 import { postJournalWithin, type LedgerAccount } from './ledger.js';
 import { planRefund, planSettlement, type Allocation } from './fee-settlement.js';
+import {
+  clampLimit,
+  keysetCursorValues,
+  keysetPredicate,
+  pageOf,
+  readKeysetCursor,
+  type KeysetBoundary,
+  type ListResult,
+} from '../platform/list.js';
+
+/** What the fee list accepts. Validated by `FeeListQueryDto`. */
+export type FeeListOptions = {
+  readonly patronId?: string;
+  readonly loanId?: string;
+  readonly status?: string;
+  readonly includeArchived?: boolean;
+  readonly after?: string;
+  readonly limit?: number;
+};
+
+/**
+ * One row of the fee list.
+ *
+ * `id` is a literal `string` because `DataTable` is `T extends { id: string }`
+ * and uses it as the React key; a row without one renders as a list of
+ * identical children and React reconciles the wrong one on every update.
+ *
+ * SIX AMOUNTS, ALL STRINGS, ONE CURRENCY EACH. `owedCents` is the generated
+ * column and the only number a reader should act on; the five counters beside it
+ * are there so a receipt or a dispute can show how it got there, and they are
+ * paired with `currency` on the SAME row rather than with a list-wide scalar —
+ * a patron with EUR and GBP charges has two of these rows and no single currency
+ * between them.
+ */
+export type FeeListRow = {
+  readonly id: string;
+  readonly patronId: string;
+  readonly branchId: string;
+  readonly loanId: string | null;
+  readonly itemId: string | null;
+  readonly holdId: string | null;
+  readonly currency: string;
+  readonly amountCents: string;
+  readonly taxCents: string;
+  readonly paidCents: string;
+  readonly waivedCents: string;
+  readonly writtenOffCents: string;
+  readonly owedCents: string;
+  readonly status: string;
+  readonly isAccruing: boolean;
+  readonly reason: string;
+  readonly createdAt: Date;
+  readonly closedAt: Date | null;
+  readonly archivedAt: Date | null;
+  readonly feeType: {
+    readonly id: string;
+    readonly code: string;
+    readonly name: string;
+    readonly category: string;
+  };
+};
+
+/**
+ * One fee in full: the list row plus the three columns the list refuses to
+ * carry, and the account the charge posted to.
+ *
+ * `accrualPolicy` is NOT here. It is the resolved policy snapshot an accrual was
+ * computed from — phase 13's `explain` surface owns rendering that, and a jsonb
+ * blob whose shape is the resolver's private business would become a public
+ * contract the moment a screen read a field out of it. `isAccruing` and
+ * `accruedThrough` are the two facts a reader of a fee actually needs.
+ */
+export type FeeRead = FeeListRow & {
+  readonly accountId: string;
+  readonly bookingId: string | null;
+  readonly accruedThrough: Date | null;
+  readonly notes: string | null;
+  readonly customFields: unknown;
+};
+
+type ClientV2 = ReturnType<TenantPrismaService['getClientV2']>;
+
+/**
+ * The columns a list row is built from — declared structurally rather than as
+ * `Prisma.FeeGetPayload<…>` so this file needs no generated-type import. The
+ * enum columns arrive as string unions and narrow into `string` on their own.
+ */
+type FeeColumns = {
+  id: string;
+  patronId: string;
+  branchId: string;
+  loanId: string | null;
+  itemId: string | null;
+  holdId: string | null;
+  currency: string;
+  amountCents: bigint;
+  taxCents: bigint;
+  paidCents: bigint;
+  waivedCents: bigint;
+  writtenOffCents: bigint;
+  status: string;
+  isAccruing: boolean;
+  reason: string;
+  createdAt: Date;
+  closedAt: Date | null;
+  archivedAt: Date | null;
+  feeType: { id: string; code: string; name: string; category: string };
+};
+
+/**
+ * The list's column list, named so it cannot drift from {@link FeeColumns}.
+ *
+ * `accrualPolicy`, `customFields` and `notes` are absent on purpose — see
+ * `FeesService.list`. `feeType` is a nested explicit select and not an
+ * `include`, because an `include` would pull every column of `fee_types` to
+ * render a code and a name.
+ */
+const FEE_LIST_SELECT = {
+  id: true,
+  patronId: true,
+  branchId: true,
+  loanId: true,
+  itemId: true,
+  holdId: true,
+  currency: true,
+  amountCents: true,
+  taxCents: true,
+  paidCents: true,
+  waivedCents: true,
+  writtenOffCents: true,
+  status: true,
+  isAccruing: true,
+  reason: true,
+  createdAt: true,
+  closedAt: true,
+  archivedAt: true,
+  feeType: { select: { id: true, code: true, name: true, category: true } },
+} as const;
+
+/** One fee: the list's columns, plus the ones a single row can afford. */
+const FEE_READ_SELECT = {
+  ...FEE_LIST_SELECT,
+  accountId: true,
+  bookingId: true,
+  accruedThrough: true,
+  notes: true,
+  customFields: true,
+} as const;
 
 /**
  * What a borrower owes, and the record of what happened to it (2.0 phase 18).
@@ -87,6 +235,213 @@ export class FeesService {
        GROUP BY currency
        ORDER BY currency`;
     return rows.map((r) => ({ currency: r.currency, owedCents: BigInt(r.owed) }));
+  }
+
+  /**
+   * The fee list — one patron's ledger, or one loan's (2.0 phase 20a).
+   *
+   * ## It refuses to list the whole ledger, and that refusal is the design
+   *
+   * `patronId` or `loanId` is REQUIRED. 1.0's fines list made both optional and
+   * answered an unfiltered request with a parallel sequential scan of every fine
+   * in the library plus a top-N heapsort — measured at 14.513 ms on page one of
+   * 150,000 rows, before the row count that a library reaches in year three.
+   * There is no screen that asks "show me every debt this library has ever
+   * raised", so the query that serves it is pure cost, and the honest answer to
+   * a caller who asks for it is a 400 that says what to filter by.
+   *
+   * The check lives here rather than in `FeeListQueryDto` because it is a
+   * statement about the indexes, not about the shape of either field, and every
+   * caller has to obey it — including the next one, which will not be HTTP.
+   *
+   * ## The sort walks an index that does not exist yet
+   *
+   * `(created_at DESC, id DESC)` under a `patron_id` or `loan_id` equality. The
+   * indexes present today are `(patron_id, status)`, `(loan_id)` and the partial
+   * `fees_owing_idx (patron_id, currency) WHERE closed_at IS NULL`; none of them
+   * carries `created_at`, so Postgres filters on the patron and then SORTS. That
+   * is survivable for a reader with nine fines and is not survivable for the
+   * account that has accrued a fine a night for two years. Phase 20a does not
+   * ship a migration; the operator adds
+   *   CREATE INDEX fees_patron_created_idx ON lbr2.fees (patron_id, created_at DESC, id DESC);
+   *   CREATE INDEX fees_loan_created_idx   ON lbr2.fees (loan_id,   created_at DESC, id DESC);
+   * and the keyset predicate below becomes a start key instead of a filter.
+   *
+   * ## `direction: 'desc'` is not decoration
+   *
+   * It has to agree with the `orderBy` two lines under it. An ascending
+   * predicate against a descending order returns the rows BEFORE the cursor, so
+   * "Load more" walks back towards page one and the reader never reaches the end
+   * of their own fines. Nothing throws; the list simply loops.
+   */
+  async list(tenant: TenantContext, opts: FeeListOptions = {}): Promise<ListResult<FeeListRow>> {
+    const patronId = opts.patronId ?? null;
+    const loanId = opts.loanId ?? null;
+    if (patronId === null && loanId === null) {
+      throw new BadRequestException('A fee list must be scoped to a patron or to a loan.');
+    }
+
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const limit = clampLimit(opts.limit);
+
+    const where: Record<string, unknown> = {};
+    if (patronId !== null) where['patronId'] = patronId;
+    if (loanId !== null) where['loanId'] = loanId;
+    if (opts.status !== undefined) where['status'] = opts.status;
+    // Soft-deleted rows are hidden unless asked for. `owed_cents` already reads
+    // `archived_at`, so an archived fee reports 0 owed; showing it beside live
+    // debts with no explanation is how a desk chases money the library dropped.
+    if (opts.includeArchived !== true) where['archivedAt'] = null;
+
+    const after = await this.decodeListCursor(client, opts.after);
+    if (after) {
+      where['AND'] = keysetPredicate({ sortField: 'createdAt', direction: 'desc', after });
+    }
+
+    // EXPLICIT SELECT. `accrual_policy` and `custom_fields` are jsonb and
+    // `notes` is unbounded text; a default `findMany` would select all three and
+    // put a TOAST read on every row of every page of a screen that shows none of
+    // them. They are what `read()` is for.
+    const rows = await client.fee.findMany({
+      where: where as never,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      select: FEE_LIST_SELECT,
+    });
+
+    const owed = await this.owedFor(
+      client,
+      rows.map((r) => r.id),
+    );
+
+    return pageOf(
+      rows,
+      limit,
+      (r) => this.toListRow(r, owed.get(r.id)),
+      (r) => keysetCursorValues(r.createdAt, r.id),
+    );
+  }
+
+  /**
+   * One fee, including the three columns the list deliberately leaves behind.
+   *
+   * An ARCHIVED fee is returned rather than 404'd. A librarian who followed a
+   * link to a specific id is asking what happened to that charge, and "it does
+   * not exist" is a false answer to that question — `archivedAt` on the row is
+   * the true one. The list is where archiving hides things, because that is
+   * where a reader would otherwise be shown a filed-away debt they did not ask
+   * about.
+   */
+  async read(tenant: TenantContext, feeId: string): Promise<FeeRead> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const row = await client.fee.findUnique({ where: { id: feeId }, select: FEE_READ_SELECT });
+    if (row === null) throw new NotFoundException(`No fee with id ${feeId}.`);
+
+    const owed = await this.owedFor(client, [row.id]);
+    return {
+      ...this.toListRow(row, owed.get(row.id)),
+      accountId: row.accountId,
+      bookingId: row.bookingId,
+      accruedThrough: row.accruedThrough,
+      notes: row.notes,
+      customFields: row.customFields,
+    };
+  }
+
+  /**
+   * `owed_cents` for the rows of one page, read from the GENERATED COLUMN.
+   *
+   * A second statement, and the alternative was worse. `owed_cents` is
+   * `GENERATED ALWAYS … STORED`, and Prisma has no generated-column concept, so
+   * it is absent from the `Fee` model and unreachable through `select`. The
+   * tempting fix is to add the five counters up in TypeScript — and that is
+   * precisely the defect the generated column was introduced to delete: the
+   * migration's decision 4 records that two readers of the old
+   * `outstanding_cents` already disagreed, and phase 19a then CHANGED the
+   * expression to also read `archived_at`. A TypeScript copy would not have
+   * changed with it, and a desk would today be showing a balance for debts the
+   * library has filed away. One source, or none.
+   *
+   * The cost is a primary-key lookup of at most `limit + 1` ids, which is an
+   * index scan of a hundred rows at the outside. The two statements run under
+   * READ COMMITTED, so a settlement landing between them shows a row whose
+   * `status` is one moment older than its `owedCents` — stale in the direction
+   * of less money owed, never more. A row that vanished between them reports 0,
+   * which cannot happen today: every FK into `fees` is `ON DELETE RESTRICT` and
+   * nothing in the module deletes a fee.
+   */
+  private async owedFor(client: ClientV2, ids: readonly string[]): Promise<Map<string, bigint>> {
+    if (ids.length === 0) return new Map();
+    const rows = await client.$queryRaw<{ id: string; owed: bigint }[]>`
+      SELECT id, owed_cents::bigint AS owed
+        FROM lbr2.fees
+       WHERE id = ANY(${ids as string[]}::text[])`;
+    return new Map(rows.map((r) => [r.id, BigInt(r.owed)]));
+  }
+
+  /**
+   * Turn an `?after=` token back into the two values {@link list} pages on.
+   *
+   * A bare fee id is accepted as well as a token we minted, for the reason
+   * `decodeCursor` states: 1.0's fines list documented `?after=` as a row id,
+   * and a librarian clicking "Load more" while a deploy swaps the format must
+   * not be handed a 400 halfway down a patron's account. A cursor naming a row
+   * that is gone resolves to `null`, which restarts them at page one.
+   */
+  private async decodeListCursor(
+    client: ClientV2,
+    after: string | undefined,
+  ): Promise<KeysetBoundary | null> {
+    if (after === undefined || after.length === 0) return null;
+    const parts = readKeysetCursor(after, { sortIsDate: true });
+    if (parts) return parts;
+    const row = await client.fee.findUnique({
+      where: { id: after },
+      select: { createdAt: true, id: true },
+    });
+    return row ? { sort: row.createdAt, id: row.id } : null;
+  }
+
+  /**
+   * EVERY AMOUNT LEAVES AS A DECIMAL STRING OF MINOR UNITS.
+   *
+   * Not because a fee is large, but because of what happens if one is not: there
+   * is no `BigInt.prototype.toJSON` in this repo, so a `bigint` reaching
+   * `res.json` throws `TypeError: Do not know how to serialize a BigInt` — a 500
+   * on a list that worked in every unit test, because no 2.0 spec had yet issued
+   * an HTTP GET that returned one of these columns. `Number(bigint)` is the
+   * other wrong answer: it silently becomes a double, which is the lossy type
+   * the whole module exists to keep out of the ledger. `String(bigint)` is
+   * exact, and `fees.dto.ts` already made it the convention on the way in.
+   */
+  private toListRow(row: FeeColumns, owedCents: bigint | undefined): FeeListRow {
+    return {
+      id: row.id,
+      patronId: row.patronId,
+      branchId: row.branchId,
+      loanId: row.loanId,
+      itemId: row.itemId,
+      holdId: row.holdId,
+      currency: row.currency,
+      amountCents: String(row.amountCents),
+      taxCents: String(row.taxCents),
+      paidCents: String(row.paidCents),
+      waivedCents: String(row.waivedCents),
+      writtenOffCents: String(row.writtenOffCents),
+      owedCents: String(owedCents ?? 0n),
+      status: row.status,
+      isAccruing: row.isAccruing,
+      reason: row.reason,
+      createdAt: row.createdAt,
+      closedAt: row.closedAt,
+      archivedAt: row.archivedAt,
+      feeType: {
+        id: row.feeType.id,
+        code: row.feeType.code,
+        name: row.feeType.name,
+        category: row.feeType.category,
+      },
+    };
   }
 
   /**

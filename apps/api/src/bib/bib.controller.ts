@@ -27,6 +27,7 @@ import { PermissionGuard } from '../authz/permission.guard.js';
 import { BibWriteService } from './bib-write.service.js';
 import {
   AcquireLockDto,
+  BibListQueryDto,
   CreateRecordDto,
   LockSessionDto,
   RestoreVersionDto,
@@ -48,6 +49,7 @@ import { CATALOG_INGEST_MAX_BYTES } from './bib.constants.js';
 /**
  * The MARC store: records in, records out.
  *
+ *   GET   /t/:slug/catalog/bib                      — the list: search, filter, page
  *   GET   /t/:slug/catalog/bib/:id.mrc              — ISO 2709
  *   GET   /t/:slug/catalog/bib/:id.xml              — MARCXML
  *   GET   /t/:slug/catalog/bib/:id.json             — MARC-in-JSON
@@ -168,6 +170,27 @@ export class BibController {
    * falls back to a fresh serialization, because a re-derivation that merely
    * looks similar is the one wrong answer nobody can detect.
    */
+  /**
+   * The catalogue list (2.0 phase 20a).
+   *
+   * Declared FIRST among the GETs. `@Get()` matches the empty path and cannot
+   * be shadowed by `@Get(':id')`, so this is convention rather than necessity —
+   * but the convention is load-bearing on this controller (see the class
+   * docblock on `:id` capturing the dot in `abc123.mrc`), and a reader should
+   * not have to work out which of the six GETs are ordered on purpose.
+   *
+   * `cat.bib.read`, the key the rest of the read surface already uses. No new
+   * permission: a cataloguer who may open a record may list records, and
+   * inventing `cat.bib.list` would mean editing all four role templates for a
+   * distinction nobody has asked for.
+   */
+  @RequirePermission('cat.bib.read')
+  @Get()
+  async list(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {
+    const q = await validateDto(BibListQueryDto, rawQuery ?? {});
+    return this.reads.list(tenant, q);
+  }
+
   @RequirePermission('cat.bib.read')
   @Get(':id.mrc')
   async readMrc(

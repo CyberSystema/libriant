@@ -28,6 +28,8 @@ import {
   CancelTransferDto,
   CreateItemDto,
   CreateStatusReasonDto,
+  ItemByBarcodeQueryDto,
+  ItemListQueryDto,
   ReceiveTransferDto,
   SendTransferDto,
   SetItemStatusDto,
@@ -82,6 +84,50 @@ export class ItemsController {
       replacementCostCents:
         dto.replacementCostCents === undefined ? undefined : BigInt(dto.replacementCostCents),
     });
+  }
+
+  /**
+   * The copies of one record (2.0 phase 20a).
+   *
+   * `bibId` is required and its absence is a 400. `ItemsService.copies` carries
+   * the argument: there is no index for a library-wide copy list and no screen
+   * that wants one, and a required filter is cheaper to explain than an
+   * endpoint that is slow for a reason nobody meant to invoke.
+   *
+   * `cat.bib.read`, which is what every other read on this controller already
+   * uses — `GET :id`, `GET shelf`, `GET :id/history`, `GET :id/notes`. No new
+   * key: `permissions.test.ts` asserts owner holds exactly `PERMISSION_KEYS
+   * .length` and that volunteer ⊂ librarian ⊂ admin ⊂ owner, so inventing
+   * `cat.item.read` means editing all four role templates for a distinction
+   * nobody has asked for — and a volunteer who may open a copy may list the
+   * copies of a title.
+   */
+  @RequirePermission('cat.bib.read')
+  @Get()
+  async list(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {
+    const q = await validateDto(ItemListQueryDto, rawQuery ?? {});
+    return this.items.copies(tenant, q);
+  }
+
+  /**
+   * The copy a scanner just read, with its title (2.0 phase 20a).
+   *
+   * Declared BEFORE `:id`. Nest matches in declaration order and `:id` compiles
+   * to `([^/]+)`, so a `@Get(':id')` ahead of this one would swallow
+   * `by-barcode` and answer "No such copy." for the literal string — a 404 that
+   * looks like a missing book and is really a routing mistake, which is the
+   * same trap `shelf` and `status-reasons` below are ordered around.
+   *
+   * `cat.bib.read` again, and it matters that this is the key a circulation
+   * desk already holds: the callers are checkout and check-in, and putting a
+   * scan behind a cataloguing permission would mean every library granting
+   * `cat.item.write` to whoever works the desk.
+   */
+  @RequirePermission('cat.bib.read')
+  @Get('by-barcode')
+  async byBarcode(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {
+    const q = await validateDto(ItemByBarcodeQueryDto, rawQuery ?? {});
+    return this.items.byBarcode(tenant, q.barcode);
   }
 
   /**

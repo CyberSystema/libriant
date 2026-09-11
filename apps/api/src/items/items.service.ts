@@ -7,7 +7,9 @@ import type { TenantContext } from '../tenancy/tenant-context.js';
 import type { TxV2 } from '../tenancy/tenant-tx-v2.js';
 import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
+import { clampLimit, pageOf, type ListResult } from '../platform/list.js';
 import { acquireLocks, lockKey } from '../platform/locks.js';
+import { decodeCursor } from '../platform/query.js';
 import { TenantClockService } from '../policy/tenant-clock.service.js';
 import { ItemStatusService, type ItemStatusValue } from './item-status.service.js';
 
@@ -381,6 +383,314 @@ export class ItemsService {
   }
 
   /**
+   * The copies of ONE record, in shelf order (2.0 phase 20a).
+   *
+   * ## `bibId` is required, and that is the whole design of this endpoint
+   *
+   * There is deliberately no library-wide copy list. Nothing indexes one —
+   * `items_shelf_order_idx` leads on `current_branch_id` and
+   * `items_shelf_available_idx` is partial on a generated boolean — so an
+   * unfiltered list is a sequential scan of every copy the library owns, and no
+   * screen wants it: the copies table lives on a record page, and the
+   * branch-wide walk is {@link shelfList}, which has the index for it. A
+   * required filter is cheaper to explain to a caller than an endpoint that is
+   * slow for a reason nobody meant to invoke.
+   *
+   * ## The sort key is NULLABLE, and the shared predicate cannot say so
+   *
+   * `platform/list.ts` builds `sortField >= s` as a start key the planner can
+   * seek to, and that is exactly what a NULL cannot survive: every comparison
+   * against NULL is NULL, never true. Handed a nullable `call_number_sort` it
+   * drops the entire unshelved tail out of the list, and a cursor that lands IN
+   * that tail (`sort` is null) matches nothing at all — which renders as "the
+   * list ended" while three copies are still missing from it. So the predicate
+   * is the three-branch one {@link shelfList} already carries, written out here
+   * rather than pushed into the shared helper, because the start-key
+   * optimisation the helper exists for is the part that cannot be made NULL-safe.
+   *
+   * ASC on a nullable column is NULLS LAST in Postgres, which is the order this
+   * wants: a copy nobody has shelved yet belongs at the end of the list rather
+   * than missing from it.
+   *
+   * ## What it walks today
+   *
+   * NOTHING, and that is a gap the operator has to close: Postgres creates no
+   * index for a foreign key, phase 15 added none on `bib_id`, so
+   * `WHERE bib_id = $1` is a sequential scan of `items` and the ORDER BY is a
+   * sort node on top of it. The list is correct and it does not scale — a
+   * 200,000-copy library pays the whole table for a record page. The index that
+   * fixes it is `items (bib_id, call_number_sort, id)`, which matches this
+   * filter and this order leading-column for leading-column and turns the sort
+   * node into an index walk. It is named in the phase-20a report.
+   */
+  async copies(tenant: TenantContext, opts: ItemListOptions): Promise<ItemListPage> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const limit = clampLimit(opts.limit);
+
+    // Live copies only. `archived_at` is not a status — it is the row leaving
+    // the live set, which is also what releases its barcode for re-use — so an
+    // archived copy on a record page would be a copy a librarian cannot find,
+    // scan or check out.
+    const where: Record<string, unknown> = { bibId: opts.bibId, archivedAt: null };
+    const after = await this.decodeCopiesCursor(client, opts.bibId, opts.after);
+    if (after !== null) {
+      Object.assign(
+        where,
+        after.callNumberSort === null
+          ? { callNumberSort: null, id: { gt: after.id } }
+          : {
+              OR: [
+                { callNumberSort: { gt: after.callNumberSort } },
+                { callNumberSort: after.callNumberSort, id: { gt: after.id } },
+                { callNumberSort: null },
+              ],
+            },
+      );
+    }
+
+    // EXPLICIT SELECT. `public_note` and `staff_note` are 2,000 characters each
+    // and `custom_fields` is JSONB, so a default `findMany` would drag up to
+    // 4 KB of prose and a TOAST read per row onto a page that shows a call
+    // number and a status. None of the three has a column on the copies table
+    // in the UI.
+    const rows = await client.item.findMany({
+      where: where as never,
+      orderBy: [{ callNumberSort: 'asc' }, { id: 'asc' }],
+      take: limit + 1,
+      select: {
+        id: true,
+        barcode: true,
+        callNumberPrefix: true,
+        callNumberBase: true,
+        callNumberSuffix: true,
+        callNumberSort: true,
+        copyNumber: true,
+        enumeration: true,
+        chronology: true,
+        status: true,
+        statusSince: true,
+        statusReasonId: true,
+        itemTypeId: true,
+        temporaryItemTypeId: true,
+        materialTypeId: true,
+        owningBranchId: true,
+        currentBranchId: true,
+        permanentLocationId: true,
+        temporaryLocationId: true,
+        notForLoanCode: true,
+        damagedCode: true,
+        lostCode: true,
+        withdrawnAt: true,
+        restrictedAccess: true,
+        holdable: true,
+        bookable: true,
+        priceCents: true,
+        replacementCostCents: true,
+        accessionNumber: true,
+        checkoutCount: true,
+        renewalCount: true,
+        updatedAt: true,
+      },
+    });
+
+    return pageOf(
+      rows,
+      limit,
+      (r) => ({
+        id: r.id,
+        barcode: r.barcode,
+        callNumberPrefix: r.callNumberPrefix,
+        callNumberBase: r.callNumberBase,
+        callNumberSuffix: r.callNumberSuffix,
+        callNumberSort: r.callNumberSort,
+        copyNumber: r.copyNumber,
+        enumeration: r.enumeration,
+        chronology: r.chronology,
+        status: r.status,
+        statusSince: r.statusSince,
+        statusReasonId: r.statusReasonId,
+        itemTypeId: r.itemTypeId,
+        temporaryItemTypeId: r.temporaryItemTypeId,
+        materialTypeId: r.materialTypeId,
+        owningBranchId: r.owningBranchId,
+        currentBranchId: r.currentBranchId,
+        permanentLocationId: r.permanentLocationId,
+        temporaryLocationId: r.temporaryLocationId,
+        notForLoanCode: r.notForLoanCode,
+        damagedCode: r.damagedCode,
+        lostCode: r.lostCode,
+        withdrawnAt: r.withdrawnAt,
+        restrictedAccess: r.restrictedAccess,
+        holdable: r.holdable,
+        bookable: r.bookable,
+        priceCents: money(r.priceCents),
+        replacementCostCents: money(r.replacementCostCents),
+        accessionNumber: r.accessionNumber,
+        checkoutCount: r.checkoutCount,
+        renewalCount: r.renewalCount,
+        updatedAt: r.updatedAt,
+      }),
+      // NOT `keysetCursorValues`, which takes a non-null sort value. The token
+      // carries a JSON null for an unshelved copy, which `decodeCursor` round-
+      // trips and the three-branch predicate above reads as "the NULL tail".
+      (r) => [r.callNumberSort, r.id],
+    );
+  }
+
+  /**
+   * Turn an `?after=` token back into the two values {@link copies} pages on.
+   *
+   * A bare item id is accepted beside a token we minted, for the reason
+   * `decodeCursor` states: `?after=` was an id everywhere in 1.0, and a
+   * librarian clicking "Load more" while a deploy swaps the format must not be
+   * handed a 400 halfway down a list of copies.
+   *
+   * The bare-id lookup is scoped to the SAME record, not to the copy alone. An
+   * id belonging to a different title would otherwise resume this list at that
+   * copy's call number — a page that silently starts in the middle of the
+   * copies it was asked for. Scoped, it resolves to `null` and restarts at page
+   * one, which is also what a deleted cursor row does.
+   */
+  private async decodeCopiesCursor(
+    client: ReturnType<TenantPrismaService['getClientV2']>,
+    bibId: string,
+    after: string | undefined,
+  ): Promise<{ callNumberSort: string | null; id: string } | null> {
+    if (after === undefined || after.length === 0) return null;
+    const parts = decodeCursor(after, 2);
+    if (parts !== null) {
+      const [sort, id] = parts;
+      // A token of the right arity carrying the wrong types came from another
+      // list. Page one is the right answer to it — resuming at a position read
+      // out of somebody else's columns is not.
+      if (typeof id !== 'string') return null;
+      if (sort !== null && typeof sort !== 'string') return null;
+      return { callNumberSort: sort, id };
+    }
+    const row = await client.item.findFirst({
+      where: { id: after, bibId },
+      select: { id: true, callNumberSort: true },
+    });
+    return row === null ? null : { callNumberSort: row.callNumberSort, id: row.id };
+  }
+
+  /**
+   * One copy, found by the barcode on its spine, with its title attached
+   * (2.0 phase 20a).
+   *
+   * ## Why the bib travels with the copy
+   *
+   * Every caller of this is holding the book — a return scan, a checkout, an
+   * inventory wand — and none of them can do anything with a `bibId`. The first
+   * thing that has to appear on the screen is the title, so leaving it out buys
+   * a second round trip on every single scan at the busiest desk in the
+   * building. One request in, one screen out.
+   *
+   * ## One statement, and that is why it is raw
+   *
+   * The projection hangs off `marc_records` rather than off `items`, so the
+   * model-API spelling of this join is a two-level nested select — item → bib →
+   * bib — and Prisma resolves each relation level with a statement of its own,
+   * because `relationJoins` is not among the preview features this client is
+   * generated with (see the generator block in `00-datasource.prisma`). Three
+   * round trips for what Postgres does with one index seek and one primary-key
+   * lookup is not a trade to make on a scan.
+   *
+   * The INNER join is deliberate: §2 recomputes the projection inside the same
+   * transaction as every record write, so a copy whose record has no
+   * `bib_records` row cannot be committed. Were one ever to exist, this answers
+   * 404 for a copy that is really there — the loud failure, and the one
+   * `catalog-verify` exists to find.
+   *
+   * ## The ITEMS normalisation, not the patron-card one
+   *
+   * `normaliseBarcode` strips whitespace, folds and uppercases, because
+   * `items_barcode_unique_active` is on `barcode_norm`: a copy catalogued
+   * `ΑΒΓ-1` has to be found by a hand typing `αβγ-1`, which is the normal case
+   * on legacy Greek accession numbers. `patron_cards` deliberately does NOT
+   * fold, and reaching for that rule here would make the lookup miss the row
+   * the unique index says is there.
+   *
+   * Walks `items_barcode_unique_active ON items (barcode_norm) WHERE
+   * barcode_norm IS NOT NULL AND archived_at IS NULL`. Both halves of the index
+   * predicate are implied by the WHERE — `barcode_norm = $1` cannot match a
+   * NULL, and `archived_at IS NULL` is written out rather than assumed — which
+   * is the condition for Postgres to use a partial index at all.
+   */
+  async byBarcode(tenant: TenantContext, barcode: string): Promise<ItemByBarcodeRow> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const rows = await client.$queryRaw<BarcodeRow[]>`
+      SELECT i.id, i.bib_id, i.barcode,
+             i.item_type_id, i.temporary_item_type_id, i.material_type_id,
+             i.owning_branch_id, i.current_branch_id,
+             i.permanent_location_id, i.temporary_location_id,
+             i.call_number_prefix, i.call_number_base, i.call_number_suffix,
+             i.call_number_sort, i.copy_number, i.enumeration, i.chronology,
+             i.status::text AS status, i.status_since, i.status_reason_id,
+             i.not_for_loan_code, i.damaged_code, i.lost_code, i.withdrawn_at,
+             i.restricted_access, i.holdable, i.bookable,
+             i.price_cents, i.replacement_cost_cents, i.accession_number,
+             i.checkout_count, i.renewal_count, i.updated_at,
+             b.title, b.main_entry_display, b.browse_author, b.publication_year
+        FROM lbr2.items i
+        JOIN lbr2.bib_records b ON b.bib_id = i.bib_id
+       WHERE i.barcode_norm = ${normaliseBarcode(barcode)}
+         AND i.archived_at IS NULL`;
+    const row = rows[0];
+    if (row === undefined) {
+      throw new NotFoundException(
+        `No copy in this library carries the barcode ${barcode}. Check that the whole barcode ` +
+          'was scanned or typed, and that the copy has not been archived — archiving takes a ' +
+          'copy out of the live set and releases its barcode, so an archived copy cannot be ' +
+          'found by scanning it.',
+      );
+    }
+
+    return {
+      id: row.id,
+      bibId: row.bib_id,
+      barcode: row.barcode,
+      itemTypeId: row.item_type_id,
+      temporaryItemTypeId: row.temporary_item_type_id,
+      materialTypeId: row.material_type_id,
+      owningBranchId: row.owning_branch_id,
+      currentBranchId: row.current_branch_id,
+      permanentLocationId: row.permanent_location_id,
+      temporaryLocationId: row.temporary_location_id,
+      callNumberPrefix: row.call_number_prefix,
+      callNumberBase: row.call_number_base,
+      callNumberSuffix: row.call_number_suffix,
+      callNumberSort: row.call_number_sort,
+      copyNumber: row.copy_number,
+      enumeration: row.enumeration,
+      chronology: row.chronology,
+      status: row.status,
+      statusSince: row.status_since,
+      statusReasonId: row.status_reason_id,
+      notForLoanCode: row.not_for_loan_code,
+      damagedCode: row.damaged_code,
+      lostCode: row.lost_code,
+      withdrawnAt: row.withdrawn_at,
+      restrictedAccess: row.restricted_access,
+      holdable: row.holdable,
+      bookable: row.bookable,
+      priceCents: money(row.price_cents),
+      replacementCostCents: money(row.replacement_cost_cents),
+      accessionNumber: row.accession_number,
+      checkoutCount: row.checkout_count,
+      renewalCount: row.renewal_count,
+      updatedAt: row.updated_at,
+      bib: {
+        id: row.bib_id,
+        title: row.title,
+        mainEntryDisplay: row.main_entry_display,
+        browseAuthor: row.browse_author,
+        publicationYear: row.publication_year,
+      },
+    };
+  }
+
+  /**
    * Is there a copy of this title on the shelf at this branch?
    *
    * The hold-promotion probe of §6 phase 15, and phase 17 is its real caller.
@@ -584,6 +894,22 @@ function normaliseBarcode(barcode: string): string {
   return foldGreek(barcode.replace(/\s+/g, '')).toUpperCase();
 }
 
+/**
+ * Minor units, as a DECIMAL STRING, on the way out.
+ *
+ * `items.price_cents` and `replacement_cost_cents` are `BigInt`, and there is no
+ * `BigInt.prototype.toJSON` in this repository: a raw bigint reaching
+ * `res.json()` throws `TypeError: Do not know how to serialize a BigInt` — a 500
+ * on a route that read the row correctly, and only for the copies that happen to
+ * carry a price. `fees.controller.ts` already settled the convention for every
+ * amount crossing this wire, and this is the same one. NOT `Number()`: a
+ * 64-bit minor-unit amount is not safely representable as a double, and a
+ * silently rounded replacement cost is a bill somebody disputes.
+ */
+function money(cents: bigint | null): string | null {
+  return cents === null ? null : String(cents);
+}
+
 /** `undefined` means "leave alone"; `null` means "clear". */
 function pick<T>(given: T | null | undefined, current: T | null): T | null {
   return given === undefined ? current : given;
@@ -716,4 +1042,127 @@ export type ShelfRow = {
   readonly copyNumber: string | null;
   readonly status: ItemStatusValue;
   readonly permanentLocationId: string;
+};
+
+/** What the copies list accepts. Validated by `ItemListQueryDto`. */
+export type ItemListOptions = {
+  /** REQUIRED. See {@link ItemsService.copies} for why there is no unfiltered list. */
+  readonly bibId: string;
+  readonly after?: string;
+  readonly limit?: number;
+};
+
+/**
+ * One row of the copies list.
+ *
+ * `id` is spelled out as a literal field rather than left to a spread, because
+ * `DataTable` is `T extends { id: string }` and uses it as the React key: a row
+ * shape that loses it renders a list whose rows re-mount on every refresh.
+ *
+ * The two amounts are DECIMAL STRINGS of minor units — see {@link money}. The
+ * three fat columns (`public_note`, `staff_note`, `custom_fields`) are absent by
+ * construction, which is what keeps the page off TOAST.
+ */
+export type ItemListRow = {
+  readonly id: string;
+  readonly barcode: string | null;
+  readonly callNumberPrefix: string | null;
+  readonly callNumberBase: string | null;
+  readonly callNumberSuffix: string | null;
+  readonly callNumberSort: string | null;
+  readonly copyNumber: string | null;
+  readonly enumeration: string | null;
+  readonly chronology: string | null;
+  readonly status: ItemStatusValue;
+  readonly statusSince: Date;
+  readonly statusReasonId: string | null;
+  readonly itemTypeId: string;
+  readonly temporaryItemTypeId: string | null;
+  readonly materialTypeId: string | null;
+  readonly owningBranchId: string;
+  readonly currentBranchId: string;
+  readonly permanentLocationId: string;
+  readonly temporaryLocationId: string | null;
+  readonly notForLoanCode: string | null;
+  readonly damagedCode: string | null;
+  readonly lostCode: string | null;
+  readonly withdrawnAt: Date | null;
+  readonly restrictedAccess: boolean;
+  readonly holdable: boolean;
+  readonly bookable: boolean;
+  readonly priceCents: string | null;
+  readonly replacementCostCents: string | null;
+  readonly accessionNumber: string | null;
+  readonly checkoutCount: number;
+  readonly renewalCount: number;
+  readonly updatedAt: Date;
+};
+
+export type ItemListPage = ListResult<ItemListRow>;
+
+/**
+ * One copy resolved from a scan, and the record it is a copy of.
+ *
+ * The same columns as {@link ItemListRow} plus `bibId` and `bib`: a list already
+ * knows which record it is listing, and a scan is the case where nothing is
+ * known until the barcode comes back.
+ */
+export type ItemByBarcodeRow = ItemListRow & {
+  readonly bibId: string;
+  readonly bib: {
+    readonly id: string;
+    readonly title: string;
+    readonly mainEntryDisplay: string | null;
+    readonly browseAuthor: string | null;
+    readonly publicationYear: number | null;
+  };
+};
+
+/**
+ * The raw row {@link ItemsService.byBarcode} selects.
+ *
+ * Written out because `$queryRaw` cannot infer one, and snake_case because that
+ * is what Postgres hands back — the mapping to the camelCase wire shape happens
+ * once, in the method, where the two lists can be read against each other.
+ */
+type BarcodeRow = {
+  id: string;
+  bib_id: string;
+  barcode: string | null;
+  item_type_id: string;
+  temporary_item_type_id: string | null;
+  material_type_id: string | null;
+  owning_branch_id: string;
+  current_branch_id: string;
+  permanent_location_id: string;
+  temporary_location_id: string | null;
+  call_number_prefix: string | null;
+  call_number_base: string | null;
+  call_number_suffix: string | null;
+  call_number_sort: string | null;
+  copy_number: string | null;
+  enumeration: string | null;
+  chronology: string | null;
+  /** Selected as `::text`, so the six-value union is the honest type for it. */
+  status: ItemStatusValue;
+  status_since: Date;
+  status_reason_id: string | null;
+  not_for_loan_code: string | null;
+  damaged_code: string | null;
+  lost_code: string | null;
+  withdrawn_at: Date | null;
+  restricted_access: boolean;
+  holdable: boolean;
+  bookable: boolean;
+  /** `bigint` here and a decimal string on the wire. See {@link money}. */
+  price_cents: bigint | null;
+  replacement_cost_cents: bigint | null;
+  accession_number: string | null;
+  checkout_count: number;
+  renewal_count: number;
+  updated_at: Date;
+  title: string;
+  main_entry_display: string | null;
+  browse_author: string | null;
+  publication_year: number | null;
 };

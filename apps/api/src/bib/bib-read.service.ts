@@ -1,7 +1,19 @@
 import { ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { MarcRecord } from '@libriant/marc';
+import { foldGreek } from '@libriant/shared/greek';
+import { classifySearchTerm } from '@libriant/shared/search';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
+import {
+  clampLimit,
+  keysetCursorValues,
+  keysetPredicate,
+  pageOf,
+  readKeysetCursor,
+  type KeysetBoundary,
+  type ListResult,
+} from '../platform/list.js';
+import { escapeLike } from '../platform/like.js';
 
 /**
  * Reading a record, for the editor and for the serialization routes.
@@ -28,6 +40,45 @@ import type { TenantContext } from '../tenancy/tenant-context.js';
  * itself; {@link readSourceBlob} is a separate call reached only by
  * `?fidelity=source`. A boolean crosses the wire where a kilobyte would have.
  */
+/** What the catalogue list accepts. Validated by `BibListQueryDto`. */
+export type BibListOptions = {
+  readonly q?: string;
+  readonly after?: string;
+  readonly limit?: number;
+  readonly yearFrom?: number;
+  readonly yearTo?: number;
+};
+
+/**
+ * One row of the catalogue list.
+ *
+ * NOT the 1.0 `BookDto`. Three of its fields have no 2.0 column and their
+ * absence is a decision, not an oversight: there is no `subtitle` (the projector
+ * joins 245 $a and $b into `title`, because a MARC record does not have a
+ * subtitle field — it has a title statement), no `authors` array (contributors
+ * live inside the MARC record and there is no authority store until phase 45,
+ * so `mainEntryDisplay` and `browseAuthor` are what a list can honestly show),
+ * and no `isbn13` (identifiers are their own table and a record may carry
+ * several — phase 20b decides whether a list is the place to show one).
+ */
+export type BibListRow = {
+  readonly id: string;
+  readonly title: string;
+  readonly statementOfResp: string | null;
+  readonly mainEntryDisplay: string | null;
+  readonly browseAuthor: string | null;
+  readonly edition: string | null;
+  readonly publisher: string | null;
+  readonly publicationYear: number | null;
+  readonly languageCode: string | null;
+  readonly itemCount: number;
+  readonly availableCount: number;
+  readonly suppressedFromOpac: boolean;
+  readonly updatedAt: Date;
+};
+
+export type BibListPage = ListResult<BibListRow>;
+
 export type BibRecordRead = {
   readonly id: string;
   readonly publicNo: string;
@@ -85,6 +136,136 @@ const HEX = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, '
 @Injectable()
 export class BibReadService {
   constructor(@Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService) {}
+
+  /**
+   * The catalogue list — search, filter, page (2.0 phase 20a).
+   *
+   * ## This is the route the Greek fix finally reaches a user through
+   *
+   * Phase 1 measured the defect and fixed the function: `'ΠΟΛΙΣ'.toLowerCase()`
+   * ends in U+03C2, because `String.prototype.toLowerCase` correctly applies the
+   * Unicode Final_Sigma conditional mapping, while a typist searching types
+   * U+03C3. Phase 11 wrote `bib_records.search_text` through `foldGreek`, so the
+   * stored side has been right since. But `lbr2` has had no list or search
+   * endpoint at all, so nothing has ever ASKED — `πολισ` finding
+   * `Η ΠΟΛΙΣ ΕΑΛΩ` was true of a column and of no HTTP request.
+   *
+   * Both sides fold with the SAME function: the column was written with
+   * `foldGreek` and the term is folded with `foldGreek` here. That is why no SQL
+   * fold function appears in this query. `libriant_fold_greek` exists as a file
+   * and in one spec that creates and rolls it back; it is installed by no
+   * migration, so calling it would throw — and wrapping the column in it would
+   * defeat `bib_records_search_trgm` even if it worked, because a GIN trigram
+   * index is on the column and not on a function of it.
+   *
+   * ## The short-term floor
+   *
+   * performance-12. A two-character term is answered with an EMPTY page carrying
+   * `minQueryChars`, not with an unfiltered one: handing back the whole
+   * catalogue for `αβ` reads as a broken filter, and a GIN trigram index cannot
+   * serve a two-character LIKE anyway — it would fall to a sequential scan of
+   * every record in the library.
+   *
+   * ## LIKE metacharacters
+   *
+   * Prisma's `contains` renders a LIKE and does NOT escape `%` or `_`, so a
+   * reader typing `%` would otherwise get a wildcard. They are escaped here. The
+   * backslash is doubled first, or escaping the others would be undone by it.
+   */
+  async list(tenant: TenantContext, opts: BibListOptions = {}): Promise<BibListPage> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const limit = clampLimit(opts.limit);
+
+    const term = classifySearchTerm(opts.q, foldGreek);
+    if (term.kind === 'short') {
+      return { items: [], nextCursor: null, minQueryChars: term.minChars };
+    }
+
+    const where: Record<string, unknown> = {};
+    if (term.kind === 'term') where['searchText'] = { contains: escapeLike(term.value) };
+    if (opts.yearFrom !== undefined || opts.yearTo !== undefined) {
+      where['publicationYear'] = {
+        ...(opts.yearFrom !== undefined ? { gte: opts.yearFrom } : {}),
+        ...(opts.yearTo !== undefined ? { lte: opts.yearTo } : {}),
+      };
+    }
+
+    const after = await this.decodeListCursor(client, opts.after);
+    if (after) {
+      where['AND'] = keysetPredicate({ sortField: 'sortTitle', idField: 'bibId', after });
+    }
+
+    // EXPLICIT SELECT, and it stays explicit. `search_text`, `summary` and
+    // `projection_anomalies` are the three fat columns on this table and the
+    // reason `marc_record_contents` is a separate table at all; a default
+    // `findMany` selects every scalar and puts a TOAST read on every row of
+    // every page. bib-projection-toast.spec.ts measures exactly that.
+    const rows = await client.bibRecord.findMany({
+      where: where as never,
+      orderBy: [{ sortTitle: 'asc' }, { bibId: 'asc' }],
+      take: limit + 1,
+      select: {
+        bibId: true,
+        title: true,
+        sortTitle: true,
+        statementOfResp: true,
+        mainEntryDisplay: true,
+        browseAuthor: true,
+        edition: true,
+        publisher: true,
+        publicationYear: true,
+        languageCode: true,
+        itemCount: true,
+        availableCount: true,
+        suppressedFromOpac: true,
+        updatedAt: true,
+      },
+    });
+
+    return pageOf(
+      rows,
+      limit,
+      (r) => ({
+        id: r.bibId,
+        title: r.title,
+        statementOfResp: r.statementOfResp,
+        mainEntryDisplay: r.mainEntryDisplay,
+        browseAuthor: r.browseAuthor,
+        edition: r.edition,
+        publisher: r.publisher,
+        publicationYear: r.publicationYear,
+        languageCode: r.languageCode === null ? null : r.languageCode.trim(),
+        itemCount: r.itemCount,
+        availableCount: r.availableCount,
+        suppressedFromOpac: r.suppressedFromOpac,
+        updatedAt: r.updatedAt,
+      }),
+      (r) => keysetCursorValues(r.sortTitle, r.bibId),
+    );
+  }
+
+  /**
+   * Turn an `?after=` token back into the two values {@link list} pages on.
+   *
+   * A bare bib id is accepted as well as a token we minted, for the reason
+   * `decodeCursor` states: every 1.0 controller documents `?after=` as an id,
+   * and a librarian who clicks "Load more" across a deploy should not be handed
+   * a 400 halfway down the catalogue. A cursor row that has since been deleted
+   * resolves to `null`, which restarts them at page one.
+   */
+  private async decodeListCursor(
+    client: ReturnType<TenantPrismaService['getClientV2']>,
+    after: string | undefined,
+  ): Promise<KeysetBoundary | null> {
+    if (after === undefined || after.length === 0) return null;
+    const parts = readKeysetCursor(after);
+    if (parts) return parts;
+    const row = await client.bibRecord.findUnique({
+      where: { bibId: after },
+      select: { sortTitle: true, bibId: true },
+    });
+    return row ? { sort: row.sortTitle, id: row.bibId } : null;
+  }
 
   /**
    * One record, everything but the source bytes.
