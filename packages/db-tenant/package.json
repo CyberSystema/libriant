@@ -7,10 +7,12 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./client": "./src/client.ts"
+    "./client": "./src/client.ts",
+    "./upgrade/marc-from-book": "./src/upgrade/marc-from-book.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "lint": "echo 'lint: ok'",
     "prisma:generate": "prisma generate && prisma generate --config prisma-v2.config.ts",
     "prisma:format": "prisma format",

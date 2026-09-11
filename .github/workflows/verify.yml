@@ -804,6 +804,59 @@ jobs:
         env:
           TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
 
+      # THE UPGRADE REHEARSAL (2.0 phase 19b).
+      #
+      # A separate database, because the upgrade renames `public` to
+      # `v1_archive` and `libriant_demo` is what every step above and the smoke
+      # suite read. It is a TEMPLATE copy, so the 1.0 schema, the lbr2 baseline
+      # and the seeded defaults all come for free.
+      #
+      # `ci` profile — 1,000 books and proportional, carrying EVERY awkward
+      # shape: a Greek title with a leading article, a translator at order 0, an
+      # orphaned author, a bad ISBN check digit, a language outside ISO 639-2/B,
+      # a member with no email, duplicate queue positions, a `ready` hold with no
+      # copy, a zero-amount fine, an archived-but-paid fine, audit rows spread
+      # across months. §6's 50,000-book fixture is the `acceptance` profile and
+      # belongs on a schedule: it would add twenty minutes to this job for a
+      # signal that does not change between commits, and a fast fixture that is
+      # merely SMALLER would test a different library.
+      #
+      # DRY RUN. There is no `--commit` in phase 19 and no environment variable
+      # that makes one; the run rolls back and asserts the database is unchanged.
+      - name: Rehearse the v1 to v2 upgrade (dry run, ci fixture)
+        run: |
+          set -euo pipefail
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control \
+            -c "CREATE DATABASE libriant_upgrade TEMPLATE libriant_demo"
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_control \
+            -c "ALTER DATABASE libriant_upgrade SET TimeZone TO 'UTC'"
+          URL=postgresql://libriant:libriant@localhost:5432/libriant_upgrade
+          pnpm tsx scripts/seed-v1-fixture.ts --url "$URL" --profile ci
+          pnpm tsx scripts/tenant-upgrade-v2.ts --url "$URL" --slug demo --report
+
+      # A rehearsal that could not fail would prove nothing. One deliberately
+      # corrupted row — a request pointing at a book that does not exist, which
+      # 1.0's own foreign keys make impossible — must be REFUSED by name, and the
+      # database must be untouched afterwards.
+      - name: A corrupted fixture aborts, and the database is unchanged
+        run: |
+          set -euo pipefail
+          URL=postgresql://libriant:libriant@localhost:5432/libriant_upgrade
+          BEFORE=$(PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_upgrade -tAc \
+            "SELECT (SELECT count(*) FROM public.books)||','||(SELECT count(*) FROM lbr2.patrons)")
+          PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_upgrade -c "
+            SET session_replication_role = replica;
+            INSERT INTO public.reservations
+              (id,\"bookId\",\"memberId\",\"placedAt\",\"queuePosition\",status,\"customFields\",\"createdAt\",\"updatedAt\")
+            VALUES ('ci-corrupt','no-such-book','no-such-member',now(),1,'queued','{}',now(),now());"
+          if pnpm tsx scripts/tenant-upgrade-v2.ts --url "$URL" --slug demo; then
+            echo "✗ the upgrade accepted a dangling reference"; exit 1
+          fi
+          AFTER=$(PGPASSWORD=libriant psql -h localhost -U libriant -d libriant_upgrade -tAc \
+            "SELECT (SELECT count(*) FROM public.books)||','||(SELECT count(*) FROM lbr2.patrons)")
+          [ "$BEFORE" = "$AFTER" ] || { echo "✗ the database changed: $BEFORE -> $AFTER"; exit 1; }
+          echo "✓ refused, and the database is byte-identical ($AFTER)"
+
       # The Prisma schema and the migrations must still describe the same
       # database. They drift in one direction almost every time and always
       # silently: a model or field is added, `prisma generate` emits a client

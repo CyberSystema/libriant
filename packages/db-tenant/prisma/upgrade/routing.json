@@ -307,7 +307,7 @@
       "status": {
         "verdict": "derived",
         "to": "patrons.status",
-        "how": "MemberStatus -> patron_status"
+        "how": "1.0 MemberStatus is (active, suspended, archived) and 2.0 patron_status is (active, suspended, closed). `archived` has no counterpart and a bare cast is 22P02; 2.0 says the same thing with a closed status plus the archived_at stamp, which is carried separately."
       },
       "staffNotes": {
         "verdict": "derived",
@@ -663,8 +663,8 @@
       },
       "defaultLocale": {
         "verdict": "derived",
-        "to": "circulation_settings.default_locale",
-        "how": ""
+        "to": "branches.default_locale",
+        "how": "Locale is a BRANCH property in 2.0, not a settings singleton: a consortium branches can differ and the notice engine reads the branch."
       },
       "createdAt": {
         "verdict": "dropped",
@@ -701,28 +701,28 @@
       },
       "notifyDueSoon": {
         "verdict": "derived",
-        "to": "notice_policies / notice_triggers",
-        "how": "ALSO DROPPED BY EVERY CANDIDATE DESIGN. A library that had overdue notices ON must not come up OFF."
+        "to": "notice_policy_templates (trigger dueSoon)",
+        "how": "notice_policy_templates is where a notice being ON is recorded: a trigger with a row is on, a trigger with none is off. template_id has NO foreign key because notice_templates is deferred to phase 22, so the row names the id phase 22 will create."
       },
       "dueSoonDays": {
         "verdict": "derived",
-        "to": "notice_triggers lead time",
-        "how": "as notifyDueSoon"
+        "to": "notice_policy_templates.offset_value",
+        "how": "notice_policy_templates is where a notice being ON is recorded: a trigger with a row is on, a trigger with none is off. template_id has NO foreign key because notice_templates is deferred to phase 22, so the row names the id phase 22 will create."
       },
       "notifyOverdue": {
         "verdict": "derived",
-        "to": "notice_policies / notice_triggers",
-        "how": "as notifyDueSoon"
+        "to": "notice_policy_templates (trigger overdue)",
+        "how": "notice_policy_templates is where a notice being ON is recorded: a trigger with a row is on, a trigger with none is off. template_id has NO foreign key because notice_templates is deferred to phase 22, so the row names the id phase 22 will create."
       },
       "notifyHoldReady": {
         "verdict": "derived",
-        "to": "notice_policies / notice_triggers",
-        "how": "as notifyDueSoon"
+        "to": "notice_policy_templates (trigger holdAvailable)",
+        "how": "notice_policy_templates is where a notice being ON is recorded: a trigger with a row is on, a trigger with none is off. template_id has NO foreign key because notice_templates is deferred to phase 22, so the row names the id phase 22 will create."
       },
       "notificationTemplates": {
         "verdict": "derived",
-        "to": "notice_templates",
-        "how": "as notifyDueSoon"
+        "to": "upgrade_exceptions",
+        "how": "The 1.0 notice BODIES. notice_templates is deferred to phase 22 so there is no table to carry them into; they are recorded with their value rather than dropped, and upgrade_exceptions is queryable where a commit message is not."
       }
     },
     "roles": "__COMPAT__",

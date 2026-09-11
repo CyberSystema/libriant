@@ -1,302 +1,399 @@
+#!/usr/bin/env tsx
 /**
- * Libriant — build a 1.x tenant database with realistic data in it.
+ * A 1.0 library, generated deterministically, for the upgrade to be run against
+ * (2.0 phase 19b).
  *
- * WHAT THIS IS FOR. Phase 19 writes the 1.0 → 2.0 upgrade: MARC records
- * synthesised from flat `books` rows, holdings per shelf location, an item per
- * copy, loans with `closed_at` back-filled, reservations converted to
- * title-level holds with bit-exact queue positions, fines converted to a
- * double-entry ledger. That script gets exactly one chance on a real library's
- * data, so it is tested on every commit against a database built by this
- * script — not against a hand-made row or two, but against the shapes that
- * actually break a migration.
+ * ## Two profiles, and why not one
  *
- * SO THE FIXTURE IS DELIBERATELY AWKWARD. Anyone can migrate tidy data. What
- * has to survive is:
+ * §6's acceptance fixture is 50,000 books / 12,000 authors / 80,000 copies /
+ * 40,000 loans. Running that on every commit would add roughly twenty minutes to
+ * a job that already applies thirteen migrations, runs two DR drills, replays a
+ * shadow-database drift check and runs the smoke suite — for a signal that does
+ * not change between commits.
  *
- *   Two books sharing an ISBN. The 1.0 constraint `books_isbn13_unique_active`
- *   forbids it among non-archived rows, and 2.0 drops that constraint because
- *   a set and its volumes, a reprint, and endemic publisher ISBN reuse in
- *   small Greek presses all legitimately share one. The fixture archives one
- *   of the pair, which is exactly how a real catalogue holds the state today.
+ *   `ci`         1,000 books and proportional, EVERY awkward shape present.
+ *                Runs on every commit. Seconds.
+ *   `acceptance` §6's numbers. Nightly and on demand.
  *
- *   Greek text in every text column, in capitals, with final sigma — the case
- *   the whole of phase 1 is about.
+ * The split only works because the SHAPES are in both. A fast fixture that is
+ * merely smaller tests a different library: the rows that break a migration are
+ * the zero-amount fine, the duplicate queue position, the Greek title with a
+ * leading article, the member with no email. Those are seeded explicitly at both
+ * sizes rather than left to a probability.
  *
- *   A loan that is `lost`: `returnedAt` is NULL forever, so the partial unique
- *   `loans_one_active_per_copy` pins that copy out of circulation. 2.0 splits
- *   `closed_at` from `returned_at` precisely to undo this, and the upgrade has
- *   to get it right.
+ * ## Deterministic
  *
- *   A hold queue with gaps in it, and a `ready` hold with an expiry in the
- *   past, because queue positions must come across bit-exact.
- *
- *   An expression index over `immutable_unaccent`. Phase 20 relocates
- *   `unaccent` and `pg_trgm` out of `public`, which invalidates every
- *   unqualified index expression — this repository has already shipped
- *   20260825200000_qualify_immutable_unaccent for that exact bug and lost a
- *   control-plane restore to an unqualified `gen_random_uuid`. The upgrade
- *   must drop and recreate this index, and CI can only prove that if the
- *   fixture has one.
- *
- *   USAGE:
- *     TENANT_DATABASE_URL=…  pnpm seed:v1-fixture
- *     TENANT_DATABASE_URL=…  pnpm seed:v1-fixture --scale=10   # 10x the rows
- *     TENANT_DATABASE_URL=…  pnpm seed:v1-fixture --reset      # wipe first
- *
- * The default scale is small enough to run in a CI step (a few seconds) and
- * large enough that a full table scan is visibly different from an index scan.
+ * A fixed LCG, no `Math.random`, no clock. A migration that fails once in CI and
+ * never again is worse than one that fails every time: the second can be fixed.
  */
-import { makeTenantPrismaClient } from '@libriant/db-tenant';
-import { die, isYes, log, parseArgs } from './_lib/cli.js';
+import { Client } from 'pg';
+import { PG_SESSION_OPTIONS } from '@libriant/shared/postgres-session';
+import { die, log, parseArgs } from './_lib/cli.js';
 
-const SCRIPT = 'seed-v1-fixture';
+const NAME = 'seed-v1-fixture';
 
 const args = parseArgs({
-  name: SCRIPT,
-  description: 'Populate a 1.x tenant database with data shaped like a real library.',
-  options: {
-    scale: { type: 'string' },
-    reset: { type: 'boolean' },
-  },
+  name: NAME,
+  description: "Fill a database's 1.0 `public` schema with a deterministic library.",
+  options: { url: { type: 'string' }, profile: { type: 'string' } },
+  required: ['url'],
 });
 
-/** Base counts at scale 1. Multiplied by `--scale`. */
-const BASE = {
-  authors: 400,
-  books: 1_000,
-  copies: 1_600,
-  members: 500,
-  loans: 800,
-  reservations: 120,
-  fines: 150,
-};
+const PROFILES = {
+  ci: {
+    books: 1_000,
+    authors: 320,
+    copies: 1_600,
+    members: 500,
+    loans: 800,
+    holds: 120,
+    fines: 150,
+    audit: 2_000,
+  },
+  acceptance: {
+    books: 50_000,
+    authors: 12_000,
+    copies: 80_000,
+    members: 25_000,
+    loans: 40_000,
+    holds: 6_000,
+    fines: 7_500,
+    audit: 40_000,
+  },
+} as const;
 
-async function main() {
-  const v = args.values as Record<string, string | boolean | undefined>;
-  const scale = Math.max(1, Math.min(200, Number(v.scale ?? '1')));
-  const url = process.env.TENANT_DATABASE_URL;
-  if (!url) die(SCRIPT, 'TENANT_DATABASE_URL is required.');
+const profile = (args.values.profile as keyof typeof PROFILES | undefined) ?? 'ci';
+if (!(profile in PROFILES)) die(NAME, `unknown profile ${profile}; expected ci or acceptance`);
+const N = PROFILES[profile];
 
-  const n = Object.fromEntries(
-    Object.entries(BASE).map(([k, base]) => [k, base * scale]),
-  ) as Record<keyof typeof BASE, number>;
+/** A fixed LCG. See the file docblock: reproducibility beats variety. */
+function lcg(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (Math.imul(s, 1_664_525) + 1_013_904_223) >>> 0;
+    return s / 0x1_0000_0000;
+  };
+}
+const rand = lcg(19_260_919);
+const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)] as T;
+const id = (p: string, n: number): string => `${p}${String(n).padStart(19, '0')}`;
 
-  const db = makeTenantPrismaClient({ databaseUrl: url as string, maxPoolSize: 4 });
-  const started = Date.now();
+/**
+ * A DISTINCT, check-digit-valid ISBN-13 per book.
+ *
+ * 1.0 carries `books_isbn13_unique_active`, which §3 DROPS in 2.0 — "a set and
+ * its volumes, a reprint, and endemic publisher ISBN reuse in small Greek
+ * presses all legitimately share an ISBN, and the 1.0 constraint would refuse
+ * the exact catalogues this product exists to import". The fixture still has to
+ * be a valid 1.0 library, so every ISBN here is unique; the DUPLICATE case
+ * belongs to the phase-20 cutover test, which is where the constraint is dropped.
+ */
+function isbn13(n: number): string {
+  const body = `978${String(n).padStart(9, '0')}`;
+  let sum = 0;
+  for (let i = 0; i < 12; i += 1) sum += Number(body[i]) * (i % 2 === 0 ? 1 : 3);
+  return `${body}${(10 - (sum % 10)) % 10}`;
+}
 
+/**
+ * Greek titles with LEADING ARTICLES, because 245 ind2 is the thing most likely
+ * to be silently wrong and the thing no row count would show.
+ */
+const TITLES = [
+  'Η πόλις εάλω',
+  'Ο Ζορμπάς',
+  'Το κιβώτιο',
+  'Βίος και πολιτεία του Αλέξη Ζορμπά',
+  'The Hobbit',
+  'Le Petit Prince',
+  'ΠΟΛΙΣ',
+];
+const NAMES = [
+  'Καζαντζάκης, Νίκος',
+  'Παπαδόπουλος, Γιώργος',
+  'Σεφέρης, Γιώργος',
+  'Tolkien, J.R.R.',
+];
+
+async function main(): Promise<void> {
+  const c = new Client({
+    connectionString: args.values.url as string,
+    options: PG_SESSION_OPTIONS,
+  });
+  await c.connect();
   try {
-    const state = await db.$queryRawUnsafe<{ n: bigint }[]>(
-      `SELECT count(*)::bigint AS n FROM "_prisma_migrations" WHERE finished_at IS NOT NULL`,
+    await c.query('BEGIN');
+    await c.query(`SET LOCAL search_path TO public`);
+
+    await c.query(
+      `INSERT INTO tenant_settings (id, currency, "loanPeriodDays", "maxRenewals",
+         "finePerDayCents", "fineCapCents", "holdPickupHours", "maxActiveLoans", "defaultLocale",
+         "createdAt", "updatedAt", "renewalsEnabled", "overdueFinesEnabled", "lostItemFeesEnabled",
+         "lostItemDefaultFeeCents", "reservationsEnabled", "notifyDueSoon", "dueSoonDays",
+         "notifyOverdue", "notifyHoldReady", "notificationTemplates")
+       VALUES (1, 'EUR', 21, 0, 20, 0, 72, 5, 'el', pg_catalog.now(), pg_catalog.now(),
+               true, true, true, 2500, true, true, 3, true, true, '{"overdue":"Το βιβλίο σας"}')
+       ON CONFLICT (id) DO NOTHING`,
     );
-    if (Number(state[0]?.n ?? 0n) === 0) {
-      die(
-        SCRIPT,
-        'this database has no applied migrations. Run `pnpm tenant:migrate:deploy` first.',
+    // maxRenewals 0 and fineCapCents 0 are DELIBERATE and mean different things:
+    // zero renewals is a real setting, zero cap means uncapped. The verifier
+    // asserts both crossings (F04, F05).
+
+    const authors: string[] = [];
+    for (let i = 0; i < N.authors; i += 1) {
+      const aid = id('clauth', i);
+      authors.push(aid);
+      await c.query(
+        `INSERT INTO authors (id, "fullName", "sortName", "isOrganization", "birthYear", "deathYear",
+           notes, "customFields", "createdAt", "updatedAt")
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'{}',pg_catalog.now(),pg_catalog.now())`,
+        [
+          aid,
+          pick(NAMES),
+          `sort ${i}`,
+          i % 40 === 0,
+          1883 + (i % 60),
+          null,
+          i % 25 === 0 ? 'a note' : null,
+        ],
+      );
+    }
+    // AN ORPHAN AUTHOR — linked to no book. It has no MARC home and assertion
+    // A12 requires it to be RECORDED rather than lost. No candidate design for
+    // this phase had that assertion at all.
+    await c.query(
+      `INSERT INTO authors (id, "fullName", "sortName", "isOrganization", "customFields", "createdAt", "updatedAt")
+       VALUES ('clauth-orphan', 'Ορφανός, Συγγραφέας', 'orfanos', false, '{}', pg_catalog.now(), pg_catalog.now())`,
+    );
+
+    for (let i = 0; i < N.books; i += 1) {
+      const bid = id('clbook', i);
+      await c.query(
+        `INSERT INTO books (id, title, subtitle, "sortTitle", "searchText", isbn13, isbn10,
+           publisher, "publicationYear", language, edition, "numPages", description,
+           classification, "customFields", "createdAt", "updatedAt", "archivedAt")
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'{}',
+                 pg_catalog.now() - ($15 || ' days')::interval, pg_catalog.now(), $16)`,
+        [
+          bid,
+          pick(TITLES),
+          i % 7 === 0 ? 'μυθιστόρημα' : null,
+          `sort ${i}`,
+          `search ${i}`,
+          // One in 50 has a BAD check digit, which must land in 020 $z with an
+          // exception rather than being dropped or silently accepted.
+          // One in 50 has a BAD check digit and must land in 020 $z with an
+          // exception; the rest are distinct and valid.
+          i % 50 === 0 ? `978000000${String(i).padStart(3, '0')}1` : i % 3 === 0 ? isbn13(i) : null,
+          i % 11 === 0 ? `026203${String(i % 1000).padStart(3, '0')}4` : null,
+          i % 5 === 0 ? 'Εκδόσεις Καστανιώτη' : null,
+          1950 + (i % 70),
+          // One in 60 has a language code outside ISO 639-2/B.
+          i % 60 === 0 ? 'zz' : i % 4 === 0 ? 'en' : 'el',
+          null,
+          120 + (i % 400),
+          i % 9 === 0 ? 'Μια περίληψη.' : null,
+          i % 6 === 0 ? '889.332' : i % 13 === 0 ? 'ΛΟΓ-ΚΑΖ' : null,
+          String(30 + (i % 3000)),
+          i % 97 === 0 ? new Date() : null,
+        ],
+      );
+      const howMany = i % 13 === 0 ? 0 : 1 + (i % 3);
+      for (let k = 0; k < howMany; k += 1) {
+        await c.query(
+          `INSERT INTO book_authors ("bookId", "authorId", "order", role) VALUES ($1,$2,$3,$4)
+           ON CONFLICT DO NOTHING`,
+          // A TRANSLATOR AT ORDER 0 on one in 30 — the shape that migrates as
+          // the author if $e is dropped from the main entry.
+          [
+            bid,
+            authors[(i * 3 + k) % authors.length],
+            k,
+            k === 0 && i % 30 === 0 ? 'translator' : k > 0 ? 'editor' : null,
+          ],
+        );
+      }
+    }
+
+    for (let i = 0; i < N.members; i += 1) {
+      await c.query(
+        `INSERT INTO members (id, "memberNumber", "fullName", "sortName", "searchText", email, phone,
+           "dateOfBirth", "addressLine1", city, "postalCode", country, status, "staffNotes",
+           "joinedAt", "customFields", "createdAt", "updatedAt", "archivedAt")
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+                 pg_catalog.now(),'{}',pg_catalog.now(),pg_catalog.now(),$15)`,
+        [
+          id('clmemb', i),
+          `M-2026-${String(i).padStart(5, '0')}`,
+          'Παπαδοπούλου, Ελένη',
+          `sort ${i}`,
+          `search ${i}`,
+          // MOST MEMBERS HAVE NO EMAIL. A search_text built without COALESCE
+          // goes NULL for all of them, and the source column is gone afterwards.
+          i % 4 === 0 ? `Ε.Παπαδοπουλου${i}@example.gr` : null,
+          i % 3 === 0 ? '2101234567' : null,
+          null,
+          i % 5 === 0 ? 'Οδός 1' : null,
+          i % 5 === 0 ? 'Αθήνα' : null,
+          null,
+          null,
+          // `archived` has no patron_status counterpart — a bare cast is 22P02.
+          i % 23 === 0 ? 'archived' : i % 17 === 0 ? 'suspended' : 'active',
+          null,
+          i % 23 === 0 ? new Date() : null,
+        ],
+      );
+    }
+    await c.query(
+      `INSERT INTO member_number_counters (year, "nextSeq") VALUES (2026, $1)
+       ON CONFLICT (year) DO NOTHING`,
+      [N.members + 500],
+    );
+
+    const copies: string[] = [];
+    for (let i = 0; i < N.copies; i += 1) {
+      const cid = id('clcopy', i);
+      copies.push(cid);
+      await c.query(
+        `INSERT INTO book_copies (id, "bookId", barcode, status, "shelfLocation", "conditionNotes",
+           "acquiredAt", "priceCents", "customFields", "createdAt", "updatedAt", "archivedAt")
+         VALUES ($1,$2,$3,$4,$5,$6,pg_catalog.now(),$7,'{}',pg_catalog.now(),pg_catalog.now(),NULL)`,
+        [
+          cid,
+          id('clbook', i % N.books),
+          // A GREEK barcode: items.barcode_norm folds and patron_cards does not.
+          i % 40 === 0 ? `ΑΒΓ-${i}` : `BC-${i}`,
+          // All six 1.0 statuses appear; three have no 2.0 counterpart.
+          pick([
+            'available',
+            'available',
+            'available',
+            'on_loan',
+            'reserved',
+            'lost',
+            'damaged',
+            'withdrawn',
+          ]),
+          i % 6 === 0 ? 'Ράφι Α1' : null,
+          null,
+          1000 + (i % 3000),
+        ],
       );
     }
 
-    if (isYes(v.reset)) {
-      log(SCRIPT, 'resetting library tables…');
-      await db.$executeRawUnsafe(
-        `TRUNCATE "fines", "reservations", "loans", "book_copies", "book_authors",
-                  "books", "authors", "members", "member_number_counters",
-                  "collection_records", "audit_log" RESTART IDENTITY CASCADE`,
+    for (let i = 0; i < N.loans; i += 1) {
+      const returned = i % 3 !== 0;
+      const lost = !returned && i % 11 === 0;
+      await c.query(
+        `INSERT INTO loans (id, "copyId", "memberId", "loanedAt", "dueAt", "returnedAt",
+           "renewedCount", status, notes, "customFields", "createdAt", "updatedAt")
+         VALUES ($1,$2,$3, pg_catalog.now() - interval '40 days', pg_catalog.now() - interval '19 days',
+                 $4,$5,$6,$7,'{}',pg_catalog.now(),pg_catalog.now())`,
+        [
+          id('clloan', i),
+          copies[i % copies.length],
+          id('clmemb', i % N.members),
+          returned ? new Date() : null,
+          i % 7,
+          lost ? 'lost' : returned ? 'returned' : 'active',
+          // A LOST loan's note is the one that says so, and it is dropped by any
+          // design that routes notes onto the `returned` event.
+          lost ? 'lost report filed 12/3' : i % 9 === 0 ? 'borrower says posted back' : null,
+        ],
       );
     }
 
-    log(SCRIPT, `seeding at scale ${scale}: ${JSON.stringify(n)}`);
+    for (let i = 0; i < N.holds; i += 1) {
+      await c.query(
+        `INSERT INTO reservations (id, "bookId", "memberId", "placedAt", "queuePosition", status,
+           "readyAt", "expiresAt", "customFields", "createdAt", "updatedAt")
+         VALUES ($1,$2,$3, pg_catalog.now() - interval '5 days', $4,$5,$6,$7,'{}',
+                 pg_catalog.now(), pg_catalog.now())`,
+        [
+          id('clresv', i),
+          // Deliberately few bibs, so queues are DEEP and the positions collide.
+          id('clbook', i % 20),
+          id('clmemb', (i * 7) % N.members),
+          // DUPLICATES AND GAPS — the corruption 1.0 can actually reach, and
+          // the reason "bit-exact" cannot survive.
+          //
+          // NOT position 0: 1.0 carries `reservations_queue_position_when_queued`
+          // CHECK (status <> 'queued' OR queuePosition >= 1), so a zero is
+          // refused at the source and the blanket `> 0` decrement ABORTS there
+          // rather than committing one. What 1.0 does NOT have is a unique on
+          // (bookId, queuePosition) — `reservations_bookId_status_queuePosition_idx`
+          // is a plain index — so two queued requests for one book can share a
+          // position, and nothing makes the sequence dense. Both are refused by
+          // 2.0's `holds_one_hold_per_position` and by the contiguity assertion,
+          // which is what forces the renumber.
+          i % 5 === 0 ? 1 : 1 + (i % 4),
+          i % 6 === 0 ? 'ready' : i % 13 === 0 ? 'canceled' : 'queued',
+          i % 6 === 0 ? new Date() : null,
+          i % 6 === 0 ? new Date(Date.now() + 86_400_000 * 3) : null,
+        ],
+      );
+    }
 
-    // Greek names, in the capitals a real export uses. `ΣΟΦΟΣ` and friends are
-    // here so the phase-20 search_text backfill has something to change.
-    await db.$executeRawUnsafe(
-      `INSERT INTO "authors" ("id","fullName","sortName","isOrganization","customFields","createdAt","updatedAt")
-       SELECT 'a-' || g,
-              (ARRAY['ΚΑΖΑΝΤΖΑΚΗΣ, ΝΙΚΟΣ','Παπαδόπουλος, Γιώργος','ΣΕΦΕΡΗΣ, ΓΙΩΡΓΟΣ',
-                     'Ελύτης, Οδυσσέας','ΡΙΤΣΟΣ, ΓΙΑΝΝΗΣ','Woolf, Virginia'])[1 + g % 6]
-                || ' ' || g,
-              pg_catalog.lower((ARRAY['καζαντζακησ','παπαδοπουλος','σεφερησ','ελυτησ','ριτσος','woolf'])[1 + g % 6]) || ' ' || g,
-              false, '{}'::jsonb,
-              (pg_catalog.now() AT TIME ZONE 'UTC'), (pg_catalog.now() AT TIME ZONE 'UTC')
-         FROM generate_series(1, ${n.authors}) g`,
-    );
+    for (let i = 0; i < N.fines; i += 1) {
+      await c.query(
+        `INSERT INTO fines (id, "memberId", "loanId", "amountCents", currency, reason, status,
+           "paidAt", notes, "customFields", "createdAt", "updatedAt", "archivedAt")
+         VALUES ($1,$2,$3,$4,'EUR',$5,$6,$7,$8,'{}',pg_catalog.now(),pg_catalog.now(),$9)`,
+        [
+          id('clfine', i),
+          id('clmemb', i % N.members),
+          i % 2 === 0 ? id('clloan', i % N.loans) : null,
+          // A ZERO fine on one in 25: fees_amount_is_positive refuses it, and
+          // promoting it to a cent would invent a debt.
+          i % 25 === 0 ? 0 : 100 + (i % 900),
+          i % 8 === 0 ? 'lost item replacement' : 'overdue',
+          i % 3 === 0 ? 'paid' : i % 7 === 0 ? 'waived' : 'outstanding',
+          i % 3 === 0 ? new Date() : null,
+          i % 10 === 0 ? 'agreed instalments' : null,
+          // An ARCHIVED but PAID fine: the fact that is lost if archived_at is
+          // folded into status='cancelled'.
+          i % 31 === 0 ? new Date() : null,
+        ],
+      );
+    }
 
-    await db.$executeRawUnsafe(
-      `INSERT INTO "books" ("id","title","sortTitle","searchText","isbn13","publisher",
-                            "publicationYear","language","classification","customFields",
-                            "createdAt","updatedAt")
-       SELECT 'b-' || g,
-              (ARRAY['Η ΠΟΛΙΣ ΕΑΛΩ','Βίος και πολιτεία του Αλέξη Ζορμπά','ΤΟ ΑΞΙΟΝ ΕΣΤΙ',
-                     'Μυθιστόρημα','ΕΠΙΤΑΦΙΟΣ','Mrs Dalloway'])[1 + g % 6] || ' ' || g,
-              pg_catalog.lower((ARRAY['η πολις εαλω','βιος και πολιτεια','το αξιον εστι',
-                     'μυθιστορημα','επιταφιος','mrs dalloway'])[1 + g % 6]) || ' ' || g,
-              pg_catalog.lower((ARRAY['η πολις εαλω','βιος και πολιτεια','το αξιον εστι',
-                     'μυθιστορημα','επιταφιος','mrs dalloway'])[1 + g % 6]) || ' ' || g,
-              -- Unique on insert. The twins are made afterwards, because the
-              -- partial unique index refuses them at INSERT time and only
-              -- ignores a row once it is archived.
-              '978' || pg_catalog.lpad(g::text, 10, '0'),
-              (ARRAY['Καστανιώτης','Πατάκης','ΙΚΑΡΟΣ','Κέδρος'])[1 + g % 4],
-              1900 + (g % 126), (ARRAY['el','en'])[1 + g % 2],
-              (ARRAY['005.133','PA4037 .A2','027.4','82-31'])[1 + g % 4],
-              '{}'::jsonb,
-              (pg_catalog.now() AT TIME ZONE 'UTC'), (pg_catalog.now() AT TIME ZONE 'UTC')
-         FROM generate_series(1, ${n.books}) g`,
-    );
-    // Now make the twins. ARCHIVE FIRST, then copy a neighbour's ISBN onto the
-    // archived row: `books_isbn13_unique_active` only ignores archived rows, so
-    // this is the one order that works — and it is exactly the order a
-    // librarian arrives at the state by, having archived a duplicate record and
-    // kept it for reference. 2.0 drops the constraint entirely, because a set
-    // and its volumes, a reprint, and endemic publisher ISBN reuse in small
-    // Greek presses all legitimately share one ISBN.
-    const twinPairs = Math.max(1, Math.floor(n.books / 100) - 1);
-    const twins = await db.$executeRawUnsafe(
-      `UPDATE "books" AS b
-          SET "archivedAt" = (pg_catalog.now() AT TIME ZONE 'UTC'),
-              "isbn13" = src."isbn13"
-         FROM generate_series(1, ${twinPairs}) AS s(g)
-         JOIN "books" AS src ON src."id" = 'b-' || (s.g * 100)
-        WHERE b."id" = 'b-' || (s.g * 100 + 1)`,
-    );
+    for (let i = 0; i < N.audit; i += 1) {
+      await c.query(
+        `INSERT INTO audit_log (id, "actorType", "actorId", action, "targetType", "targetId",
+           "beforeJson", "afterJson", ip, "userAgent", "supportSessionId", "occurredAt")
+         VALUES ($1,'user',$2,'update','book',$3,$4,$5,'10.0.0.1','test',$6,
+                 pg_catalog.now() - ($7 || ' days')::interval)`,
+        [
+          id('claudit', i),
+          'user-1',
+          id('clbook', i % N.books),
+          JSON.stringify({ title: 'before' }),
+          JSON.stringify({ title: 'after' }),
+          i % 50 === 0 ? 'sess-1' : null,
+          // SPREAD ACROSS MONTHS, so the partition routing is exercised: a row
+          // whose month has no partition aborts with 23514.
+          String(i % 400),
+        ],
+      );
+    }
 
-    await db.$executeRawUnsafe(
-      `INSERT INTO "book_authors" ("bookId","authorId","order","role")
-       SELECT 'b-' || g, 'a-' || (1 + g % ${n.authors}), 0, NULL
-         FROM generate_series(1, ${n.books}) g`,
+    await c.query('COMMIT');
+    log(
+      NAME,
+      `seeded the ${profile} profile: ${N.books} books, ${N.copies} copies, ${N.members} members`,
     );
-
-    await db.$executeRawUnsafe(
-      `INSERT INTO "book_copies" ("id","bookId","barcode","status","shelfLocation",
-                                  "acquiredAt","priceCents","customFields","createdAt","updatedAt")
-       SELECT 'c-' || g, 'b-' || (1 + g % ${n.books}),
-              'BC' || pg_catalog.lpad(g::text, 10, '0'),
-              'available',
-              (ARRAY['ΠΑΙΔ 1','REF 2','Α3','005.1'])[1 + g % 4],
-              (pg_catalog.now() AT TIME ZONE 'UTC'), 1000 + g % 5000, '{}'::jsonb,
-              (pg_catalog.now() AT TIME ZONE 'UTC'), (pg_catalog.now() AT TIME ZONE 'UTC')
-         FROM generate_series(1, ${n.copies}) g`,
-    );
-
-    await db.$executeRawUnsafe(
-      `INSERT INTO "members" ("id","memberNumber","fullName","sortName","searchText","email",
-                              "status","joinedAt","customFields","createdAt","updatedAt")
-       SELECT 'm-' || g,
-              'M-2026-' || pg_catalog.lpad(g::text, 4, '0'),
-              (ARRAY['ΓΕΩΡΓΙΟΥ, ΜΑΡΙΑ','Δημητρίου, Κώστας','ΠΑΠΑΣ, ΣΟΦΟΣ'])[1 + g % 3] || ' ' || g,
-              pg_catalog.lower((ARRAY['γεωργιου μαρια','δημητριου κωστας','παπας σοφος'])[1 + g % 3]) || ' ' || g,
-              pg_catalog.lower((ARRAY['γεωργιου μαρια','δημητριου κωστας','παπας σοφος'])[1 + g % 3]) || ' ' || g,
-              'member' || g || '@example.test',
-              (ARRAY['active','active','active','suspended'])[1 + g % 4]::"MemberStatus",
-              (pg_catalog.now() AT TIME ZONE 'UTC'), '{}'::jsonb,
-              (pg_catalog.now() AT TIME ZONE 'UTC'), (pg_catalog.now() AT TIME ZONE 'UTC')
-         FROM generate_series(1, ${n.members}) g`,
-    );
-    await db.$executeRawUnsafe(
-      `INSERT INTO "member_number_counters" ("year","nextSeq") VALUES (2026, ${n.members + 1})
-       ON CONFLICT ("year") DO UPDATE SET "nextSeq" = EXCLUDED."nextSeq"`,
-    );
-
-    // Loans: one per copy so `loans_one_active_per_copy` holds, with a slice
-    // returned and a slice LOST — the state that traps a copy forever in 1.0.
-    await db.$executeRawUnsafe(
-      `INSERT INTO "loans" ("id","copyId","memberId","loanedAt","dueAt","returnedAt",
-                            "renewedCount","status","customFields","createdAt","updatedAt")
-       SELECT 'l-' || g, 'c-' || g, 'm-' || (1 + g % ${n.members}),
-              (pg_catalog.now() AT TIME ZONE 'UTC') - (g % 60) * INTERVAL '1 day',
-              (pg_catalog.now() AT TIME ZONE 'UTC') - (g % 60) * INTERVAL '1 day' + INTERVAL '14 days',
-              CASE WHEN g % 4 = 0 THEN NULL
-                   ELSE (pg_catalog.now() AT TIME ZONE 'UTC') - (g % 30) * INTERVAL '1 day' END,
-              g % 3,
-              (CASE WHEN g % 4 = 0 THEN (CASE WHEN g % 8 = 0 THEN 'lost' ELSE 'active' END)
-                    ELSE 'returned' END)::"LoanStatus",
-              '{}'::jsonb,
-              (pg_catalog.now() AT TIME ZONE 'UTC'), (pg_catalog.now() AT TIME ZONE 'UTC')
-         FROM generate_series(1, ${n.loans}) g`,
-    );
-    await db.$executeRawUnsafe(
-      `UPDATE "book_copies" SET "status" = 'on_loan'
-        WHERE "id" IN (SELECT "copyId" FROM "loans" WHERE "status" = 'active')`,
-    );
-    await db.$executeRawUnsafe(
-      `UPDATE "book_copies" SET "status" = 'lost'
-        WHERE "id" IN (SELECT "copyId" FROM "loans" WHERE "status" = 'lost')`,
-    );
-
-    // Holds: contiguous 1-based queues per book, plus one `ready` hold whose
-    // pickup window has already closed. Positions must survive the upgrade
-    // bit-exact, so they are built deterministically here.
-    await db.$executeRawUnsafe(
-      `INSERT INTO "reservations" ("id","bookId","memberId","placedAt","queuePosition","status",
-                                   "readyAt","expiresAt","customFields","createdAt","updatedAt")
-       SELECT 'r-' || g, 'b-' || (1 + g % 40), 'm-' || (1 + g % ${n.members}),
-              -- Placed well before readyAt. reservations_ready_after_placed is
-              -- a CHECK constraint, and a fixture that will not insert is no
-              -- fixture. (No backticks in here: this is inside a template
-              -- literal, where one ends the string.)
-              (pg_catalog.now() AT TIME ZONE 'UTC') - INTERVAL '30 days' - g * INTERVAL '1 hour',
-              1 + ((g - 1) / 40),
-              (CASE WHEN g <= 40 THEN 'ready' ELSE 'queued' END)::"ReservationStatus",
-              CASE WHEN g <= 40 THEN (pg_catalog.now() AT TIME ZONE 'UTC') - INTERVAL '5 days' END,
-              CASE WHEN g <= 40 THEN (pg_catalog.now() AT TIME ZONE 'UTC') - INTERVAL '3 days' END,
-              '{}'::jsonb,
-              (pg_catalog.now() AT TIME ZONE 'UTC'), (pg_catalog.now() AT TIME ZONE 'UTC')
-         FROM generate_series(1, ${n.reservations}) g`,
-    );
-
-    await db.$executeRawUnsafe(
-      `INSERT INTO "fines" ("id","memberId","loanId","amountCents","currency","reason","status",
-                            "paidAt","customFields","createdAt","updatedAt")
-       SELECT 'f-' || g, 'm-' || (1 + g % ${n.members}),
-              -- Every third fine hangs off a loan. At most ONE of those may be
-              -- outstanding per loan (fines_one_outstanding_per_loan), and the
-              -- modulo below gives each loan-linked fine a distinct loan, so
-              -- that holds without thinking about it.
-              CASE WHEN g % 3 = 0 THEN 'l-' || g ELSE NULL END,
-              50 * (1 + g % 40), 'EUR',
-              (ARRAY['Εκπρόθεσμη επιστροφή','Φθορά','Απώλεια'])[1 + g % 3],
-              (ARRAY['outstanding','paid','waived'])[1 + g % 3]::"FineStatus",
-              -- fines_paid_consistency: paid REQUIRES paidAt, and only paid or
-              -- waived may carry one.
-              CASE WHEN g % 3 = 1 THEN (pg_catalog.now() AT TIME ZONE 'UTC') END,
-              '{}'::jsonb,
-              (pg_catalog.now() AT TIME ZONE 'UTC'), (pg_catalog.now() AT TIME ZONE 'UTC')
-         FROM generate_series(1, ${n.fines}) g`,
-    );
-
-    // The expression index phase 20's extension relocation must not break.
-    await db.$executeRawUnsafe(
-      `CREATE OR REPLACE FUNCTION public.immutable_unaccent(text)
-         RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE STRICT
-         AS $fn$ SELECT public.unaccent('public.unaccent'::regdictionary, $1) $fn$`,
-    );
-    await db.$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "books_title_unaccent_idx"
-         ON "books" (public.immutable_unaccent("title"))`,
-    );
-
-    const counts = await db.$queryRawUnsafe<Record<string, bigint>[]>(
-      `SELECT (SELECT count(*) FROM "authors")      AS authors,
-              (SELECT count(*) FROM "books")        AS books,
-              (SELECT count(*) FROM "books" WHERE "archivedAt" IS NOT NULL) AS archived_books,
-              (SELECT count(*) FROM "book_copies")  AS copies,
-              (SELECT count(*) FROM "members")      AS members,
-              (SELECT count(*) FROM "loans")        AS loans,
-              (SELECT count(*) FROM "loans" WHERE "status" = 'lost') AS lost_loans,
-              (SELECT count(*) FROM "reservations") AS reservations,
-              (SELECT count(*) FROM "fines")        AS fines,
-              (SELECT count(DISTINCT "isbn13") FROM "books" WHERE "isbn13" IS NOT NULL) AS distinct_isbns`,
-    );
-    const row = counts[0] as Record<string, bigint>;
-    log(SCRIPT, '---');
-    for (const [k, val] of Object.entries(row)) log(SCRIPT, `  ${k.padEnd(16)} ${val}`);
-    log(SCRIPT, `  ${'isbn twins'.padEnd(16)} ${twins} archived so the 1.0 unique index holds`);
-    log(SCRIPT, `done in ${Date.now() - started} ms.`);
+  } catch (err: unknown) {
+    await c.query('ROLLBACK');
+    throw err;
   } finally {
-    await db.$disconnect().catch(() => undefined);
+    await c.end();
   }
 }
 
-main().catch((err) => {
-  process.stderr.write(`[${SCRIPT}] ${err instanceof Error ? err.message : err}\n`);
-  process.exit(1);
+main().catch((err: unknown) => {
+  // tsx loads a script as CJS, so `await main()` at top level is a build error
+  // ("Top-level await is currently not supported with the cjs output format").
+  // Every other script here ends the same way for the same reason.
+  console.error(err);
+  process.exitCode = 1;
 });

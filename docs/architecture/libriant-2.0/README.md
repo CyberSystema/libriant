@@ -3873,3 +3873,108 @@ else at all because `fees` has no event table.
 fine, a PAID fine can be archived, and collapsing the two loses the archival and
 leaves a settled debt looking live. Phase 18's `owed_cents` is regenerated to
 read it, because a library's balance must not include debts it has filed away.
+
+---
+
+## Phase 19b — the copy-forward, and what running it found
+
+19a built the surface; this is the transformation, the 42-assertion verifier, the
+deterministic fixture and the CI rehearsal. It runs end to end against a real
+1.0 library and **rolls back**: there is no `--commit` in phase 19, and no
+environment variable that makes one.
+
+### Three corrections to what 19a wrote
+
+**Position 0 is impossible in 1.0.** 19a said the blanket `> 0` decrement
+"produces position 0 and duplicates". Measured against a real 1.0 schema, 1.0
+carries `reservations_queue_position_when_queued`
+`CHECK (status <> 'queued' OR ("queuePosition" IS NOT NULL AND "queuePosition" >= 1))`,
+so a zero is refused at the source and that decrement would ABORT there rather
+than commit one. The claim came from the design review and was repeated without
+checking 1.0's own constraints. What 1.0 genuinely lacks is any uniqueness on
+`(bookId, queuePosition)` — `reservations_bookId_status_queuePosition_idx` is a
+plain index — and any density guarantee, so DUPLICATES and GAPS are reachable.
+Bit-exact still cannot survive; the reason is duplicates and gaps, not zeros.
+
+**§6's rollback recipe is not yet the right one.** It reads
+`DROP SCHEMA public CASCADE; ALTER SCHEMA v1_archive RENAME TO public;` and,
+measured against a committed clone, fails with `schema "public" does not exist`.
+It has to: this phase renames `public` away and puts nothing in its place,
+because promoting `lbr2` is phase 20's job. Before that promotion the rollback is
+one statement — `ALTER SCHEMA v1_archive RENAME TO public` — verified to restore
+1,000 books, 500 members, 800 loans, 150 fines, `roles` readable through the
+default search_path, a Greek title intact and citext still folding. §6's two-step
+becomes correct the moment phase 20 renames `lbr2`, and is the wrong instruction
+to leave in a runbook before then.
+
+**The SQL-construct trap list is longer than this repo had written down.**
+Measured on PG 16.15, `pg_catalog.<x>` is a syntax error or an unknown function
+for `COALESCE`, `NULLIF`, `GREATEST`, `LEAST`, `CASE`, `EXTRACT(x FROM y)` and
+`SUBSTRING(x FROM y)` — and works for everything else tested, including
+`to_jsonb`, `jsonb_build_object`, `date_part`, the two-argument `substring`,
+`format`, `to_char`, `string_agg` and `date_trunc`. The FROM-forms are the
+dangerous half: they read like function calls and fail at PARSE time, so a file
+containing one does not run at all. This phase hit `substring(x FROM y)` and
+`greatest` in one sitting.
+
+### What the verifier caught that nothing else would have
+
+It runs INSIDE the transaction, before the commit, which is the only reason
+these were findings rather than production defects.
+
+**An archived-but-PAID fine credited the receivable twice.** 19a made
+`owed_cents` see `archived_at`, so an archived fee owes nothing — but its charge
+journal still debited the receivable and nothing credited it back, so I3 failed
+by the archived total. The first fix cancelled the gross, which then
+double-credited every archived fine that had already been paid and left the
+account NEGATIVE by exactly what the reader had handed over. The cancellation
+reverses only `amount − paid − waived`.
+
+**A `ready` request with no copy cannot be loaded at all.**
+`holds_collectable_implies_assigned` refuses a hold awaiting pickup without an
+assigned copy. Expiring those would destroy a live, notified request and leave no
+row saying a reader lost their place, so they return to the HEAD of their queue
+and the demotion is recorded in `upgrade_exceptions`. The queue position is now
+derived from the same predicate `holds_position_iff_waiting` uses, rather than
+from the 1.0 status, so the two cannot disagree on a row with an inconsistent
+combination.
+
+**Corruption and a business rule must not share a fate.** A zero-amount fine is
+legitimately dropped — 2.0's CHECK will not hold it — while a dangling reference
+means 1.0's own foreign keys were bypassed and the database is not sound. Both
+are recorded in `upgrade_dropped_rows`; only the second aborts, because its
+reason begins `DANGLING:` and assertion A14 refuses it by name. Recording AND
+refusing is not a contradiction: the record is what tells an operator which row,
+and the assertion is what stops the commit.
+
+### The precondition that would have merged two libraries
+
+`lbr2` must be provisioned, seeded and EMPTY. The first full run went against a
+clone whose `lbr2` still held 4,552 fees from the phase-18 property test, and the
+symptom was a foreign-key violation a hundred statements later naming an id
+nobody recognised. The general case is worse — an upgrade into a populated
+`lbr2` merges two libraries, silently, with no undo after a commit — so the
+orchestrator now refuses before `BEGIN` and names what it found.
+
+### Why `marc_source_format` gained a value
+
+The four existing values name serialisations a record was parsed from, plus
+`manual` for a human typing into the editor. A record built from a 1.0 `books`
+row is none of those. `manual` was refused: this column is provenance and
+nothing else, and labelling fifty thousand generated records as hand-catalogued
+is a false statement about work nobody did — in the one column a cataloguer
+consults to find out where a record came from. It also explains why
+`source_blob` is NULL and `source_roundtrips` is false on all of them.
+
+### The fixture is deterministic, and its SHAPES are the point
+
+A fixed LCG, no clock, no `Math.random`: a migration that fails once in CI and
+never again is worse than one that fails every time, because the second can be
+fixed. The `ci` profile is 1,000 books and runs on every commit; §6's 50,000-book
+fixture is `acceptance` and belongs on a schedule. The split only works because
+every awkward shape is in BOTH — a Greek title with a leading article, a
+translator at order 0, an orphaned author, a bad ISBN check digit, a language
+outside ISO 639-2/B, a member with no email, duplicate queue positions, a `ready`
+hold with no copy, a zero-amount fine, an archived-but-paid fine, audit rows
+spread across months. A fast fixture that is merely SMALLER tests a different
+library.

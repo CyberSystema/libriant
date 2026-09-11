@@ -218,6 +218,15 @@ enum MarcSourceFormat {
   marcxml
   marc_json
   manual
+  /// Built by the v1 to v2 upgrade from a 1.0 `books` row (2.0 phase 19b).
+  ///
+  /// NOT `manual`, which means a human typed it into the editor. This column is
+  /// provenance and nothing else, and labelling a generated record as
+  /// hand-catalogued would be a false statement about work nobody did, in the
+  /// one column a cataloguer consults to find out where a record came from. It
+  /// also explains why `source_blob` is NULL and `source_roundtrips` is false
+  /// on every one of them.
+  migrated
 
   @@map("marc_source_format")
 }
