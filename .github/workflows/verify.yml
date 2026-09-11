@@ -40,11 +40,24 @@ jobs:
       - name: Translation parity (en + el catalogs in lock-step)
         run: pnpm check:translations
 
-      # The images are never built in CI, so a Dockerfile/package.json pnpm
-      # mismatch is otherwise invisible until the migrate one-shot fails on a
-      # network it has no egress from — which is exactly what happened.
+      # A Dockerfile/package.json pnpm mismatch is invisible until the migrate
+      # one-shot fails on a network it has no egress from — which is exactly
+      # what happened. The image-contents job below does build the images now,
+      # but it runs late and in parallel; this answers in milliseconds.
       - name: pnpm pins match across package.json and the Dockerfiles
         run: pnpm check:pnpm-pins
+
+      # The image-contents job builds and BOOTS the API image, so it does catch
+      # a missing workspace COPY — it caught this one. It caught it for nine
+      # consecutive phases, on a job that had been red long enough to read as
+      # scenery, while every green signal a phase actually looked at stayed
+      # green: typecheck, lint, unit, integration and smoke all run against the
+      # full workspace on disk, where every package resolves.
+      #
+      # This is the same assertion, thirty seconds into the run instead of
+      # twenty minutes, in a job people read.
+      - name: Each Dockerfile copies the full workspace closure it builds
+        run: pnpm check:docker-workspace-closure
 
       - name: Asset manifest integrity (every slot exists; every code ref listed)
         run: pnpm check:assets

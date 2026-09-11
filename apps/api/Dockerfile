@@ -121,6 +121,22 @@ COPY apps/api/package.json apps/api/package.json
 COPY packages/db-control/package.json packages/db-control/package.json
 COPY packages/db-tenant/package.json packages/db-tenant/package.json
 COPY packages/shared/package.json packages/shared/package.json
+# @libriant/marc is the MARC codec the bib write path imports, and
+# @libriant/circ-policy is the pure resolver circulation, holds, fees and
+# notices all resolve through. Both are plain `dependencies` of @libriant/api.
+#
+# THEY WERE OMITTED FROM THIS LIST FOR NINE PHASES and the image could not boot
+# for any of them: `pnpm install --frozen-lockfile` only validates the projects
+# it finds on disk, so a workspace dependency whose manifest is absent is not an
+# error — pnpm simply never creates the symlink, the install succeeds, the image
+# builds, and the container dies at startup with
+#   ERR_MODULE_NOT_FOUND: Cannot find package '@libriant/marc'
+# The same property that makes the omission of apps/desktop safe (the comment
+# above) makes the omission of a REAL dependency silent. Nothing but booting the
+# image can tell the two apart, which is why `check:docker-workspace-closure`
+# now derives this list from the manifests instead of trusting it.
+COPY packages/marc/package.json packages/marc/package.json
+COPY packages/circ-policy/package.json packages/circ-policy/package.json
 # The API renders the marketing site's home page when the application form
 # fails validation, so @libriant/site is a real runtime dependency.
 COPY apps/site/package.json apps/site/package.json
@@ -144,6 +160,15 @@ COPY locales locales
 COPY packages/db-control packages/db-control
 COPY packages/db-tenant packages/db-tenant
 COPY packages/shared packages/shared
+# A manifest without its source is a dangling symlink, so these move together
+# with the two COPYs added to `deps` above. Cheap: 548 KB and 676 KB of
+# TypeScript, and they add NO third-party package at all to a container holding
+# CONTROL_DATABASE_URL and every tenant credential — circ-policy is
+# zero-dependency by design (§4.1), and marc's one dependency,
+# fast-xml-parser ^5.11.0, is already a direct dependency of apps/api itself,
+# resolving to the single fast-xml-parser@5.11.0 in the lockfile.
+COPY packages/marc packages/marc
+COPY packages/circ-policy packages/circ-policy
 # privacy-legal-09: the frozen, version-addressed copies of the legal documents.
 # `legal_document_versions` is loaded from here before any acceptance is
 # recorded, so a library's consent record can produce the exact text it agreed
@@ -198,6 +223,8 @@ RUN node scripts/docker-prune-dev-modules.mjs \
       --root packages/db-control \
       --root packages/db-tenant \
       --root packages/shared \
+      --root packages/marc \
+      --root packages/circ-policy \
       --root apps/site \
       --keep tsx \
       --keep prisma \
