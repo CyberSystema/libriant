@@ -23,7 +23,7 @@
 # The tag stays for readability; the digest is what resolves. Re-resolve
 # deliberately when bumping (`docker buildx imagetools inspect node:26-alpine`)
 # and update apps/web/Dockerfile + infra/caddy/Dockerfile in the same commit.
-FROM node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019 AS base
+FROM node:26-alpine@sha256:ef24c5053d50fdc3e4e56eb4e7ddb7861874ab0fdc797046ba897581deb8e868 AS base
 # postgresql-client provides pg_dump for the SQL-format database export.
 #
 # launch-readiness-14: the client major is PINNED to the server major, and the
