@@ -916,17 +916,6 @@ jobs:
         env:
           SHADOW_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_shadow
 
-      # The 1.x fixture the phase-19 upgrade will be tested against, seeded
-      # here so it is proven to build on every commit rather than on the day
-      # someone needs it. It deliberately contains the shapes that break a
-      # migration: two books sharing an ISBN (one archived, the only way 1.0
-      # can hold that state), lost loans whose returnedAt is NULL forever,
-      # hold queues that must come across bit-exact, Greek capitals with final
-      # sigma, and an expression index over immutable_unaccent.
-      - name: Seed the 1.x upgrade fixture
-        run: pnpm seed:v1-fixture --reset
-        env:
-          TENANT_DATABASE_URL: postgresql://libriant:libriant@localhost:5432/libriant_demo
 
   # ---------------------------------------------------------------------------
   # supply-chain-03 + supply-chain-06.
