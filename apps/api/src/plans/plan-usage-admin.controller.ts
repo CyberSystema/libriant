@@ -5,7 +5,7 @@ import { AdminRolesGuard } from '../admin/admin-roles.guard.js';
 import { AnyAdmin } from '../admin/admin-roles.decorator.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
-import { TENANT_RUNTIME_SELECT, runtimeDbUrl } from '../tenancy/tenant-db-url.js';
+import { TENANT_RUNTIME_SELECT, runtimeDbUrl, readSchemaMajors } from '../tenancy/tenant-db-url.js';
 import { EffectivePlanService } from './effective-plan.service.js';
 import { breaches, collectUsage, type UsageRow } from './plan-usage.js';
 
@@ -75,6 +75,8 @@ export class AdminPlanUsageController {
       select: { ...TENANT_RUNTIME_SELECT, name: true },
       orderBy: { slug: 'asc' },
     });
+    // One query for which libraries have been cut over (2.0 phase 20f/20g).
+    const schemaMajors = await readSchemaMajors(tenants.map((t) => t.id));
 
     const overCap: OverCapTenant[] = [];
     const unreadable: Array<{ slug: string; error: string }> = [];
@@ -87,9 +89,17 @@ export class AdminPlanUsageController {
         planSlug = plan.plan?.slug ?? null;
         // The RUNTIME credential, not `tenants.db_url` — an admin report reads
         // library data and has no business holding the superuser string.
-        const runtime = { id: tenant.id, dbUrl: runtimeDbUrl(tenant) };
+        // `schemaMajor` rides along (2.0 phase 20g) so the 2.0 client binds to
+        // the schema this library actually has — a fleet report counts across
+        // both populations and would otherwise query `lbr2` on a promoted one.
+        const runtime = {
+          id: tenant.id,
+          dbUrl: runtimeDbUrl(tenant),
+          schemaMajor: schemaMajors.get(tenant.id),
+        };
         const tenantClient = this.tenantPrisma.getClient(runtime);
-        rows = await collectUsage(plan, { tenant: runtime, tenantClient });
+        const tenantClientV2 = this.tenantPrisma.getClientV2(runtime);
+        rows = await collectUsage(plan, { tenant: runtime, tenantClient, tenantClientV2 });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.logger.warn(`over-cap: could not measure tenant ${tenant.slug}: ${message}`);

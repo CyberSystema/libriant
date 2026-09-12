@@ -55,6 +55,10 @@ export class PlanUsageController {
     // operator's pre-flight is the caller that wants the contracted limits.
     const plan = await this.effective.getEffectivePlan(tenant.id);
     const tenantClient = this.tenantPrisma.getClient(tenant);
-    return { plan: plan.plan, usage: await collectUsage(plan, { tenant, tenantClient }) };
+    const tenantClientV2 = this.tenantPrisma.getClientV2(tenant);
+    return {
+      plan: plan.plan,
+      usage: await collectUsage(plan, { tenant, tenantClient, tenantClientV2 }),
+    };
   }
 }

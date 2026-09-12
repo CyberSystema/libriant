@@ -1,5 +1,5 @@
 import { controlDb } from '@libriant/db-control';
-import type { TenantPrismaClient } from '@libriant/db-tenant';
+import type { TenantPrismaClient, TenantPrismaClientV2 } from '@libriant/db-tenant';
 import type { FeatureKey } from '@libriant/shared';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { isUnlimitedInt } from './effective-plan.service.js';
@@ -41,7 +41,11 @@ export type UsageRow = {
  */
 export async function collectUsage(
   plan: EffectivePlan,
-  ctx: { tenant: Pick<TenantContext, 'id' | 'dbUrl'>; tenantClient: TenantPrismaClient },
+  ctx: {
+    tenant: Pick<TenantContext, 'id' | 'dbUrl' | 'schemaMajor'>;
+    tenantClient: TenantPrismaClient;
+    tenantClientV2: TenantPrismaClientV2;
+  },
 ): Promise<UsageRow[]> {
   const rows: UsageRow[] = [];
   for (const key of KNOWN_QUOTA_KEYS) {

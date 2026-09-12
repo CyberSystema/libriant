@@ -1,5 +1,5 @@
 import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
-import type { TenantPrismaClient } from '@libriant/db-tenant';
+import type { TenantPrismaClient, TenantPrismaClientV2 } from '@libriant/db-tenant';
 import type { FeatureKey } from '@libriant/shared';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 
@@ -7,8 +7,14 @@ import { EffectivePlanService } from '../plans/effective-plan.service.js';
  * Just enough of a tenant Prisma (transaction) client to take an advisory
  * lock. Accepting this narrow shape lets `enforceWithinTx` be called with
  * either the full client or a `$transaction` callback's `tx`.
+ *
+ * BOTH DATAMODELS (2.0 phase 20g). The 2.0 write surface has to enforce the
+ * same ceilings as the 1.0 one, and its transactions come from the other
+ * generated client — structurally identical for this purpose, and a union is
+ * how that is said without either client's whole type crossing the boundary.
  */
-type LockableTx = Pick<TenantPrismaClient, '$executeRaw'>;
+type LockableTx =
+  Pick<TenantPrismaClient, '$executeRaw'> | Pick<TenantPrismaClientV2, '$executeRaw'>;
 
 /**
  * Integer-quota enforcement for resources that live in the tenant DB

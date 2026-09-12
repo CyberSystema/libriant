@@ -25,6 +25,8 @@ import {
 import { escapeLike } from '../platform/like.js';
 import { acquireLocks, lockKey } from '../platform/locks.js';
 import { TenantClockService } from '../policy/tenant-clock.service.js';
+import { QuotaService } from '../customization/quota.service.js';
+import { EffectivePlanService, isUnlimitedInt } from '../plans/effective-plan.service.js';
 import { mintPatronNumber } from './patron-numbers.js';
 import type { PatronRosterStatus } from './patrons.dto.js';
 
@@ -100,6 +102,8 @@ export class PatronsService {
     @Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService,
     @Inject(TenantAuditService) private readonly audit: TenantAuditService,
     @Inject(TenantClockService) private readonly clock: TenantClockService,
+    @Inject(QuotaService) private readonly quota: QuotaService,
+    @Inject(EffectivePlanService) private readonly plans: EffectivePlanService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -133,10 +137,33 @@ export class PatronsService {
     const patronNumber =
       input.patronNumber ?? (await mintPatronNumber(client, this.clock.civil(now, timezone).year));
 
+    const enforce = !isUnlimitedInt(await this.plans.getInt(tenant.id, 'max_members'));
     const created = await client
       .$transaction(
         async (tx) => {
           await setChangeActor(tx, changeActorOf(actor));
+          // THE CEILING, inside the same transaction as the insert (2.0 phase
+          // 20g). 1.0 enforces `max_members` on `MembersController.create`; the
+          // 2.0 patron surface enforced nothing.
+          //
+          // The predicate is 1.0's, MAPPED rather than copied. 1.0 excluded
+          // archived rows and rows whose status was `archived`; 2.0's
+          // `PatronStatus` is `active | suspended | closed` and has no such
+          // value, because archiving is `archived_at`. `closed` is the reader
+          // who left the library, which is the state 1.0's archived status
+          // stood for, so it is excluded too — and `erasedAt` with it: a reader
+          // erased under Article 17 is a row the library is required to keep
+          // and has no business being billed for.
+          if (enforce) {
+            await this.quota.enforceWithinTx(tx, {
+              tenantId: tenant.id,
+              featureKey: 'max_members',
+              count: () =>
+                tx.patron.count({
+                  where: { archivedAt: null, erasedAt: null, status: { not: 'closed' } },
+                }),
+            });
+          }
           const patron = await tx.patron.create({
             data: {
               patronNumber,

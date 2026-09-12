@@ -10,6 +10,8 @@ import { PatronEraseService } from './patron-erase.service.js';
 import { PatronAddressesService } from './patron-addresses.service.js';
 import { PatronPhotoController } from './patron-photo.controller.js';
 import { PatronSubjectAccessService } from '../privacy/patron-subject-access.service.js';
+import { CustomizationModule } from '../customization/customization.module.js';
+import { PlansModule } from '../plans/plans.module.js';
 
 /**
  * The record side of a patron (2.0 phase 14).
@@ -24,7 +26,7 @@ import { PatronSubjectAccessService } from '../privacy/patron-subject-access.ser
  * which is the first statement of every circulation transaction.
  */
 @Module({
-  imports: [TenantModule, PolicyModule, StorageModule],
+  imports: [TenantModule, PolicyModule, StorageModule, CustomizationModule, PlansModule],
   providers: [
     PatronsService,
     PatronMergeService,

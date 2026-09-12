@@ -4667,3 +4667,75 @@ against `lbr2`.
    authorization five are LIVE: the 1.0 client keeps reading them through
    search_path until phase 20 deletes it, and PermissionGuard runs on every
    request." The test now copies them, which is what the real upgrade does.
+
+## Phase 20g — plan ceilings reach the 2.0 write surface
+
+Recorded twice already, under 20c and 20d, and deferred both times because
+making the importer the only place a ceiling bit would have been worse than the
+gap. This closes it at the source instead.
+
+### Both halves were pointed at the wrong datamodel, in opposite directions
+
+1.0 enforces `max_books` inside `BooksService.create` and `max_members` on
+`MembersController.create`. The 2.0 write surface — the one the cutover replaces
+them with — enforced **neither**, and `QUOTA_COUNTERS` still counted `books` and
+`members`, the tables the cutover archives.
+
+So a library on a five-hundred-title plan could catalogue without limit through
+the very screens 2.0 gives it, and its usage page would report zero while it did.
+
+`BibWriteService.create` and `PatronsService.create` now take
+`pg_advisory_xact_lock('quota:<tenant>:<feature>:')`, count, and insert inside
+the transaction they already opened — the shape `QuotaService.enforceWithinTx`
+was written for, and the same TOCTOU argument: a naive count-then-insert lets N
+parallel creates all read the same total and all commit. The ceiling check is
+skipped entirely when the limit is the `UNLIMITED_INT` sentinel, which is the
+shipped posture, so neither the lock nor the count is paid for a comparison
+against `Number.MAX_SAFE_INTEGER`.
+
+### Two predicates that had to be mapped rather than copied
+
+**`max_books` counts BIBLIOGRAPHIC records only.** `marc_records` also holds
+authority, holdings and classification records, and counting those would bill a
+library for the headings it catalogues with.
+
+**`max_members` excludes `closed` and `erased_at`.** 1.0 excluded archived rows
+and rows whose status was `archived`; 2.0's `PatronStatus` is
+`active | suspended | closed` and has no such value, because archiving is
+`archived_at`. `closed` is the reader who left, which is what 1.0's archived
+status stood for. `erased_at` is excluded for a different reason: a reader erased
+under Article 17 is a row the library is legally required to keep, and charging
+its plan for complying with the GDPR is the wrong answer to the wrong question.
+
+### The index, and the trap it had to avoid
+
+Both counts run under a lock that serialises the whole library behind them, so
+what the count costs is what the ceiling costs. The obvious partial index —
+`(id) WHERE kind = 'bibliographic' AND deleted_at IS NULL` — **could never be
+used**. Prisma emits an enum comparison as `kind = CAST($1::text AS
+marc_record_kind)`, a parameter through a function that is only STABLE, so the
+predicate is not provable at plan time. It is the same reason 1.0 could not put
+the `loans` status predicate in a partial index and the same reason
+`items.is_shelf_available` is a generated column.
+
+So the enum moves from the predicate into the KEY:
+
+    CREATE INDEX marc_records_billable_idx ON marc_records (kind)
+      WHERE deleted_at IS NULL;
+
+MEASURED on 20,000 records, on the statement Prisma emits: this index is chosen
+(`Index Only Scan … Index Cond: (kind = ('bibliographic'::cstring)::marc_record_kind)`),
+and the naive shape — built alongside and ANALYZEd — is **not**, because the
+planner cannot prove its predicate. At 20,000 rows where every row matches, an
+unhinted planner still prefers a Seq Scan and is right to; the index earns itself
+on the catalogue that has grown and on the library whose records are not all
+bibliographic.
+
+### What this does not do
+
+The four routes with no 2.0 equivalent — author search and create, ISBN lookup,
+declare-lost — are still missing, and three staff screens still cannot be
+repointed without them. They are feature ports with phase-boundary questions
+attached (an authority store is phase 45, copy cataloguing is phase 30,
+declare-lost with its fee is phase 21), and they are not the same kind of work as
+closing a hole in the billing surface.

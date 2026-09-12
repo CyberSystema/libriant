@@ -43,6 +43,8 @@ import type { ImportEntityKind } from '@libriant/db-control';
 import type { TenantPrismaClient, TenantPrismaClientV2 } from '@libriant/db-tenant';
 import { BibProjectionService } from '../../bib/bib-projection.service.js';
 import { BibWriteService } from '../../bib/bib-write.service.js';
+import { QuotaService } from '../../customization/quota.service.js';
+import type { EffectivePlanService } from '../../plans/effective-plan.service.js';
 import { ItemStatusService } from '../../items/item-status.service.js';
 import { ItemsService } from '../../items/items.service.js';
 import { PatronsService } from '../../patrons/patrons.service.js';
@@ -95,6 +97,8 @@ export type ImportEngineV2Wiring = EngineV2Context & {
   readonly client: TenantPrismaClient;
   /** The 2.0 client every service below reaches the database through. */
   readonly clientV2: TenantPrismaClientV2;
+  /** The worker's own plan service, for the `max_books` ceiling (2.0 phase 20g). */
+  readonly plans: EffectivePlanService;
 };
 
 /**
@@ -110,9 +114,21 @@ export async function makeImportEngineV2(w: ImportEngineV2Wiring): Promise<Built
   const audit = new TenantAuditService(tenantPrisma);
   const clock = new TenantClockService();
   const status = new ItemStatusService(tenantPrisma, clock);
-  const bibs = new BibWriteService(tenantPrisma, audit, new BibProjectionService());
+  // Phase 20g gave BibWriteService the plan ceiling, so the hand-wired graph
+  // grows the service that answers it. The worker already holds one — it is
+  // `processImportJob`'s only dependency — so it is passed in rather than built
+  // again: a second instance would be a second Redis connection and a second
+  // plan cache, disagreeing with the first for a TTL.
+  const plans = w.plans;
+  const bibs = new BibWriteService(
+    tenantPrisma,
+    audit,
+    new BibProjectionService(),
+    new QuotaService(plans),
+    plans,
+  );
   const items = new ItemsService(tenantPrisma, audit, clock, status);
-  const patrons = new PatronsService(tenantPrisma, audit, clock);
+  const patrons = new PatronsService(tenantPrisma, audit, clock, new QuotaService(plans), plans);
   // Phase 20d: circulation history pins a REAL policy resolution — see
   // `ImportEngineV2.pinnedFor` — so the engine needs the matrix, and the matrix
   // needs Redis. Both belong to this factory, which is why it hands back a

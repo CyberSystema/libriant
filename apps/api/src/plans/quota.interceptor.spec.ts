@@ -44,6 +44,9 @@ function makeInterceptor(featureValue: { type: 'int'; value: number } | undefine
   } as unknown as import('./effective-plan.service.js').EffectivePlanService;
   const tenantPrisma = {
     getClient: vi.fn().mockReturnValue({}),
+    // 2.0 phase 20g: `max_books` and `max_members` count the 2.0 tables now, so
+    // the interceptor hands the counter both clients.
+    getClientV2: vi.fn().mockReturnValue({}),
   } as unknown as import('../tenancy/tenant-prisma.service.js').TenantPrismaService;
   return new QuotaInterceptor(reflector, effective, tenantPrisma);
 }

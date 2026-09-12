@@ -1,5 +1,5 @@
 import { controlDb } from '@libriant/db-control';
-import type { TenantPrismaClient } from '@libriant/db-tenant';
+import type { TenantPrismaClient, TenantPrismaClientV2 } from '@libriant/db-tenant';
 import type { FeatureKey } from '@libriant/shared';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 
@@ -16,8 +16,18 @@ export type QuotaCounterCtx = {
    * current request and so has no resolved context at all. A request handler
    * still passes its whole `req.tenant`.
    */
-  tenant: Pick<TenantContext, 'id' | 'dbUrl'>;
+  tenant: Pick<TenantContext, 'id' | 'dbUrl' | 'schemaMajor'>;
   tenantClient: TenantPrismaClient;
+  /**
+   * The 2.0 client, for the counters whose resource moved (2.0 phase 20g).
+   *
+   * `max_books` and `max_members` counted `books` and `members` — tables the
+   * cutover archives — while the write surface that creates their 2.0
+   * equivalents enforced no ceiling at all. So the count and the enforcement
+   * were BOTH pointed at the wrong datamodel, in opposite directions: usage
+   * read a table nobody was writing, and the writers had no limit.
+   */
+  tenantClientV2: TenantPrismaClientV2;
   controlDb: typeof controlDb;
 };
 
@@ -34,11 +44,19 @@ export type QuotaCounter = (ctx: QuotaCounterCtx) => Promise<number>;
  *   4. mark the relevant endpoint with `@RequiresQuota('your_key')`
  */
 export const QUOTA_COUNTERS: Partial<Record<FeatureKey, QuotaCounter>> = {
-  max_books: async ({ tenantClient }) => tenantClient.book.count({ where: { archivedAt: null } }),
+  // BIBLIOGRAPHIC RECORDS ONLY — `marc_records` also holds authority, holdings
+  // and classification records, and counting those would bill a library for its
+  // own headings. Matches the predicate `BibWriteService.create` enforces, which
+  // is the property that makes usage and the ceiling agree.
+  max_books: async ({ tenantClientV2 }) =>
+    tenantClientV2.marcRecord.count({ where: { kind: 'bibliographic', deletedAt: null } }),
 
-  max_members: async ({ tenantClient }) =>
-    tenantClient.member.count({
-      where: { archivedAt: null, status: { not: 'archived' } },
+  // `closed` is 2.0's word for the reader who left; `PatronStatus` has no
+  // `archived` value because archiving is `archived_at`. An erased reader is a
+  // row the library is required to keep and is not billed for.
+  max_members: async ({ tenantClientV2 }) =>
+    tenantClientV2.patron.count({
+      where: { archivedAt: null, erasedAt: null, status: { not: 'closed' } },
     }),
 
   max_custom_collections: async ({ tenantClient }) =>

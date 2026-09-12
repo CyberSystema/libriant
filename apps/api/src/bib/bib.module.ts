@@ -11,6 +11,8 @@ import { BibIngestService } from './bib-ingest.service.js';
 import { BibDeleteService } from './bib-delete.service.js';
 import { BibCoverController } from './bib-cover.controller.js';
 import { MarcBodyMiddleware } from './marc-body.middleware.js';
+import { CustomizationModule } from '../customization/customization.module.js';
+import { PlansModule } from '../plans/plans.module.js';
 
 /**
  * The MARC store.
@@ -25,7 +27,7 @@ import { MarcBodyMiddleware } from './marc-body.middleware.js';
  * and the bytes it came from belong together.
  */
 @Module({
-  imports: [TenantModule, StorageModule],
+  imports: [TenantModule, StorageModule, CustomizationModule, PlansModule],
   providers: [
     BibWriteService,
     BibLockService,

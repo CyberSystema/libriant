@@ -117,7 +117,13 @@ export class QuotaInterceptor implements NestInterceptor {
     if (isUnlimitedInt(limit)) return next.handle();
 
     const tenantClient = this.tenantPrisma.getClient(req.tenant);
-    const used = await countUsage(feature, { tenant: req.tenant, tenantClient, controlDb });
+    const tenantClientV2 = this.tenantPrisma.getClientV2(req.tenant);
+    const used = await countUsage(feature, {
+      tenant: req.tenant,
+      tenantClient,
+      tenantClientV2,
+      controlDb,
+    });
     if (used === null) {
       // Counter returned null even though it's registered — shouldn't happen.
       throw new HttpException(

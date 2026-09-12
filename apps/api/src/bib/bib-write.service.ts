@@ -25,6 +25,8 @@ import { changeActorOf, setChangeActor } from '../tenancy/tenant-actor-guc.js';
 import { acquireLocks, lockKey } from '../platform/locks.js';
 import { stamp005 } from './marc-005.js';
 import { BibProjectionService } from './bib-projection.service.js';
+import { QuotaService } from '../customization/quota.service.js';
+import { EffectivePlanService, isUnlimitedInt } from '../plans/effective-plan.service.js';
 
 /**
  * The single `write()`.
@@ -277,7 +279,31 @@ export class BibWriteService {
     @Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService,
     @Inject(TenantAuditService) private readonly audit: TenantAuditService,
     @Inject(BibProjectionService) private readonly projection: BibProjectionService,
+    /**
+     * The plan ceiling (2.0 phase 20g).
+     *
+     * 1.0 enforces `max_books` inside `BooksService.create`; the 2.0 write
+     * surface enforced nothing, so a library on a five-hundred-title plan could
+     * catalogue without limit through the very screens 2.0 replaced it with.
+     */
+    @Inject(QuotaService) private readonly quota: QuotaService,
+    @Inject(EffectivePlanService) private readonly plans: EffectivePlanService,
   ) {}
+
+  /**
+   * Is there a real ceiling to enforce, or is the limit the "no ceiling"
+   * sentinel?
+   *
+   * `BooksService.maxBooksCeilingApplies` verbatim, and for the measurement it
+   * carries: under `BILLING_ENABLED=false` every int feature resolves to
+   * `UNLIMITED_INT`, so the lock and the `count(*)` would be paid to compare a
+   * number against `Number.MAX_SAFE_INTEGER`. Read BEFORE the transaction opens,
+   * because `getInt` is a Redis-cached read and doing it inside would put a
+   * network round trip inside the lock window this exists to shrink.
+   */
+  private async ceilingApplies(tenantId: string): Promise<boolean> {
+    return !isUnlimitedInt(await this.plans.getInt(tenantId, 'max_books'));
+  }
 
   /**
    * The definition a record is measured against.
@@ -476,10 +502,29 @@ export class BibWriteService {
     // and a row whose own checksum is a lie is undetectable afterwards.
     const sourceHash = input.source ? Buffer.from(sha256(input.source.blob)) : null;
 
+    const enforce = await this.ceilingApplies(tenant.id);
     const created = await client
       .$transaction(
         async (tx) => {
           await setChangeActor(tx, changeActorOf(actor));
+          // THE CEILING, inside the same transaction as the insert (20g).
+          //
+          // A naive count-then-insert is a TOCTOU race: N parallel creates all
+          // read the same total and all insert. `enforceWithinTx` takes
+          // `pg_advisory_xact_lock('quota:<tenant>:max_books:')` first, so the
+          // count and this insert observe a serialised view per quota key.
+          //
+          // BIBLIOGRAPHIC RECORDS ONLY. `max_books` is a count of titles, and
+          // `marc_records` also holds authority, holdings and classification
+          // records — counting those would bill a library for its own headings.
+          if (enforce) {
+            await this.quota.enforceWithinTx(tx, {
+              tenantId: tenant.id,
+              featureKey: 'max_books',
+              count: () =>
+                tx.marcRecord.count({ where: { kind: 'bibliographic', deletedAt: null } }),
+            });
+          }
           const row = await tx.marcRecord.create({
             data: {
               kind,

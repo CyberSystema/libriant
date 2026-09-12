@@ -257,6 +257,7 @@ export async function processImportJob(
         orgCode: withCode?.marcOrgCode ?? `LBR-${tenant.slug}`,
         client,
         clientV2,
+        plans: deps.effective,
       });
       try {
         await runRows(
