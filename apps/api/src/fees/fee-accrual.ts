@@ -104,7 +104,13 @@ export async function accrueWithin(tx: TxV2, input: AccrualInput): Promise<Accru
     )
     ON CONFLICT (loan_id) WHERE loan_id IS NOT NULL AND is_accruing AND closed_at IS NULL
     DO UPDATE SET
-      amount_cents    = pg_catalog.greatest(lbr2.fees.amount_cents, EXCLUDED.amount_cents),
+      -- greatest is BARE. Like COALESCE, NULLIF and LEAST it is a SQL
+      -- CONSTRUCT and not a function, so pg_catalog.greatest(...) is 42883 —
+      -- which is what this line raised the first time anything called it, in
+      -- phase 20b-ii. checkout.service.ts and holds.service.ts each carry a
+      -- comment about the same trap; this file shipped it because nothing
+      -- invoked accrueWithin until the overdue sweep did.
+      amount_cents    = greatest(lbr2.fees.amount_cents, EXCLUDED.amount_cents),
       accrued_through = EXCLUDED.accrued_through
     RETURNING id, (amount_cents + tax_cents) AS charged`;
 

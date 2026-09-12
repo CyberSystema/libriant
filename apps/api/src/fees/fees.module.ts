@@ -4,6 +4,7 @@ import { TenantModule } from '../tenancy/tenant.module.js';
 import { CashDrawerService } from './cash-drawer.service.js';
 import { FeesController } from './fees.controller.js';
 import { FeesService } from './fees.service.js';
+import { OverdueAccrualService } from './overdue-accrual.service.js';
 import { ReceiptsService } from './receipts.service.js';
 
 /**
@@ -27,7 +28,7 @@ import { ReceiptsService } from './receipts.service.js';
 @Module({
   imports: [TenantModule, PolicyModule],
   controllers: [FeesController],
-  providers: [FeesService, CashDrawerService, ReceiptsService],
-  exports: [FeesService, CashDrawerService, ReceiptsService],
+  providers: [FeesService, CashDrawerService, ReceiptsService, OverdueAccrualService],
+  exports: [FeesService, CashDrawerService, ReceiptsService, OverdueAccrualService],
 })
 export class FeesModule {}
