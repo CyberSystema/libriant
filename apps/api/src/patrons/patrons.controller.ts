@@ -6,6 +6,7 @@ import {
   HttpCode,
   Inject,
   Param,
+  Patch,
   Post,
   Put,
   Query,
@@ -30,6 +31,8 @@ import {
   PlaceBlockDto,
   ReplaceCardDto,
   ResolveCardDto,
+  SetPatronStatusDto,
+  UpdatePatronDto,
 } from './patrons.dto.js';
 import { PatronBlocksService, type LiveBlock } from './patron-blocks.service.js';
 import { PatronMergeService } from './patron-merge.service.js';
@@ -136,6 +139,49 @@ export class PatronsController {
   @Get(':id')
   async get(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.patrons.get(tenant, id);
+  }
+
+  @RequirePermission('patron.write')
+  @Patch(':id')
+  async update(@TenantCtx() tenant: TenantContext, @Param('id') id: string, @Body() raw: unknown) {
+    const dto = await validateDto(UpdatePatronDto, raw ?? {});
+    return this.patrons.update(tenant, id, dto);
+  }
+
+  /**
+   * `patron.status`, its own key — suspending a reader stops them borrowing,
+   * which is a different act from correcting their phone number and is one a
+   * library may want a narrower set of people doing.
+   */
+  @RequirePermission('patron.status')
+  @Post(':id/status')
+  @HttpCode(200)
+  async setStatus(
+    @TenantCtx() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() raw: unknown,
+  ) {
+    const dto = await validateDto(SetPatronStatusDto, raw ?? {});
+    return this.patrons.setStatus(tenant, id, dto.status);
+  }
+
+  /**
+   * Archive, refusing while the patron still has open business — an open loan,
+   * a live hold or an unpaid fee. A 409 rather than a 400: the request is
+   * well-formed and the library may archive them tomorrow.
+   */
+  @RequirePermission('patron.archive')
+  @Post(':id/archive')
+  @HttpCode(200)
+  async archive(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
+    return this.patrons.archive(tenant, id);
+  }
+
+  @RequirePermission('patron.archive')
+  @Post(':id/restore')
+  @HttpCode(200)
+  async restore(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
+    return this.patrons.restore(tenant, id);
   }
 
   /**

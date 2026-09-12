@@ -1,4 +1,11 @@
-import { ConflictException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { foldGreek } from '@libriant/shared/greek';
 import { classifySearchTerm } from '@libriant/shared/search';
 import { changeActorOf, setChangeActor } from '../tenancy/tenant-actor-guc.js';
@@ -70,6 +77,7 @@ export type PatronRecord = {
   homeBranchId: string | null;
   joinedAt: Date | null;
   expiresAt: Date | null;
+  staffNotes: string | null;
   erasedAt: Date | null;
   archivedAt: Date | null;
   mergedIntoId: string | null;
@@ -478,6 +486,7 @@ export class PatronsService {
         homeBranchId: true,
         joinedAt: true,
         expiresAt: true,
+        staffNotes: true,
         erasedAt: true,
         archivedAt: true,
         mergedIntoId: true,
@@ -502,6 +511,205 @@ export class PatronsService {
       status: patron.status as PatronRecord['status'],
       cards: patron.cards.map((c) => ({ ...c, status: String(c.status) })),
     };
+  }
+
+  /**
+   * Edit a patron record (2.0 phase 20b-ii).
+   *
+   * Every field optional and only the ones present are written, because a PATCH
+   * that treated absent as null would blank a phone number every time somebody
+   * corrected a spelling.
+   *
+   * `sortName` and `searchText` are RECOMPUTED whenever the name changes rather
+   * than accepted from the caller. They are the roster's sort key and its search
+   * column, both Greek-folded, and a client that computed them itself would fold
+   * with whatever it had — which is precisely the defect phase 1 exists to fix.
+   *
+   * ## Addresses are NOT here, and that is a gap rather than a decision
+   *
+   * 1.0 carries `addressLine1/2`, `city`, `postalCode` and `country` as columns
+   * on `members` and this method's 1.0 counterpart writes them. 2.0 moved them
+   * to a `patron_addresses` table that NO route reads or writes, and
+   * `deskSummary` does not include it either. Overdue notices that post a letter
+   * need it. It needs its own CRUD and its own decisions — one address or
+   * several, which is billing, which is postal — so it is named here as
+   * outstanding rather than half-built into a patch method.
+   */
+  async update(
+    tenant: TenantContext,
+    patronId: string,
+    input: {
+      patronNumber?: string;
+      fullName?: string;
+      email?: string | null;
+      phone?: string | null;
+      dateOfBirth?: string | null;
+      patronCategoryId?: string | null;
+      homeBranchId?: string | null;
+      expiresAt?: string | null;
+      staffNotes?: string | null;
+    },
+  ): Promise<PatronRecord> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const existing = await client.patron.findUnique({
+      where: { id: patronId },
+      select: { id: true, erasedAt: true },
+    });
+    if (existing === null) throw new NotFoundException(`No patron with id ${patronId}.`);
+    // An erased record is a tombstone. Editing it would put identifying data
+    // back into a row somebody exercised Article 17 over.
+    if (existing.erasedAt !== null) {
+      throw new BadRequestException(
+        'This patron was erased under Article 17 and cannot be edited.',
+      );
+    }
+
+    const data: Record<string, unknown> = {};
+    if (input.patronNumber !== undefined) data['patronNumber'] = input.patronNumber;
+    if (input.email !== undefined) data['email'] = input.email;
+    if (input.phone !== undefined) data['phone'] = input.phone;
+    if (input.patronCategoryId !== undefined) data['patronCategoryId'] = input.patronCategoryId;
+    if (input.homeBranchId !== undefined) data['homeBranchId'] = input.homeBranchId;
+    if (input.staffNotes !== undefined) data['staffNotes'] = input.staffNotes;
+    if (input.dateOfBirth !== undefined) {
+      data['dateOfBirth'] = input.dateOfBirth === null ? null : new Date(input.dateOfBirth);
+    }
+    if (input.expiresAt !== undefined) {
+      data['expiresAt'] = input.expiresAt === null ? null : new Date(input.expiresAt);
+    }
+    if (input.fullName !== undefined) {
+      data['fullName'] = input.fullName;
+      data['sortName'] = foldGreek(input.fullName);
+      data['searchText'] = foldGreek(input.fullName);
+    }
+    if (Object.keys(data).length === 0) return this.get(tenant, patronId);
+
+    data['updatedAt'] = new Date();
+    await client.patron.update({ where: { id: patronId }, data: data as never });
+    return this.get(tenant, patronId);
+  }
+
+  /**
+   * Suspend, reinstate, or close a patron.
+   *
+   * `closed` is 2.0's third value and 1.0 had no equivalent — 1.0 offered only
+   * `active` and `suspended` and used `archivedAt` for everything else. It is
+   * NOT archiving: a closed patron is one the library has ended the relationship
+   * with and whose record it still keeps, which is a different fact from a row
+   * hidden from the roster.
+   */
+  async setStatus(
+    tenant: TenantContext,
+    patronId: string,
+    status: 'active' | 'suspended' | 'closed',
+  ): Promise<PatronRecord> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const existing = await client.patron.findUnique({
+      where: { id: patronId },
+      select: { id: true, archivedAt: true, erasedAt: true },
+    });
+    if (existing === null) throw new NotFoundException(`No patron with id ${patronId}.`);
+    if (existing.erasedAt !== null) {
+      throw new BadRequestException('This patron was erased under Article 17.');
+    }
+    if (existing.archivedAt !== null) {
+      throw new BadRequestException(
+        'This patron is archived. Restore them before changing their status.',
+      );
+    }
+    await client.patron.update({
+      where: { id: patronId },
+      data: { status, updatedAt: new Date() },
+    });
+    return this.get(tenant, patronId);
+  }
+
+  /**
+   * Archive a patron, refusing while they still have open business.
+   *
+   * ## The invariant, and why it needs a lock
+   *
+   * An archived patron holding an active loan is a record nobody can act on: the
+   * roster hides them, so the copy they have is out with someone the desk cannot
+   * find. 1.0 does the open-business check and the archive write in ONE
+   * transaction under a member-scoped advisory lock, for the stated reason that
+   * otherwise a checkout can land between the check and the write.
+   *
+   * 2.0 keeps that and takes the lock through `platform/locks.ts`, which ranks
+   * domains `patron < bib < item` and is what the checkout path takes first —
+   * so the two serialize against each other by construction rather than by two
+   * services happening to agree on a key format.
+   *
+   * "Open business" is wider than 1.0's, because 2.0 has holds: an open loan, a
+   * live hold, or an unpaid fee. `owed_cents`, not `outstanding_cents` — phase
+   * 18's distinction, where a cancelled charge closes without its settlement
+   * counters moving, so the second stays positive on a debt nobody owes.
+   */
+  async archive(tenant: TenantContext, patronId: string): Promise<PatronRecord> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    await client.$transaction(async (tx) => {
+      await acquireLocks(tx as never, [lockKey('patron', patronId)]);
+      const existing = await tx.patron.findUnique({
+        where: { id: patronId },
+        select: { id: true, archivedAt: true, erasedAt: true },
+      });
+      if (existing === null) throw new NotFoundException(`No patron with id ${patronId}.`);
+      if (existing.erasedAt !== null) {
+        throw new BadRequestException('This patron was erased under Article 17.');
+      }
+      if (existing.archivedAt !== null) return;
+
+      const open = await tx.$queryRaw<{ loans: bigint; holds: bigint; owed: bigint }[]>`
+        SELECT (SELECT pg_catalog.count(*) FROM lbr2.loans
+                 WHERE patron_id = ${patronId} AND closed_at IS NULL) AS loans,
+               (SELECT pg_catalog.count(*) FROM lbr2.holds
+                 WHERE patron_id = ${patronId}
+                   AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL) AS holds,
+               -- coalesce is BARE on purpose: it is one of the constructs
+               -- Postgres refuses to schema-qualify (with NULLIF, GREATEST,
+               -- LEAST, CASE and the FROM-form of EXTRACT/SUBSTRING), and
+               -- pg_catalog.coalesce(...) is a hard 42883.
+               (SELECT coalesce(pg_catalog.sum(owed_cents), 0) FROM lbr2.fees
+                 WHERE patron_id = ${patronId} AND owed_cents > 0) AS owed`;
+      const row = open[0];
+      if (row !== undefined && (row.loans > 0n || row.holds > 0n || row.owed > 0n)) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          code: 'patron.hasOpenBusiness',
+          openLoans: Number(row.loans),
+          openHolds: Number(row.holds),
+          owedCents: String(row.owed),
+          message:
+            'This patron still has open business — ' +
+            `${row.loans} loan(s), ${row.holds} hold(s), ${row.owed} owed. ` +
+            'Archiving them would hide a record the desk still needs to act on.',
+        });
+      }
+      await tx.patron.update({
+        where: { id: patronId },
+        data: { archivedAt: new Date(), updatedAt: new Date() },
+      });
+    });
+    return this.get(tenant, patronId);
+  }
+
+  /** Put an archived patron back on the roster. */
+  async restore(tenant: TenantContext, patronId: string): Promise<PatronRecord> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const existing = await client.patron.findUnique({
+      where: { id: patronId },
+      select: { id: true, erasedAt: true },
+    });
+    if (existing === null) throw new NotFoundException(`No patron with id ${patronId}.`);
+    if (existing.erasedAt !== null) {
+      throw new BadRequestException('This patron was erased under Article 17.');
+    }
+    await client.patron.update({
+      where: { id: patronId },
+      data: { archivedAt: null, updatedAt: new Date() },
+    });
+    return this.get(tenant, patronId);
   }
 
   async deskSummary(tenant: TenantContext, patronId: string): Promise<DeskSummary> {

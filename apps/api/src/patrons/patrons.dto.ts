@@ -10,6 +10,7 @@ import {
   Length,
   Matches,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
 const trim = () =>
@@ -167,4 +168,55 @@ export class ListPatronsQueryDto {
  */
 export class ErasePatronDto {
   @trim() @IsString() @Length(3, 500) reason!: string;
+}
+
+/**
+ * A patch to a patron record (2.0 phase 20b-ii).
+ *
+ * Every field optional: absent means "leave it", and only an explicit `null`
+ * clears. `sortName` and `searchText` are deliberately NOT accepted — they are
+ * recomputed from `fullName` through `foldGreek`, because a client folding them
+ * itself would fold with whatever it had, which is the phase-1 defect returning
+ * through the front door.
+ */
+export class UpdatePatronDto {
+  @IsOptional() @trim() @IsString() @Length(1, 64) patronNumber?: string;
+  @IsOptional() @trim() @IsString() @Length(1, 200) fullName?: string;
+  @IsOptional() @ValidateIf((_o: unknown, v: unknown) => v !== null) @trim() @IsEmail() email?:
+    string | null;
+  @IsOptional()
+  @ValidateIf((_o: unknown, v: unknown) => v !== null)
+  @trim()
+  @IsString()
+  @Length(1, 64)
+  phone?: string | null;
+  @IsOptional() @ValidateIf((_o: unknown, v: unknown) => v !== null) @IsISO8601() dateOfBirth?:
+    string | null;
+  @IsOptional()
+  @ValidateIf((_o: unknown, v: unknown) => v !== null)
+  @IsString()
+  @Length(1, 64)
+  patronCategoryId?: string | null;
+  @IsOptional()
+  @ValidateIf((_o: unknown, v: unknown) => v !== null)
+  @IsString()
+  @Length(1, 64)
+  homeBranchId?: string | null;
+  @IsOptional() @ValidateIf((_o: unknown, v: unknown) => v !== null) @IsISO8601() expiresAt?:
+    string | null;
+  @IsOptional()
+  @ValidateIf((_o: unknown, v: unknown) => v !== null)
+  @trim()
+  @IsString()
+  @Length(0, 2000)
+  staffNotes?: string | null;
+}
+
+/**
+ * `closed` is 2.0's third value and has no 1.0 equivalent. It is not archiving:
+ * a closed patron is one the library has ended the relationship with and whose
+ * record it keeps, which is a different fact from a row hidden from the roster.
+ */
+export class SetPatronStatusDto {
+  @IsIn(['active', 'suspended', 'closed']) status!: 'active' | 'suspended' | 'closed';
 }
