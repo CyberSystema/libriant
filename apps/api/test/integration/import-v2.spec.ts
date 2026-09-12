@@ -1236,3 +1236,50 @@ describe('§11 the branches the first draft of this phase got wrong', () => {
     expect(rows[0]!.actor_kind).toBe('user');
   });
 });
+
+describe('§12 custom fields, where the column exists', () => {
+  it('keeps a mapped custom field on a loan, and still refuses one on a book', async () => {
+    // `lbr2.loans`, `lbr2.holds` and `lbr2.fees` each carry a `custom_fields`
+    // jsonb column; the bib, item and patron writers go through services whose
+    // inputs have none. 20c refused all six, which made this engine's own
+    // passthrough on the three circulation writers unreachable.
+    const book = await (await engineFor('book')).commit(row({ title: 'ΜΕ ΠΕΔΙΑ' }), []);
+    const bc = `CF-${tag}`;
+    await (
+      await engineFor('book_copy')
+    ).commit(row({ barcode: bc }, { bookId: book.entityId! }), []);
+    await (
+      await engineFor('member')
+    ).commit(row({ fullName: 'Πεδία Δώδεκα', memberNumber: `CF${tag.toUpperCase()}` }), []);
+
+    rowNo += 1;
+    const withCustom: MappedRow = {
+      rowNumber: rowNo,
+      values: { loanedAt: '2026-03-01T10:00:00.000Z', dueAt: '2026-03-15T10:00:00.000Z' },
+      customFields: { oldSystemId: 'KOHA-99812' },
+      refs: { copyBarcode: bc, memberNumber: `CF${tag.toUpperCase()}` },
+      issues: [],
+    };
+    // `processRow`, not `commit` — the gate is there, and it is what the runner calls.
+    const out = await (await engineFor('loan')).processRow(withCustom);
+    expect(out.outcome, JSON.stringify(out.issues)).toBe('imported');
+    const rows = await sql<{ custom_fields: Record<string, unknown> }>(
+      `SELECT custom_fields FROM lbr2.loans WHERE id = $1`,
+      [out.entityId!],
+    );
+    expect(rows[0]!.custom_fields['oldSystemId']).toBe('KOHA-99812');
+
+    // And the refusal still stands where there is nowhere to put it.
+    rowNo += 1;
+    const bookWithCustom: MappedRow = {
+      rowNumber: rowNo,
+      values: { title: 'ΜΕ ΑΓΝΩΣΤΟ ΠΕΔΙΟ' },
+      customFields: { shelfNote: 'top shelf' },
+      refs: {},
+      issues: [],
+    };
+    const refused = await (await engineFor('book')).processRow(bookWithCustom);
+    expect(refused.outcome).toBe('error');
+    expect(refused.issues.some((i) => i.field === 'shelfNote')).toBe(true);
+  }, 120_000);
+});

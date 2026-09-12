@@ -227,6 +227,16 @@ export const V2_SUPPORTED_KINDS: readonly ImportEntityKind[] = [
 const DEFAULT_BRANCH = 'branch-main';
 const DEFAULT_LOCATION = 'loc-general';
 const DEFAULT_ITEM_TYPE = 'itype-book';
+/**
+ * The kinds whose 2.0 table carries `custom_fields`, and which therefore keep
+ * what a librarian mapped into one.
+ *
+ * Not a phase list — a column list. `lbr2.loans`, `lbr2.holds` and `lbr2.fees`
+ * all have the jsonb column and the three writers below fill it; the other
+ * three kinds reach the database through services whose inputs do not carry it.
+ */
+const KINDS_WITH_CUSTOM_FIELDS = new Set<ImportEntityKind>(['loan', 'reservation', 'fine']);
+
 /** `patron_category_id_applied` is NOT NULL; this is the seeded category. */
 const DEFAULT_PATRON_CATEGORY = 'pcat-general';
 
@@ -370,12 +380,21 @@ export class ImportEngineV2 {
    * error becomes an issue on that row rather than the end of a 4,000-row
    * import.
    *
-   * CUSTOM FIELDS ARE REFUSED RATHER THAN DROPPED. 1.0 validates them here
-   * against `field_definitions` and stores them on the row. 2.0 has the table
-   * and no service that writes to it, so a mapped custom field has nowhere to
-   * go — and an importer that silently discarded a column the librarian
-   * deliberately mapped would lose data with no trace anywhere. The row fails
-   * by name instead.
+   * CUSTOM FIELDS ARE REFUSED RATHER THAN DROPPED, for the kinds that have
+   * nowhere to put them. An importer that silently discarded a column the
+   * librarian deliberately mapped would lose data with no trace anywhere, so
+   * the row fails by name instead.
+   *
+   * WHICH KINDS is decided by the schema, not by the phase. `loans`, `holds` and
+   * `fees` each carry a `custom_fields` jsonb column and this engine writes it —
+   * the upgrade copies 1.0's verbatim into the same place — so for those three
+   * the passthrough is real. `bib_records`, `items` and `patrons` go through
+   * services whose inputs have no such field, so for those three it is not, and
+   * refusing is the honest answer until one exists.
+   *
+   * 20c refused it for ALL SIX, which made this engine's own
+   * `customFields: row.customFields` on the three circulation writers
+   * unreachable — a passthrough that could never fire.
    */
   async processRow(row: MappedRow): Promise<EngineRowResult> {
     const issues: RowIssue[] = [...row.issues];
@@ -384,13 +403,14 @@ export class ImportEngineV2 {
     }
 
     const custom = Object.keys(row.customFields);
-    if (custom.length > 0) {
+    if (custom.length > 0 && !KINDS_WITH_CUSTOM_FIELDS.has(this.kind)) {
       return this.error(
         row,
         issues,
         custom[0]!,
-        `2.0 has no writer for custom fields yet, so ${custom.join(', ')} would be dropped ` +
-          'silently. Unmap the column and import it once the field surface lands.',
+        `A ${this.kind} in 2.0 has nowhere to put a custom field yet, so ${custom.join(', ')} ` +
+          'would be dropped silently. Unmap the column and import it once the field surface ' +
+          'lands.',
       );
     }
 
