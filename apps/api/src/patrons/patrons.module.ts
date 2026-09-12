@@ -7,6 +7,7 @@ import { PatronMergeService } from './patron-merge.service.js';
 import { PatronsController } from './patrons.controller.js';
 import { PatronsService } from './patrons.service.js';
 import { PatronEraseService } from './patron-erase.service.js';
+import { PatronAddressesService } from './patron-addresses.service.js';
 import { PatronPhotoController } from './patron-photo.controller.js';
 import { PatronSubjectAccessService } from '../privacy/patron-subject-access.service.js';
 
@@ -30,6 +31,7 @@ import { PatronSubjectAccessService } from '../privacy/patron-subject-access.ser
     PatronBlocksService,
     PatronEraseService,
     PatronSubjectAccessService,
+    PatronAddressesService,
   ],
   controllers: [PatronsController, PatronPhotoController],
   exports: [PatronsService, PatronMergeService, PatronBlocksService, PatronEraseService],

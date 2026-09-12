@@ -32,12 +32,15 @@ import {
   ReplaceCardDto,
   ResolveCardDto,
   SetPatronStatusDto,
+  UndeliverableDto,
   UpdatePatronDto,
+  UpsertAddressDto,
 } from './patrons.dto.js';
 import { PatronBlocksService, type LiveBlock } from './patron-blocks.service.js';
 import { PatronMergeService } from './patron-merge.service.js';
 import { PatronsService } from './patrons.service.js';
 import { PatronEraseService } from './patron-erase.service.js';
+import { PatronAddressesService } from './patron-addresses.service.js';
 import { PatronSubjectAccessService } from '../privacy/patron-subject-access.service.js';
 
 /**
@@ -59,6 +62,7 @@ export class PatronsController {
     @Inject(PatronSubjectAccessService)
     private readonly subjectAccess: PatronSubjectAccessService,
     @Inject(PatronEraseService) private readonly erasure: PatronEraseService,
+    @Inject(PatronAddressesService) private readonly addressSvc: PatronAddressesService,
   ) {}
 
   /**
@@ -182,6 +186,71 @@ export class PatronsController {
   @HttpCode(200)
   async restore(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
     return this.patrons.restore(tenant, id);
+  }
+
+  // -- addresses (2.0 phase 20b-ii) -----------------------------------------
+  //
+  // Nested under the patron because an address has no meaning without one: the
+  // table is `ON DELETE CASCADE` from `patrons` and every read starts from a
+  // person. Declared before `:id/data-export` only for grouping.
+
+  @RequirePermission('patron.read')
+  @Get(':id/addresses')
+  async addresses(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
+    return this.addressSvc.list(tenant, id);
+  }
+
+  @RequirePermission('patron.write')
+  @Post(':id/addresses')
+  async addAddress(
+    @TenantCtx() tenant: TenantContext,
+    @Param('id') id: string,
+    @Body() raw: unknown,
+  ) {
+    const dto = await validateDto(UpsertAddressDto, raw ?? {});
+    return this.addressSvc.create(tenant, id, dto);
+  }
+
+  @RequirePermission('patron.write')
+  @Patch(':id/addresses/:addressId')
+  async editAddress(
+    @TenantCtx() tenant: TenantContext,
+    @Param('id') id: string,
+    @Param('addressId') addressId: string,
+    @Body() raw: unknown,
+  ) {
+    const dto = await validateDto(UpsertAddressDto, raw ?? {});
+    return this.addressSvc.update(tenant, id, addressId, dto);
+  }
+
+  @RequirePermission('patron.write')
+  @Post(':id/addresses/:addressId/undeliverable')
+  @HttpCode(200)
+  async markUndeliverable(
+    @TenantCtx() tenant: TenantContext,
+    @Param('id') id: string,
+    @Param('addressId') addressId: string,
+    @Body() raw: unknown,
+  ) {
+    const dto = await validateDto(UndeliverableDto, raw ?? {});
+    return this.addressSvc.setUndeliverable(
+      tenant,
+      id,
+      addressId,
+      dto.undeliverable,
+      dto.reason ?? null,
+    );
+  }
+
+  @RequirePermission('patron.write')
+  @Delete(':id/addresses/:addressId')
+  @HttpCode(204)
+  async removeAddress(
+    @TenantCtx() tenant: TenantContext,
+    @Param('id') id: string,
+    @Param('addressId') addressId: string,
+  ) {
+    await this.addressSvc.remove(tenant, id, addressId);
   }
 
   /**

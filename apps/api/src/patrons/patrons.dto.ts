@@ -220,3 +220,75 @@ export class UpdatePatronDto {
 export class SetPatronStatusDto {
   @IsIn(['active', 'suspended', 'closed']) status!: 'active' | 'suspended' | 'closed';
 }
+
+/** The five kinds `patron_address_kind` allows. */
+export const ADDRESS_KINDS = ['home', 'postal', 'work', 'term_time', 'other'] as const;
+
+/**
+ * An address, created or patched (2.0 phase 20b-ii).
+ *
+ * `isPrimary` is accepted on both, and promoting is a two-statement job in one
+ * transaction — `patron_addresses_one_primary` is `UNIQUE (patron_id) WHERE
+ * is_primary`, so promoting before demoting is a 23505.
+ */
+export class UpsertAddressDto {
+  @IsOptional() @IsIn(ADDRESS_KINDS) kind?: (typeof ADDRESS_KINDS)[number];
+  @IsOptional() @IsBoolean() isPrimary?: boolean;
+  @IsOptional()
+  @ValidateIf((_o: unknown, v: unknown) => v !== null)
+  @trim()
+  @IsString()
+  @Length(1, 200)
+  line1?: string | null;
+  @IsOptional()
+  @ValidateIf((_o: unknown, v: unknown) => v !== null)
+  @trim()
+  @IsString()
+  @Length(1, 200)
+  line2?: string | null;
+  @IsOptional()
+  @ValidateIf((_o: unknown, v: unknown) => v !== null)
+  @trim()
+  @IsString()
+  @Length(1, 120)
+  city?: string | null;
+  @IsOptional()
+  @ValidateIf((_o: unknown, v: unknown) => v !== null)
+  @trim()
+  @IsString()
+  @Length(1, 120)
+  region?: string | null;
+  @IsOptional()
+  @ValidateIf((_o: unknown, v: unknown) => v !== null)
+  @trim()
+  @IsString()
+  @Length(1, 32)
+  postalCode?: string | null;
+  @IsOptional()
+  @ValidateIf((_o: unknown, v: unknown) => v !== null)
+  @trim()
+  @IsString()
+  @Length(2, 2)
+  country?: string | null;
+  @IsOptional() @ValidateIf((_o: unknown, v: unknown) => v !== null) @IsISO8601() validFrom?:
+    string | null;
+  @IsOptional() @ValidateIf((_o: unknown, v: unknown) => v !== null) @IsISO8601() validTo?:
+    string | null;
+}
+
+/**
+ * A returned envelope, recorded.
+ *
+ * Its own call rather than a field on the patch: this is a fact learned from
+ * the post, not an edit, and it is what `PatronBlockCode.address_unconfirmed`
+ * reads before a library posts a fourth letter to a house nobody lives in.
+ */
+export class UndeliverableDto {
+  @IsBoolean() undeliverable!: boolean;
+  @IsOptional()
+  @ValidateIf((_o: unknown, v: unknown) => v !== null)
+  @trim()
+  @IsString()
+  @Length(1, 300)
+  reason?: string | null;
+}
