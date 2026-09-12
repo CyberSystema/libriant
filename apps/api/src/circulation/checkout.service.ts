@@ -230,7 +230,7 @@ export class CheckoutService {
           }[]
         >`
           SELECT id, patron_id, queue_position, assigned_item_id, group_id
-            FROM lbr2.holds
+            FROM holds
            WHERE (assigned_item_id = ${item.id}
                   OR (patron_id = ${patron.id} AND bib_id = ${item.bibId}))
              AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL`;
@@ -399,7 +399,7 @@ export class CheckoutService {
         let cancelledHoldIds: readonly string[] = [];
         if (ownHold !== null) {
           const filled = await tx.$executeRaw`
-            UPDATE lbr2.holds
+            UPDATE holds
                SET fulfilled_at         = ${effectiveAt},
                    fulfilled_by_loan_id = ${loan.id},
                    queue_position       = NULL,
@@ -600,9 +600,9 @@ export class CheckoutService {
       -- one inside a SQL comment terminates the JS template literal it lives
       -- in, mid-statement -- the phase-14 trap.)
       SELECT COALESCE(s.id, p.id) AS effective_patron_id
-        FROM lbr2.patron_cards c
-        JOIN lbr2.patrons p ON p.id = c.patron_id
-        LEFT JOIN lbr2.patrons s ON s.id = p.merged_into_id
+        FROM patron_cards c
+        JOIN patrons p ON p.id = c.patron_id
+        LEFT JOIN patrons s ON s.id = p.merged_into_id
        WHERE c.barcode_norm = ${normaliseBarcode(input.patronBarcode ?? '')}
          AND c.retired_at IS NULL
        LIMIT 1`;

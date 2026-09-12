@@ -252,14 +252,14 @@ export async function verifyTenantProjections(
                        (CASE WHEN i.valid THEN 'true' ELSE 'false' END) || pg_catalog.chr(31) ||
                        (CASE WHEN i.cancelled THEN 'true' ELSE 'false' END) || pg_catalog.chr(31) ||
                        i.source_tag)
-                FROM lbr2.bib_identifiers i WHERE i.bib_id = r.id) AS identifiers,
+                FROM bib_identifiers i WHERE i.bib_id = r.id) AS identifiers,
              (SELECT pg_catalog.array_agg(
                        k.scheme || pg_catalog.chr(31) || k.value || pg_catalog.chr(31) || k.sort_key || pg_catalog.chr(31) ||
                        k.source_tag)
-                FROM lbr2.bib_classifications k WHERE k.bib_id = r.id) AS classifications
-        FROM lbr2.marc_records r
-        JOIN lbr2.marc_record_contents c ON c.record_id = r.id
-        LEFT JOIN lbr2.bib_records b ON b.bib_id = r.id
+                FROM bib_classifications k WHERE k.bib_id = r.id) AS classifications
+        FROM marc_records r
+        JOIN marc_record_contents c ON c.record_id = r.id
+        LEFT JOIN bib_records b ON b.bib_id = r.id
        WHERE r.kind = 'bibliographic' AND r.deleted_at IS NULL AND r.id > ${after}
        ORDER BY r.id
        LIMIT ${BATCH}`;

@@ -4,7 +4,11 @@ import { StorageService } from '../storage/storage.service.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { RedisService } from '../platform/redis.service.js';
-import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
+import {
+  TENANT_CONTEXT_SELECT,
+  tenantContextFrom,
+  readSchemaMajors,
+} from '../tenancy/tenant-db-url.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { describeError } from './job-error.js';
 import type { JobContext, JobResult } from './jobs.types.js';
@@ -52,6 +56,9 @@ export async function recomputeStorageUsage(ctx?: JobContext): Promise<JobResult
     select: { ...TENANT_CONTEXT_SELECT, storageUsedBytes: true },
   });
 
+  // 2.0 phase 20f: one query for which libraries have been cut over.
+  const schemaMajors = await readSchemaMajors(tenants.map((x) => x.id));
+
   // Same rule as every other sweep: never mint a Redis client and use it in the
   // same breath. The client is built with `enableOfflineQueue: false`, so the
   // first command on a still-connecting socket rejects and the whole tick falls
@@ -81,7 +88,7 @@ export async function recomputeStorageUsage(ctx?: JobContext): Promise<JobResult
       // fleet-wide outage of the nightly job. The counter below is what that
       // case is for.
       try {
-        const tenantCtx: TenantContext = tenantContextFrom(rest);
+        const tenantCtx: TenantContext = tenantContextFrom(rest, 'path', schemaMajors.get(rest.id));
         const after = await storage.recomputeUsage(tenantCtx);
         if (after === before) continue;
         corrected++;

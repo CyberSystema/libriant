@@ -6,7 +6,13 @@ import { pathToFileURL } from 'node:url';
 
 const { tenantFindMany } = vi.hoisted(() => ({ tenantFindMany: vi.fn() }));
 vi.mock('@libriant/db-control', () => ({
-  controlDb: { tenant: { findMany: tenantFindMany } },
+  controlDb: {
+    tenant: { findMany: tenantFindMany },
+    // 2.0 phase 20f: the sweeps read which libraries have been cut over before
+    // they build a context, so the 2.0 client binds to the schema that library
+    // actually has. Empty here — these fixtures are all unpromoted.
+    tenantSchemaState: { findMany: () => Promise.resolve([]) },
+  },
 }));
 
 import { sweepStaleStorageTemps } from './storage-temp-cleanup.job.js';

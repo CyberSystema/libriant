@@ -1,3 +1,4 @@
+import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import {
   composeRuntimeUrl,
@@ -167,11 +168,34 @@ export type TenantContextRow = Omit<TenantContext, 'resolvedFrom'> & {
 export function tenantContextFrom(
   row: TenantContextRow,
   resolvedFrom: TenantContext['resolvedFrom'] = 'path',
+  schemaMajor?: number,
 ): TenantContext {
   const { dbCredentials, ...rest } = row;
   return {
     ...rest,
     dbUrl: runtimeDbUrl({ id: row.id, dbUrl: row.dbUrl, dbCredentials }),
+    // 2.0 phase 20f. Absent means 1 — see `TenantContext.schemaMajor`. A sweep
+    // that does not pass it gets the pre-cutover schema, which is right for
+    // every tenant nobody has upgraded and wrong for one that has, so every
+    // fleet sweep reads it with {@link readSchemaMajors} before the loop.
+    ...(schemaMajor === undefined ? {} : { schemaMajor }),
     resolvedFrom,
   };
+}
+
+/**
+ * Which schema generation each of these tenants is on, in ONE query.
+ *
+ * A fleet sweep visits every library in turn and builds a context for each; the
+ * per-tenant alternative is one control-plane round trip per library per sweep,
+ * on a table with one small row each. Tenants with no row are absent from the
+ * map and read as 1, which is what a database nobody has upgraded is.
+ */
+export async function readSchemaMajors(tenantIds: readonly string[]): Promise<Map<string, number>> {
+  if (tenantIds.length === 0) return new Map();
+  const rows = await controlDb.tenantSchemaState.findMany({
+    where: { tenantId: { in: [...tenantIds] } },
+    select: { tenantId: true, schemaMajor: true },
+  });
+  return new Map(rows.map((r) => [r.tenantId, r.schemaMajor]));
 }

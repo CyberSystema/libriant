@@ -118,9 +118,9 @@ export class CashDrawerService {
     const rows = await client.$queryRaw<{ expected: bigint }[]>`
       SELECT (d.opening_float_cents
               + COALESCE(pg_catalog.sum(e.debit_cents - e.credit_cents), 0))::bigint AS expected
-        FROM lbr2.cash_drawer_sessions d
-        LEFT JOIN lbr2.account_transactions t ON t.drawer_session_id = d.id
-        LEFT JOIN lbr2.account_entries e
+        FROM cash_drawer_sessions d
+        LEFT JOIN account_transactions t ON t.drawer_session_id = d.id
+        LEFT JOIN account_entries e
                ON e.transaction_id = t.id AND e.account = 'cash_on_hand'
        WHERE d.id = ${drawerSessionId}
        GROUP BY d.id, d.opening_float_cents`;
@@ -178,9 +178,9 @@ export class CashDrawerService {
       const rows = await tx.$queryRaw<{ expected: bigint }[]>`
         SELECT (d.opening_float_cents
                 + COALESCE(pg_catalog.sum(e.debit_cents - e.credit_cents), 0))::bigint AS expected
-          FROM lbr2.cash_drawer_sessions d
-          LEFT JOIN lbr2.account_transactions t ON t.drawer_session_id = d.id
-          LEFT JOIN lbr2.account_entries e
+          FROM cash_drawer_sessions d
+          LEFT JOIN account_transactions t ON t.drawer_session_id = d.id
+          LEFT JOIN account_entries e
                  ON e.transaction_id = t.id AND e.account = 'cash_on_hand'
          WHERE d.id = ${session.id}
          GROUP BY d.id, d.opening_float_cents`;

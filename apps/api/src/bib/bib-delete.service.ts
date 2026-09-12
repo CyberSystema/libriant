@@ -70,9 +70,9 @@ export class BibDeleteService {
         { id: string; deleted_at: Date | null; current_version: number; items: bigint }[]
       >`
         SELECT r.id, r.deleted_at, r.current_version,
-               (SELECT pg_catalog.count(*) FROM lbr2.items i
+               (SELECT pg_catalog.count(*) FROM items i
                  WHERE i.bib_id = r.id AND i.archived_at IS NULL) AS items
-          FROM lbr2.marc_records r
+          FROM marc_records r
          WHERE r.id = ${recordId}`;
       const row = rows[0];
       if (row === undefined) throw new NotFoundException(`No catalogue record ${recordId}.`);
@@ -99,7 +99,7 @@ export class BibDeleteService {
       // The tombstone. `record_status_code` follows `status` — §2's rule that
       // the leader is always emitted correct rather than echoed from the source.
       await tx.$executeRaw`
-        UPDATE lbr2.marc_records
+        UPDATE marc_records
            SET deleted_at = ${now}, status = 'deleted', record_status_code = 'd',
                updated_at = ${now}
          WHERE id = ${recordId}`;
@@ -108,24 +108,24 @@ export class BibDeleteService {
       // version chain is append-only, so restoring is a copy rather than a
       // replay — and an auditor asking who removed a record has a row to read.
       await tx.$executeRaw`
-        INSERT INTO lbr2.marc_record_versions
+        INSERT INTO marc_record_versions
           (record_id, version, leader, content, content_hash, change_kind, changed_tags,
            actor_kind, actor_id, created_at)
         SELECT r.id, ${row.current_version + 1}, r.leader, c.content, r.content_hash,
                'delete', ARRAY[]::text[], 'user', ${actor.actorId}, ${now}
-          FROM lbr2.marc_records r
-          JOIN lbr2.marc_record_contents c ON c.record_id = r.id
+          FROM marc_records r
+          JOIN marc_record_contents c ON c.record_id = r.id
          WHERE r.id = ${recordId}`;
       await tx.$executeRaw`
-        UPDATE lbr2.marc_records SET current_version = ${row.current_version + 1}
+        UPDATE marc_records SET current_version = ${row.current_version + 1}
          WHERE id = ${recordId}`;
 
       // The obligation. Identifiers and classifications cascade from it.
       const removed = await tx.$executeRaw`
-        DELETE FROM lbr2.bib_records WHERE bib_id = ${recordId}`;
+        DELETE FROM bib_records WHERE bib_id = ${recordId}`;
 
       await tx.$executeRaw`
-        INSERT INTO lbr2.audit_log
+        INSERT INTO audit_log
           (id, occurred_at, actor_kind, actor_id, action, entity_kind, entity_id, summary, detail)
         VALUES (pg_catalog.gen_random_uuid()::text, ${now}, 'user', ${actor.actorId},
                 'catalog.bib.delete', 'bib', ${recordId}, ${`deleted: ${reason}`},
@@ -153,7 +153,7 @@ export class BibDeleteService {
     const client = this.tenantPrisma.getClientV2(tenant);
     const now = new Date();
     const rows = await client.$queryRaw<{ deleted_at: Date | null }[]>`
-      SELECT deleted_at FROM lbr2.marc_records WHERE id = ${recordId}`;
+      SELECT deleted_at FROM marc_records WHERE id = ${recordId}`;
     const row = rows[0];
     if (row === undefined) throw new NotFoundException(`No catalogue record ${recordId}.`);
     if (row.deleted_at === null) {
@@ -166,17 +166,17 @@ export class BibDeleteService {
     }
 
     await client.$executeRaw`
-      UPDATE lbr2.marc_records
+      UPDATE marc_records
          SET deleted_at = NULL, status = 'complete', record_status_code = 'c', updated_at = ${now}
        WHERE id = ${recordId}`;
     await client.$executeRaw`
-      INSERT INTO lbr2.audit_log
+      INSERT INTO audit_log
         (id, occurred_at, actor_kind, actor_id, action, entity_kind, entity_id, summary)
       VALUES (pg_catalog.gen_random_uuid()::text, ${now}, 'user', ${actor.actorId},
               'catalog.bib.restore', 'bib', ${recordId}, 'restored from deleted')`;
 
     const projected = await client.$queryRaw<{ n: bigint }[]>`
-      SELECT pg_catalog.count(*) AS n FROM lbr2.bib_records WHERE bib_id = ${recordId}`;
+      SELECT pg_catalog.count(*) AS n FROM bib_records WHERE bib_id = ${recordId}`;
     return {
       bibId: recordId,
       status: 'complete',

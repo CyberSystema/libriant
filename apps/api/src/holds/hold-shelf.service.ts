@@ -116,9 +116,9 @@ export class HoldShelfService {
              i.owning_branch_id  AS "itemOwningBranchId",
              p.home_branch_id    AS "patronHomeBranchId",
              h.policy_snapshot   AS "policySnapshot"
-        FROM lbr2.holds h
-        JOIN lbr2.patrons p ON p.id = h.patron_id
-        JOIN lbr2.items i
+        FROM holds h
+        JOIN patrons p ON p.id = h.patron_id
+        JOIN items i
           ON i.bib_id = h.bib_id
          AND i.is_shelf_available
          AND i.current_branch_id = ${branchId}
@@ -266,7 +266,7 @@ export class HoldShelfService {
                  current_branch_id  AS "currentBranchId",
                  owning_branch_id   AS "owningBranchId",
                  is_shelf_available AS "isShelfAvailable"
-            FROM lbr2.items
+            FROM items
            WHERE id = ${probe.id}`;
         const item = rows[0] ?? null;
         if (item === null) throw new NotFoundException('No such copy.');
@@ -383,7 +383,7 @@ export class HoldShelfService {
 
     const due = await client.$queryRaw<{ id: string; bib_id: string; assigned_item_id: string }[]>`
       SELECT id, bib_id, assigned_item_id
-        FROM lbr2.holds
+        FROM holds
        WHERE awaiting_pickup_since IS NOT NULL
          AND shelf_expires_at IS NOT NULL
          AND shelf_expires_at <= ${now}
@@ -409,7 +409,7 @@ export class HoldShelfService {
           // is right rather than merely safe — the next tick re-reads and takes
           // the lock that matches.
           const ended = await tx.$executeRaw`
-            UPDATE lbr2.holds
+            UPDATE holds
                SET expired_at   = ${now},
                    expired_kind = 'shelf',
                    updated_at   = ${now}
@@ -522,7 +522,7 @@ export class HoldShelfService {
     // selected: it is a guess by the time the lock is taken. See below.
     const due = await client.$queryRaw<{ id: string; bib_id: string }[]>`
       SELECT id, bib_id
-        FROM lbr2.holds
+        FROM holds
        WHERE request_expires_at IS NOT NULL
          AND request_expires_at <= ${now}
          AND assigned_item_id IS NULL
@@ -546,7 +546,7 @@ export class HoldShelfService {
           // contiguity is an aggregate property.
           const fresh = await tx.$queryRaw<{ queue_position: number | null }[]>`
             SELECT queue_position
-              FROM lbr2.holds
+              FROM holds
              WHERE id = ${row.id}
                AND assigned_item_id IS NULL
                AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL`;
@@ -554,7 +554,7 @@ export class HoldShelfService {
           const vacated = fresh[0]?.queue_position ?? null;
 
           const ended = await tx.$executeRaw`
-            UPDATE lbr2.holds
+            UPDATE holds
                SET expired_at     = ${now},
                    expired_kind   = 'request',
                    queue_position = NULL,

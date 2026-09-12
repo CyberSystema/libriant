@@ -112,8 +112,8 @@ export class OverdueAccrualService {
     >`
       SELECT l.id, l.patron_id, l.item_id, l.due_at, l.checkout_branch_id, l.policy_snapshot,
              i.replacement_cost_cents
-        FROM lbr2.loans l
-        JOIN lbr2.items i ON i.id = l.item_id
+        FROM loans l
+        JOIN items i ON i.id = l.item_id
        WHERE l.closed_at IS NULL
          AND l.patron_id IS NOT NULL
          AND l.due_at < ${now}
@@ -159,7 +159,7 @@ export class OverdueAccrualService {
         // back the other three thousand nine hundred.
         const outcome = await client.$transaction(async (tx) => {
           const account = await tx.$queryRaw<{ id: string }[]>`
-            SELECT id FROM lbr2.patron_accounts
+            SELECT id FROM patron_accounts
              WHERE patron_id = ${loan.patron_id} AND currency = ${priced.amount.currency}
              LIMIT 1`;
           const accountId = account[0]?.id;

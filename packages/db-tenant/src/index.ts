@@ -8,7 +8,13 @@ export type {
   TenantPrismaClientV2,
   MakeTenantClientOptions,
 } from './client.js';
-export { V2_SCHEMA, withV2Schema } from './v2.js';
+export {
+  V2_SCHEMA,
+  V2_SCHEMA_PROMOTED,
+  v2SchemaFor,
+  v2SessionOptions,
+  withV2Schema,
+} from './v2.js';
 
 // Re-export generated types so consumers import everything from
 // `@libriant/db-tenant`.

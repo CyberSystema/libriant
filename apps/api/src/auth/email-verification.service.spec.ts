@@ -10,6 +10,8 @@ const { userUpdateMany, userFindUnique, userFindFirst, tenantFindUnique } = vi.h
 
 vi.mock('@libriant/db-control', () => ({
   controlDb: {
+    // 2.0 phase 20f: the sweeps read which libraries have been cut over.
+    tenantSchemaState: { findMany: () => Promise.resolve([]) },
     user: { updateMany: userUpdateMany, findUnique: userFindUnique, findFirst: userFindFirst },
     tenant: { findUnique: tenantFindUnique },
   },

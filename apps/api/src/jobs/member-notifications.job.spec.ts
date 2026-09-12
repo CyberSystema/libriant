@@ -31,6 +31,8 @@ vi.mock('@libriant/db-control', async (importOriginal) => ({
   // helpers have to be the real ones (tenant-isolation-02).
   ...(await importOriginal<typeof import('@libriant/db-control')>()),
   controlDb: {
+    // 2.0 phase 20f: the sweeps read which libraries have been cut over.
+    tenantSchemaState: { findMany: () => Promise.resolve([]) },
     tenant: { findMany: tenantFindMany },
     emailOutbox: { findMany: outboxFindMany },
   },

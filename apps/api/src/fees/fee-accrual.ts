@@ -92,7 +92,7 @@ export type AccrualOutcome = {
  */
 export async function accrueWithin(tx: TxV2, input: AccrualInput): Promise<AccrualOutcome> {
   const rows = await tx.$queryRaw<{ id: string; charged: bigint }[]>`
-    INSERT INTO lbr2.fees (
+    INSERT INTO fees (
       id, account_id, patron_id, fee_type_id, currency, loan_id, item_id, branch_id,
       amount_cents, is_accruing, accrued_through, reason, created_at
     )
@@ -110,7 +110,7 @@ export async function accrueWithin(tx: TxV2, input: AccrualInput): Promise<Accru
       -- phase 20b-ii. checkout.service.ts and holds.service.ts each carry a
       -- comment about the same trap; this file shipped it because nothing
       -- invoked accrueWithin until the overdue sweep did.
-      amount_cents    = greatest(lbr2.fees.amount_cents, EXCLUDED.amount_cents),
+      amount_cents    = greatest(fees.amount_cents, EXCLUDED.amount_cents),
       accrued_through = EXCLUDED.accrued_through
     RETURNING id, (amount_cents + tax_cents) AS charged`;
 
@@ -125,7 +125,7 @@ export async function accrueWithin(tx: TxV2, input: AccrualInput): Promise<Accru
   // remembered — see decision 2 in the docblock.
   const posted = await tx.$queryRaw<{ already: bigint }[]>`
     SELECT COALESCE(pg_catalog.sum(debit_cents - credit_cents), 0)::bigint AS already
-      FROM lbr2.account_entries
+      FROM account_entries
      WHERE fee_id = ${fee.id} AND account = 'patron_receivable'`;
 
   const already = posted[0]?.already ?? 0n;

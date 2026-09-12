@@ -90,7 +90,7 @@ export async function highestExistingSequence(client: RawClient, year: number): 
                     THEN pg_catalog.substring(patron_number, '[0-9]+$')::bigint
                END),
              0)::bigint AS max
-      FROM lbr2.patrons
+      FROM patrons
      WHERE patron_number LIKE ${`${prefix}%`}`;
   return Number(rows[0]?.max ?? 0n);
 }
@@ -108,7 +108,7 @@ export async function nextSequenceForYear(client: RawClient, year: number): Prom
   // Hot path. One primary-key UPDATE, no scan, nothing transferred, and the row
   // lock serialises concurrent enrolments so each number is handed out once.
   const bumped = await client.$queryRaw<{ next_seq: number }[]>`
-    UPDATE lbr2.patron_number_counters
+    UPDATE patron_number_counters
        SET next_seq = next_seq + 1
      WHERE year = ${year}
     RETURNING next_seq`;
@@ -120,10 +120,10 @@ export async function nextSequenceForYear(client: RawClient, year: number): Prom
   // overwriting it and so cannot re-issue a number.
   const seed = await highestExistingSequence(client, year);
   const claimed = await client.$queryRaw<{ next_seq: number }[]>`
-    INSERT INTO lbr2.patron_number_counters (year, next_seq)
+    INSERT INTO patron_number_counters (year, next_seq)
     VALUES (${year}, ${seed + 1})
     ON CONFLICT (year)
-    DO UPDATE SET next_seq = lbr2.patron_number_counters.next_seq + 1
+    DO UPDATE SET next_seq = patron_number_counters.next_seq + 1
     RETURNING next_seq`;
   return Number(claimed[0]!.next_seq);
 }

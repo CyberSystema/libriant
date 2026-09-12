@@ -34,6 +34,8 @@ const {
 
 vi.mock('@libriant/db-control', () => ({
   controlDb: {
+    // 2.0 phase 20f: the sweeps read which libraries have been cut over.
+    tenantSchemaState: { findMany: () => Promise.resolve([]) },
     subscription: { findUnique: subFindUnique, update: subUpdate, updateMany: subUpdateMany },
     plan: { findUnique: planFindUnique },
     billingAccount: { findUnique: accountFindUnique },

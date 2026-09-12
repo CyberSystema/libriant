@@ -104,7 +104,7 @@ export class BibLockService {
     }
 
     const rows = await client.$queryRaw<AcquireRow[]>`
-      INSERT INTO lbr2.marc_record_locks
+      INSERT INTO marc_record_locks
         (record_id, holder_user_id, session_id, expires_at)
       VALUES (
         ${input.recordId}, ${actor.actorId}, ${input.sessionId},
@@ -119,21 +119,21 @@ export class BibLockService {
              -- Whom this displaced, and why. NULL when the same tab simply
              -- renewed, which is the common case and is not an event.
              displaced_holder_user_id =
-               CASE WHEN lbr2.marc_record_locks.holder_user_id = EXCLUDED.holder_user_id
-                     AND lbr2.marc_record_locks.session_id = EXCLUDED.session_id
-                    THEN NULL ELSE lbr2.marc_record_locks.holder_user_id END,
+               CASE WHEN marc_record_locks.holder_user_id = EXCLUDED.holder_user_id
+                     AND marc_record_locks.session_id = EXCLUDED.session_id
+                    THEN NULL ELSE marc_record_locks.holder_user_id END,
              displaced_reason =
-               CASE WHEN lbr2.marc_record_locks.holder_user_id = EXCLUDED.holder_user_id
-                     AND lbr2.marc_record_locks.session_id = EXCLUDED.session_id
+               CASE WHEN marc_record_locks.holder_user_id = EXCLUDED.holder_user_id
+                     AND marc_record_locks.session_id = EXCLUDED.session_id
                     THEN NULL
-                    WHEN lbr2.marc_record_locks.expires_at <= pg_catalog.now()
+                    WHEN marc_record_locks.expires_at <= pg_catalog.now()
                     THEN 'expired'
                     ELSE 'taken_over' END
-       WHERE lbr2.marc_record_locks.expires_at <= pg_catalog.now()
-          OR (lbr2.marc_record_locks.holder_user_id = EXCLUDED.holder_user_id
-              AND lbr2.marc_record_locks.session_id = EXCLUDED.session_id)
+       WHERE marc_record_locks.expires_at <= pg_catalog.now()
+          OR (marc_record_locks.holder_user_id = EXCLUDED.holder_user_id
+              AND marc_record_locks.session_id = EXCLUDED.session_id)
           OR (${input.seenSessionId ?? null}::text IS NOT NULL
-              AND lbr2.marc_record_locks.session_id = ${input.seenSessionId ?? null}::text)
+              AND marc_record_locks.session_id = ${input.seenSessionId ?? null}::text)
       RETURNING holder_user_id, session_id, acquired_at, expires_at, heartbeat_count,
                 displaced_holder_user_id, displaced_reason, (xmax = 0) AS was_insert`;
 
@@ -210,7 +210,7 @@ export class BibLockService {
   ): Promise<LockView> {
     const client = this.tenantPrisma.getClientV2(tenant);
     const rows = await client.$queryRaw<AcquireRow[]>`
-      UPDATE lbr2.marc_record_locks
+      UPDATE marc_record_locks
          SET expires_at = pg_catalog.now() + ${`${LOCK_TTL_SECONDS} seconds`}::interval,
              heartbeat_count = heartbeat_count + 1
        WHERE record_id = ${input.recordId}

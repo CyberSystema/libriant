@@ -4579,3 +4579,91 @@ files, and no other instance anywhere.
 `check:tenant-db-urls` did its job unaided — the upgrade's second (Prisma)
 connection is on the operator url by necessity, and is recorded in
 `ADMIN_CLIENT_OPENERS` with the reason rather than worked around.
+
+## Phase 20f — one binary, both tenant populations
+
+The first step of the cutover, and the one that makes the rest of it safe. It
+deletes nothing and repoints nothing; it removes the coupling that made §6's
+cutover a single irreversible event.
+
+### The coupling
+
+`V2_SCHEMA = 'lbr2'` was a module constant read at client construction. The
+promotion renames that schema to `public` ONE DATABASE AT A TIME, while a deploy
+reaches every tenant at once. So the two had to happen together: under the old
+code a promoted library was wholly broken, and under new code an unpromoted one
+would be. `tenant-upgrade-v2.ts` says so itself — "set schemaMajor = 2 by hand
+before deploying code that assumes 2.0, or that tenant will be served by the
+wrong schema."
+
+§6's answer was to flip the constant and rewrite the literals. Measured, that is
+not merely insufficient, it is destructive: `withV2Schema` feeds the SAME
+constant to `prisma migrate deploy`, and four callers deploy both migration
+folders, so `'public'` points both at one schema where 13 physical names collide
+and the two `_prisma_migrations` ledgers become one.
+
+### What was measured instead
+
+Four configurations of the 2.0 client, against a real database:
+
+| binding                                         | model API               | unqualified raw SQL |
+| ----------------------------------------------- | ----------------------- | ------------------- |
+| adapter `{schema}`, no search_path (before 20f) | works                   | **42P01**           |
+| search_path only, no adapter `{schema}`         | **fails on `public.…`** | works               |
+| adapter `{schema}` + `search_path`              | works                   | works               |
+
+So both are needed and they cover different halves. And the property the phase
+rests on, also measured: **Postgres silently ignores a schema in `search_path`
+that does not exist.** `search_path = lbr2, public` therefore finds the 2.0
+tables in `lbr2` before the promotion and in `public` after it, with one string.
+The ORDER is load-bearing — nine names collide, and `lbr2` first is what makes an
+unqualified `loans` mean the 2.0 one while both exist; reversed, every 2.0 query
+silently reads 1.0's rows.
+
+### The change
+
+- `v2SchemaFor(schemaMajor)` replaces the constant at every runtime call site.
+  The flag is `tenant_schema_state.schemaMajor`, which 20c's importer already
+  read. Absent means 1 — the upsert that writes 2 runs only after a cutover
+  commits, so a missing row is a database nobody has upgraded.
+- `TenantContext` carries `schemaMajor`; the resolver reads it on a cache miss,
+  and the sixteen fleet sweeps read it for all their tenants in one query
+  (`readSchemaMajors`).
+- `TenantPrismaService` keys its client cache on the schema as well as the url,
+  so a cutover invalidates the cached client instead of waiting for a restart.
+- **162 `lbr2.` qualifications were deleted** from 33 runtime files. The
+  `lbr2_`-prefixed Postgres object names — `lbr2_write_change_event`,
+  `lbr2_patrons_merge_one_hop` and the rest — are untouched: they ride the
+  rename as part of the schema.
+- `check:v2-schema-literals` is new and proved to discriminate: it fails on a
+  single re-introduced `lbr2.` in application code, which would otherwise pass
+  every test in the repository, because every test database is unpromoted.
+
+### What it does NOT do
+
+Provisioning still deploys both folders, so a new tenant is still 1.0 in `public`
+plus 2.0 in `lbr2` — which is schemaMajor 1, which is what the code now expects.
+Nothing about the 1.0 surface changed.
+
+`withV2Schema` still feeds the constant to `prisma migrate deploy`. For a
+promoted tenant that would CREATE an empty `lbr2` and replay the whole 2.0
+baseline into it, reported as success. It is not reachable from the running
+product — only from `tenant:migrate`, `tenant:create` and the maintenance
+processor — but it is the next thing to fix and it is recorded here rather than
+left to be discovered.
+
+### Two things the new promoted-tenant test found
+
+`import-worker-promoted.spec.ts` is the only test in the repository that
+exercises a genuinely cut-over library; the other 69 integration specs all run
+against `lbr2`.
+
+1. 20c's worker tests stamped `schemaMajor = 2` on a tenant whose tables were
+   still in `lbr2`. Phase 20f makes that state impossible, and rightly — the flag
+   now selects the schema as well as the engine. Those two tests moved into the
+   new file and promote for real.
+2. A promotion that copies no data 403s on every route. The cause is not a
+   defect: `01-pre-catalog.sql` copies eleven compat twins and says why — "the
+   authorization five are LIVE: the 1.0 client keeps reading them through
+   search_path until phase 20 deletes it, and PermissionGuard runs on every
+   request." The test now copies them, which is what the real upgrade does.

@@ -1,7 +1,11 @@
 import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
-import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
+import {
+  TENANT_CONTEXT_SELECT,
+  tenantContextFrom,
+  readSchemaMajors,
+} from '../tenancy/tenant-db-url.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { describeError } from './job-error.js';
 import type { JobResult } from './jobs.types.js';
@@ -80,6 +84,11 @@ export async function checkHoldTransitTimeouts(): Promise<JobResult> {
     select: TENANT_CONTEXT_SELECT,
   });
 
+  // 2.0 phase 20f: which of these libraries have been cut over, in one query.
+  // A sweep that assumed `lbr2` would query a schema a promoted tenant no
+  // longer has.
+  const schemaMajors = await readSchemaMajors(tenants.map((x) => x.id));
+
   const tenantPrisma = new TenantPrismaService('worker');
   let overdue = 0;
   let oldestDays = 0;
@@ -88,7 +97,7 @@ export async function checkHoldTransitTimeouts(): Promise<JobResult> {
   try {
     for (const t of tenants) {
       try {
-        const ctx: TenantContext = tenantContextFrom(t);
+        const ctx: TenantContext = tenantContextFrom(t, 'path', schemaMajors.get(t.id));
         const client = tenantPrisma.getClientV2(ctx);
         const now = new Date();
         // COUNT and the EARLIEST due date, and the days are worked out in Node.
@@ -104,7 +113,7 @@ export async function checkHoldTransitTimeouts(): Promise<JobResult> {
         const rows = await client.$queryRaw<{ n: bigint; oldest: Date | null }[]>`
           SELECT pg_catalog.count(*) AS n,
                  pg_catalog.min(expected_by) AS oldest
-            FROM lbr2.item_transfers
+            FROM item_transfers
            WHERE hold_id IS NOT NULL
              AND received_at IS NULL
              AND cancelled_at IS NULL

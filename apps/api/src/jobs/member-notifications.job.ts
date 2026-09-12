@@ -2,7 +2,11 @@ import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { Prisma, type TenantPrismaClient } from '@libriant/db-tenant';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
-import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
+import {
+  TENANT_CONTEXT_SELECT,
+  tenantContextFrom,
+  readSchemaMajors,
+} from '../tenancy/tenant-db-url.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { RedisService } from '../platform/redis.service.js';
 import { EmailService } from '../email/email.service.js';
@@ -126,6 +130,11 @@ export async function sendMemberNotifications(ctx?: JobContext): Promise<JobResu
     select: TENANT_CONTEXT_SELECT,
   });
 
+  // 2.0 phase 20f: which of these libraries have been cut over, in one query.
+  // A sweep that assumed `lbr2` would query a schema a promoted tenant no
+  // longer has.
+  const schemaMajors = await readSchemaMajors(tenants.map((x) => x.id));
+
   const tenantPrisma = new TenantPrismaService('worker');
   // reliability-01: this sweep used to construct its own RedisService here and
   // issue its first Redis GET microseconds later, on the first line of
@@ -162,7 +171,7 @@ export async function sendMemberNotifications(ctx?: JobContext): Promise<JobResu
       // fleet-wide outage of the nightly job. The counter below is what that
       // case is for.
       try {
-        const tenantCtx: TenantContext = tenantContextFrom(t);
+        const tenantCtx: TenantContext = tenantContextFrom(t, 'path', schemaMajors.get(t.id));
         const c = await notifyOneTenant(tenantCtx, tenantPrisma, emails, plans);
         counts.dueSoon += c.dueSoon;
         counts.overdue += c.overdue;

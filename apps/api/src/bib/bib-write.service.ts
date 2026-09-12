@@ -720,7 +720,7 @@ export class BibWriteService {
         //    transaction", and row_version is the total order the feed, the
         //    search index and every offline replica read in.
         const cas = await tx.$queryRaw<{ row_version: bigint }[]>`
-          UPDATE lbr2.marc_records
+          UPDATE marc_records
              SET leader = ${stamped.leader},
                  content_hash = ${Buffer.from(hash)},
                  current_version = ${nextVersion},
@@ -728,7 +728,7 @@ export class BibWriteService {
                  needs_review = ${validation.after.issues.length > 0},
                  updated_by_user_id = ${actor.userId},
                  updated_at = ${now},
-                 row_version = pg_catalog.nextval('lbr2.record_version_seq')
+                 row_version = pg_catalog.nextval('record_version_seq')
            WHERE id = ${recordId}
              AND content_hash = ${Buffer.from(row.contentHash)}
              AND deleted_at IS NULL

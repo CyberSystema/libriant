@@ -442,7 +442,7 @@ export class HoldsService {
         }
 
         const done = await tx.$executeRaw`
-          UPDATE lbr2.holds
+          UPDATE holds
              SET cancelled_at         = ${now},
                  cancelled_by_user_id = ${actor.userId ?? null},
                  cancelled_reason     = ${input.reason ?? null},
@@ -536,7 +536,7 @@ export class HoldsService {
           );
         }
         await tx.$executeRaw`
-          UPDATE lbr2.holds
+          UPDATE holds
              SET suspended_from = ${from}::date,
                  suspended_until = ${until}::date,
                  updated_at = ${now}
@@ -575,7 +575,7 @@ export class HoldsService {
         await setChangeActor(tx, changeActorOf(actor));
         await this.openHold(tx, input.holdId);
         await tx.$executeRaw`
-          UPDATE lbr2.holds
+          UPDATE holds
              SET suspended_from = NULL, suspended_until = NULL, updated_at = ${now}
            WHERE id = ${input.holdId}`;
       },
@@ -881,9 +881,9 @@ export class HoldsService {
           -- pg_catalog.coalesce(...) raises 42883. ONE hop through
           -- merged_into_id, which lbr2_patrons_merge_one_hop makes sufficient.
           SELECT COALESCE(s.id, p.id) AS effective_patron_id
-            FROM lbr2.patron_cards c
-            JOIN lbr2.patrons p ON p.id = c.patron_id
-            LEFT JOIN lbr2.patrons s ON s.id = p.merged_into_id
+            FROM patron_cards c
+            JOIN patrons p ON p.id = c.patron_id
+            LEFT JOIN patrons s ON s.id = p.merged_into_id
            WHERE c.barcode_norm = ${normaliseBarcode(input.patronBarcode ?? '')}
              AND c.retired_at IS NULL
            LIMIT 1`
@@ -921,7 +921,7 @@ export class HoldsService {
       }[]
     >`
       SELECT id, bib_id, queue_position, assigned_item_id
-        FROM lbr2.holds
+        FROM holds
        WHERE id = ${holdId}
          AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL`;
     const hold = rows[0];

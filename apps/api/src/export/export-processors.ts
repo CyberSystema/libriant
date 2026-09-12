@@ -11,9 +11,10 @@ import { promisify } from 'node:util';
 import { ZipArchive, Archiver } from 'archiver';
 import ExcelJS from 'exceljs';
 import { Client as PgClient } from 'pg';
+import { v2SchemaFor, v2SessionOptions } from '@libriant/db-tenant';
 import { controlDb } from '@libriant/db-control';
 import type { ExportFormat, ExportJob } from '@libriant/db-control';
-import { TENANT_RUNTIME_SELECT, runtimeDbUrl } from '../tenancy/tenant-db-url.js';
+import { TENANT_RUNTIME_SELECT, readSchemaMajors, runtimeDbUrl } from '../tenancy/tenant-db-url.js';
 import { loadEnv } from '../config/env.js';
 import { EXPORT_MAX_RUNTIME_MS } from './export.constants.js';
 import { catalogManifest, withCatalogSource, writeCatalogMarc } from './catalog-marc.js';
@@ -271,7 +272,16 @@ function redactRow(table: string, row: Record<string, unknown>): Record<string, 
   return row;
 }
 
-type Target = { label: string; dbUrl: string; isControl?: boolean };
+type Target = {
+  label: string;
+  dbUrl: string;
+  isControl?: boolean;
+  /**
+   * Which schema generation this library is on (2.0 phase 20f). Absent — and so
+   * unpromoted — for the control database, which has no 2.0 schema at all.
+   */
+  schemaMajor?: number;
+};
 
 /**
  * A table's shape, read once from the catalog — never its rows. The rows only
@@ -452,14 +462,22 @@ async function generate(
  * has not been migrated has no catalogue to export, and the walk will find no
  * rows and produce an empty artifact with an honest manifest.
  */
-async function estimateCatalogBytes(dbUrl: string): Promise<number> {
-  const client = new PgClient({ connectionString: dbUrl, connectionTimeoutMillis: 15_000 });
+async function estimateCatalogBytes(dbUrl: string, v2Schema: string): Promise<number> {
+  // Its own connection, so it carries its own search path (2.0 phase 20f) —
+  // `to_regclass` resolves an unqualified name through it, and that is what
+  // makes this right for a library whose catalogue is in `lbr2` AND one whose
+  // has been promoted to `public`.
+  const client = new PgClient({
+    connectionString: dbUrl,
+    connectionTimeoutMillis: 15_000,
+    options: v2SessionOptions(v2Schema),
+  });
   await client.connect();
   try {
     const r = await client.query<{ bytes: string }>(
       `SELECT COALESCE(
                 pg_catalog.pg_total_relation_size(
-                  pg_catalog.to_regclass('lbr2.marc_record_contents')), 0)::text AS bytes`,
+                  pg_catalog.to_regclass('marc_record_contents')), 0)::text AS bytes`,
     );
     return Number(r.rows[0]?.bytes ?? 0);
   } finally {
@@ -552,15 +570,19 @@ async function addTargetToArchive(
     // a nearly full disk. `estimateCatalogBytes` asks the right schema.
     const guard = new ExportRunGuard(spoolDir(), Date.now() + EXPORT_MAX_RUNTIME_MS);
     await guard.assertRoomFor(
-      (await estimateCatalogBytes(target.dbUrl)) * CATALOG_SPOOL_MULTIPLIER,
+      (await estimateCatalogBytes(target.dbUrl, v2SchemaFor(target.schemaMajor))) *
+        CATALOG_SPOOL_MULTIPLIER,
     );
-    const result = await withCatalogSource(target.dbUrl, (source) =>
-      writeCatalogMarc({
-        source,
-        mrcPath: mrcTmp,
-        xmlPath: xmlTmp,
-        assertHealthy: () => guard.assertStillHealthy(),
-      }),
+    const result = await withCatalogSource(
+      target.dbUrl,
+      (source) =>
+        writeCatalogMarc({
+          source,
+          mrcPath: mrcTmp,
+          xmlPath: xmlTmp,
+          assertHealthy: () => guard.assertStillHealthy(),
+        }),
+      v2SchemaFor(target.schemaMajor),
     );
     await fs.writeFile(manifestTmp, catalogManifest(result, new Date().toISOString()), 'utf8');
     if (result.refused > 0) {
@@ -627,7 +649,8 @@ async function resolveTargets(job: ExportJob, superuserUrl: string): Promise<Tar
       select: TENANT_RUNTIME_SELECT,
     });
     if (!t) throw new Error('Target tenant not found.');
-    return [{ label: t.slug, dbUrl: runtimeDbUrl(t) }];
+    const schemaMajors = await readSchemaMajors([t.id]);
+    return [{ label: t.slug, dbUrl: runtimeDbUrl(t), schemaMajor: schemaMajors.get(t.id) }];
   }
   if (job.scope === 'control') {
     return [{ label: 'control', dbUrl: superuserUrl, isControl: true }];
@@ -637,9 +660,14 @@ async function resolveTargets(job: ExportJob, superuserUrl: string): Promise<Tar
     select: TENANT_RUNTIME_SELECT,
     orderBy: { slug: 'asc' },
   });
+  const schemaMajors = await readSchemaMajors(tenants.map((t) => t.id));
   return [
     { label: 'control', dbUrl: superuserUrl, isControl: true },
-    ...tenants.map((t) => ({ label: t.slug, dbUrl: runtimeDbUrl(t) })),
+    ...tenants.map((t) => ({
+      label: t.slug,
+      dbUrl: runtimeDbUrl(t),
+      schemaMajor: schemaMajors.get(t.id),
+    })),
   ];
 }
 

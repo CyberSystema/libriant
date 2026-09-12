@@ -11,7 +11,13 @@ vi.mock('@libriant/db-control', async (importOriginal) => ({
   // runtime connection string from its sealed credential, so the sealing
   // helpers have to be the real ones (tenant-isolation-02).
   ...(await importOriginal<typeof import('@libriant/db-control')>()),
-  controlDb: { tenant: { findMany: tenantFindMany } },
+  controlDb: {
+    tenant: { findMany: tenantFindMany },
+    // 2.0 phase 20f: the sweeps read which libraries have been cut over before
+    // they build a context, so the 2.0 client binds to the schema that library
+    // actually has. Empty here — these fixtures are all unpromoted.
+    tenantSchemaState: { findMany: () => Promise.resolve([]) },
+  },
 }));
 vi.mock('../config/env.js', () => ({
   loadEnv: () => ({

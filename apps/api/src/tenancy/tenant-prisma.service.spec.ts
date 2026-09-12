@@ -12,7 +12,14 @@ const { makeTenantPrismaClient, makeTenantPrismaClientV2 } = vi.hoisted(() => ({
   // the guard tests fail on a missing export rather than on what they assert.
   makeTenantPrismaClientV2: vi.fn(() => ({ $disconnect: vi.fn(async () => undefined) })),
 }));
-vi.mock('@libriant/db-tenant', () => ({ makeTenantPrismaClient, makeTenantPrismaClientV2 }));
+// `v2SchemaFor` is REAL, not stubbed (2.0 phase 20f): the cache key now
+// includes the schema this tenant's 2.0 tables are in, and a stub would let
+// this spec pass while the real mapping was wrong.
+vi.mock('@libriant/db-tenant', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@libriant/db-tenant')>()),
+  makeTenantPrismaClient,
+  makeTenantPrismaClientV2,
+}));
 
 vi.mock('../config/env.js', () => ({
   loadEnv: () => ({ tenantClientCacheSize: 10, tenantClientIdleMs: 60_000 }),

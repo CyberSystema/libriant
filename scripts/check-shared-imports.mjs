@@ -65,4 +65,6 @@ if (bad) {
   console.error(`\n${bad} bad import(s). These pass \`pnpm typecheck\` and fail \`next build\`.`);
   process.exit(1);
 }
-console.log('shared-import check passed: every web import of @libriant/shared uses an exported subpath.');
+console.log(
+  'shared-import check passed: every web import of @libriant/shared uses an exported subpath.',
+);

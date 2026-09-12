@@ -418,9 +418,9 @@ export class PatronsService {
              COALESCE(s.full_name, p.full_name) AS full_name,
              COALESCE(s.patron_number, p.patron_number) AS patron_number,
              COALESCE(s.status, p.status)::text AS patron_status
-        FROM lbr2.patron_cards c
-        JOIN lbr2.patrons p ON p.id = c.patron_id
-        LEFT JOIN lbr2.patrons s ON s.id = p.merged_into_id
+        FROM patron_cards c
+        JOIN patrons p ON p.id = c.patron_id
+        LEFT JOIN patrons s ON s.id = p.merged_into_id
        WHERE c.barcode_norm = ${normaliseBarcode(barcode)}
        LIMIT 1`;
     const row = rows[0];
@@ -660,16 +660,16 @@ export class PatronsService {
       if (existing.archivedAt !== null) return;
 
       const open = await tx.$queryRaw<{ loans: bigint; holds: bigint; owed: bigint }[]>`
-        SELECT (SELECT pg_catalog.count(*) FROM lbr2.loans
+        SELECT (SELECT pg_catalog.count(*) FROM loans
                  WHERE patron_id = ${patronId} AND closed_at IS NULL) AS loans,
-               (SELECT pg_catalog.count(*) FROM lbr2.holds
+               (SELECT pg_catalog.count(*) FROM holds
                  WHERE patron_id = ${patronId}
                    AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL) AS holds,
                -- coalesce is BARE on purpose: it is one of the constructs
                -- Postgres refuses to schema-qualify (with NULLIF, GREATEST,
                -- LEAST, CASE and the FROM-form of EXTRACT/SUBSTRING), and
                -- pg_catalog.coalesce(...) is a hard 42883.
-               (SELECT coalesce(pg_catalog.sum(owed_cents), 0) FROM lbr2.fees
+               (SELECT coalesce(pg_catalog.sum(owed_cents), 0) FROM fees
                  WHERE patron_id = ${patronId} AND owed_cents > 0) AS owed`;
       const row = open[0];
       if (row !== undefined && (row.loans > 0n || row.holds > 0n || row.owed > 0n)) {
@@ -734,7 +734,7 @@ export class PatronsService {
       -- and agreed only because nothing wrote fees yet. From the first void they
       -- would have shown a patron two different balances at one desk.
       SELECT currency, pg_catalog.sum(owed_cents)::bigint AS outstanding
-        FROM lbr2.fees
+        FROM fees
        WHERE patron_id = ${patronId} AND owed_cents > 0
        GROUP BY currency
        ORDER BY currency`;

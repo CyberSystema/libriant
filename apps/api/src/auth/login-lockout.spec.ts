@@ -9,6 +9,8 @@ const { tenantFindUnique, userFindFirst, userUpdate, queryRaw } = vi.hoisted(() 
 
 vi.mock('@libriant/db-control', () => ({
   controlDb: {
+    // 2.0 phase 20f: the sweeps read which libraries have been cut over.
+    tenantSchemaState: { findMany: () => Promise.resolve([]) },
     tenant: { findUnique: tenantFindUnique },
     user: { findFirst: userFindFirst, update: userUpdate },
     $queryRaw: queryRaw,

@@ -92,10 +92,7 @@ export class PatronEraseService {
     const loansAnonymised = await client.$transaction(async (tx) => {
       // 2. The satellite tables that exist only to describe a person.
       for (const t of deleteTables) {
-        await tx.$executeRawUnsafe(
-          `DELETE FROM lbr2.${t.table} WHERE ${t.patronColumn} = $1`,
-          patronId,
-        );
+        await tx.$executeRawUnsafe(`DELETE FROM ${t.table} WHERE ${t.patronColumn} = $1`, patronId);
       }
 
       // 3. Loans: the one link that CAN be broken, broken the same way the
@@ -106,7 +103,7 @@ export class PatronEraseService {
       //    the annual ISO 2789 return survive, and none of them identifies
       //    anyone.
       const loans = await tx.$executeRawUnsafe(
-        `UPDATE lbr2.loans SET patron_id = NULL, anonymised_at = $2
+        `UPDATE loans SET patron_id = NULL, anonymised_at = $2
           WHERE patron_id = $1 AND patron_id IS NOT NULL`,
         patronId,
         now,
@@ -116,7 +113,7 @@ export class PatronEraseService {
       //    `patron_accounts` and `holds` keep their NOT NULL references and the
       //    ledger still balances.
       await tx.$executeRawUnsafe(
-        `UPDATE lbr2.patrons
+        `UPDATE patrons
             SET full_name = $2, sort_name = $2, search_text = $2,
                 email = NULL, phone = NULL, date_of_birth = NULL,
                 photo_asset_ref = NULL, staff_notes = NULL,
@@ -140,7 +137,7 @@ export class PatronEraseService {
       // record in the table that goes away. Note the column names: the 2.0 log
       // is `entity_kind`/`entity_id`, not `target_type`/`target_id`.
       await tx.$executeRawUnsafe(
-        `INSERT INTO lbr2.audit_log
+        `INSERT INTO audit_log
            (id, occurred_at, actor_kind, actor_id, action, entity_kind, entity_id, summary, detail)
          VALUES (pg_catalog.gen_random_uuid()::text, $1, 'user', $2, 'patron.erase',
                  'patron', $3, $4, $5::jsonb)`,

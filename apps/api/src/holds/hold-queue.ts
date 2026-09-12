@@ -51,7 +51,7 @@ import type { TxV2 } from '../tenancy/tenant-tx-v2.js';
 export async function nextQueuePosition(tx: TxV2, bibId: string): Promise<number> {
   const rows = await tx.$queryRaw<{ next: number }[]>`
     SELECT (COALESCE(pg_catalog.max(queue_position), 0) + 1)::int AS next
-      FROM lbr2.holds
+      FROM holds
      WHERE bib_id = ${bibId} AND queue_position IS NOT NULL`;
   return rows[0]?.next ?? 1;
 }
@@ -74,7 +74,7 @@ export async function closeQueueGap(
   now: Date,
 ): Promise<number> {
   return tx.$executeRaw`
-    UPDATE lbr2.holds
+    UPDATE holds
        SET queue_position = queue_position - 1, updated_at = ${now}
      WHERE bib_id = ${bibId}
        AND queue_position IS NOT NULL
@@ -99,7 +99,7 @@ export async function queueIntegrity(
 ): Promise<{ ok: boolean; positions: number[] }> {
   const rows = await tx.$queryRaw<{ queue_position: number }[]>`
     SELECT queue_position
-      FROM lbr2.holds
+      FROM holds
      WHERE bib_id = ${bibId} AND queue_position IS NOT NULL
      ORDER BY queue_position`;
   const positions = rows.map((r) => r.queue_position);

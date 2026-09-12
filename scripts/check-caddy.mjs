@@ -195,9 +195,9 @@ if (shortHsts.length) {
 // These four are asserted by name because they are the four that do not fall
 // back to `default-src`: dropping any of them removes it entirely rather than
 // narrowing it.
-const cspValues = [
-  ...lines.join('\n').matchAll(/^\s*Content-Security-Policy\s+"([^"]*)"/gm),
-].map((m) => m[1]);
+const cspValues = [...lines.join('\n').matchAll(/^\s*Content-Security-Policy\s+"([^"]*)"/gm)].map(
+  (m) => m[1],
+);
 if (cspValues.length === 0) {
   console.error(
     `✗ ${FILE}: no Content-Security-Policy header at all.\n\n` +
@@ -271,7 +271,7 @@ const applyRequirements = [
     // below would still have reported the path as "Origin-gated".
     re: /^\s*not header Origin https:\/\/\{\$SITE_HOST:[a-z0-9.-]+\}\s*$/m,
     what:
-      'a matcher requiring this site\'s own Origin on POST — exactly\n' +
+      "a matcher requiring this site's own Origin on POST — exactly\n" +
       '      `not header Origin https://{$SITE_HOST:…}`, not just any https:// host',
   },
   {

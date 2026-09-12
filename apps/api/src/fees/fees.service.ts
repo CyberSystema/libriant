@@ -205,7 +205,7 @@ export class FeesService {
    */
   async accountForWithin(tx: TxV2, patronId: string, currency: string, now: Date): Promise<string> {
     const rows = await tx.$queryRaw<{ id: string }[]>`
-      INSERT INTO lbr2.patron_accounts (id, patron_id, currency, opened_at)
+      INSERT INTO patron_accounts (id, patron_id, currency, opened_at)
       VALUES (pg_catalog.gen_random_uuid()::text, ${patronId}, ${currency}, ${now})
       ON CONFLICT (patron_id, currency) DO NOTHING
       RETURNING id`;
@@ -230,7 +230,7 @@ export class FeesService {
     const client = this.tenantPrisma.getClientV2(tenant);
     const rows = await client.$queryRaw<{ currency: string; owed: bigint }[]>`
       SELECT currency, pg_catalog.sum(owed_cents)::bigint AS owed
-        FROM lbr2.fees
+        FROM fees
        WHERE patron_id = ${patronId} AND owed_cents > 0
        GROUP BY currency
        ORDER BY currency`;
@@ -374,7 +374,7 @@ export class FeesService {
     if (ids.length === 0) return new Map();
     const rows = await client.$queryRaw<{ id: string; owed: bigint }[]>`
       SELECT id, owed_cents::bigint AS owed
-        FROM lbr2.fees
+        FROM fees
        WHERE id = ANY(${ids as string[]}::text[])`;
     return new Map(rows.map((r) => [r.id, BigInt(r.owed)]));
   }
@@ -568,7 +568,7 @@ export class FeesService {
       // UNDER THE LOCK, and `owed_cents` rather than `outstanding_cents`.
       const open = await tx.$queryRaw<{ id: string; owed: bigint }[]>`
         SELECT id, owed_cents::bigint AS owed
-          FROM lbr2.fees
+          FROM fees
          WHERE patron_id = ${input.patronId}
            AND currency = ${input.currency}
            AND owed_cents > 0
@@ -669,7 +669,7 @@ export class FeesService {
 
       const paid = await tx.$queryRaw<{ id: string; paid: bigint }[]>`
         SELECT id, paid_cents::bigint AS paid
-          FROM lbr2.fees
+          FROM fees
          WHERE patron_id = ${input.patronId}
            AND currency = ${input.currency}
            AND paid_cents > 0
@@ -798,13 +798,13 @@ export class FeesService {
       // left a refunded fee reading `paid` while it owed money, which is exactly
       // the drift I2 would have reported at 03:00 instead of preventing.
       await tx.$executeRawUnsafe(
-        `UPDATE lbr2.fees
+        `UPDATE fees
             SET ${column} = ${column} + $1,
                 status = CASE
                   WHEN amount_cents + tax_cents
                        - paid_cents - waived_cents - written_off_cents - $1 <= 0
-                  THEN CAST($2 AS lbr2.fee_status)
-                  ELSE CAST('outstanding' AS lbr2.fee_status) END,
+                  THEN CAST($2 AS fee_status)
+                  ELSE CAST('outstanding' AS fee_status) END,
                 closed_at = CASE
                   WHEN amount_cents + tax_cents
                        - paid_cents - waived_cents - written_off_cents - $1 <= 0

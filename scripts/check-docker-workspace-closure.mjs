@@ -75,7 +75,9 @@ for (const base of ['apps', 'packages']) {
   }
 }
 if (dirOf.size === 0) {
-  fail('no workspace packages found under apps/ or packages/ — this gate is blind, point it at the right roots');
+  fail(
+    'no workspace packages found under apps/ or packages/ — this gate is blind, point it at the right roots',
+  );
   process.exit(1);
 }
 
@@ -146,7 +148,9 @@ function copySources(src) {
 /** Every `--root <dir>` handed to the dev-module pruner. */
 function pruneRoots(src) {
   if (!/docker-prune-dev-modules\.mjs/.test(src)) return null; // no prune step
-  return [...src.matchAll(/--root\s+(\S+)/g)].map((m) => m[1].replace(/^\.\//, '').replace(/\/+$/, ''));
+  return [...src.matchAll(/--root\s+(\S+)/g)].map((m) =>
+    m[1].replace(/^\.\//, '').replace(/\/+$/, ''),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -162,7 +166,10 @@ for (const base of ['apps', 'packages']) {
 }
 for (const f of NO_WORKSPACE.keys()) {
   if (existsSync(f)) dockerfiles.push(f);
-  else fail(`${f} is allowlisted as building no workspace package, but the file is gone — drop the entry`);
+  else
+    fail(
+      `${f} is allowlisted as building no workspace package, but the file is gone — drop the entry`,
+    );
 }
 dockerfiles.sort();
 

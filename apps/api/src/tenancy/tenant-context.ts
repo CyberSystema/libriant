@@ -20,6 +20,20 @@ export type TenantContext = {
   storageUrl: string;
   customSubdomain: string | null;
   tags: string[];
+  /**
+   * Which schema generation this library's database is on (2.0 phase 20f).
+   *
+   * `tenant_schema_state.schemaMajor`: 1 is the pre-cutover shape with the 2.0
+   * tables in `lbr2`, 2 is after `tenant-upgrade-v2.ts` promoted them to
+   * `public`. It rides on the context because `TenantPrismaService` has to bind
+   * the 2.0 client to the right schema per tenant — a promotion happens one
+   * database at a time while a deploy reaches every tenant at once, so the fleet
+   * holds both populations for as long as the promotions take.
+   *
+   * OPTIONAL, and absent means 1. Every path that builds a context by hand — the
+   * sweeps, the tests — is describing a tenant nobody has upgraded.
+   */
+  schemaMajor?: number;
   /** How the middleware recognized this tenant on this request. */
   resolvedFrom: 'path' | 'subdomain';
 };

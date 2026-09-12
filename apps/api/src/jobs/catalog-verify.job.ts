@@ -1,7 +1,11 @@
 import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
-import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
+import {
+  TENANT_CONTEXT_SELECT,
+  tenantContextFrom,
+  readSchemaMajors,
+} from '../tenancy/tenant-db-url.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { verifyTenantProjections } from '../bib/bib-projection-verify.js';
 import { describeError } from './job-error.js';
@@ -66,6 +70,11 @@ export async function verifyCatalogProjections(): Promise<JobResult> {
     select: TENANT_CONTEXT_SELECT,
   });
 
+  // 2.0 phase 20f: which of these libraries have been cut over, in one query.
+  // A sweep that assumed `lbr2` would query a schema a promoted tenant no
+  // longer has.
+  const schemaMajors = await readSchemaMajors(tenants.map((x) => x.id));
+
   const tenantPrisma = new TenantPrismaService('worker');
   let scanned = 0;
   let drift = 0;
@@ -77,7 +86,7 @@ export async function verifyCatalogProjections(): Promise<JobResult> {
       // throws for a tenant with no sealed credential, and a throw out here
       // would end the sweep for every OTHER library at the first one.
       try {
-        const ctx: TenantContext = tenantContextFrom(t);
+        const ctx: TenantContext = tenantContextFrom(t, 'path', schemaMajors.get(t.id));
         const report = await verifyTenantProjections(tenantPrisma.getClientV2(ctx));
         scanned += report.scanned;
         drift += report.drifted;

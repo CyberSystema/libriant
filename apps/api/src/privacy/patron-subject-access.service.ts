@@ -115,7 +115,7 @@ export class PatronSubjectAccessService {
       // into this build — never from a request, so the interpolation below
       // cannot carry anything a caller chose. The VALUE is still bound.
       const rows = await client.$queryRawUnsafe<Record<string, unknown>[]>(
-        `SELECT * FROM lbr2.${entry.table} WHERE ${entry.patronColumn} = $1 LIMIT ${SECTION_LIMIT + 1}`,
+        `SELECT * FROM ${entry.table} WHERE ${entry.patronColumn} = $1 LIMIT ${SECTION_LIMIT + 1}`,
         patronId,
       );
       const truncated = rows.length > SECTION_LIMIT;

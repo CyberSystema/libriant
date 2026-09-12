@@ -13,6 +13,8 @@ const { sessionFindMany, sessionUpdateMany, tenantFindUnique, outboxFindMany, em
 
 vi.mock('@libriant/db-control', () => ({
   controlDb: {
+    // 2.0 phase 20f: the sweeps read which libraries have been cut over.
+    tenantSchemaState: { findMany: () => Promise.resolve([]) },
     supportSession: { findMany: sessionFindMany, updateMany: sessionUpdateMany },
     tenant: { findUnique: tenantFindUnique },
     emailOutbox: { findMany: outboxFindMany },

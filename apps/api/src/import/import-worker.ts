@@ -19,6 +19,7 @@ import {
   disconnectTenantClient,
   makeTenantPrismaClient,
   makeTenantPrismaClientV2,
+  v2SchemaFor,
 } from '@libriant/db-tenant';
 import { loadEnv } from '../config/env.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
@@ -108,7 +109,16 @@ export async function processImportJob(
   // concurrent holder of the worker's share — the budget divides it four ways.
   const databaseUrl = runtimeDbUrl(tenant);
   const client = makeTenantPrismaClient({ databaseUrl, maxPoolSize: 1 });
-  const clientV2 = v2 ? makeTenantPrismaClientV2({ databaseUrl, maxPoolSize: 1 }) : null;
+  const clientV2 = v2
+    ? makeTenantPrismaClientV2({
+        databaseUrl,
+        maxPoolSize: 1,
+        // This worker is the one place that knew the tenant's schema before
+        // 20f existed. Now it says so to the client as well, instead of
+        // letting it default to the pre-cutover `lbr2`.
+        v2Schema: v2SchemaFor(schemaState?.schemaMajor),
+      })
+    : null;
 
   // Fresh issue list for this run.
   await controlDb.importRowIssue.deleteMany({ where: { batchId } });
@@ -230,7 +240,9 @@ export async function processImportJob(
       });
       const built = await makeImportEngineV2({
         kind: batch.entityKind,
-        tenant: tenantContextFrom(tenant),
+        // The flag this worker already read, now carried on the context so the
+        // 2.0 client binds to the schema this library actually has (20f).
+        tenant: tenantContextFrom(tenant, 'path', schemaState?.schemaMajor ?? 1),
         // The librarian who started the import, so the audit row the service
         // writes names a person rather than the queue. `system` only when the
         // batch predates the column or the user has since been deleted.

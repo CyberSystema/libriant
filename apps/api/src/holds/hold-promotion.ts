@@ -122,8 +122,8 @@ export async function promoteForItem(
            h.volume,
            p.home_branch_id   AS "patronHomeBranchId",
            h.policy_snapshot  AS "policySnapshot"
-      FROM lbr2.holds h
-      JOIN lbr2.patrons p ON p.id = h.patron_id
+      FROM holds h
+      JOIN patrons p ON p.id = h.patron_id
      WHERE h.bib_id = ${input.bibId}
        AND h.queue_position IS NOT NULL
        AND h.fulfilled_at IS NULL AND h.cancelled_at IS NULL AND h.expired_at IS NULL
@@ -179,7 +179,7 @@ export async function promoteForItem(
   // WHERE is an agreement with the database, which is the one that holds when a
   // future caller forgets.
   const claimed = await tx.$executeRaw`
-    UPDATE lbr2.holds
+    UPDATE holds
        SET assigned_item_id = ${input.itemId},
            assigned_at      = ${input.now},
            queue_position   = NULL,

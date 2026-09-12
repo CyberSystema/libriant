@@ -2,7 +2,11 @@ import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { applicationNotifyKey } from '../applications/applications.service.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
-import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
+import {
+  TENANT_CONTEXT_SELECT,
+  tenantContextFrom,
+  readSchemaMajors,
+} from '../tenancy/tenant-db-url.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { RedisService } from '../platform/redis.service.js';
 import { LONGEST_ONE_TIME_LINK_TTL_SEC } from '../auth/one-time-link-ttl.js';
@@ -252,6 +256,11 @@ export async function sweepRetention(ctx?: JobContext): Promise<JobResult> {
     select: TENANT_CONTEXT_SELECT,
   });
 
+  // 2.0 phase 20f: which of these libraries have been cut over, in one query.
+  // A sweep that assumed `lbr2` would query a schema a promoted tenant no
+  // longer has.
+  const schemaMajors = await readSchemaMajors(tenants.map((x) => x.id));
+
   const tenantPrisma = new TenantPrismaService('worker');
   // Same rule as every other sweep: never mint a Redis client and use it in the
   // same breath. The client is built with `enableOfflineQueue: false`, so the
@@ -277,7 +286,7 @@ export async function sweepRetention(ctx?: JobContext): Promise<JobResult> {
       // fleet-wide outage of the nightly job. The counter below is what that
       // case is for.
       try {
-        const tenantCtx: TenantContext = tenantContextFrom(t);
+        const tenantCtx: TenantContext = tenantContextFrom(t, 'path', schemaMajors.get(t.id));
         const res = await sweepTenantAuditLog(tenantCtx, tenantPrisma, plans, now);
         auditRowsDeleted += res.deleted;
         if (res.unlimited) tenantsUnlimited++;

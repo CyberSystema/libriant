@@ -5,7 +5,11 @@ import { PolicySnapshotService } from '../policy/policy-snapshot.service.js';
 import { TenantClockService } from '../policy/tenant-clock.service.js';
 import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
-import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
+import {
+  TENANT_CONTEXT_SELECT,
+  tenantContextFrom,
+  readSchemaMajors,
+} from '../tenancy/tenant-db-url.js';
 import type { TenantActor } from '../tenancy/tenant-actor.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { ItemStatusService } from '../items/item-status.service.js';
@@ -77,6 +81,11 @@ export async function sweepHoldExpiry(): Promise<JobResult> {
     select: TENANT_CONTEXT_SELECT,
   });
 
+  // 2.0 phase 20f: which of these libraries have been cut over, in one query.
+  // A sweep that assumed `lbr2` would query a schema a promoted tenant no
+  // longer has.
+  const schemaMajors = await readSchemaMajors(tenants.map((x) => x.id));
+
   const redis = new RedisService();
   const tenantPrisma = new TenantPrismaService('worker');
   const clock = new TenantClockService();
@@ -114,7 +123,7 @@ export async function sweepHoldExpiry(): Promise<JobResult> {
       // throw out here would end the sweep for EVERY library at the first
       // un-backfilled one.
       try {
-        const ctx: TenantContext = tenantContextFrom(t);
+        const ctx: TenantContext = tenantContextFrom(t, 'path', schemaMajors.get(t.id));
         const shelfRun = await shelf.expireShelf(ctx, SYSTEM);
         shelfExpired += shelfRun.expired;
         promoted += shelfRun.promoted;

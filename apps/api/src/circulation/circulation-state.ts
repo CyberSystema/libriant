@@ -118,12 +118,12 @@ export async function countCirculationState(
     }[]
   >`
     SELECT
-      (SELECT pg_catalog.count(*) FROM lbr2.loans
+      (SELECT pg_catalog.count(*) FROM loans
         WHERE patron_id = ${input.patronId} AND closed_at IS NULL) AS open_loans,
-      (SELECT pg_catalog.count(*) FROM lbr2.loans
+      (SELECT pg_catalog.count(*) FROM loans
         WHERE patron_id = ${input.patronId} AND closed_at IS NULL
           AND bib_id = ${input.bibId}) AS open_of_title,
-      (SELECT pg_catalog.count(*) FROM lbr2.loans
+      (SELECT pg_catalog.count(*) FROM loans
         WHERE patron_id = ${input.patronId} AND closed_at IS NULL
           AND due_at < ${input.at}) AS overdue,
       -- COALESCE is a SQL construct and cannot be schema-qualified; sum is a
@@ -133,33 +133,33 @@ export async function countCirculationState(
       -- the row is open and 0 when it is closed. It replaces the pair
       -- outstanding_cents + closed_at IS NULL, which was one of TWO spellings of
       -- this question in the codebase.
-      (SELECT COALESCE(pg_catalog.sum(owed_cents), 0)::bigint FROM lbr2.fees
+      (SELECT COALESCE(pg_catalog.sum(owed_cents), 0)::bigint FROM fees
         WHERE patron_id = ${input.patronId}
           AND currency = ${input.currency}) AS owed,
       -- THE HOLD COUNTS. "Open" is three NULL tests and never a status enum —
       -- 45-items.prisma has the measurement: a parameterised enum predicate
       -- seq-scans at 1470 buffers against 2 for a NULL predicate, and still
       -- seq-scans with enable_seqscan off, so there is no index path at all.
-      (SELECT pg_catalog.count(*) FROM lbr2.holds
+      (SELECT pg_catalog.count(*) FROM holds
         WHERE patron_id = ${input.patronId}
           AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL) AS open_holds,
-      (SELECT pg_catalog.count(*) FROM lbr2.holds
+      (SELECT pg_catalog.count(*) FROM holds
         WHERE patron_id = ${input.patronId} AND bib_id = ${input.bibId}
           AND fulfilled_at IS NULL AND cancelled_at IS NULL
           AND expired_at IS NULL) AS open_holds_of_record,
       -- SOMEBODY ELSE, and not somebody who said "not until the 3rd". Both
       -- exclusions are in the class docblock; together they are what stops a
       -- reader being given a short loan on the copy they themselves asked for.
-      (SELECT pg_catalog.count(*) FROM lbr2.holds
+      (SELECT pg_catalog.count(*) FROM holds
         WHERE bib_id = ${input.bibId} AND patron_id <> ${input.patronId}
           AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL
           AND (suspended_until IS NULL
                OR suspended_until < ${input.today}::date)) AS outstanding_holds,
-      (SELECT pg_catalog.count(*) FROM lbr2.items
+      (SELECT pg_catalog.count(*) FROM items
         WHERE bib_id = ${input.bibId} AND archived_at IS NULL) AS copies,
       -- The GENERATED column, which is the ONE definition of "on the shelf right
       -- now" and already folds in the four exclusion codes.
-      (SELECT pg_catalog.count(*) FROM lbr2.items
+      (SELECT pg_catalog.count(*) FROM items
         WHERE bib_id = ${input.bibId} AND is_shelf_available) AS copies_available`;
 
   const row = rows[0]!;
@@ -271,7 +271,7 @@ export async function hasOutstandingHoldOn(
 ): Promise<boolean> {
   const rows = await tx.$queryRaw<{ n: bigint }[]>`
     SELECT pg_catalog.count(*) AS n
-      FROM lbr2.holds
+      FROM holds
      WHERE bib_id = ${input.bibId}
        AND patron_id IS DISTINCT FROM ${input.excludePatronId}
        AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL

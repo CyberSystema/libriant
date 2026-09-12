@@ -154,7 +154,7 @@ export class PatronMergeService {
           // that keeps the invariant one hop deep, and leaving it out is what
           // 59 of 60 concurrent pairs did without the locks.
           await tx.$executeRaw`
-            UPDATE lbr2.patrons
+            UPDATE patrons
                SET merged_into_id = ${input.survivorId}, updated_at = ${input.now}
              WHERE merged_into_id = ${input.loserId}
                AND id <> ${input.survivorId}`;
@@ -226,7 +226,7 @@ export class PatronMergeService {
     // record is — and the merge has to resolve both before it re-points
     // anything, or the `UPDATE` trips the index and takes the whole merge down.
     carried.cards = await tx.$executeRaw`
-      UPDATE lbr2.patron_cards SET patron_id = ${survivorId}, updated_at = ${now}
+      UPDATE patron_cards SET patron_id = ${survivorId}, updated_at = ${now}
        WHERE patron_id = ${loserId}`;
 
     // Identifiers: unique on (patron, scheme, value), so a duplicate ΑΦΜ is a
@@ -234,51 +234,51 @@ export class PatronMergeService {
     // second identical identifier carries no information the survivor's does
     // not.
     collided.identifiers = await tx.$executeRaw`
-      DELETE FROM lbr2.patron_identifiers l
+      DELETE FROM patron_identifiers l
        WHERE l.patron_id = ${loserId}
-         AND EXISTS (SELECT 1 FROM lbr2.patron_identifiers s
+         AND EXISTS (SELECT 1 FROM patron_identifiers s
                       WHERE s.patron_id = ${survivorId}
                         AND s.scheme = l.scheme
                         AND s.value_norm = l.value_norm)`;
     carried.identifiers = await tx.$executeRaw`
-      UPDATE lbr2.patron_identifiers SET patron_id = ${survivorId} WHERE patron_id = ${loserId}`;
+      UPDATE patron_identifiers SET patron_id = ${survivorId} WHERE patron_id = ${loserId}`;
 
     // Addresses: only one may be primary, so the loser's demotes.
     collided.addresses = await tx.$executeRaw`
-      UPDATE lbr2.patron_addresses SET is_primary = false, updated_at = ${now}
+      UPDATE patron_addresses SET is_primary = false, updated_at = ${now}
        WHERE patron_id = ${loserId} AND is_primary
-         AND EXISTS (SELECT 1 FROM lbr2.patron_addresses s
+         AND EXISTS (SELECT 1 FROM patron_addresses s
                       WHERE s.patron_id = ${survivorId} AND s.is_primary)`;
     carried.addresses = await tx.$executeRaw`
-      UPDATE lbr2.patron_addresses SET patron_id = ${survivorId}, updated_at = ${now}
+      UPDATE patron_addresses SET patron_id = ${survivorId}, updated_at = ${now}
        WHERE patron_id = ${loserId}`;
 
     carried.blocks = await tx.$executeRaw`
-      UPDATE lbr2.patron_blocks SET patron_id = ${survivorId}
+      UPDATE patron_blocks SET patron_id = ${survivorId}
        WHERE patron_id = ${loserId}
-         AND NOT EXISTS (SELECT 1 FROM lbr2.patron_blocks s
-                          WHERE s.patron_id = ${survivorId} AND s.code = lbr2.patron_blocks.code
+         AND NOT EXISTS (SELECT 1 FROM patron_blocks s
+                          WHERE s.patron_id = ${survivorId} AND s.code = patron_blocks.code
                             AND s.auto_generated AND s.cleared_at IS NULL)`;
     carried.messages = await tx.$executeRaw`
-      UPDATE lbr2.patron_messages SET patron_id = ${survivorId} WHERE patron_id = ${loserId}`;
+      UPDATE patron_messages SET patron_id = ${survivorId} WHERE patron_id = ${loserId}`;
     carried.notes = await tx.$executeRaw`
-      UPDATE lbr2.patron_notes SET patron_id = ${survivorId}, updated_at = ${now}
+      UPDATE patron_notes SET patron_id = ${survivorId}, updated_at = ${now}
        WHERE patron_id = ${loserId}`;
 
     // Relationships: a row must not end up pointing at itself.
     collided.relationships = await tx.$executeRaw`
-      DELETE FROM lbr2.patron_relationships
+      DELETE FROM patron_relationships
        WHERE (from_patron_id = ${loserId} AND to_patron_id = ${survivorId})
           OR (from_patron_id = ${survivorId} AND to_patron_id = ${loserId})`;
     carried.relationships = await tx.$executeRaw`
-      UPDATE lbr2.patron_relationships SET from_patron_id = ${survivorId}, updated_at = ${now}
+      UPDATE patron_relationships SET from_patron_id = ${survivorId}, updated_at = ${now}
        WHERE from_patron_id = ${loserId}`;
     carried.relationships += await tx.$executeRaw`
-      UPDATE lbr2.patron_relationships SET to_patron_id = ${survivorId}, updated_at = ${now}
+      UPDATE patron_relationships SET to_patron_id = ${survivorId}, updated_at = ${now}
        WHERE to_patron_id = ${loserId}`;
 
     carried.loans = await tx.$executeRaw`
-      UPDATE lbr2.loans SET patron_id = ${survivorId}, updated_at = ${now}
+      UPDATE loans SET patron_id = ${survivorId}, updated_at = ${now}
        WHERE patron_id = ${loserId}`;
 
     // Fees carry NO foreign key to `patrons` until phase 9d, so nothing at the
@@ -287,7 +287,7 @@ export class PatronMergeService {
     // Until that FK exists, the integration test's `orphaned_money = 0`
     // assertion is the only thing standing in for it.
     carried.fees = await tx.$executeRaw`
-      UPDATE lbr2.fees SET patron_id = ${survivorId} WHERE patron_id = ${loserId}`;
+      UPDATE fees SET patron_id = ${survivorId} WHERE patron_id = ${loserId}`;
 
     return { carried, collided };
   }

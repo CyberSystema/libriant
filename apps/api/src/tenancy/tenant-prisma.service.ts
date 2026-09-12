@@ -3,6 +3,7 @@ import { LRUCache } from 'lru-cache';
 import {
   makeTenantPrismaClient,
   makeTenantPrismaClientV2,
+  v2SchemaFor,
   type TenantPrismaClient,
   type TenantPrismaClientV2,
 } from '@libriant/db-tenant';
@@ -35,6 +36,8 @@ type Entry = {
   client: TenantPrismaClient;
   clientV2: TenantPrismaClientV2;
   dbUrl: string;
+  /** Which schema `clientV2` was bound to, so a cutover invalidates it. */
+  v2Schema: string;
 };
 
 /**
@@ -167,7 +170,7 @@ export class TenantPrismaService implements OnModuleDestroy {
    * the client if the cached one points at a different DB URL — which
    * happens after a tenant relocation.
    */
-  getClient(ctx: Pick<TenantContext, 'id' | 'dbUrl'>): TenantPrismaClient {
+  getClient(ctx: Pick<TenantContext, 'id' | 'dbUrl' | 'schemaMajor'>): TenantPrismaClient {
     return this.entryFor(ctx).client;
   }
 
@@ -178,22 +181,27 @@ export class TenantPrismaService implements OnModuleDestroy {
    * and their own generated Prisma client — see `packages/db-tenant/src/v2.ts`.
    * Same cache entry, same URL, same isolation guard.
    */
-  getClientV2(ctx: Pick<TenantContext, 'id' | 'dbUrl'>): TenantPrismaClientV2 {
+  getClientV2(ctx: Pick<TenantContext, 'id' | 'dbUrl' | 'schemaMajor'>): TenantPrismaClientV2 {
     return this.entryFor(ctx).clientV2;
   }
 
-  private entryFor(ctx: Pick<TenantContext, 'id' | 'dbUrl'>): Entry {
+  private entryFor(ctx: Pick<TenantContext, 'id' | 'dbUrl' | 'schemaMajor'>): Entry {
     // Checked on EVERY call, not only on construction (tenant-isolation-02).
     // Gating it on the cache-miss path would make the guard's coverage depend
     // on cache state, which is exactly the kind of reasoning a cross-tenant
     // check should not require. One `new URL()` per request is microseconds.
     assertUrlBelongsToTenant(ctx.id, ctx.dbUrl);
+    // KEYED ON THE SCHEMA AS WELL AS THE URL (2.0 phase 20f). A cutover changes
+    // where this tenant's 2.0 tables are without changing its address, so a
+    // cache that watched only the url would serve a promoted library a client
+    // still bound to `lbr2` until the pod restarted.
+    const v2Schema = v2SchemaFor(ctx.schemaMajor);
     const existing = this.cache.get(ctx.id);
-    if (existing && existing.dbUrl === ctx.dbUrl) {
+    if (existing && existing.dbUrl === ctx.dbUrl && existing.v2Schema === v2Schema) {
       return existing;
     }
     if (existing) {
-      this.logger.debug(`dbUrl changed for tenant ${ctx.id}; rebuilding clients.`);
+      this.logger.debug(`dbUrl or 2.0 schema changed for tenant ${ctx.id}; rebuilding clients.`);
       // Removing triggers `dispose`, which disconnects BOTH old clients.
       this.cache.delete(ctx.id);
     }
@@ -204,8 +212,9 @@ export class TenantPrismaService implements OnModuleDestroy {
     const clientV2 = makeTenantPrismaClientV2({
       databaseUrl: ctx.dbUrl,
       maxPoolSize: this.plan.poolMax,
+      v2Schema,
     });
-    const entry: Entry = { client, clientV2, dbUrl: ctx.dbUrl };
+    const entry: Entry = { client, clientV2, dbUrl: ctx.dbUrl, v2Schema };
     this.cache.set(ctx.id, entry);
     this.logger.debug(`Created tenant clients for ${ctx.id} (cache size: ${this.cache.size}).`);
     return entry;

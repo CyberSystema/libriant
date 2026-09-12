@@ -1,7 +1,11 @@
 import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
-import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
+import {
+  TENANT_CONTEXT_SELECT,
+  tenantContextFrom,
+  readSchemaMajors,
+} from '../tenancy/tenant-db-url.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { describeError } from './job-error.js';
 import type { JobResult } from './jobs.types.js';
@@ -35,6 +39,11 @@ export async function sweepExpiredReservationPickups(): Promise<JobResult> {
     select: TENANT_CONTEXT_SELECT,
   });
 
+  // 2.0 phase 20f: which of these libraries have been cut over, in one query.
+  // A sweep that assumed `lbr2` would query a schema a promoted tenant no
+  // longer has.
+  const schemaMajors = await readSchemaMajors(tenants.map((x) => x.id));
+
   const tenantPrisma = new TenantPrismaService('worker');
   let total = 0;
   let promoted = 0;
@@ -54,7 +63,7 @@ export async function sweepExpiredReservationPickups(): Promise<JobResult> {
       // fleet-wide outage of the nightly job. The counter below is what that
       // case is for.
       try {
-        const ctx: TenantContext = tenantContextFrom(t);
+        const ctx: TenantContext = tenantContextFrom(t, 'path', schemaMajors.get(t.id));
         const result = await expireOneTenant(ctx, tenantPrisma);
         total += result.expired;
         promoted += result.promoted;

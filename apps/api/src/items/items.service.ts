@@ -157,7 +157,7 @@ export class ItemsService {
     now: Date,
   ): Promise<string> {
     const inserted = await tx.$queryRaw<{ record_id: string }[]>`
-      INSERT INTO lbr2.holdings_records (record_id, bib_id, branch_id, is_default, created_at, updated_at)
+      INSERT INTO holdings_records (record_id, bib_id, branch_id, is_default, created_at, updated_at)
       VALUES (pg_catalog.gen_random_uuid()::text, ${bibId}, ${branchId}, true, ${now}, ${now})
       ON CONFLICT (bib_id, branch_id) WHERE is_default AND archived_at IS NULL
       DO NOTHING
@@ -166,7 +166,7 @@ export class ItemsService {
 
     const existing = await tx.$queryRaw<{ record_id: string }[]>`
       SELECT record_id
-        FROM lbr2.holdings_records
+        FROM holdings_records
        WHERE bib_id = ${bibId} AND branch_id = ${branchId}
          AND is_default AND archived_at IS NULL`;
     if (existing.length > 0) return existing[0]!.record_id;
@@ -632,8 +632,8 @@ export class ItemsService {
              i.price_cents, i.replacement_cost_cents, i.accession_number,
              i.checkout_count, i.renewal_count, i.updated_at,
              b.title, b.main_entry_display, b.browse_author, b.publication_year
-        FROM lbr2.items i
-        JOIN lbr2.bib_records b ON b.bib_id = i.bib_id
+        FROM items i
+        JOIN bib_records b ON b.bib_id = i.bib_id
        WHERE i.barcode_norm = ${normaliseBarcode(barcode)}
          AND i.archived_at IS NULL`;
     const row = rows[0];
@@ -710,7 +710,7 @@ export class ItemsService {
     // model at all. It is allowlisted in `check:schema-drift` for that reason.
     const rows = await client.$queryRaw<{ id: string }[]>`
       SELECT id
-        FROM lbr2.items
+        FROM items
        WHERE bib_id = ${bibId}
          AND current_branch_id = ${branchId}
          AND is_shelf_available

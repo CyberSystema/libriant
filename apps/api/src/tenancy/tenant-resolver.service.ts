@@ -329,7 +329,7 @@ export class TenantResolverService {
       where: { slug },
       select: TENANT_SELECT,
     });
-    return row ? this.rowToContext(row, 'path') : null;
+    return row ? this.rowToContext(row, 'path', await this.schemaMajorOf(row.id)) : null;
   }
 
   private async lookupBySubdomain(subdomain: string): Promise<TenantContext | null> {
@@ -337,7 +337,29 @@ export class TenantResolverService {
       where: { customSubdomain: subdomain },
       select: TENANT_SELECT,
     });
-    return row ? this.rowToContext(row, 'subdomain') : null;
+    return row ? this.rowToContext(row, 'subdomain', await this.schemaMajorOf(row.id)) : null;
+  }
+
+  /**
+   * Which schema generation this library's database is on (2.0 phase 20f).
+   *
+   * A SECOND QUERY, and only on a cache miss. `tenant_schema_state` has no
+   * declared relation to `tenants` — it is keyed by a bare tenant id, the way
+   * every control-plane pointer in this product is — so it cannot ride on the
+   * select above. The contexts this service builds are cached for
+   * `TENANT_CACHE_TTL_SEC`, so this costs one small primary-key read per tenant
+   * per TTL, not one per request.
+   *
+   * A MISSING ROW IS 1, and the direction is the safe one: the upsert that
+   * writes 2 runs only after a cutover has committed, so "no row" and "row says
+   * 1" both mean a database whose 2.0 tables are still in `lbr2`.
+   */
+  private async schemaMajorOf(tenantId: string): Promise<number> {
+    const row = await controlDb.tenantSchemaState.findUnique({
+      where: { tenantId },
+      select: { schemaMajor: true },
+    });
+    return row?.schemaMajor ?? 1;
   }
 
   private rowToContext(
@@ -359,6 +381,7 @@ export class TenantResolverService {
       } | null;
     },
     resolvedFrom: TenantContext['resolvedFrom'],
+    schemaMajor: number,
   ): TenantContext {
     // Destructured, not spread. `dbCredentials` is a sealed secret and
     // `TenantContext` is passed to guards, interceptors and (before
@@ -372,6 +395,7 @@ export class TenantResolverService {
       // TenantPrismaService is unchanged and still checks the database name on
       // every call: this is the second wall, not a replacement for the first.
       dbUrl: runtimeDbUrl({ id: row.id, dbUrl: row.dbUrl, dbCredentials }),
+      schemaMajor,
       resolvedFrom,
     };
   }

@@ -162,7 +162,7 @@ export async function loadPolicySnapshot(tx: SnapshotSource): Promise<LoadedSnap
     // roles table is broken behaves as though it is not."
     throw new PolicyResolutionError(
       POLICY_ERROR.policyIncomplete,
-      'lbr2.circulation_policy_version holds no row. That counter is what tells every ' +
+      'circulation_policy_version holds no row. That counter is what tells every ' +
         'process a policy changed, so without it a cached snapshot could never be ' +
         'invalidated. Re-run the phase-13 migration against this library.',
     );

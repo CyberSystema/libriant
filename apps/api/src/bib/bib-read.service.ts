@@ -286,8 +286,8 @@ export class BibReadService {
              c.content, c.source_format::text AS source_format, c.source_encoding,
              c.source_normalization, c.source_roundtrips, c.anomalies,
              (c.source_blob IS NOT NULL) AS has_source_blob
-        FROM lbr2.marc_records r
-        JOIN lbr2.marc_record_contents c ON c.record_id = r.id
+        FROM marc_records r
+        JOIN marc_record_contents c ON c.record_id = r.id
        WHERE r.id = ${recordId} AND r.deleted_at IS NULL`;
     const row = rows[0];
     if (!row) throw new NotFoundException(`Record ${recordId} does not exist.`);
@@ -359,8 +359,8 @@ export class BibReadService {
       }[]
     >`
       SELECT c.source_format::text AS source_format, c.source_blob, c.source_blob_sha256
-        FROM lbr2.marc_records r
-        JOIN lbr2.marc_record_contents c ON c.record_id = r.id
+        FROM marc_records r
+        JOIN marc_record_contents c ON c.record_id = r.id
        WHERE r.id = ${recordId} AND r.deleted_at IS NULL`;
     const row = rows[0];
     if (!row) throw new NotFoundException(`Record ${recordId} does not exist.`);

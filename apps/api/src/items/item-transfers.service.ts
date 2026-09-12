@@ -397,7 +397,7 @@ export class ItemTransfersService {
   ): Promise<string | null> {
     const position = await nextQueuePosition(tx, input.bibId);
     const done = await tx.$executeRaw`
-      UPDATE lbr2.holds
+      UPDATE holds
          SET assigned_item_id       = NULL,
              assigned_at            = NULL,
              awaiting_pickup_since  = NULL,

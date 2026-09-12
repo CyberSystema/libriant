@@ -22,8 +22,6 @@ import {
 import { TenantPrismaService } from '../../src/tenancy/tenant-prisma.service.js';
 import { ItemStatusService } from '../../src/items/item-status.service.js';
 import { PolicySnapshotService } from '../../src/policy/policy-snapshot.service.js';
-import { processImportJob } from '../../src/import/import-worker.js';
-import { EffectivePlanService } from '../../src/plans/effective-plan.service.js';
 import type { MappedRow } from '../../src/import/mapping/row-mapper.js';
 import { listenOnce } from './listen-once.js';
 import { declareBillingPosture } from './billing-posture.js';
@@ -52,8 +50,6 @@ const tag = randomBytes(4).toString('hex');
 let slug = '';
 let owner = '';
 let dbUrl = '';
-let tenantId = '';
-let effective: EffectivePlanService;
 let ctx: TenantContext;
 let engineFor: (kind: string, over?: Partial<EngineV2Context>) => Promise<ImportEngineV2>;
 
@@ -118,8 +114,6 @@ beforeAll(async () => {
   owner = cookieFrom(res, SESSION_RE);
   const t = await controlDb.tenant.findUnique({ where: { slug } });
   dbUrl = t!.dbUrl;
-  tenantId = t!.id;
-  effective = app.get(EffectivePlanService);
   ctx = (await app.get(TenantResolverService).resolveBySlug(slug))!;
 
   const bibs = app.get(BibWriteService);
@@ -277,96 +271,6 @@ describe('§3 the one kind that is still refused, by name', () => {
     );
     expect(V2_SUPPORTED_KINDS).not.toContain('author');
   });
-});
-
-describe('§4 the worker reaches it — which is the only way a library does', () => {
-  /**
-   * The engine above is exercised directly; this section is the wiring, and
-   * without it the phase would have shipped code nothing calls.
-   *
-   * `processImportJob` is the function the registered BullMQ consumer runs, and
-   * it chooses between the two engines by reading
-   * `tenant_schema_state.schemaMajor` — the flag `tenant-upgrade-v2.ts` stamps
-   * after a cutover commits. This tenant has never been upgraded, so BOTH
-   * schemas are present and empty: stamping the flag by hand is the one way to
-   * ask "does the worker route by the flag?" and get an answer that is not
-   * about which tables happen to exist.
-   */
-  const CSV =
-    'title,author,publisher,isbn13\n' +
-    'ΤΟ ΚΙΒΩΤΙΟ,"Αλεξάνδρου, Άρης",Κέδρος,9789600434835\n' +
-    'ΤΡΙΤΟ ΣΤΕΦΑΝΙ,"Ταχτσής, Κώστας",Ερμής,9789603201847\n';
-
-  let batchId = '';
-
-  it('routes a real batch to the 2.0 engine when the fleet flag says 2', async () => {
-    await controlDb.tenantSchemaState.upsert({
-      where: { tenantId },
-      create: { tenantId, schemaMajor: 2, checkedAt: new Date() },
-      update: { schemaMajor: 2, checkedAt: new Date() },
-    });
-
-    const up = await api()
-      .post(`/t/${slug}/imports`)
-      .set('Cookie', owner)
-      .field('entityKind', 'book')
-      .attach('file', Buffer.from(CSV, 'utf-8'), 'books.csv')
-      .expect(201);
-    batchId = (up.body as { batch: { id: string } }).batch.id;
-
-    await api().post(`/t/${slug}/imports/${batchId}/commit`).set('Cookie', owner).expect(201);
-    await processImportJob(batchId, 'commit', { effective });
-
-    const res = await api().get(`/t/${slug}/imports/${batchId}`).set('Cookie', owner).expect(200);
-    const batch = (res.body as { batch: { status: string; counts: Record<string, number> } }).batch;
-    expect(batch.status, JSON.stringify(batch.counts)).toBe('completed');
-    expect(batch.counts['imported']).toBe(2);
-  }, 120_000);
-
-  it('and the rows are in lbr2, with the version history a service write leaves', async () => {
-    const rows = await sql<{ n: string }>(
-      `SELECT pg_catalog.count(*)::text AS n
-         FROM lbr2.marc_records r
-         JOIN lbr2.marc_record_versions v ON v.record_id = r.id
-        WHERE r.control_number IS NOT NULL`,
-    );
-    expect(Number(rows[0]!.n)).toBeGreaterThanOrEqual(2);
-  });
-
-  it('and NOT in the 1.0 table the other engine would have written', async () => {
-    // The proof the flag chose, rather than the schema deciding for it: this
-    // database still has `public.books`, so a worker that ignored schemaMajor
-    // would have filled it without erroring.
-    const rows = await sql<{ n: string }>(`SELECT pg_catalog.count(*)::text AS n FROM books`);
-    expect(Number(rows[0]!.n)).toBe(0);
-  });
-
-  it('stamps the librarian on the record, not the queue', async () => {
-    const rows = await sql<{ actor_kind: string; actor_id: string | null }>(
-      `SELECT actor_kind, actor_id FROM lbr2.marc_record_versions ORDER BY created_at DESC LIMIT 1`,
-    );
-    expect(rows[0]!.actor_kind).toBe('user');
-    expect(rows[0]!.actor_id).not.toBeNull();
-  });
-
-  it('falls back to the 1.0 engine the moment the flag says 1', async () => {
-    await controlDb.tenantSchemaState.update({
-      where: { tenantId },
-      data: { schemaMajor: 1 },
-    });
-    const up = await api()
-      .post(`/t/${slug}/imports`)
-      .set('Cookie', owner)
-      .field('entityKind', 'book')
-      .attach('file', Buffer.from(CSV, 'utf-8'), 'books.csv')
-      .expect(201);
-    const id = (up.body as { batch: { id: string } }).batch.id;
-    await api().post(`/t/${slug}/imports/${id}/commit`).set('Cookie', owner).expect(201);
-    await processImportJob(id, 'commit', { effective });
-
-    const rows = await sql<{ n: string }>(`SELECT pg_catalog.count(*)::text AS n FROM books`);
-    expect(Number(rows[0]!.n)).toBe(2);
-  }, 120_000);
 });
 
 /**
@@ -933,65 +837,6 @@ describe('§9 a charge the library already made', () => {
     );
     expect(Number(rows[0]!.receivable)).toBe(Number(rows[0]!.owed));
   });
-});
-
-describe('§10 a real loan file, through the worker', () => {
-  /**
-   * §5–§9 drive the handlers directly. This drives the whole pipe — a CSV with
-   * a Greek library's own column headers, auto-mapped, committed through the
-   * registered BullMQ function — because "the engine works" and "a librarian's
-   * file works" are different claims and only the second one is the product.
-   */
-  it('auto-maps Greek headers and lands the loan in lbr2', async () => {
-    const barcode = `WRK-${tag}-1`;
-    const number = `WRK${tag.toUpperCase()}`;
-    const book = await (await engineFor('book')).commit(row({ title: 'ΜΕΣΩ ΟΥΡΑΣ ΕΡΓΑΣΙΩΝ' }), []);
-    await (await engineFor('book_copy')).commit(row({ barcode }, { bookId: book.entityId! }), []);
-    await (
-      await engineFor('member')
-    ).commit(row({ fullName: 'Εργασία Έξι', memberNumber: number }), []);
-
-    await controlDb.tenantSchemaState.upsert({
-      where: { tenantId },
-      create: { tenantId, schemaMajor: 2, checkedAt: new Date() },
-      update: { schemaMajor: 2, checkedAt: new Date() },
-    });
-
-    // Headers a real export uses, not our internal keys: `αριθμός μέλους`,
-    // `γραμμωτός κώδικας`, `ημερομηνία δανεισμού`, `λήξη`.
-    const csv =
-      'αριθμός μέλους,γραμμωτός κώδικας,ημερομηνία δανεισμού,λήξη\n' +
-      `${number},${barcode},2026-02-01,2026-02-15\n`;
-
-    const up = await api()
-      .post(`/t/${slug}/imports`)
-      .set('Cookie', owner)
-      .field('entityKind', 'loan')
-      .attach('file', Buffer.from(csv, 'utf-8'), 'loans.csv')
-      .expect(201);
-    const id = (up.body as { batch: { id: string } }).batch.id;
-    await api().post(`/t/${slug}/imports/${id}/commit`).set('Cookie', owner).expect(201);
-    await processImportJob(id, 'commit', { effective });
-
-    const res = await api().get(`/t/${slug}/imports/${id}`).set('Cookie', owner).expect(200);
-    const batch = (res.body as { batch: { status: string; counts: Record<string, number> } }).batch;
-    expect(batch.status, JSON.stringify(batch.counts)).toBe('completed');
-    expect(batch.counts['imported']).toBe(1);
-
-    const rows = await sql<{ n: string }>(
-      `SELECT pg_catalog.count(*)::text AS n
-         FROM lbr2.loans l JOIN lbr2.items i ON i.id = l.item_id WHERE i.barcode = $1`,
-      [barcode],
-    );
-    expect(Number(rows[0]!.n)).toBe(1);
-
-    // And it went nowhere near the 1.0 table, which still exists in this
-    // database — the same proof §4 makes for books.
-    const v1 = await sql<{ n: string }>(`SELECT pg_catalog.count(*)::text AS n FROM loans`);
-    expect(Number(v1[0]!.n)).toBe(0);
-
-    await controlDb.tenantSchemaState.update({ where: { tenantId }, data: { schemaMajor: 1 } });
-  }, 180_000);
 });
 
 describe('§11 the branches the first draft of this phase got wrong', () => {

@@ -60,8 +60,8 @@ export async function findUnbalancedTransactions(tx: TxV2): Promise<Drift[]> {
            COALESCE(pg_catalog.sum(e.credit_cents), 0)::bigint AS credits,
            pg_catalog.count(e.id)::bigint                      AS legs,
            t.total_cents::bigint                               AS header
-      FROM lbr2.account_transactions t
-      LEFT JOIN lbr2.account_entries e ON e.transaction_id = t.id
+      FROM account_transactions t
+      LEFT JOIN account_entries e ON e.transaction_id = t.id
      GROUP BY t.id, t.currency, t.total_cents
     HAVING COALESCE(pg_catalog.sum(e.debit_cents), 0) <> COALESCE(pg_catalog.sum(e.credit_cents), 0)
         OR pg_catalog.count(e.id) < 2
@@ -107,8 +107,8 @@ export async function findFeeCounterDrift(tx: TxV2): Promise<Drift[]> {
              FILTER (WHERE a.kind = 'waiver'), 0)::bigint               AS alloc_waived,
            COALESCE(pg_catalog.sum(a.amount_cents)
              FILTER (WHERE a.kind = 'write_off'), 0)::bigint            AS alloc_written
-      FROM lbr2.fees f
-      LEFT JOIN lbr2.fee_allocations a ON a.fee_id = f.id
+      FROM fees f
+      LEFT JOIN fee_allocations a ON a.fee_id = f.id
      GROUP BY f.id, f.currency, f.paid_cents, f.waived_cents, f.written_off_cents
     HAVING f.paid_cents <> COALESCE(pg_catalog.sum(a.amount_cents)
              FILTER (WHERE a.kind IN ('payment', 'refund')), 0)
@@ -151,7 +151,7 @@ export async function findAccountBalanceDrift(tx: TxV2): Promise<Drift[]> {
       SELECT e.account_id,
              e.currency,
              pg_catalog.sum(e.debit_cents - e.credit_cents)::bigint AS balance
-        FROM lbr2.account_entries e
+        FROM account_entries e
        WHERE e.account = 'patron_receivable'
        GROUP BY e.account_id, e.currency
     ),
@@ -159,7 +159,7 @@ export async function findAccountBalanceDrift(tx: TxV2): Promise<Drift[]> {
       SELECT f.account_id,
              f.currency,
              pg_catalog.sum(f.owed_cents)::bigint AS balance
-        FROM lbr2.fees f
+        FROM fees f
        GROUP BY f.account_id, f.currency
     )
     SELECT COALESCE(l.account_id, o.account_id) AS account_id,

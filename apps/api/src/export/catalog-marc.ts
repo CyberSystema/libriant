@@ -1,6 +1,7 @@
 import { createWriteStream } from 'node:fs';
 import { once } from 'node:events';
 import { Client as PgClient } from 'pg';
+import { v2SessionOptions, V2_SCHEMA } from '@libriant/db-tenant';
 import {
   MarcError,
   writeIso2709,
@@ -122,8 +123,8 @@ export async function writeCatalogMarc(opts: {
       await opts.assertHealthy();
       const page = await client.query<Row>(
         `SELECT r.id, r.leader, r.control_number, c.content
-           FROM lbr2.marc_records r
-           JOIN lbr2.marc_record_contents c ON c.record_id = r.id
+           FROM marc_records r
+           JOIN marc_record_contents c ON c.record_id = r.id
           WHERE r.kind = 'bibliographic'
             AND r.deleted_at IS NULL
             AND r.merged_into_id IS NULL
@@ -206,8 +207,22 @@ export async function writeCatalogMarc(opts: {
 export async function withCatalogSource<T>(
   dbUrl: string,
   body: (source: CatalogSource) => Promise<T>,
+  v2Schema: string = V2_SCHEMA,
 ): Promise<T> {
-  const client = new PgClient({ connectionString: dbUrl, connectionTimeoutMillis: 15_000 });
+  // ITS OWN CONNECTION, so it carries its own search path (2.0 phase 20f).
+  //
+  // The exporter does not go through the Prisma v2 client, so nothing else sets
+  // one for it — and after 20f the statements below name no schema, because the
+  // 2.0 tables are in `lbr2` for a library that has not been cut over and in
+  // `public` for one that has. `lbr2` first is what makes them resolve to the
+  // 2.0 tables while the 1.0 ones of the same name are still in `public`, and a
+  // missing `lbr2` is silently ignored, which is what makes one string serve
+  // both populations.
+  const client = new PgClient({
+    connectionString: dbUrl,
+    connectionTimeoutMillis: 15_000,
+    options: v2SessionOptions(v2Schema),
+  });
   await client.connect();
   try {
     // A library that has not been migrated to 2.0 has no catalogue to export,
@@ -216,7 +231,7 @@ export async function withCatalogSource<T>(
     // provisions gets the schema, so this is a guard against the case that has
     // no other way to be reported.
     const present = await client.query<{ ok: boolean }>(
-      `SELECT pg_catalog.to_regclass('lbr2.marc_records') IS NOT NULL AS ok`,
+      `SELECT pg_catalog.to_regclass('marc_records') IS NOT NULL AS ok`,
       [],
     );
     if (!present.rows[0]?.ok) {

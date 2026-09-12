@@ -51,11 +51,11 @@ export class ReceiptsService {
   async nextNumberWithin(tx: TxV2, branchId: string, at: Date): Promise<string> {
     const year = at.getUTCFullYear();
     const rows = await tx.$queryRaw<{ next_value: bigint }[]>`
-      INSERT INTO lbr2.receipt_number_counters (branch_id, year, next_value)
+      INSERT INTO receipt_number_counters (branch_id, year, next_value)
       VALUES (${branchId}, ${year}, 2)
       ON CONFLICT (branch_id, year)
-      DO UPDATE SET next_value = lbr2.receipt_number_counters.next_value + 1
-      RETURNING (lbr2.receipt_number_counters.next_value - 1)::bigint AS next_value`;
+      DO UPDATE SET next_value = receipt_number_counters.next_value + 1
+      RETURNING (receipt_number_counters.next_value - 1)::bigint AS next_value`;
     const taken = rows[0]?.next_value;
     if (taken === undefined) {
       throw new Error(`Could not take a receipt number for ${branchId}/${year}.`);

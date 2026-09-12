@@ -173,7 +173,14 @@ for (const file of files) {
       continue;
     }
     const tail = text.slice(m.index, m.index + 400);
-    if (!/options:\s*PG_SESSION_OPTIONS/.test(tail)) {
+    // `v2SessionOptions(schema)` is accepted alongside the bare constant (2.0
+    // phase 20f). It RETURNS `PG_SESSION_OPTIONS` with the tenant's
+    // `search_path` appended — the 2.0 connection needs both, and building the
+    // string at the call site would be the third copy this gate exists to
+    // prevent. `v2.ts` composes it from the constant, and
+    // `schema-binding-v2.spec.ts` asserts the result still carries the UTC pin,
+    // so accepting the helper does not widen the hole.
+    if (!/options:\s*(PG_SESSION_OPTIONS|v2SessionOptions\()/.test(tail)) {
       fail(
         `${r}:${at} constructs a Prisma pg adapter without \`options: PG_SESSION_OPTIONS\`.\n      ` +
           'See packages/shared/src/postgres-session.ts for what a non-UTC session does to every ' +

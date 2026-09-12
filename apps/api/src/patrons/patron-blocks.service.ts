@@ -133,11 +133,11 @@ export class PatronBlocksService {
     },
   ): Promise<{ id: string }> {
     const rows = await tx.$queryRaw<{ id: string }[]>`
-      INSERT INTO lbr2.patron_blocks
+      INSERT INTO patron_blocks
         (id, patron_id, code, reason, auto_generated, observed, severity, placed_at)
       VALUES (
         pg_catalog.gen_random_uuid()::text, ${input.patronId},
-        ${input.code}::lbr2.patron_block_code, ${input.reason ?? null},
+        ${input.code}::patron_block_code, ${input.reason ?? null},
         true, ${JSON.stringify(input.observed ?? {})}::jsonb,
         ${input.severity ?? 'block'}, ${input.now})
       ON CONFLICT (patron_id, code) WHERE auto_generated AND cleared_at IS NULL
@@ -171,10 +171,10 @@ export class PatronBlocksService {
     input: { patronId: string; code: AutoBlockCode; reason: string; now: Date },
   ): Promise<number> {
     const result = await tx.$executeRaw`
-      UPDATE lbr2.patron_blocks
+      UPDATE patron_blocks
          SET cleared_at = ${input.now}, cleared_reason = ${input.reason}
        WHERE patron_id = ${input.patronId}
-         AND code = ${input.code}::lbr2.patron_block_code
+         AND code = ${input.code}::patron_block_code
          AND auto_generated
          AND cleared_at IS NULL`;
     return result;

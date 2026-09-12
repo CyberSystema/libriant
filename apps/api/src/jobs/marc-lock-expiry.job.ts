@@ -2,7 +2,11 @@ import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import { TenantAuditService } from '../tenancy/tenant-audit.service.js';
-import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
+import {
+  TENANT_CONTEXT_SELECT,
+  tenantContextFrom,
+  readSchemaMajors,
+} from '../tenancy/tenant-db-url.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { describeError } from './job-error.js';
 import type { JobResult } from './jobs.types.js';
@@ -64,6 +68,11 @@ export async function sweepExpiredMarcLocks(): Promise<JobResult> {
     select: TENANT_CONTEXT_SELECT,
   });
 
+  // 2.0 phase 20f: which of these libraries have been cut over, in one query.
+  // A sweep that assumed `lbr2` would query a schema a promoted tenant no
+  // longer has.
+  const schemaMajors = await readSchemaMajors(tenants.map((x) => x.id));
+
   const tenantPrisma = new TenantPrismaService('worker');
   // Constructed by hand rather than injected: a scheduled job runs outside the
   // Nest container, exactly as every other sweep in this folder does.
@@ -78,7 +87,7 @@ export async function sweepExpiredMarcLocks(): Promise<JobResult> {
       // would end the sweep for every OTHER library at the first un-backfilled
       // one.
       try {
-        const ctx: TenantContext = tenantContextFrom(t);
+        const ctx: TenantContext = tenantContextFrom(t, 'path', schemaMajors.get(t.id));
         total += await sweepOneTenant(ctx, tenantPrisma, audit);
       } catch (err) {
         failed++;
@@ -120,7 +129,7 @@ async function sweepOneTenant(
 ) {
   const client = tenantPrisma.getClientV2(ctx);
   const lapsed = await client.$queryRaw<LapsedLock[]>`
-    DELETE FROM lbr2.marc_record_locks
+    DELETE FROM marc_record_locks
      WHERE expires_at <= pg_catalog.now()
     RETURNING record_id, holder_user_id, session_id`;
 

@@ -75,7 +75,7 @@ export async function groupLockTargets(
 ): Promise<{ bibIds: string[]; itemIds: string[] }> {
   const rows = await tx.$queryRaw<{ bib_id: string; assigned_item_id: string | null }[]>`
     SELECT bib_id, assigned_item_id
-      FROM lbr2.holds
+      FROM holds
      WHERE group_id = ${groupId}
        AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL
      ORDER BY bib_id`;
@@ -115,7 +115,7 @@ export async function resolveGroupOnFulfilment(
     }[]
   >`
     SELECT id, bib_id, queue_position, assigned_item_id
-      FROM lbr2.holds
+      FROM holds
      WHERE group_id = ${input.groupId}
        AND id <> ${input.winningHoldId}
        AND fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL
@@ -134,7 +134,7 @@ export async function resolveGroupOnFulfilment(
     // agreement between callers and the WHERE is an agreement with the database,
     // which is the one that holds when a future caller forgets.
     const done = await tx.$executeRaw`
-      UPDATE lbr2.holds
+      UPDATE holds
          SET cancelled_at     = ${input.now},
              cancelled_reason = ${`Another edition in this group was collected (hold ${input.winningHoldId}).`},
              queue_position   = NULL,
@@ -153,7 +153,7 @@ export async function resolveGroupOnFulfilment(
   }
 
   await tx.$executeRaw`
-    UPDATE lbr2.hold_groups
+    UPDATE hold_groups
        SET resolved_at = ${input.now},
            resolved_by_hold_id = ${input.winningHoldId},
            updated_at = ${input.now}

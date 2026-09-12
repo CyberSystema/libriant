@@ -11,7 +11,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PG_SESSION_OPTIONS } from '@libriant/shared/postgres-session';
 import { PrismaClient } from '../node_modules/.prisma/tenant-client/index.js';
 import { PrismaClient as PrismaClientV2 } from '../node_modules/.prisma/tenant-v2-client/index.js';
-import { V2_SCHEMA } from './v2.js';
+import { V2_SCHEMA, v2SessionOptions } from './v2.js';
 export type TenantPrismaClient = PrismaClient;
 /** The Libriant 2.0 client, bound to the `lbr2` schema. */
 export type TenantPrismaClientV2 = PrismaClientV2;
@@ -76,6 +76,16 @@ export type MakeTenantClientOptions = {
    * as the worker can pass a smaller value than the API.
    */
   maxPoolSize?: number;
+  /**
+   * Which Postgres schema the 2.0 tables are in FOR THIS TENANT (2.0 phase 20f).
+   *
+   * Defaults to {@link V2_SCHEMA}. A tenant that `tenant-upgrade-v2.ts` has cut
+   * over has them in `public` instead, and the fleet holds both populations at
+   * once for as long as the promotions take — so this is a per-tenant value, not
+   * a constant. Ignored by {@link makeTenantPrismaClient}, which is the 1.0
+   * datamodel and always `public`.
+   */
+  v2Schema?: string;
 };
 
 /**
@@ -120,21 +130,46 @@ export function makeTenantPrismaClient(opts: MakeTenantClientOptions): TenantPri
  * would be harmless but misleading — it would look like the thing making this
  * work.
  *
- * ## Raw SQL is NOT covered by that option
+ * ## Raw SQL is NOT covered by that option — so the SESSION carries it too
  *
  * Also measured: with `{ schema: 'lbr2' }` in force, `$queryRaw` still executes
  * at the session's default search_path, so `SELECT … FROM marc_records` throws
- * `relation "marc_records" does not exist`. Every hand-written statement in a
- * 2.0 service must say `lbr2.`. The model API is schema-aware; raw SQL is not.
+ * `42P01`. The model API is schema-aware; raw SQL is not. Until 2.0 phase 20f
+ * that is why every hand-written statement in a 2.0 service said `lbr2.`.
+ *
+ * A FOURTH configuration, measured in 20f, removes the need for those literals:
+ *
+ *   `-c search_path=lbr2,public` + `{ schema: 'lbr2' }`   -> model API OK,
+ *                                         UNQUALIFIED raw SQL OK
+ *   `-c search_path=lbr2,public`, no adapter option       -> the model API
+ *                                         fails on `public.marc_records`
+ *
+ * So BOTH are needed and they cover different halves. The adapter option is the
+ * model API's; the session `search_path` is raw SQL's.
+ *
+ * ## Why the schema is a PARAMETER now
+ *
+ * `tenant-upgrade-v2.ts` promotes `lbr2` to `public` one database at a time,
+ * while a deploy reaches every tenant at once. Binding the schema to a constant
+ * therefore made the two have to happen together: under the old code a promoted
+ * tenant was wholly broken, and under new code an unpromoted one would be.
+ *
+ * Per-tenant, they decouple. And the `search_path` makes the raw half free:
+ * MEASURED, Postgres silently IGNORES a schema in `search_path` that does not
+ * exist, so `lbr2, public` finds the 2.0 tables in `lbr2` before the promotion
+ * and in `public` after it, with the same string. The ORDER is load-bearing —
+ * nine physical names collide between 1.0 and 2.0, and `lbr2` first is what
+ * makes an unqualified `loans` mean the 2.0 one while both exist.
  */
 export function makeTenantPrismaClientV2(opts: MakeTenantClientOptions): TenantPrismaClientV2 {
+  const schema = opts.v2Schema ?? V2_SCHEMA;
   const adapter = new PrismaPg(
     {
       connectionString: opts.databaseUrl,
       max: resolveMaxPoolSize(opts.maxPoolSize),
-      options: PG_SESSION_OPTIONS,
+      options: v2SessionOptions(schema),
     },
-    { schema: V2_SCHEMA },
+    { schema },
   );
   return new PrismaClientV2({
     adapter,

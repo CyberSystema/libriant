@@ -15,6 +15,14 @@ const { findUnique, findFirst, update } = vi.hoisted(() => ({
 vi.mock('@libriant/db-control', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@libriant/db-control')>()),
   controlDb: {
+    // 2.0 phase 20f: the sweeps read which libraries have been cut over.
+    // 2.0 phase 20f: the resolver now reads which schema generation this
+    // library's database is on, so the 2.0 client can be bound to it. Absent
+    // means 1, which is every fixture here.
+    tenantSchemaState: {
+      findMany: () => Promise.resolve([]),
+      findUnique: () => Promise.resolve(null),
+    },
     tenant: { findUnique, findFirst, update },
   },
 }));

@@ -2,7 +2,11 @@ import { controlDb } from '@libriant/db-control';
 import type { Prisma } from '@libriant/db-tenant';
 import { Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
-import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
+import {
+  TENANT_CONTEXT_SELECT,
+  tenantContextFrom,
+  readSchemaMajors,
+} from '../tenancy/tenant-db-url.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { fetchOpenLibraryBook } from '../catalog/openlibrary.js';
 import { describeError } from './job-error.js';
@@ -68,6 +72,11 @@ export async function refreshBookMetadata(): Promise<JobResult> {
     select: TENANT_CONTEXT_SELECT,
   });
 
+  // 2.0 phase 20f: which of these libraries have been cut over, in one query.
+  // A sweep that assumed `lbr2` would query a schema a promoted tenant no
+  // longer has.
+  const schemaMajors = await readSchemaMajors(tenants.map((x) => x.id));
+
   const tenantPrisma = new TenantPrismaService('worker');
   let enriched = 0;
   let attempted = 0;
@@ -94,7 +103,7 @@ export async function refreshBookMetadata(): Promise<JobResult> {
       // fleet-wide outage of the nightly job. The counter below is what that
       // case is for.
       try {
-        const ctx: TenantContext = tenantContextFrom(t);
+        const ctx: TenantContext = tenantContextFrom(t, 'path', schemaMajors.get(t.id));
         const res = await refreshOneTenant(ctx, tenantPrisma);
         enriched += res.enriched;
         attempted += res.attempted;

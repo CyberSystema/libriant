@@ -1,7 +1,11 @@
 import { controlDb } from '@libriant/db-control';
 import { Logger } from '@nestjs/common';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
-import { TENANT_CONTEXT_SELECT, tenantContextFrom } from '../tenancy/tenant-db-url.js';
+import {
+  TENANT_CONTEXT_SELECT,
+  tenantContextFrom,
+  readSchemaMajors,
+} from '../tenancy/tenant-db-url.js';
 import type { TxV2 } from '../tenancy/tenant-tx-v2.js';
 import {
   findAccountBalanceDrift,
@@ -67,12 +71,12 @@ const KINDS = {
 async function record(tx: TxV2, kind: string, drifts: readonly Drift[], now: Date): Promise<void> {
   for (const d of drifts) {
     await tx.$executeRaw`
-      INSERT INTO lbr2.ledger_discrepancies (
+      INSERT INTO ledger_discrepancies (
         id, kind, subject_id, currency, expected_cents, actual_cents, detail, detected_at
       )
       VALUES (
         pg_catalog.gen_random_uuid()::text,
-        CAST(${kind} AS lbr2.ledger_discrepancy_kind),
+        CAST(${kind} AS ledger_discrepancy_kind),
         ${d.subjectId}, ${d.currency}, ${d.expectedCents}, ${d.actualCents},
         CAST(${JSON.stringify(d.detail)} AS jsonb), ${now}
       )
@@ -87,6 +91,9 @@ export async function reconcileLedger(): Promise<JobResult> {
     select: TENANT_CONTEXT_SELECT,
   });
 
+  // 2.0 phase 20f: one query for which libraries have been cut over.
+  const schemaMajors = await readSchemaMajors(tenants.map((x) => x.id));
+
   const tenantPrisma = new TenantPrismaService('worker');
   const now = new Date();
 
@@ -96,7 +103,7 @@ export async function reconcileLedger(): Promise<JobResult> {
   let accountBalanceDrift = 0;
 
   for (const row of tenants) {
-    const tenant = tenantContextFrom(row);
+    const tenant = tenantContextFrom(row, 'path', schemaMajors.get(row.id));
     try {
       const client = tenantPrisma.getClientV2(tenant);
       // One transaction per tenant so all three identities see ONE snapshot. A
