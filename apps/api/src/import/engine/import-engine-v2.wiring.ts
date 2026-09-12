@@ -49,6 +49,8 @@ import { PatronsService } from '../../patrons/patrons.service.js';
 import { TenantClockService } from '../../policy/tenant-clock.service.js';
 import { TenantAuditService } from '../../tenancy/tenant-audit.service.js';
 import { TenantPrismaService } from '../../tenancy/tenant-prisma.service.js';
+import { PolicySnapshotService } from '../../policy/policy-snapshot.service.js';
+import { RedisService } from '../../platform/redis.service.js';
 import { ImportEngineV2, type EngineV2Context } from './import-engine-v2.js';
 
 /**
@@ -80,6 +82,13 @@ class OneTenantPrisma extends TenantPrismaService {
   }
 }
 
+/** The engine plus the connections this factory opened for it. */
+export type BuiltEngine = {
+  readonly engine: ImportEngineV2;
+  /** Closes the Redis client and the policy cache. Call it in the caller's `finally`. */
+  readonly close: () => Promise<void>;
+};
+
 export type ImportEngineV2Wiring = EngineV2Context & {
   readonly kind: ImportEntityKind;
   /** The 1.0 client. Held open by the caller; never written to by this engine. */
@@ -88,19 +97,29 @@ export type ImportEngineV2Wiring = EngineV2Context & {
   readonly clientV2: TenantPrismaClientV2;
 };
 
-export function makeImportEngineV2(w: ImportEngineV2Wiring): ImportEngineV2 {
+/**
+ * Build the engine and read its per-run state.
+ *
+ * ASYNC because of `init()`, which phase 20d gave the engine: the run's
+ * duplicate-key boundary is read from the database clock before a single row is
+ * processed, and a boundary read late is a boundary that matches rows this run
+ * wrote. `ImportEngine` initialises the same way for the same reason.
+ */
+export async function makeImportEngineV2(w: ImportEngineV2Wiring): Promise<BuiltEngine> {
   const tenantPrisma = new OneTenantPrisma(w.client, w.clientV2);
   const audit = new TenantAuditService(tenantPrisma);
   const clock = new TenantClockService();
+  const status = new ItemStatusService(tenantPrisma, clock);
   const bibs = new BibWriteService(tenantPrisma, audit, new BibProjectionService());
-  const items = new ItemsService(
-    tenantPrisma,
-    audit,
-    clock,
-    new ItemStatusService(tenantPrisma, clock),
-  );
+  const items = new ItemsService(tenantPrisma, audit, clock, status);
   const patrons = new PatronsService(tenantPrisma, audit, clock);
-  return new ImportEngineV2(
+  // Phase 20d: circulation history pins a REAL policy resolution — see
+  // `ImportEngineV2.pinnedFor` — so the engine needs the matrix, and the matrix
+  // needs Redis. Both belong to this factory, which is why it hands back a
+  // `close` rather than leaving two connections to the garbage collector.
+  const redis = new RedisService();
+  const snapshots = new PolicySnapshotService(redis, tenantPrisma);
+  const engine = new ImportEngineV2(
     w.kind,
     {
       tenant: w.tenant,
@@ -112,5 +131,16 @@ export function makeImportEngineV2(w: ImportEngineV2Wiring): ImportEngineV2 {
     bibs,
     items,
     patrons,
+    tenantPrisma,
+    status,
+    snapshots,
   );
+  await engine.init();
+  return {
+    engine,
+    close: async () => {
+      await snapshots.onModuleDestroy().catch(() => undefined);
+      await redis.onModuleDestroy().catch(() => undefined);
+    },
+  };
 }

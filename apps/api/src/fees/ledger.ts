@@ -42,7 +42,25 @@ export type LedgerAccount =
   | 'tax_payable'
   | 'waiver_expense'
   | 'bad_debt_expense'
-  | 'cash_over_short';
+  | 'cash_over_short'
+  /**
+   * EQUITY, in effect — and the one account no service call could reach until
+   * 2.0 phase 20d.
+   *
+   * `ledger_account` has carried it since the phase-19a upgrade surface, with
+   * the reason written on the enum: "a fine paid in 2019 did go into a till, but
+   * that till was counted and banked years ago. Posting it now would inflate the
+   * trial balance of a library that has just started keeping one by every fine
+   * it has ever taken." The upgrade's raw SQL used it and this union did not
+   * list it, so the only correct way to post a historical settlement was to
+   * bypass `postJournalWithin` entirely — which the statement-level balance
+   * trigger exists to make impossible.
+   *
+   * Nothing at the desk can reach it: `payment_methods_settlement_is_asset`
+   * restricts a payment method to cash/bank/card_clearing, so `FeesService`
+   * still cannot debit this by accident.
+   */
+  | 'opening_balance';
 
 export type LedgerTxKind =
   | 'charge'
@@ -91,7 +109,15 @@ export type JournalInput = {
   readonly paymentMethodId?: string | null;
   readonly reversesTransactionId?: string | null;
   readonly actorUserId?: string | null;
-  readonly source?: 'desk' | 'opac' | 'sip2' | 'ncip' | 'api' | 'offline' | 'kiosk';
+  /**
+   * `migration` is here for the same reason `opening_balance` is (phase 20d):
+   * `event_source` has carried it since 19a — "a migrated row was nobody's
+   * action, and labelling forty thousand of them `desk` would put fictional
+   * counter activity into every report that groups by source" — and this union
+   * omitted it, so a journal for a row that arrived from another system could
+   * not be posted through the single writer.
+   */
+  readonly source?: 'desk' | 'opac' | 'sip2' | 'ncip' | 'api' | 'offline' | 'kiosk' | 'migration';
   readonly deviceId?: string | null;
   readonly clientChangeId?: string | null;
   readonly note?: string | null;

@@ -598,6 +598,25 @@ const FINE: EntitySpec = {
       note: 'Defaults to "outstanding".',
     },
     {
+      key: 'chargedAt',
+      label: 'Charge date',
+      kind: 'datetime',
+      aliases: [
+        'charged',
+        'charge date',
+        'date charged',
+        'created',
+        'issued',
+        'ημερομηνία χρέωσης',
+      ],
+      // 2.0 phase 20d. A 2.0 fee is ledger-backed, so the date a charge was
+      // made is not decoration: the charge journal is posted at it, and without
+      // a column the import stamps `now` and a library loading four years of
+      // arrears sees its whole historical debt land in this month's revenue.
+      // 1.0 had no such column and did not need one — its fines were bare rows.
+      note: 'When the charge was made. Defaults to the settlement date, then to now.',
+    },
+    {
       key: 'paidAt',
       label: 'Paid date',
       kind: 'datetime',

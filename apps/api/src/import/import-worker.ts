@@ -228,7 +228,7 @@ export async function processImportJob(
         select: { marcOrgCode: true },
         orderBy: { id: 'asc' },
       });
-      const engine = makeImportEngineV2({
+      const built = await makeImportEngineV2({
         kind: batch.entityKind,
         tenant: tenantContextFrom(tenant),
         // The librarian who started the import, so the audit row the service
@@ -246,7 +246,17 @@ export async function processImportJob(
         client,
         clientV2,
       });
-      await runRows(engine, batch.entityKind, table, batch.mappingJson as ColumnMapping, cb);
+      try {
+        await runRows(
+          built.engine,
+          batch.entityKind,
+          table,
+          batch.mappingJson as ColumnMapping,
+          cb,
+        );
+      } finally {
+        await built.close();
+      }
     }
     await flushIssues();
 

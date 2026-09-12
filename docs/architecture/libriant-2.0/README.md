@@ -4311,3 +4311,190 @@ created, and it is deliberately NOT patched here: making the importer the only
 place a ceiling is enforced, while every interactive route ignores it, would be
 worse than the gap. Rewriting the counters onto the 2.0 tables and decorating the
 2.0 controllers is its own phase.
+
+## Phase 20d — circulation history, and four defects it measured
+
+`loan`, `reservation` and `fine` now import into `lbr2`. The 20c boundary is
+closed; `author` remains the one refused kind, and still for the same reason.
+
+### The premise 20c wrote down was false
+
+20c's docblock and the entry above both say: "2.0 has an override path for the
+first — 'clear or override every blocking reason' — so a bulk import would
+record an override per row." **It does not.** Measured, not argued:
+
+- `circulation_overrides`, `override_reasons` and `override_permissions` are all
+  `"status": "deferred"` in `schema-v2/BASELINE-SCOPE.json` and appear in no
+  Prisma model, no migration SQL and no census.
+- `circ.checkout.override`, `circ.hold.override` and `circ.renew.override` are
+  absent from the phase-3 catalogue, so `check:permissions` would fail any route
+  decorated with them — even though `blocks.ts` ships those exact strings to
+  clients in every 409 body, where nothing consumes them.
+- `CheckoutInput` is `{item, patron, branch, source, effectiveAt, device}`: no
+  `force`, no `override`, no `reason`. `checkout.service.ts` says it plainly —
+  "Phase 16 refuses; it does not offer a way past."
+- `LoanEventKind` is `checked_out | renewed | returned | anonymised`.
+
+All of it is phase 21, in M3, which lands after this. The sentence was read off
+§6 rather than off the code. Both texts are corrected in 20d's commit.
+
+### So the three kinds are written directly, and that is not a retreat from 20c
+
+20c's thesis — route through the service a librarian's click goes through — holds
+where the service's meaning is the row's meaning. For a loan it is not:
+`CheckoutService.checkout` means "lend this book now". It cannot express `dueAt`,
+`renewalCount`, `returnedAt` or `status`; six of its seven state refusals are
+evaluated as of today, so a copy since withdrawn or a reader at their loan
+ceiling refuses their own history; and no call produces a closed loan, because
+closing one needs a second `CheckinService` call that promotes today's hold queue
+onto the copy. `HoldsService.place` assigns the queue position itself and writes
+only the waiting columns. `FeesService.settle` requires `owed_cents > 0` and
+derives its debit from a payment method, which `payment_methods_settlement_is_asset`
+restricts to cash/bank/card_clearing.
+
+The two boundaries that ARE enforced by machinery are honoured: the item's status
+moves through `ItemStatusService.applyWithin` (phase 15, ESLint + a grep gate),
+and every ledger entry goes through `postJournalWithin` (phase 18's statement
+trigger makes a half-journal impossible).
+
+Two TypeScript unions were widened to reach enum values the database has carried
+since 19a and no service call could produce: `LedgerAccount` gained
+`opening_balance`, and `JournalInput['source']` and `TransitionInput['source']`
+gained `migration`.
+
+### Reading history: a deliberate divergence from 19b
+
+A closed imported loan honours the tenant's `reading_history_policy` the way
+`CheckinService` does — default `anonymised`, so the patron link is severed and
+the three statistical buckets kept. **19b does not**: the copy-forward carries
+`patron_id` on every returned loan and never anonymises, and nothing recorded
+that as a decision. §3 calls the anonymisation "an IFLA/NISO professional
+obligation and a Greek DPA answer". The operator was asked and chose to honour
+the policy.
+
+It forces one design consequence: anonymising destroys the patron half of every
+weak duplicate key, so the loan key is `(item_id, loaned_at)` — stronger than
+1.0's, because two readers cannot borrow one copy at one instant.
+
+### Four defects measured in committed code
+
+1. **19b pins a policy snapshot 2.0 cannot read.** `readPinnedPolicy` requires
+   `v: 1` plus `loan`, `overdueFine`, `lostItemFee` and a non-empty `timezone`;
+   `02-post-catalog.sql` pins `{migratedFrom:'1.0', loanPeriodDays, maxRenewals,
+finePerDayCents, currency}`, which has **none of the five**. So every migrated
+   loan throws `PinnedSnapshotError` on the detail screen, on renew, on checkin,
+   and is skipped by the overdue sweep; every migrated hold does the same through
+   `hold-pinning.ts`. Verifier E04 only asserts the column is not NULL and not
+   `'{}'`, so nothing catches it. The error message anticipated exactly this: "A
+   migration owes it a shape it understands." **20d does not copy it** — an
+   imported row pins a real `resolveCirculationPolicy` result with `rolls: []`,
+   asserted by a test. The upgrade still needs the same fix.
+2. **19b creates a `patron_accounts` row only for patrons who already had a 1.0
+   fine.** `overdue-accrual.service.ts` returns null — charging nothing,
+   reporting nothing — when it cannot find one, so a migrated library silently
+   stops charging overdue fines for every reader who had never been fined. An
+   imported fee opens the account it needs; the upgrade does not.
+3. **19b's charge journal hardcodes `fine_revenue`** for every migrated fine,
+   including the ones it classifies `feetype_replacement`, whose seeded revenue
+   account is `replacement_revenue`. It nets to zero against its own cancellation
+   leg, so no identity catches it, but a migrated library files lost-book
+   replacements under overdue fines for ever. 20d reads the account off the fee
+   type.
+4. **20c passed a file's member number straight to `patrons.patron_number`**,
+   which `patrons_number_format` constrains to `^[A-Z0-9][A-Z0-9_-]{1,29}$`. A
+   library whose numbers are lowercase, or carry a slash or a space, got a raw
+   `23514` naming a constraint on every row. Fixed here: uppercased, then refused
+   by name if it still will not fit.
+
+Defects 1–3 are in `prisma/upgrade/02-post-catalog.sql` and `tenant-upgrade-v2.ts`
+— 19b's code, exercised by the CI rehearsal — and are **not** fixed in this
+commit. They are one change to the upgrade with its own verifier assertions
+(E04 has to start checking the shape, and a new assertion has to count accounts
+against patrons), and doing it here would put an untested rewrite of the cutover
+path inside an import phase. It is the next piece of work in this area.
+
+### What a six-dimension adversarial review found, and what it changed
+
+The first draft passed 40 tests and was wrong in four places that no test
+touched, because the tests covered `active` and `returned` loans and `queued`
+and `canceled` holds — exactly the four statuses that happen to work. All four
+are now fixed and each has a regression test in §11 of the spec:
+
+- **Every `lost` loan aborted.** `loans_closed_consistency` is
+  `(closed_at IS NULL) = (status IN ('active','claims_returned','claims_never_borrowed','recalled'))`,
+  so a lost loan is CLOSED in 2.0 — §3's split of `closed_at` from `returned_at`
+  is precisely what lets it close without a return. The draft wrote it open and
+  took a 23514 on every lost row. Its reader is kept: the library is still trying
+  to get the book back, so anonymisation happens on RETURN, not on close.
+- **`item_status` has no `lost`** — six values, `available | on_loan |
+in_transit | awaiting_pickup | in_process | missing`. A lost loan leaves the
+  copy `missing`.
+- **Every `expired` hold aborted.** `holds_expiry_pair` is
+  `(expired_at IS NULL) = (expired_kind IS NULL)`; an imported expiry is
+  `request` (the reader waited and was never reached), never `shelf`.
+- **A returned loan with no `status` column imported as an open loan and dropped
+  its return date.** The status is now derived from the return DATE as well as
+  the word, which is the same lesson the upgrade's hold section teaches about
+  deriving from the ending instants rather than the status.
+
+Four more, each real:
+
+- **A collectable imported hold with no expiry is the 1.0 immortal hold.**
+  `expireShelf` filters `shelf_expires_at < now` and NULL is never `< now`, so it
+  would pin its copy at `awaiting_pickup` for ever, hold the reader's
+  one-live-hold slot and block every renewal of the title. The fallback is now
+  the resolved hold policy's own shelf period.
+- **`commitHold` moved an item's status holding no `item:` lock**, which is the
+  one precondition `applyWithin` states. The bib lock is not a substitute:
+  `ItemStatusService.transition`, `ItemTransfersService.send` and
+  `ItemsService.archive` all take the ITEM lock alone. The copy is now locked
+  after the bib (rank 3 after rank 2, so the total order holds) and re-read under
+  it, which is what makes the claim a CAS.
+- **None of the three transactions called `setChangeActor`**, so every imported
+  loan, hold and fee wrote `system` into `change_events` while the same run's
+  records, copies and readers named the librarian.
+- **The duplicate-key boundary compared a Postgres instant against Node-written
+  values.** 1.0 reads the database clock correctly, because its `created_at`
+  carries `@default(now())`; these three 2.0 tables have no default, so the
+  importer supplies it and the boundary must come from the same clock or a few
+  seconds of drift collapses the two identical rows one file must keep.
+
+And three smaller ones: an imported currency is now uppercased and refused by
+name if it is not three letters (`eur` silently opened a second account beside
+`EUR` and split the reader's balance); a negative renewal count is refused by
+name; and `nextQueuePosition` now comes from `hold-queue.ts` instead of a private
+copy that a later priority rule would have left behind.
+
+**The fine entity gained a `chargedAt` column.** Without one every imported fine
+was stamped with the import instant, and its charge journal then credited revenue
+in the CURRENT period — so a library loading four years of arrears saw its whole
+historical debt appear as this month's income.
+
+### Named limitations, not oversights
+
+- **An imported loan writes no `loan_events`,** so it contributes nothing to
+  `circulation_statistics`. A library that imports the current month's
+  circulation at go-live sees zeros for that month, and `rollMonth` assigns
+  rather than adds, so the month cannot be repaired by a later run. Synthesising
+  a checkout and a return event per row is a defensible next step; inventing
+  them silently here is not.
+- **Outstanding fines cannot be linked to their loan.** The import surface has
+  no column for it — in 1.0 or here — so the nightly overdue sweep cannot see
+  that a still-open loan has already been charged and will raise its own fine.
+  The row now says so, once per file.
+- **`loans.notes` is carried verbatim onto an anonymised loan**, and a note
+  naming the reader re-identifies the row. `CheckinService` does not clear notes
+  either, so changing it here would make the import diverge from the desk; it
+  belongs with whatever phase revisits note handling.
+- **`applyWithin` is passed the loan's historical instant**, so an imported
+  copy's `items.updated_at` moves backwards. The alternative is an
+  `item_status_history` row claiming the copy moved today, which is a lie about
+  the copy rather than an artefact of a sort order — and replicas order on
+  `change_events.row_version`, not on `updated_at`.
+
+### Still not in scope
+
+Plan quotas are still unenforced on the whole 2.0 write surface (recorded under
+20c). 20d deliberately adds none: the 1.0 importer never counted circulation
+rows against a ceiling either, and a library migrating its loan history should
+not be stopped by `max_books`.

@@ -297,7 +297,7 @@ export type TransitionInput = {
   readonly toBranchId?: string;
   readonly reasonId?: string | null;
   readonly note?: string | null;
-  readonly source?: 'desk' | 'opac' | 'sip2' | 'ncip' | 'api' | 'offline' | 'kiosk';
+  readonly source?: 'desk' | 'opac' | 'sip2' | 'ncip' | 'api' | 'offline' | 'kiosk' | 'migration';
   /** The loan, transfer or hold behind it. Both or neither — a CHECK says so. */
   readonly causeType?: string;
   readonly causeId?: string;
