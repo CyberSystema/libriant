@@ -41,7 +41,23 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const ROOTS = ['apps/api/src', 'packages/db-tenant/src', 'packages/db-tenant/scripts', 'scripts'];
+/**
+ * Where SQL is written in this repository.
+ *
+ * `packages/db-tenant/prisma` was MISSING until 2.0 phase 20e, which is where
+ * every migration and the whole v1→v2 upgrade live — so the gate could not see
+ * the largest body of hand-written SQL in the product, and a
+ * `pg_catalog.coalesce` went into `03-verify.sql` and was caught only by running
+ * the upgrade. A gate that cannot reach the code it is about is a gate that
+ * reports green for the wrong reason.
+ */
+const ROOTS = [
+  'apps/api/src',
+  'packages/db-tenant/src',
+  'packages/db-tenant/scripts',
+  'packages/db-tenant/prisma',
+  'scripts',
+];
 const SKIP = new Set(['node_modules', 'dist', '.next', '.turbo', 'generated']);
 
 /**
@@ -78,7 +94,12 @@ for (const r of ROOTS) {
       if (SKIP.has(entry)) continue;
       const p = path.join(dir, entry);
       if (statSync(p).isDirectory()) walk(p);
-      else if (entry.endsWith('.ts') && !entry.endsWith('.d.ts')) files.push(p);
+      // `.sql` as well as `.ts`: a migration is SQL in a file, not SQL in a
+      // template literal, and it is exactly as able to qualify a construct
+      // Postgres will not resolve.
+      else if ((entry.endsWith('.ts') && !entry.endsWith('.d.ts')) || entry.endsWith('.sql')) {
+        files.push(p);
+      }
     }
   })(start);
 }

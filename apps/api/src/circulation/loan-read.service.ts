@@ -10,7 +10,7 @@ import {
   type KeysetBoundary,
   type ListResult,
 } from '../platform/list.js';
-import { readPinnedPolicy, type PinnedPolicySnapshot } from './policy-pinning.js';
+import { readPinnedPolicy, type PinnedPolicySnapshot } from '@libriant/circ-policy';
 
 /**
  * Reading loans — the three questions a desk asks and the one a dispute asks.

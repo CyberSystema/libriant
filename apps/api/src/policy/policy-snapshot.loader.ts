@@ -1,6 +1,10 @@
 import {
   POLICY_ERROR,
   PolicyResolutionError,
+  projectHoldPolicy,
+  projectLoanPolicy,
+  projectLostItemFeePolicy,
+  projectOverdueFinePolicy,
   type Calendar,
   type CalendarException,
   type CirculationRule,
@@ -11,12 +15,10 @@ import {
   type FixedDueDateSet,
   type HoldPolicy,
   type LoanPolicy,
-  type LostItemFeePolicy,
   type MoneyJson,
   type NoticePolicy,
   type NoticeTemplateBinding,
   type OpeningInterval,
-  type OverdueFinePolicy,
   type PatronCategoryLimit,
   type PolicySnapshot,
   type TimeOfDay,
@@ -118,10 +120,6 @@ function duration(value: number | null, unit: string | null, where: string): Dur
 
 function money(cents: bigint | null, currency: string): MoneyJson | null {
   if (cents === null) return null;
-  return { minorUnits: Number(cents), currency };
-}
-
-function requiredMoney(cents: bigint, currency: string): MoneyJson {
   return { minorUnits: Number(cents), currency };
 }
 
@@ -280,133 +278,15 @@ export async function loadPolicySnapshot(tx: SnapshotSource): Promise<LoadedSnap
       effectiveFrom: r.effectiveFrom === null ? null : r.effectiveFrom.toISOString(),
       effectiveTo: r.effectiveTo === null ? null : r.effectiveTo.toISOString(),
     })),
-    loanPolicies: byId(
-      loanPolicies.map((p): LoanPolicy => ({
-        id: p.id,
-        name: p.name,
-        loanable: p.loanable,
-        profile: p.profile,
-        period: duration(p.periodValue, p.periodUnit, `loan policy ${p.id} period`),
-        fixedDueDateSetId: p.fixedDueDateSetId,
-        dueTimeOfDay: timeOfDay(p.dueTimeOfDayMin),
-        closedDayHandling: p.closedDayHandling,
-        openingTimeOffset: duration(
-          p.openingTimeOffsetValue,
-          p.openingTimeOffsetUnit,
-          `loan policy ${p.id} openingTimeOffset`,
-        ),
-        maxPeriod: duration(p.maxPeriodValue, p.maxPeriodUnit, `loan policy ${p.id} maxPeriod`),
-        renewable: p.renewable,
-        renewalsAllowed: p.renewalsAllowed,
-        renewalPeriod: duration(
-          p.renewalPeriodValue,
-          p.renewalPeriodUnit,
-          `loan policy ${p.id} renewalPeriod`,
-        ),
-        renewFrom: p.renewFrom,
-        noRenewalBefore: duration(
-          p.noRenewalBeforeValue,
-          p.noRenewalBeforeUnit,
-          `loan policy ${p.id} noRenewalBefore`,
-        ),
-        noRenewalBeforeRelativeTo: p.noRenewalBeforeRelativeTo,
-        renewWithOutstandingHolds: p.renewWithOutstandingHolds,
-        alternateCheckoutPeriodWithHolds: duration(
-          p.altCheckoutPeriodWithHoldsValue,
-          p.altCheckoutPeriodWithHoldsUnit,
-          `loan policy ${p.id} alternateCheckoutPeriodWithHolds`,
-        ),
-        alternateRenewalPeriodWithHolds: duration(
-          p.altRenewalPeriodWithHoldsValue,
-          p.altRenewalPeriodWithHoldsUnit,
-          `loan policy ${p.id} alternateRenewalPeriodWithHolds`,
-        ),
-        itemLimitForPolicy: p.itemLimitForPolicy,
-      })),
-    ),
-    overdueFinePolicies: byId(
-      overdueFinePolicies.map((p): OverdueFinePolicy => ({
-        id: p.id,
-        name: p.name,
-        interval: { value: p.intervalValue, unit: p.intervalUnit },
-        amountPerInterval: requiredMoney(p.amountPerIntervalCents, p.currency),
-        chargeAt: p.chargeAt,
-        gracePeriod: duration(
-          p.gracePeriodValue,
-          p.gracePeriodUnit,
-          `fine policy ${p.id} gracePeriod`,
-        ),
-        graceSuppressesNotice: p.graceSuppressesNotice,
-        countClosedDays: p.countClosedDays,
-        maximumFine: money(p.maximumFineCents, p.currency),
-        minimumFine: money(p.minimumFineCents, p.currency),
-        capAtReplacementCost: p.capAtReplacementCost,
-        forgiveOn: p.forgiveOn,
-        suspension:
-          p.suspensionDaysPerOverdueDay === null || p.suspensionResetOnReturn === null
-            ? null
-            : {
-                daysPerOverdueDay: p.suspensionDaysPerOverdueDay,
-                maxDays: p.suspensionMaxDays,
-                resetOnReturn: p.suspensionResetOnReturn,
-              },
-      })),
-    ),
-    lostItemFeePolicies: byId(
-      lostItemFeePolicies.map((p): LostItemFeePolicy => ({
-        id: p.id,
-        name: p.name,
-        chargeBasis: p.chargeBasis,
-        fixedAmount: money(p.fixedAmountCents, p.currency),
-        processingFee: requiredMoney(p.processingFeeCents, p.currency),
-        agedToLostAfter: { value: p.agedToLostAfterValue, unit: p.agedToLostAfterUnit },
-        refundReplacementOnReturn: p.refundReplacementOnReturn,
-        refundProcessingFeeOnReturn: p.refundProcessingFeeOnReturn,
-        refundWindow: duration(
-          p.refundWindowValue,
-          p.refundWindowUnit,
-          `lost item policy ${p.id} refundWindow`,
-        ),
-        stopOverdueAccrualOnLost: p.stopOverdueAccrualOnLost,
-        chargeOverdueUpToLost: p.chargeOverdueUpToLost,
-      })),
-    ),
-    holdPolicies: byId(
-      holdPolicies.map((p): HoldPolicy => ({
-        id: p.id,
-        name: p.name,
-        holdsAllowed: p.holdsAllowed,
-        requestTypes: p.requestTypes,
-        onShelfHolds: p.onShelfHolds,
-        itemLevelHolds: p.itemLevelHolds,
-        maxHoldsPerRecord: p.maxHoldsPerRecord,
-        maxHoldsTotal: p.maxHoldsTotal,
-        pickupPolicy: p.pickupPolicy,
-        pickupBranchIds: [...p.pickupBranches]
-          .map((b) => b.branchId)
-          // Sorted so the snapshot is byte-stable across rebuilds: this array
-          // lands in `loans.policy_snapshot`, and a receipt reprinted from a
-          // different pod must be the same bytes.
-          .sort(),
-        holdShelfExpiry: { value: p.holdShelfExpiryValue, unit: p.holdShelfExpiryUnit },
-        shelfExpiryUsesCalendar: p.shelfExpiryUsesCalendar,
-        unfilledRequestExpiry: duration(
-          p.unfilledRequestExpiryValue,
-          p.unfilledRequestExpiryUnit,
-          `hold policy ${p.id} unfilledRequestExpiry`,
-        ),
-        suspensionAllowed: p.suspensionAllowed,
-        maxSuspension: duration(
-          p.maxSuspensionValue,
-          p.maxSuspensionUnit,
-          `hold policy ${p.id} maxSuspension`,
-        ),
-        placementFee: money(p.placementFeeCents, p.currency),
-        notPickedUpFee: money(p.notPickedUpFeeCents, p.currency),
-        transitAllowed: p.transitAllowed,
-        maxTransitDays: p.maxTransitDays,
-      })),
-    ),
+    // Projected by `@libriant/circ-policy`, not here (2.0 phase 20e). The v1→v2
+    // upgrade needs the identical row→object mapping and cannot import from
+    // `apps/api`; what it wrote instead was a `policy_snapshot` the product
+    // refused to read. Two implementations of "what a loan policy is" always
+    // eventually disagree, so there is one.
+    loanPolicies: byId(loanPolicies.map(projectLoanPolicy)),
+    overdueFinePolicies: byId(overdueFinePolicies.map(projectOverdueFinePolicy)),
+    lostItemFeePolicies: byId(lostItemFeePolicies.map(projectLostItemFeePolicy)),
+    holdPolicies: byId(holdPolicies.map(projectHoldPolicy)),
     noticePolicies: byId(
       noticePolicies.map((p): NoticePolicy => ({
         id: p.id,

@@ -4498,3 +4498,84 @@ Plan quotas are still unenforced on the whole 2.0 write surface (recorded under
 20c). 20d deliberately adds none: the 1.0 importer never counted circulation
 rows against a ceiling either, and a library migrating its loan history should
 not be stopped by `max_books`.
+
+## Phase 20e — repairing the upgrade, before the cutover runs it
+
+20d measured three defects in 19b's copy-forward and deliberately left them, on
+the grounds that they needed the verifier changed with them. This is that change.
+It comes before 20b-iii because 20b-iii *runs* this code: cutting a library over
+with an upgrade that writes policy snapshots the product then refuses to read is
+not a cutover, it is a data loss with a green light on it.
+
+### The snapshot nothing could read
+
+`readPinnedPolicy` requires `v: 1` plus `loan`, `overdueFine`, `lostItemFee` and
+a non-empty `timezone`, and refuses loudly otherwise — §4.1's rule that a
+resolution "never fails open to a default policy". 19b froze
+`{migratedFrom:'1.0', loanPeriodDays, maxRenewals, finePerDayCents, currency}`,
+which has **none of the five**. Every migrated loan therefore threw
+`PinnedSnapshotError` on its detail screen, on renew and on checkin, and
+`overdue-accrual.service.ts` counted it `refused` and charged nothing; every
+migrated hold did the same through `hold-pinning.ts`. The error message had
+stated the requirement in advance — "A migration owes it a shape it understands."
+
+**The operator chose to pin a real resolution** rather than let migrated rows
+re-resolve against today's matrix, so a rule edited next year still cannot
+re-price a loan the library migrated.
+
+### Which forced a boundary to move, and it is better where it went
+
+`scripts/` deliberately never imports from `apps/api`, so the upgrade could not
+reach either the pinning helpers or the row→object projection — which is exactly
+why it wrote its own object instead. Three modules moved into
+`@libriant/circ-policy`, the package §4.1 names as the owner of policy
+resolution:
+
+- `policy-pinning.ts` → `pinning.ts` and `hold-pinning.ts`, both already pure
+  with a single type-only import.
+- The four policy projections out of `policy-snapshot.loader.ts` → the new
+  `policy-rows.ts`. The loader now calls them, so a desk read and a migration
+  cannot disagree about what a loan policy is. The rows are typed structurally,
+  field by field, because the package must not import Prisma's generated types;
+  `tsc` checks those types against the real rows at the loader's call site, which
+  is what proves the extraction faithful.
+- `pinNamedPolicy` / `pinNamedHoldPolicy` are new: a bulk loader that NAMES its
+  policies rather than resolving them. A 1.0 library had exactly one policy, so
+  there is no matrix to evaluate, and making the upgrade fabricate a
+  `ResolvedPolicy` to satisfy a parameter would be a lie in the shape of a type.
+
+`purity.test.ts` refused all three until its manifest was updated — a hard-coded
+file list asserted against the directory, so adding a file to that package forces
+somebody to certify it is clock-free and dependency-free. It worked.
+
+### The other two defects
+
+`patron_accounts` is now opened for **every** migrated patron, per currency, not
+only for those who already had a 1.0 fine — the sweep returns null and reports
+nothing when it cannot find one, so the old form stopped a migrated library
+fining most of its readers on day one, silently. And both the charge and the
+cancellation journals now credit the fee type's own `revenue_account` instead of
+a hardcoded `fine_revenue`, so a replacement charge stops being filed under
+overdue fines.
+
+### Two gates that could not have caught any of it
+
+**E04 could not fail.** It asserted `policy_snapshot IS NOT NULL AND <> '{}'`,
+and the broken blob is neither — so it was green for three phases over a snapshot
+the product refused. It now asserts the five things the READER checks, and it is
+proved to discriminate: restoring the old blob makes E04 and the new E04b fail,
+and the real snapshot makes them pass. `E04c` is new and asserts every migrated
+patron has an account. 44 assertions, up from 42.
+
+**`check:sql-constructs` could not see the SQL.** Its roots were
+`apps/api/src`, `packages/db-tenant/src`, `packages/db-tenant/scripts` and
+`scripts` — not `packages/db-tenant/prisma`, where every migration and the whole
+upgrade live, and it only scanned `.ts`. So the largest body of hand-written SQL
+in the product was outside the gate written to protect it, and a
+`pg_catalog.coalesce` went into `03-verify.sql` in this very phase and was caught
+only by running the upgrade. The gate now scans that tree and `.sql` files: 600
+files, and no other instance anywhere.
+
+`check:tenant-db-urls` did its job unaided — the upgrade's second (Prisma)
+connection is on the operator url by necessity, and is recorded in
+`ADMIN_CLIENT_OPENERS` with the reason rather than worked around.

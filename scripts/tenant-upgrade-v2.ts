@@ -91,6 +91,17 @@ import {
   type V1Author,
   type V1Book,
 } from '@libriant/db-tenant/upgrade/marc-from-book';
+import { makeTenantPrismaClientV2 } from '@libriant/db-tenant';
+import {
+  pinNamedHoldPolicy,
+  pinNamedPolicy,
+  projectHoldPolicy,
+  projectLoanPolicy,
+  projectLostItemFeePolicy,
+  projectOverdueFinePolicy,
+  type PinnedHoldSnapshot,
+  type PinnedPolicySnapshot,
+} from '@libriant/circ-policy';
 import { die, isYes, log, parseArgs } from './_lib/cli.js';
 
 const NAME = 'tenant-upgrade-v2';
@@ -165,6 +176,91 @@ if (commitMode && args.values.clone !== undefined) {
 const sqlFile = (f: string): string => readFileSync(path.join(UPGRADE_DIR, f), 'utf8');
 
 type Verdict = { id: string; claim: string; ok: boolean; detail: string };
+
+/**
+ * The library's own seeded circulation policy, pinned into the two shapes the
+ * product reads back (2.0 phase 20e).
+ *
+ * WHY THE WILDCARD RULE AND NOT A RESOLUTION. A 1.0 library had exactly one
+ * policy — one `tenant_settings` row — so there is no matrix to evaluate and
+ * nothing for `resolveCirculationPolicy` to decide between. The upgrade already
+ * writes `applied_rule_id = 'rule-default'` on every migrated loan and hold; this
+ * reads the policies THAT rule names and freezes them, so the columns and the
+ * snapshot agree instead of the snapshot claiming a resolution nobody ran.
+ *
+ * It refuses rather than falling back. `§4.1`: a resolution "never fails open to
+ * a default policy — a wrong loan period is a wrong receipt", and a migration
+ * that guessed a fourteen-day period because a row was missing would put that
+ * guess on every loan in the library, permanently, with nothing recording it.
+ * The orchestrator has already asserted `rule-default` exists; this asserts the
+ * four policies it points at do too.
+ */
+async function readSeededPolicies(databaseUrl: string): Promise<{
+  loan: PinnedPolicySnapshot;
+  hold: PinnedHoldSnapshot;
+}> {
+  const db = makeTenantPrismaClientV2({ databaseUrl, maxPoolSize: 1 });
+  try {
+    const [version, rule, branch] = await Promise.all([
+      db.circulationPolicyVersion.findUnique({ where: { id: 1 } }),
+      db.circulationRule.findUnique({ where: { id: 'rule-default' } }),
+      db.branch.findFirst({ where: { archivedAt: null }, orderBy: { id: 'asc' } }),
+    ]);
+    if (rule === null) die(NAME, 'lbr2 has no `rule-default`; the defaults were never seeded.');
+    if (branch === null) die(NAME, 'lbr2 has no branch; the defaults were never seeded.');
+    const [loanPolicy, finePolicy, lostPolicy, holdPolicy] = await Promise.all([
+      db.loanPolicy.findUnique({ where: { id: rule!.loanPolicyId } }),
+      db.overdueFinePolicy.findUnique({ where: { id: rule!.overdueFinePolicyId } }),
+      db.lostItemFeePolicy.findUnique({ where: { id: rule!.lostItemFeePolicyId } }),
+      db.holdPolicy.findUnique({
+        where: { id: rule!.holdPolicyId },
+        include: { pickupBranches: true },
+      }),
+    ]);
+    for (const [what, row] of [
+      ['loan policy', loanPolicy],
+      ['overdue fine policy', finePolicy],
+      ['lost item fee policy', lostPolicy],
+      ['hold policy', holdPolicy],
+    ] as const) {
+      if (row === null) {
+        die(
+          NAME,
+          `\`rule-default\` names a ${what} that does not exist. Every migrated loan would be ` +
+            'frozen against a policy the library does not have.',
+        );
+      }
+    }
+
+    const common = {
+      // The instant the resolution happened, which the type's own comment says
+      // "is not always `loaned_at`". Here it is the upgrade.
+      resolvedAt: new Date(),
+      snapshotVersion: version?.version ?? 1,
+      ruleId: rule!.id,
+      branchId: branch!.id,
+      timezone: branch!.timezone,
+      calendarId: branch!.calendarId,
+      itemTypeId: rule!.itemTypeId,
+      patronCategoryId: rule!.patronCategoryId,
+    };
+    return {
+      loan: pinNamedPolicy({
+        ...common,
+        loan: projectLoanPolicy(loanPolicy!),
+        overdueFine: projectOverdueFinePolicy(finePolicy!),
+        lostItemFee: projectLostItemFeePolicy(lostPolicy!),
+      }),
+      hold: pinNamedHoldPolicy({
+        ...common,
+        hold: projectHoldPolicy(holdPolicy!),
+        pickupBranchIds: holdPolicy!.pickupBranches.map((b) => b.branchId).sort(),
+      }),
+    };
+  } finally {
+    await db.$disconnect().catch(() => undefined);
+  }
+}
 
 async function main(): Promise<void> {
   const targetUrl = args.values.url as string;
@@ -339,22 +435,36 @@ async function main(): Promise<void> {
     // ONE snapshot for every migrated loan and hold, because a 1.0 library had
     // exactly one policy. It is a TEMP table so it vanishes with the connection
     // and cannot be mistaken for data.
+    //
+    // IT IS A SNAPSHOT THE PRODUCT CAN READ, which it was not until 2.0 phase
+    // 20e. What stood here wrote `{migratedFrom: '1.0', loanPeriodDays,
+    // maxRenewals, finePerDayCents, currency}` — an honest-looking object that
+    // `readPinnedPolicy` refuses on all five of its requirements (`v: 1`,
+    // `loan`, `overdueFine`, `lostItemFee`, a non-empty `timezone`). Every
+    // migrated loan therefore threw `PinnedSnapshotError` on its detail screen,
+    // on renew and on checkin, and `overdue-accrual.service.ts` counted it as
+    // `refused` and charged nothing — while verifier E04 passed, because it only
+    // asserted the column was not `'{}'`. The error message had stated the
+    // requirement in advance: "A migration owes it a shape it understands."
+    //
+    // So the policies are read from the tenant's own seeded rows and pinned
+    // through `@libriant/circ-policy`, the package that owns the shape. The
+    // projection is the SAME function `policy-snapshot.loader.ts` uses, which is
+    // the whole reason it was moved into the package: a loader and a migration
+    // that both call it cannot disagree about what a loan policy is.
+    //
+    // A SECOND CONNECTION, deliberately. These rows were seeded at provisioning
+    // and are committed; this transaction has just renamed `public` out from
+    // under itself, so reading them through Prisma on its own connection is
+    // both simpler and safer than teaching the raw client to project them.
+    const pinned = await readSeededPolicies(targetUrl);
     await client.query(
-      `CREATE TEMP TABLE _upgrade_params (snapshot jsonb NOT NULL) ON COMMIT DROP`,
+      `CREATE TEMP TABLE _upgrade_params (snapshot jsonb NOT NULL, hold_snapshot jsonb NOT NULL) ON COMMIT DROP`,
     );
-    const settings = await client.query<Record<string, unknown>>(
-      `SELECT * FROM v1_archive.tenant_settings LIMIT 1`,
+    await client.query(
+      `INSERT INTO _upgrade_params (snapshot, hold_snapshot) VALUES ($1::jsonb, $2::jsonb)`,
+      [JSON.stringify(pinned.loan), JSON.stringify(pinned.hold)],
     );
-    const s = settings.rows[0] ?? {};
-    await client.query(`INSERT INTO _upgrade_params (snapshot) VALUES ($1::jsonb)`, [
-      JSON.stringify({
-        migratedFrom: '1.0',
-        loanPeriodDays: s['loanPeriodDays'] ?? null,
-        maxRenewals: s['maxRenewals'] ?? null,
-        finePerDayCents: s['finePerDayCents'] ?? null,
-        currency: s['currency'] ?? 'EUR',
-      }),
-    ]);
     // The SQL names `_upgrade_params` unqualified, and this is why: a temp
     // table lives in pg_temp, which goes FIRST on the search_path. Everything
     // else in those files names its schema, because after the rename `public`

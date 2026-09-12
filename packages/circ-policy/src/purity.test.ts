@@ -41,14 +41,28 @@ import type { CivilVector, VectorDocument } from './vectors.js';
  */
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-/** Every non-test source file. The scan must not be able to miss a new one. */
+/**
+ * Every non-test source file. The scan must not be able to miss a new one.
+ *
+ * The list is hard-coded and asserted against the directory, so ADDING a file
+ * fails this test until somebody has decided the file belongs to a
+ * zero-dependency, clock-free package. It caught the three added in 2.0 phase
+ * 20e, which is what it is for.
+ *
+ * `pinning.ts`, `hold-pinning.ts` and `policy-rows.ts` qualify: every one is a
+ * pure shape transform, each takes the instant it stamps as an argument
+ * (`resolvedAt`), and none reads a clock, a random source or the filesystem.
+ */
 const SOURCES = [
   'blocks.ts',
   'calendar.ts',
   'duedate.ts',
-  'fines.ts',
   'greek-calendar.ts',
+  'fines.ts',
+  'hold-pinning.ts',
   'index.ts',
+  'pinning.ts',
+  'policy-rows.ts',
   'rank.ts',
   'resolve.ts',
   'types.ts',

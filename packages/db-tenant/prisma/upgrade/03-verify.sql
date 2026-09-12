@@ -249,10 +249,54 @@ e AS (
          NOT EXISTS (SELECT 1 FROM lbr2.loans WHERE status = 'lost' AND closed_at IS NULL),
          'the 1.0 dead end: an open lost loan pins the copy out of circulation for ever'
   UNION ALL
-  SELECT 'E04', 'every open loan has a frozen policy',
-         NOT EXISTS (SELECT 1 FROM lbr2.loans WHERE closed_at IS NULL
-                      AND (policy_snapshot IS NULL OR policy_snapshot = '{}'::jsonb)),
-         'editing a rule must never re-price an open loan'
+  -- E04 USED TO ASSERT ONLY "not NULL and not '{}'", AND THAT IS WHY IT PASSED
+  -- FOR THREE PHASES OVER A SNAPSHOT NOTHING COULD READ (2.0 phase 20e).
+  --
+  -- The upgrade froze `{migratedFrom:'1.0', loanPeriodDays, maxRenewals,
+  -- finePerDayCents, currency}`. It is not NULL and it is not `'{}'`, so the old
+  -- form was green — while `readPinnedPolicy` refused every one of those rows on
+  -- all five of its requirements, so every migrated loan threw on its detail
+  -- screen, on renew and on checkin, and the overdue sweep charged nothing.
+  --
+  -- So the assertion is now the READER's contract, spelled out: the five things
+  -- `readPinnedPolicy` checks before it returns. An assertion that cannot fail
+  -- the way the code fails is not an assertion, it is a green light — the same
+  -- lesson G03 taught in phase 20b-i.
+  SELECT 'E04', 'every open loan has a frozen policy the product can READ',
+         NOT EXISTS (
+           SELECT 1 FROM lbr2.loans
+            WHERE closed_at IS NULL
+              AND (policy_snapshot IS NULL
+                   OR policy_snapshot->>'v' IS DISTINCT FROM '1'
+                   OR policy_snapshot->'loan' IS NULL
+                   OR policy_snapshot->'overdueFine' IS NULL
+                   OR policy_snapshot->'lostItemFee' IS NULL
+                   OR coalesce(policy_snapshot->>'timezone', '') = '')),
+         'readPinnedPolicy refuses anything else, and a refused snapshot is a loan nobody can renew, return or price'
+  UNION ALL
+  -- The hold half. `readPinnedHoldPolicy` asks for its own version and its own
+  -- `hold` key, and a migrated request that cannot be read is a reader who can
+  -- never be handed their book.
+  SELECT 'E04b', 'every live hold has a frozen policy the product can READ',
+         NOT EXISTS (
+           SELECT 1 FROM lbr2.holds
+            WHERE fulfilled_at IS NULL AND cancelled_at IS NULL AND expired_at IS NULL
+              AND (policy_snapshot IS NULL
+                   OR policy_snapshot->>'v' IS DISTINCT FROM '1'
+                   OR policy_snapshot->'hold' IS NULL
+                   OR coalesce(policy_snapshot->>'timezone', '') = '')),
+         'the hold shelf, the promotion and the expiry sweep all read it before they can act'
+  UNION ALL
+  -- EVERY PATRON HAS AN ACCOUNT, not only the ones who had already been fined.
+  -- `overdue-accrual.service.ts` returns null when it cannot find one, and its
+  -- caller counts only a non-null outcome — so the nightly sweep charged nothing
+  -- and reported nothing for every reader the old form skipped. Silence is the
+  -- failure mode this assertion exists to break.
+  SELECT 'E04c', 'every migrated patron can be charged a fine',
+         NOT EXISTS (
+           SELECT 1 FROM lbr2.patrons p
+            WHERE NOT EXISTS (SELECT 1 FROM lbr2.patron_accounts a WHERE a.patron_id = p.id)),
+         'a patron with no account is one the overdue sweep skips in silence, for ever'
   UNION ALL
   SELECT 'E05', 'hold queue positions are contiguous and 1-based per bib',
          NOT EXISTS (

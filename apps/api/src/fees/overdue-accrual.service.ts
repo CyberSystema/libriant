@@ -3,7 +3,7 @@ import { accrueOverdue, type Calendar } from '@libriant/circ-policy';
 import { TenantPrismaService } from '../tenancy/tenant-prisma.service.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
 import { PolicySnapshotService } from '../policy/policy-snapshot.service.js';
-import { readPinnedPolicy } from '../circulation/policy-pinning.js';
+import { readPinnedPolicy } from '@libriant/circ-policy';
 import { accrueWithin } from './fee-accrual.js';
 import type { LedgerAccount } from './ledger.js';
 

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { TxV2 } from '../tenancy/tenant-tx-v2.js';
-import { readPinnedHoldPolicy } from './hold-pinning.js';
+import { readPinnedHoldPolicy } from '@libriant/circ-policy';
 import { shelfExpiryFor } from './hold-shelf-expiry.js';
 
 /**

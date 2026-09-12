@@ -4,7 +4,7 @@ import type {
   LostItemFeePolicy,
   OverdueFinePolicy,
   ResolvedPolicy,
-} from '@libriant/circ-policy';
+} from './types.js';
 
 /**
  * What is frozen onto a loan, and what is deliberately not.
@@ -93,6 +93,58 @@ export type PinnedPolicySnapshot = {
   readonly lostItemFee: LostItemFeePolicy;
   readonly rolls: readonly CalendarRoll[];
 };
+
+/**
+ * The same freeze, for a bulk loader that NAMES its policies instead of
+ * resolving them (2.0 phase 20e).
+ *
+ * The v1→v2 upgrade pins the seeded wildcard rule onto every migrated loan,
+ * deliberately: a 1.0 library had exactly one policy, so there is no matrix to
+ * evaluate and nothing for `resolveCirculationPolicy` to decide. Making it
+ * fabricate a `ResolvedPolicy` just to satisfy {@link pinPolicy}'s parameter
+ * would be a lie in the shape of a type.
+ *
+ * It exists because of what happened without it. 19b wrote its own object —
+ * `{migratedFrom: '1.0', loanPeriodDays, maxRenewals, finePerDayCents,
+ * currency}` — and {@link readPinnedPolicy} refuses it on all five of its
+ * requirements, so every migrated loan threw on its detail screen, on renew, on
+ * checkin, and was skipped by the overdue sweep. This is the entry point that
+ * makes the honest version no harder to write than the broken one.
+ *
+ * `rolls` is empty and not a parameter: a roll records a closed day a COMPUTED
+ * due date was pushed over, and a migrated loan's due date is a fact copied from
+ * the old system. Claiming a calendar decided it would be the same class of
+ * invention this function exists to prevent.
+ */
+export function pinNamedPolicy(input: {
+  readonly snapshotVersion: number;
+  readonly ruleId: string;
+  readonly resolvedAt: Date;
+  readonly branchId: string;
+  readonly timezone: string;
+  readonly calendarId: string | null;
+  readonly itemTypeId: string | null;
+  readonly patronCategoryId: string | null;
+  readonly loan: LoanPolicy;
+  readonly overdueFine: OverdueFinePolicy;
+  readonly lostItemFee: LostItemFeePolicy;
+}): PinnedPolicySnapshot {
+  return {
+    v: POLICY_SNAPSHOT_VERSION,
+    resolvedAt: input.resolvedAt.toISOString(),
+    snapshotVersion: input.snapshotVersion,
+    ruleId: input.ruleId,
+    branchId: input.branchId,
+    timezone: input.timezone,
+    calendarId: input.calendarId,
+    itemTypeId: input.itemTypeId,
+    patronCategoryId: input.patronCategoryId,
+    loan: input.loan,
+    overdueFine: input.overdueFine,
+    lostItemFee: input.lostItemFee,
+    rolls: [],
+  };
+}
 
 export function pinPolicy(input: {
   readonly resolved: ResolvedPolicy;

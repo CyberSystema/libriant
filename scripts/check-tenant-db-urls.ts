@@ -76,6 +76,10 @@ const ADMIN_CLIENT_OPENERS: Record<string, string> = {
   'scripts/tenant-seed-v2-defaults.ts':
     'the lbr2 twin of seed-defaults.ts — operator seed, run against an explicit url, on a ' +
     'database that may have no per-tenant role yet (CI makes libriant_demo with createdb)',
+  'scripts/tenant-upgrade-v2.ts':
+    'the cutover itself: it renames schemas and relocates extensions, which no per-tenant role ' +
+    'may do, and its second (Prisma) connection reads the seeded circulation policy out of ' +
+    'lbr2 on the same operator url so the migrated loans can be pinned against it (2.0 phase 20e)',
 };
 
 /** Files allowed to touch the sealed password column. */

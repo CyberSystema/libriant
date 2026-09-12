@@ -257,7 +257,7 @@ SELECT
        ELSE NULL END,
   e.placed_at, e.assigned_item_id, e.assigned_at, e.awaiting_pickup_since, e.shelf_expires_at,
   e.fulfilled_at, e.cancelled_at, e.expired_at, e.notes, e.placed_by_user_id,
-  'hp-default', 'rule-default', (SELECT snapshot FROM _upgrade_params),
+  'hp-default', 'rule-default', (SELECT hold_snapshot FROM _upgrade_params),
   e.custom_fields, CAST('migration' AS lbr2.event_source), e.created_at, e.updated_at
 FROM (
   SELECT
@@ -325,12 +325,33 @@ UPDATE lbr2.items i
 --
 -- ONE ACCOUNT PER PATRON PER CURRENCY — `patron_accounts_one_per_currency` says
 -- so, and §6 requires balances to sum per currency.
-
+--
+-- EVERY PATRON, not only the ones who had already been fined (2.0 phase 20d
+-- found this). The first form here was driven off `v1_archive.fines`, so a
+-- reader who had never owed anything got no account — and
+-- `overdue-accrual.service.ts` reads
+--
+--     SELECT id FROM lbr2.patron_accounts WHERE patron_id = … AND currency = …
+--     if (accountId === undefined) return null;
+--
+-- and its caller counts only a non-null outcome. So the nightly sweep charged
+-- nothing and REPORTED nothing for every such reader: a migrated library
+-- silently stopped fining most of its members on day one, and no counter, log
+-- line or alert said so.
+--
+-- The currency is the library's own, from `tenant_settings`, with the fines'
+-- own currencies unioned in so a library that ever charged in a second one
+-- keeps both accounts.
 INSERT INTO lbr2.patron_accounts (id, patron_id, currency, opened_at)
 SELECT DISTINCT
-  'acct-v1-' || f."memberId" || '-' || f.currency, f."memberId", f.currency, pg_catalog.now()
-FROM v1_archive.fines f
-JOIN lbr2.patrons p ON p.id = f."memberId"
+  'acct-v1-' || p.id || '-' || c.currency, p.id, c.currency, pg_catalog.now()
+FROM lbr2.patrons p
+CROSS JOIN LATERAL (
+  SELECT (SELECT s.currency FROM v1_archive.tenant_settings s LIMIT 1) AS currency
+  UNION
+  SELECT f.currency FROM v1_archive.fines f WHERE f."memberId" = p.id
+) c
+WHERE c.currency IS NOT NULL
 ON CONFLICT DO NOTHING;
 
 -- A ZERO-AMOUNT FINE IS SKIPPED AND RECORDED. `fees_amount_is_positive` refuses
@@ -384,6 +405,13 @@ SELECT 'tx-charge-' || f.id, CAST('charge' AS lbr2.ledger_tx_kind), f.currency, 
        'migrated 1.0 fine', f.created_at
 FROM lbr2.fees f;
 
+-- THE CREDIT LEG TAKES THE FEE TYPE'S OWN REVENUE ACCOUNT (2.0 phase 20d found
+-- this). It used to be `fine_revenue` for every fine, including the ones
+-- classified `feetype_replacement` two blocks above, whose seeded revenue
+-- account is `replacement_revenue`. No identity catches it — the cancellation
+-- leg below debited `fine_revenue` too, so it nets to zero — but a migrated
+-- library files every lost-book replacement under overdue fines, permanently,
+-- in the one report a finance office reads.
 INSERT INTO lbr2.account_entries (id, transaction_id, account, account_id, currency, debit_cents, credit_cents, fee_id, created_at)
 SELECT 'ent-chg-d-' || f.id, 'tx-charge-' || f.id,
        CAST('patron_receivable' AS lbr2.ledger_account), f.account_id, f.currency,
@@ -391,9 +419,10 @@ SELECT 'ent-chg-d-' || f.id, 'tx-charge-' || f.id,
 FROM lbr2.fees f
 UNION ALL
 SELECT 'ent-chg-c-' || f.id, 'tx-charge-' || f.id,
-       CAST('fine_revenue' AS lbr2.ledger_account), NULL, f.currency,
+       ft.revenue_account, NULL, f.currency,
        0, f.amount_cents, f.id, f.created_at
-FROM lbr2.fees f;
+FROM lbr2.fees f
+JOIN lbr2.fee_types ft ON ft.id = f.fee_type_id;
 
 -- The settlement journal, for fines 1.0 had already closed.
 --
@@ -453,9 +482,12 @@ WHERE f.archived_at IS NOT NULL AND f.amount_cents - f.paid_cents - f.waived_cen
 
 INSERT INTO lbr2.account_entries (id, transaction_id, account, account_id, currency, debit_cents, credit_cents, fee_id, created_at)
 SELECT 'ent-can-d-' || f.id, 'tx-cancel-' || f.id,
-       CAST('fine_revenue' AS lbr2.ledger_account), NULL, f.currency,
+       -- The same account the charge credited, so the un-charge lands where the
+       -- charge did rather than moving money between two revenue lines.
+       ft.revenue_account, NULL, f.currency,
        f.amount_cents - f.paid_cents - f.waived_cents, 0, f.id, f.archived_at
 FROM lbr2.fees f
+JOIN lbr2.fee_types ft ON ft.id = f.fee_type_id
 WHERE f.archived_at IS NOT NULL AND f.amount_cents - f.paid_cents - f.waived_cents > 0
 UNION ALL
 SELECT 'ent-can-c-' || f.id, 'tx-cancel-' || f.id,

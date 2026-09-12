@@ -16,7 +16,7 @@ import { acquireLocks, lockKey } from '../platform/locks.js';
 import { TenantClockService } from '../policy/tenant-clock.service.js';
 import { PolicySnapshotService } from '../policy/policy-snapshot.service.js';
 import { civilToday, hasOutstandingHoldOn } from './circulation-state.js';
-import { readPinnedPolicy } from './policy-pinning.js';
+import { readPinnedPolicy } from '@libriant/circ-policy';
 import { CirculationBlockedError, CirculationRefusal, clampEffective } from './refusals.js';
 import { lookupReplay, recordClaim, requestHash } from './sync-replay.js';
 import type { CirculationOrigin, RenewResult } from './circulation.types.js';

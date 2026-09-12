@@ -27,7 +27,7 @@ import { groupLockTargets, resolveGroupOnFulfilment } from '../holds/hold-groups
 import { closeQueueGap } from '../holds/hold-queue.js';
 import { releaseSetAsideCopy } from '../holds/hold-release.js';
 import { civilToday, countCirculationState } from './circulation-state.js';
-import { pinPolicy } from './policy-pinning.js';
+import { pinPolicy } from '@libriant/circ-policy';
 import { CirculationBlockedError, CirculationRefusal, clampEffective } from './refusals.js';
 import { lookupReplay, recordClaim, requestHash, type DeviceClaim } from './sync-replay.js';
 import type { CheckoutResult, CirculationOrigin } from './circulation.types.js';

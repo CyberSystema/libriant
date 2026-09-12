@@ -40,3 +40,6 @@ export * from './duedate.js';
 export * from './fines.js';
 export * from './blocks.js';
 export * from './resolve.js';
+export * from './policy-rows.js';
+export * from './pinning.js';
+export * from './hold-pinning.js';

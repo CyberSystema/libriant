@@ -21,8 +21,8 @@ import { acquireLocks, lockKey } from '../../platform/locks.js';
 import { nextQueuePosition } from '../../holds/hold-queue.js';
 import { changeActorOf, setChangeActor } from '../../tenancy/tenant-actor-guc.js';
 import { ageBandAt } from '../../circulation/age-band.js';
-import { pinPolicy } from '../../circulation/policy-pinning.js';
-import { pinHoldPolicy } from '../../holds/hold-pinning.js';
+import { pinPolicy } from '@libriant/circ-policy';
+import { pinHoldPolicy } from '@libriant/circ-policy';
 import { PolicySnapshotService } from '../../policy/policy-snapshot.service.js';
 import {
   addDuration,

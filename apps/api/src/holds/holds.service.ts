@@ -32,7 +32,7 @@ import { mergeBlocks } from '../circulation/block-merge.js';
 import { civilToday, countCirculationState } from '../circulation/circulation-state.js';
 import { CirculationBlockedError, CirculationRefusal } from '../circulation/refusals.js';
 import { HoldArrivalService } from './hold-arrival.service.js';
-import { pinHoldPolicy, readPinnedHoldPolicy } from './hold-pinning.js';
+import { pinHoldPolicy, readPinnedHoldPolicy } from '@libriant/circ-policy';
 import { closeQueueGap, nextQueuePosition } from './hold-queue.js';
 import { releaseSetAsideCopy } from './hold-release.js';
 

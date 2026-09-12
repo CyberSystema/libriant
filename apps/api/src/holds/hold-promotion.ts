@@ -1,6 +1,6 @@
 import type { TxV2 } from '../tenancy/tenant-tx-v2.js';
 import { closeQueueGap } from './hold-queue.js';
-import { canCollectAt, readPinnedHoldPolicy } from './hold-pinning.js';
+import { canCollectAt, readPinnedHoldPolicy } from '@libriant/circ-policy';
 
 /**
  * Who gets this copy?

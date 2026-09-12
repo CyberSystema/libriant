@@ -16,7 +16,7 @@ import { HoldArrivalService } from '../holds/hold-arrival.service.js';
 import { promoteForItem } from '../holds/hold-promotion.js';
 import { settlePromotion } from '../holds/hold-settlement.js';
 import { civilToday } from './circulation-state.js';
-import { readPinnedPolicy } from './policy-pinning.js';
+import { readPinnedPolicy } from '@libriant/circ-policy';
 import { CirculationRefusal, clampEffective } from './refusals.js';
 import { lookupReplay, recordClaim, requestHash } from './sync-replay.js';
 import type { CheckinDisposition, CheckinResult, CirculationOrigin } from './circulation.types.js';

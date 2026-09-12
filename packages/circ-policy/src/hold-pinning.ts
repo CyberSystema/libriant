@@ -1,4 +1,4 @@
-import type { CalendarRoll, HoldPolicy, ResolvedPolicy } from '@libriant/circ-policy';
+import type { CalendarRoll, HoldPolicy, ResolvedPolicy } from './types.js';
 
 /**
  * What is frozen onto a hold.
@@ -60,6 +60,35 @@ export type PinnedHoldSnapshot = {
   readonly pickupBranchIds: readonly string[];
   readonly rolls: readonly CalendarRoll[];
 };
+
+/** {@link pinNamedPolicy}'s hold half, for the same loader and the same reason. */
+export function pinNamedHoldPolicy(input: {
+  readonly snapshotVersion: number;
+  readonly ruleId: string;
+  readonly resolvedAt: Date;
+  readonly branchId: string;
+  readonly timezone: string;
+  readonly calendarId: string | null;
+  readonly itemTypeId: string | null;
+  readonly patronCategoryId: string | null;
+  readonly hold: HoldPolicy;
+  readonly pickupBranchIds: readonly string[];
+}): PinnedHoldSnapshot {
+  return {
+    v: HOLD_SNAPSHOT_VERSION,
+    resolvedAt: input.resolvedAt.toISOString(),
+    snapshotVersion: input.snapshotVersion,
+    ruleId: input.ruleId,
+    branchId: input.branchId,
+    timezone: input.timezone,
+    calendarId: input.calendarId,
+    itemTypeId: input.itemTypeId,
+    patronCategoryId: input.patronCategoryId,
+    hold: input.hold,
+    pickupBranchIds: input.pickupBranchIds,
+    rolls: [],
+  };
+}
 
 export function pinHoldPolicy(input: {
   readonly resolved: ResolvedPolicy;

@@ -13,7 +13,7 @@ import { ItemTransfersService } from '../items/item-transfers.service.js';
 import { civilToday } from '../circulation/circulation-state.js';
 import { CirculationRefusal } from '../circulation/refusals.js';
 import { HoldArrivalService } from './hold-arrival.service.js';
-import { canCollectAt, readPinnedHoldPolicy } from './hold-pinning.js';
+import { canCollectAt, readPinnedHoldPolicy } from '@libriant/circ-policy';
 import { promoteForItem } from './hold-promotion.js';
 import { closeQueueGap } from './hold-queue.js';
 import { settlePromotion } from './hold-settlement.js';
