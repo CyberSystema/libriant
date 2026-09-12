@@ -9,6 +9,7 @@ import {
   pinDatabaseTimezoneSql,
 } from '@libriant/shared/postgres-session';
 import { declareBillingPosture } from './billing-posture.js';
+import { V2_SCHEMA_LITERAL } from './v2-schema.js';
 
 declareBillingPosture(
   'unenforced',
@@ -330,7 +331,7 @@ describe('every timestamptz-keyed partition sits on a UTC day boundary', () => {
            JOIN pg_catalog.pg_partitioned_table pt ON pt.partrelid = p.oid
            JOIN pg_catalog.pg_attribute a
              ON a.attrelid = p.oid AND a.attnum = pt.partattrs[0]
-          WHERE n.nspname = 'lbr2'
+          WHERE n.nspname = ${V2_SCHEMA_LITERAL}
             AND ch.relkind = 'r'
             AND a.atttypid = 'timestamptz'::regtype
             AND pg_catalog.pg_get_expr(ch.relpartbound, ch.oid) !~

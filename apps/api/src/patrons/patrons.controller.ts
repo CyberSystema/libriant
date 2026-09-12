@@ -24,6 +24,7 @@ import { PATRON_DATA_TABLES } from './patron-data-map.js';
 import {
   ClearBlockDto,
   CreatePatronDto,
+  ErasePatronDto,
   ListPatronsQueryDto,
   MergePatronsDto,
   PlaceBlockDto,
@@ -33,6 +34,8 @@ import {
 import { PatronBlocksService, type LiveBlock } from './patron-blocks.service.js';
 import { PatronMergeService } from './patron-merge.service.js';
 import { PatronsService } from './patrons.service.js';
+import { PatronEraseService } from './patron-erase.service.js';
+import { PatronSubjectAccessService } from '../privacy/patron-subject-access.service.js';
 
 /**
  * The borrower record.
@@ -50,6 +53,9 @@ export class PatronsController {
     @Inject(PatronMergeService) private readonly merges: PatronMergeService,
     @Inject(PatronBlocksService) private readonly blocks: PatronBlocksService,
     @Inject(TenantClockService) private readonly clock: TenantClockService,
+    @Inject(PatronSubjectAccessService)
+    private readonly subjectAccess: PatronSubjectAccessService,
+    @Inject(PatronEraseService) private readonly erasure: PatronEraseService,
   ) {}
 
   /**
@@ -121,6 +127,53 @@ export class PatronsController {
   }
 
   /** Who they are, what stops them, and what they owe — per currency. */
+  /**
+   * The record. Declared before `:id/desk` only for readability — the two
+   * patterns cannot collide — but AFTER `by-card`, `data-map`, `merge` and
+   * `blocks/:blockId`, every one of which `:id` would otherwise swallow.
+   */
+  @RequirePermission('patron.read')
+  @Get(':id')
+  async get(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
+    return this.patrons.get(tenant, id);
+  }
+
+  /**
+   * GDPR Article 15 and 20, over `lbr2`.
+   *
+   * `patron.pii.export`, not `patron.read` — a volunteer may staff a desk and
+   * read the patron page, and assembling every field, the whole borrowing
+   * history and every notice into one portable file is a disclosure decision
+   * rather than a read. The 1.0 route at `GET /members/:id/data-export` makes
+   * the same distinction and for the same reason.
+   */
+  @RequirePermission('patron.pii.export')
+  @Get(':id/data-export')
+  async dataExport(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {
+    return this.subjectAccess.bundle(tenant, id);
+  }
+
+  /**
+   * GDPR Article 17.
+   *
+   * A POST rather than a DELETE: the patron row SURVIVES an erasure — redacted
+   * in place so the ledger's NOT NULL references still hold — so `DELETE` would
+   * describe something this does not do. And it takes a reason, because an
+   * erasure is a decision a library may later be asked to account for.
+   */
+  @RequirePermission('patron.erase')
+  @Post(':id/erase')
+  @HttpCode(200)
+  async erase(
+    @TenantCtx() tenant: TenantContext,
+    @TenantActorParam() actor: TenantActor,
+    @Param('id') id: string,
+    @Body() raw: unknown,
+  ) {
+    const dto = await validateDto(ErasePatronDto, raw ?? {});
+    return this.erasure.erase(tenant, actor, id, dto.reason);
+  }
+
   @RequirePermission('patron.read')
   @Get(':id/desk')
   async desk(@TenantCtx() tenant: TenantContext, @Param('id') id: string) {

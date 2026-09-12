@@ -47,6 +47,43 @@ import type { PatronRosterStatus } from './patrons.dto.js';
  * to say "this card belongs to a record that has been merged into another"
  * rather than silently substituting a patron.
  */
+/**
+ * One patron record as the wire carries it (2.0 phase 20b-ii).
+ *
+ * Spelled out rather than inferred from Prisma, because an inferred return type
+ * naming a generated enum across a module boundary is TS2883 — "the inferred
+ * type cannot be named without a reference to 'PatronStatus' from
+ * .prisma/tenant-v2-client". The enums are therefore written as string unions,
+ * which is also what an API consumer actually gets.
+ */
+export type PatronRecord = {
+  id: string;
+  patronNumber: string | null;
+  fullName: string;
+  sortName: string;
+  status: 'active' | 'suspended' | 'closed';
+  email: string | null;
+  phone: string | null;
+  dateOfBirth: Date | null;
+  photoAssetRef: string | null;
+  patronCategoryId: string | null;
+  homeBranchId: string | null;
+  joinedAt: Date | null;
+  expiresAt: Date | null;
+  erasedAt: Date | null;
+  archivedAt: Date | null;
+  mergedIntoId: string | null;
+  updatedAt: Date;
+  category: { id: string; code: string; name: string } | null;
+  cards: readonly {
+    id: string;
+    barcode: string;
+    status: string;
+    issuedAt: Date;
+    retiredAt: Date | null;
+  }[];
+};
+
 @Injectable()
 export class PatronsService {
   private readonly logger = new Logger(PatronsService.name);
@@ -406,6 +443,67 @@ export class PatronsService {
    * empty array on every real library today — the SHAPE is what phase 14 owes,
    * and it is the shape phase 18 inherits.
    */
+  /**
+   * One patron, by id (2.0 phase 20b-ii).
+   *
+   * `lbr2` had no read-by-id at all — `patrons.controller.ts` said so outright —
+   * and everything else in this phase needs one: the member detail screen, the
+   * checkout form's prefill, the edit form, and the Article 15 bundle's own
+   * existence check.
+   *
+   * NOT `deskSummary`, which is a different question. That one answers "what
+   * stops this person borrowing right now" and carries live blocks, unread
+   * staff messages and per-currency balances; it is the desk's view and it is
+   * three queries. This is the record.
+   *
+   * `erasedAt` rides on the row deliberately. A screen that renders an erased
+   * patron as an ordinary one with a blank name is how a librarian ends up
+   * asking why the record looks broken.
+   */
+  async get(tenant: TenantContext, patronId: string): Promise<PatronRecord> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const patron = await client.patron.findUnique({
+      where: { id: patronId },
+      select: {
+        id: true,
+        patronNumber: true,
+        fullName: true,
+        sortName: true,
+        status: true,
+        email: true,
+        phone: true,
+        dateOfBirth: true,
+        photoAssetRef: true,
+        patronCategoryId: true,
+        homeBranchId: true,
+        joinedAt: true,
+        expiresAt: true,
+        erasedAt: true,
+        archivedAt: true,
+        mergedIntoId: true,
+        updatedAt: true,
+        category: { select: { id: true, code: true, name: true } },
+        cards: {
+          where: { retiredAt: null },
+          orderBy: { issuedAt: 'desc' },
+          select: {
+            id: true,
+            barcode: true,
+            status: true,
+            issuedAt: true,
+            retiredAt: true,
+          },
+        },
+      },
+    });
+    if (patron === null) throw new NotFoundException(`No patron with id ${patronId}.`);
+    return {
+      ...patron,
+      status: patron.status as PatronRecord['status'],
+      cards: patron.cards.map((c) => ({ ...c, status: String(c.status) })),
+    };
+  }
+
   async deskSummary(tenant: TenantContext, patronId: string): Promise<DeskSummary> {
     const client = this.tenantPrisma.getClientV2(tenant);
     const patron = await client.patron.findUnique({

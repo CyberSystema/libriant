@@ -157,3 +157,14 @@ export class ListPatronsQueryDto {
 
   @IsOptional() @toInt() @IsInt() @Min(1) limit?: number;
 }
+
+/**
+ * The reason an erasure was carried out (2.0 phase 20b-ii).
+ *
+ * Required, and not free of consequence: Article 17 gives six grounds and a
+ * library refusing or granting one may be asked which it relied on. A blank
+ * would make the audit row that proves compliance say nothing.
+ */
+export class ErasePatronDto {
+  @trim() @IsString() @Length(3, 500) reason!: string;
+}

@@ -17,6 +17,7 @@ import { PATRON_DATA_TABLES } from '../../src/patrons/patron-data-map.js';
 import { buildPatronNumber, nextSequenceForYear } from '../../src/patrons/patron-numbers.js';
 import { listenOnce } from './listen-once.js';
 import { declareBillingPosture } from './billing-posture.js';
+import { V2_SCHEMA_LITERAL } from './v2-schema.js';
 
 declareBillingPosture(
   'unenforced',
@@ -168,7 +169,7 @@ describe('patrons_number_pattern_idx (perf-13)', () => {
   it('exists, is NOT partial, and uses text_pattern_ops', async () => {
     const [idx] = await sql<{ def: string }>(
       `SELECT indexdef AS def FROM pg_indexes
-        WHERE schemaname = 'lbr2' AND indexname = 'patrons_number_pattern_idx'`,
+        WHERE schemaname = ${V2_SCHEMA_LITERAL} AND indexname = 'patrons_number_pattern_idx'`,
     );
     expect(idx!.def).toContain('text_pattern_ops');
     // NOT partial, and that is the point of it existing beside the partial
@@ -684,7 +685,7 @@ describe('the patron data map', () => {
     // keeps it honest until the gate arrives.
     const columns = await sql<{ table_name: string; column_name: string }>(
       `SELECT table_name, column_name FROM information_schema.columns
-        WHERE table_schema = 'lbr2'
+        WHERE table_schema = ${V2_SCHEMA_LITERAL}
           AND (column_name = 'patron_id' OR column_name LIKE '%_patron_id')
         ORDER BY table_name, column_name`,
     );
@@ -712,7 +713,7 @@ describe('the patron data map', () => {
     const real = new Set(
       (
         await sql<{ t: string }>(
-          `SELECT table_name AS t FROM information_schema.tables WHERE table_schema = 'lbr2'`,
+          `SELECT table_name AS t FROM information_schema.tables WHERE table_schema = ${V2_SCHEMA_LITERAL}`,
         )
       ).map((r) => r.t),
     );

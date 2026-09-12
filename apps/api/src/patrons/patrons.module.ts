@@ -5,6 +5,8 @@ import { PatronBlocksService } from './patron-blocks.service.js';
 import { PatronMergeService } from './patron-merge.service.js';
 import { PatronsController } from './patrons.controller.js';
 import { PatronsService } from './patrons.service.js';
+import { PatronEraseService } from './patron-erase.service.js';
+import { PatronSubjectAccessService } from '../privacy/patron-subject-access.service.js';
 
 /**
  * The record side of a patron (2.0 phase 14).
@@ -20,8 +22,14 @@ import { PatronsService } from './patrons.service.js';
  */
 @Module({
   imports: [TenantModule, PolicyModule],
-  providers: [PatronsService, PatronMergeService, PatronBlocksService],
+  providers: [
+    PatronsService,
+    PatronMergeService,
+    PatronBlocksService,
+    PatronEraseService,
+    PatronSubjectAccessService,
+  ],
   controllers: [PatronsController],
-  exports: [PatronsService, PatronMergeService, PatronBlocksService],
+  exports: [PatronsService, PatronMergeService, PatronBlocksService, PatronEraseService],
 })
 export class PatronsModule {}

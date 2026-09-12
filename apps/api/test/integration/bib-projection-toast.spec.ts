@@ -3,6 +3,7 @@ import { Client as PgClient } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TenantProvisioningService } from '../../src/provisioning/tenant-provisioning.service.js';
 import { declareBillingPosture } from './billing-posture.js';
+import { V2_SCHEMA_LITERAL } from './v2-schema.js';
 
 declareBillingPosture(
   'unenforced',
@@ -91,7 +92,7 @@ async function toastBlocks(relname = 'bib_records'): Promise<number> {
     // pg_catalog entry to name and `pg_catalog.coalesce(...)` is a hard error.
     `SELECT (COALESCE(toast_blks_read, 0) + COALESCE(toast_blks_hit, 0))::text
        AS n FROM pg_catalog.pg_statio_user_tables
-      WHERE schemaname = 'lbr2' AND relname = '${relname}'`,
+      WHERE schemaname = ${V2_SCHEMA_LITERAL} AND relname = '${relname}'`,
   );
   return Number(rows[0]?.n ?? 0);
 }
@@ -147,7 +148,7 @@ describe('the fat columns of bib_records', () => {
                  FROM lbr2.bib_records) AS stored
          FROM pg_catalog.pg_class c
          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'lbr2' AND c.relname = 'bib_records'`,
+        WHERE n.nspname = ${V2_SCHEMA_LITERAL} AND c.relname = 'bib_records'`,
     );
     expect(
       Number(row!.toast_bytes),

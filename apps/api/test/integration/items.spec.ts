@@ -19,6 +19,7 @@ import { ItemsService } from '../../src/items/items.service.js';
 import { ItemStatusService } from '../../src/items/item-status.service.js';
 import { listenOnce } from './listen-once.js';
 import { declareBillingPosture } from './billing-posture.js';
+import { V2_SCHEMA_LITERAL } from './v2-schema.js';
 
 declareBillingPosture(
   'unenforced',
@@ -414,7 +415,7 @@ describe('every transition writes history', () => {
   it('is append-only — it carries no updated_at and no archived_at', async () => {
     const cols = await sql<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
-        WHERE table_schema = 'lbr2' AND table_name = 'item_status_history'`,
+        WHERE table_schema = ${V2_SCHEMA_LITERAL} AND table_name = 'item_status_history'`,
     );
     const names = cols.map((c) => c.column_name);
     // A history that can be edited is not one. `loans` sets the same precedent.

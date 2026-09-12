@@ -51,6 +51,7 @@
  * time limit on it.
  */
 import { Client } from 'pg';
+import { controlDb } from '@libriant/db-control';
 import { PG_SESSION_OPTIONS } from '@libriant/shared/postgres-session';
 import { die, isYes, log, parseArgs } from './_lib/cli.js';
 
@@ -69,7 +70,7 @@ const EXTENSIONS = [
 const args = parseArgs({
   name: NAME,
   description: 'Undo a committed 2.0 cutover: restore the 1.0 schema from v1_archive.',
-  options: { url: { type: 'string' }, yes: { type: 'boolean' } },
+  options: { url: { type: 'string' }, slug: { type: 'string' }, yes: { type: 'boolean' } },
   required: ['url'],
 });
 
@@ -146,6 +147,39 @@ async function main(): Promise<void> {
       }
       await client.query('COMMIT');
       for (const c of checks.rows) log(NAME, `✓ ${c.id}`);
+
+      // Put the fleet flag back, or the tenant reports 2.0 while serving 1.0 —
+      // which is the same mismatch the stamp exists to prevent, pointing the
+      // other way. `--slug` is optional because a rollback may be run against a
+      // database whose control-plane row has already gone; when it is missing
+      // the omission is stated rather than assumed harmless.
+      const slug = args.values.slug as string | undefined;
+      if (slug === undefined) {
+        log(
+          NAME,
+          '⚠ no --slug given, so the control plane still says schemaMajor = 2. Set it back to 1 ' +
+            'by hand, or the fleet will serve this tenant as 2.0.',
+        );
+      } else {
+        try {
+          const tenant = await controlDb.tenant.findUnique({
+            where: { slug },
+            select: { id: true },
+          });
+          if (tenant === null) {
+            log(NAME, `⚠ no control-plane tenant with slug \`${slug}\` — schemaMajor NOT reset.`);
+          } else {
+            await controlDb.tenantSchemaState.upsert({
+              where: { tenantId: tenant.id },
+              create: { tenantId: tenant.id, schemaMajor: 1, checkedAt: new Date() },
+              update: { schemaMajor: 1, checkedAt: new Date() },
+            });
+            log(NAME, 'control plane: schemaMajor = 1');
+          }
+        } catch (err) {
+          log(NAME, `⚠ schemaMajor NOT reset: ${(err as Error).message}. Set it to 1 by hand.`);
+        }
+      }
       log(NAME, 'rolled back. This tenant is 1.0 again; the 2.0 schema is gone.');
     } catch (err) {
       await client.query('ROLLBACK');

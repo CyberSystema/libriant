@@ -185,7 +185,10 @@ export const PATRON_DATA_TABLES: readonly PatronDataTable[] = [
   },
   {
     table: 'audit_log',
-    patronColumn: 'target_id',
+    // AMENDED 20b-ii: the 2.0 audit log is `entity_id`, not `target_id` — the
+    // column named here never existed, and nothing read the map until this
+    // phase, so nothing noticed.
+    patronColumn: 'entity_id',
     verdict: 'excluded',
     reason:
       'The record of what STAFF did, which the library needs precisely in order to show that an ' +

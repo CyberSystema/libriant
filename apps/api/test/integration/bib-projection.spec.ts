@@ -20,6 +20,7 @@ import { TenantResolverService } from '../../src/tenancy/tenant-resolver.service
 import type { TenantPrismaClientV2 } from '@libriant/db-tenant';
 import { listenOnce } from './listen-once.js';
 import { declareBillingPosture } from './billing-posture.js';
+import { V2_SCHEMA_LITERAL } from './v2-schema.js';
 
 declareBillingPosture(
   'unenforced',
@@ -304,7 +305,7 @@ describe('the six columns that are not the projector’s', () => {
     // wrong silently.
     const cols = await sql<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
-        WHERE table_schema = 'lbr2' AND table_name = 'bib_records'`,
+        WHERE table_schema = ${V2_SCHEMA_LITERAL} AND table_name = 'bib_records'`,
     );
     const toCamel = (s: string) => s.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
     // `bibId` is the key, the two timestamps are the service's own, and

@@ -22,6 +22,7 @@ import { RenewService } from '../../src/circulation/renew.service.js';
 import { orderLocks, lockKey } from '../../src/platform/locks.js';
 import { listenOnce } from './listen-once.js';
 import { declareBillingPosture } from './billing-posture.js';
+import { V2_SCHEMA_LITERAL } from './v2-schema.js';
 
 declareBillingPosture(
   'unenforced',
@@ -814,7 +815,7 @@ describe('reading history', () => {
     // surviving one join away in a table nobody remembered to check.
     const cols = await sql<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
-        WHERE table_schema = 'lbr2' AND table_name = 'loan_events'`,
+        WHERE table_schema = ${V2_SCHEMA_LITERAL} AND table_name = 'loan_events'`,
     );
     expect(cols.map((c) => c.column_name)).not.toContain('patron_id');
   });

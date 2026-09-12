@@ -84,6 +84,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { contentHash, projectBib } from '@libriant/marc';
 import { foldGreek } from '@libriant/shared/greek';
+import { controlDb } from '@libriant/db-control';
 import { PG_SESSION_OPTIONS } from '@libriant/shared/postgres-session';
 import {
   marcFromBook,
@@ -640,6 +641,46 @@ async function main(): Promise<void> {
     if (commitMode) {
       await client.query('COMMIT');
       log(NAME, 'COMMITTED. This tenant is now 2.0; 1.0 is readable in v1_archive.');
+
+      // STAMP THE FLEET FLAG.
+      //
+      // The deletion of the 1.0 code is one deploy reaching every tenant at
+      // once; this upgrade is one database at a time. Between the two, an
+      // un-upgraded tenant is served by code that cannot read its schema, and
+      // nothing in the product could tell the two apart —
+      // `TenantSchemaState.schemaMajor` is documented as "1 = the pre-2.0 shape;
+      // the 2.0 upgrade sets 2", `tenant-migrate.ts` reads and caches it, and
+      // until now the 2.0 upgrade never wrote it.
+      //
+      // AFTER the commit, not inside it: this is a different database, so there
+      // is no transaction that spans both. That leaves a window in which the
+      // tenant is 2.0 and the fleet does not know, and the honest thing is to
+      // say so loudly rather than pretend the two are atomic — a stamp that
+      // failed silently is worse than one that did not happen.
+      //
+      // `_libriant_schema_state` in the tenant database is NOT used for this.
+      // It rode the rename into `v1_archive` with the rest of the 1.0 schema,
+      // so it is now a historical record rather than a live one.
+      try {
+        const tenant = await controlDb.tenant.findUnique({ where: { slug }, select: { id: true } });
+        if (tenant === null) {
+          log(NAME, `⚠ no control-plane tenant with slug \`${slug}\` — schemaMajor NOT stamped.`);
+        } else {
+          await controlDb.tenantSchemaState.upsert({
+            where: { tenantId: tenant.id },
+            create: { tenantId: tenant.id, schemaMajor: 2, checkedAt: new Date() },
+            update: { schemaMajor: 2, checkedAt: new Date() },
+          });
+          log(NAME, 'control plane: schemaMajor = 2');
+        }
+      } catch (err) {
+        log(
+          NAME,
+          `⚠ THE DATABASE IS UPGRADED AND THE FLEET FLAG IS NOT SET: ${(err as Error).message}. ` +
+            `Set tenant_schema_state.schemaMajor = 2 for \`${slug}\` by hand before deploying ` +
+            `code that assumes 2.0, or that tenant will be served by the wrong schema.`,
+        );
+      }
       log(NAME, `To roll back: pnpm tsx scripts/tenant-rollback-v2.ts --url … --yes`);
     } else if (args.values.clone === undefined) {
       await client.query('ROLLBACK');
