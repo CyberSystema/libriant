@@ -4258,3 +4258,56 @@ them onto the promoted schema name in the same change that promotes it.
 
 `check:dsar-coverage` itself does not exist — not a script, not in `check:all`,
 not in the workflow. §5 promises it at phases 33 and 96.
+
+## Phase 20c — the importer's 2.0 write path
+
+Split out of 20b-ii as its own phase. §6 never mentions the importer, and phase
+35's "migration adapters" assumes it survives the cutover; the survey above
+recorded the hole and this phase fills it.
+
+`apps/api/src/import/engine/import-engine-v2.ts` writes `book`, `book_copy` and
+`member` into `lbr2` through `BibWriteService.create`, `ItemsService.create` and
+`PatronsService.create` — the same services a librarian's click goes through, so
+an imported record has the version history, the projection row and the audit
+trail a raw insert would not. `marcFromBook` is phase 19b's, reused rather than
+reimplemented. The file is 436 lines against the 1.0 engine's 1,756 for exactly
+that reason.
+
+**Three kinds are refused by name, and the line is the dependency order.**
+`author` has no destination at all: a contributor is a 100 or 700 field in 2.0
+and there is no authority store until phase 45. `loan`, `reservation` and `fine`
+are phase 20d — all three reference a record, a copy or a patron, so none can be
+imported until these three work, which is also the order a migrating library
+loads them in. They also need a decision this phase declined to make quietly:
+routing them through the services means `CheckoutService` refuses a historical
+loan for a patron blocked today, and 2.0's answer ("clear or override every
+blocking reason") would record an override per row.
+
+### The selector is not a feature flag
+
+`processImportJob` chooses between the two engines by reading
+`tenant_schema_state.schemaMajor`, the fleet flag `tenant-upgrade-v2.ts` stamps
+after a cutover commits. There is no tenant for which either engine is a matter
+of taste: after the cutover the 1.0 tables are in `v1_archive`, so `ImportEngine`
+fails on every row with "relation does not exist"; before it, `ImportEngineV2`
+would write into a schema no screen reads yet. A missing row reads as 1, because
+the upsert that sets 2 runs after the upgrade transaction commits.
+
+### Two things found while wiring it
+
+**`import_batches.created_by_user_id` had never been written.** The column's own
+comment calls it "an audit pointer"; `createBatch` accepted the value, the
+controller passed it from the session, and the data literal omitted it. Every
+import in the product's history is attributed to nobody. Fixed here because the
+2.0 engine reads it to name the actor on the MARC version row — without the fix
+every imported record is stamped `system`.
+
+**The 2.0 write surface enforces no plan quota.** The 1.0 engine has a two-stage
+`max_books`/`max_members` guard (a cheap per-run gate plus `claimQuotaWithinTx`);
+`BibWriteService`, `ItemsService` and `PatronsService` have none, no 2.0
+controller carries `@Quota`, and `quota-counters.ts` still counts `book` and
+`member` — the 1.0 tables. This is a gap across phases 10–20b, not one 20c
+created, and it is deliberately NOT patched here: making the importer the only
+place a ceiling is enforced, while every interactive route ignores it, would be
+worse than the gap. Rewriting the counters onto the 2.0 tables and decorating the
+2.0 controllers is its own phase.

@@ -15,14 +15,23 @@ import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
 import { controlDb } from '@libriant/db-control';
 import type { FeatureKey } from '@libriant/shared';
-import { disconnectTenantClient, makeTenantPrismaClient } from '@libriant/db-tenant';
+import {
+  disconnectTenantClient,
+  makeTenantPrismaClient,
+  makeTenantPrismaClientV2,
+} from '@libriant/db-tenant';
 import { loadEnv } from '../config/env.js';
 import { EffectivePlanService } from '../plans/effective-plan.service.js';
 import { PlatformSettingsService } from '../platform-settings/platform-settings.service.js';
 import { RedisService } from '../platform/redis.service.js';
-import { TENANT_RUNTIME_SELECT, runtimeDbUrl } from '../tenancy/tenant-db-url.js';
-import { executeImport } from './engine/runner.js';
+import {
+  TENANT_CONTEXT_SELECT,
+  runtimeDbUrl,
+  tenantContextFrom,
+} from '../tenancy/tenant-db-url.js';
+import { executeImport, runRows } from './engine/runner.js';
 import type { EngineContext, EngineRowResult } from './engine/import-engine.js';
+import { makeImportEngineV2 } from './engine/import-engine-v2.wiring.js';
 import { deleteStaged, readStaged } from './import-staging.js';
 import {
   IMPORT_JOB_NAME,
@@ -55,7 +64,7 @@ export async function processImportJob(
 
   const tenant = await controlDb.tenant.findUnique({
     where: { id: batch.tenantId },
-    select: TENANT_RUNTIME_SELECT,
+    select: TENANT_CONTEXT_SELECT,
   });
   if (!tenant) {
     await fail(batchId, 'Tenant no longer exists.');
@@ -63,13 +72,43 @@ export async function processImportJob(
   }
 
   const dryRun = phase === 'validate';
+
+  // WHICH SCHEMA THIS LIBRARY IS ON (2.0 phase 20c).
+  //
+  // `tenant_schema_state.schemaMajor` is the fleet flag `tenant-upgrade-v2.ts`
+  // stamps after it commits a cutover, and its model comment is the contract:
+  // "1 = the pre-2.0 shape; the 2.0 upgrade sets 2". Reading it here is not a
+  // feature flag and not a rollout decision — it is the only correct answer.
+  // After the cutover the 1.0 tables are in `v1_archive`, so `ImportEngine`
+  // would not write the wrong data, it would fail on every row with "relation
+  // does not exist"; before the cutover `ImportEngineV2` would write into a
+  // schema no screen in the product reads yet. There is no tenant for which
+  // either choice is a matter of taste.
+  //
+  // Defaulting to 1 when the row is absent is deliberate: every database that
+  // has never been upgraded is 1 by definition, and the upsert that sets 2 runs
+  // AFTER the upgrade transaction commits — so "no row" and "row says 1" mean
+  // the same thing and a missing row must never be read as "probably 2.0".
+  const schemaState = await controlDb.tenantSchemaState.findUnique({
+    where: { tenantId: batch.tenantId },
+    select: { schemaMajor: true },
+  });
+  const v2 = (schemaState?.schemaMajor ?? 1) >= 2;
+
   // performance-06's arithmetic, applied here too: this consumer runs at
   // `concurrency: 1` and walks ONE tenant's rows sequentially, so one
   // connection is all it can use. Without `maxPoolSize` the pool defaults to 5
   // — five connections held for the length of a 250 000-row import, outside
   // the budget `resolveTenantPoolPlan` computes for the sweeps and counted by
   // nobody.
-  const client = makeTenantPrismaClient({ databaseUrl: runtimeDbUrl(tenant), maxPoolSize: 1 });
+  //
+  // The 2.0 client is opened on the same terms and only when it will be used.
+  // `makeImportEngineV2` hands both to the services rather than letting a
+  // `TenantPrismaService` open a pool of its own, which would be a fifth
+  // concurrent holder of the worker's share — the budget divides it four ways.
+  const databaseUrl = runtimeDbUrl(tenant);
+  const client = makeTenantPrismaClient({ databaseUrl, maxPoolSize: 1 });
+  const clientV2 = v2 ? makeTenantPrismaClientV2({ databaseUrl, maxPoolSize: 1 }) : null;
 
   // Fresh issue list for this run.
   await controlDb.importRowIssue.deleteMany({ where: { batchId } });
@@ -174,11 +213,41 @@ export async function processImportJob(
       });
     };
 
-    await executeImport(batch.entityKind, table, batch.mappingJson as ColumnMapping, ctx, {
-      onRow,
-      onProgress,
-      shouldAbort: () => canceledMidRun,
-    });
+    const cb = { onRow, onProgress, shouldAbort: () => canceledMidRun };
+    if (clientV2 === null) {
+      await executeImport(batch.entityKind, table, batch.mappingJson as ColumnMapping, ctx, cb);
+    } else {
+      // 003 / 040 $a — the library's MARC organisation code, which is what a
+      // record says about where it was catalogued. Taken from whichever branch
+      // declares one; `LBR-<slug>` is the fallback BECAUSE that is exactly what
+      // `tenant-upgrade-v2.ts` writes into the records it carries forward, and
+      // a library whose upgraded records and imported records disagreed about
+      // their own 003 would be reporting two different cataloguing agencies.
+      const withCode = await clientV2.branch.findFirst({
+        where: { marcOrgCode: { not: null }, archivedAt: null },
+        select: { marcOrgCode: true },
+        orderBy: { id: 'asc' },
+      });
+      const engine = makeImportEngineV2({
+        kind: batch.entityKind,
+        tenant: tenantContextFrom(tenant),
+        // The librarian who started the import, so the audit row the service
+        // writes names a person rather than the queue. `system` only when the
+        // batch predates the column or the user has since been deleted.
+        actor: {
+          userId: batch.createdByUserId,
+          actorId: batch.createdByUserId ?? 'system',
+          actorType: batch.createdByUserId === null ? 'system' : 'user',
+          supportSessionId: null,
+        },
+        duplicateMode: batch.duplicateMode,
+        dryRun,
+        orgCode: withCode?.marcOrgCode ?? `LBR-${tenant.slug}`,
+        client,
+        clientV2,
+      });
+      await runRows(engine, batch.entityKind, table, batch.mappingJson as ColumnMapping, cb);
+    }
     await flushIssues();
 
     if (canceledMidRun) {
@@ -223,6 +292,7 @@ export async function processImportJob(
     await fail(batchId, (err as Error).message);
   } finally {
     await disconnectTenantClient(client).catch(() => undefined);
+    if (clientV2 !== null) await disconnectTenantClient(clientV2).catch(() => undefined);
   }
 }
 

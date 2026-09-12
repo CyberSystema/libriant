@@ -115,6 +115,14 @@ export class ImportService {
       } as object,
       mappingJson: mapping as object,
       duplicateMode: 'skip',
+      // The column has existed since the model was written — "Control-plane
+      // User.id of the librarian who started the import … an audit pointer" —
+      // and nothing ever wrote it. `createBatch` took it, the controller passed
+      // it from the session, and it stopped here, so every import in the
+      // product's history is attributed to nobody. Found in 2.0 phase 20c,
+      // where the 2.0 engine reads it to name an actor on the MARC version row
+      // it writes: without this line every imported record says `system`.
+      createdByUserId: input.createdByUserId ?? null,
     });
     const stagingPath = await stageFile(batch.id, stagingExtFor(format), input.file.buffer);
     const updated = await controlDb.importBatch.update({
