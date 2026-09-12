@@ -4,6 +4,7 @@
   "routes": {
     "DELETE t/:slug/branding/logo": ["admin", "owner"],
     "DELETE t/:slug/catalog/authors/:id": ["admin", "librarian", "owner"],
+    "DELETE t/:slug/catalog/bib/:id": ["admin", "librarian", "owner"],
     "DELETE t/:slug/catalog/bib/:id/lock": ["admin", "librarian", "owner"],
     "DELETE t/:slug/catalog/books/:id": ["admin", "librarian", "owner"],
     "DELETE t/:slug/catalog/books/:id/cover": ["admin", "librarian", "owner"],
@@ -158,6 +159,7 @@
     "POST t/:slug/catalog/bib/:id/lock": ["admin", "librarian", "owner"],
     "POST t/:slug/catalog/bib/:id/lock/heartbeat": ["admin", "librarian", "owner"],
     "POST t/:slug/catalog/bib/:id/restore": ["admin", "librarian", "owner"],
+    "POST t/:slug/catalog/bib/:id/restore-deleted": ["admin", "librarian", "owner"],
     "POST t/:slug/catalog/bib/ingest": ["admin", "librarian", "owner"],
     "POST t/:slug/catalog/books": ["admin", "librarian", "owner"],
     "POST t/:slug/catalog/books/:bookId/copies": ["admin", "librarian", "owner"],

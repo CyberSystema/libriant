@@ -29,6 +29,7 @@ import {
   AcquireLockDto,
   BibListQueryDto,
   CreateRecordDto,
+  DeleteRecordDto,
   LockSessionDto,
   RestoreVersionDto,
   WriteRecordDto,
@@ -38,6 +39,7 @@ import {
 import { BibLockService } from './bib-lock.service.js';
 import { BibReadService } from './bib-read.service.js';
 import { BibIngestService } from './bib-ingest.service.js';
+import { BibDeleteService } from './bib-delete.service.js';
 import {
   contentTypeForSourceFormat,
   marcWriteToHttp,
@@ -104,6 +106,7 @@ export class BibController {
     @Inject(BibLockService) private readonly locks: BibLockService,
     @Inject(BibReadService) private readonly reads: BibReadService,
     @Inject(BibIngestService) private readonly ingestSvc: BibIngestService,
+    @Inject(BibDeleteService) private readonly deletes: BibDeleteService,
   ) {}
 
   /**
@@ -464,6 +467,40 @@ export class BibController {
    * not an identifier of it, and putting it in the query string would write it
    * into the access log.
    */
+  /**
+   * Delete a record — a TOMBSTONE, not a row that goes away.
+   *
+   * §5 commits to OAI-PMH `deletedRecord=persistent`, which the matrix calls "a
+   * promise about the database": a harvester that saw the record last month has
+   * to be told it was deleted, and cannot be if the row is gone.
+   *
+   * Declared BEFORE `:id/lock` so the two DELETEs cannot be confused, and it
+   * takes a reason because removing a record from a catalogue is a decision a
+   * library may be asked about.
+   */
+  @RequirePermission('cat.bib.delete')
+  @Delete(':id')
+  async remove(
+    @TenantCtx() tenant: TenantContext,
+    @TenantActor() actor: TenantActor,
+    @Param('id') id: string,
+    @Query() rawQuery: unknown,
+  ) {
+    const q = await validateDto(DeleteRecordDto, rawQuery ?? {});
+    return this.deletes.delete(tenant, actor, id, q.reason);
+  }
+
+  @RequirePermission('cat.bib.delete')
+  @Post(':id/restore-deleted')
+  @HttpCode(200)
+  async restoreDeleted(
+    @TenantCtx() tenant: TenantContext,
+    @TenantActor() actor: TenantActor,
+    @Param('id') id: string,
+  ) {
+    return this.deletes.restore(tenant, actor, id);
+  }
+
   @RequirePermission('cat.bib.write')
   @Delete(':id/lock')
   @HttpCode(200)

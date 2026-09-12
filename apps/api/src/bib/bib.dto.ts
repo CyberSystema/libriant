@@ -314,3 +314,15 @@ export class BibListQueryDto {
   @IsOptional() @toInt() @IsInt() @Min(-9999) yearFrom?: number;
   @IsOptional() @toInt() @IsInt() @Min(-9999) yearTo?: number;
 }
+
+/**
+ * Why a record was removed from the catalogue (2.0 phase 20b-ii).
+ *
+ * A query parameter rather than a body, because DELETE bodies are not carried
+ * reliably by every client and proxy — and a reason that silently did not
+ * arrive would make the audit row say nothing, which is the one thing it exists
+ * to avoid.
+ */
+export class DeleteRecordDto {
+  @trim() @IsString() @Length(3, 500) reason!: string;
+}

@@ -7,6 +7,7 @@ import { BibLockService } from './bib-lock.service.js';
 import { BibProjectionService } from './bib-projection.service.js';
 import { BibReadService } from './bib-read.service.js';
 import { BibIngestService } from './bib-ingest.service.js';
+import { BibDeleteService } from './bib-delete.service.js';
 import { MarcBodyMiddleware } from './marc-body.middleware.js';
 
 /**
@@ -31,6 +32,7 @@ import { MarcBodyMiddleware } from './marc-body.middleware.js';
     BibIngestService,
     MarcBodyMiddleware,
     IdempotencyInterceptor,
+    BibDeleteService,
   ],
   controllers: [BibController],
   exports: [BibWriteService, BibLockService, BibProjectionService, BibReadService],
