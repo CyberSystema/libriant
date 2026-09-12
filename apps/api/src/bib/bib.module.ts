@@ -1,5 +1,6 @@
 import { Module, type MiddlewareConsumer, type NestModule } from '@nestjs/common';
 import { IdempotencyInterceptor } from '../platform/idempotency.interceptor.js';
+import { StorageModule } from '../storage/storage.module.js';
 import { TenantModule } from '../tenancy/tenant.module.js';
 import { BibController } from './bib.controller.js';
 import { BibWriteService } from './bib-write.service.js';
@@ -8,6 +9,7 @@ import { BibProjectionService } from './bib-projection.service.js';
 import { BibReadService } from './bib-read.service.js';
 import { BibIngestService } from './bib-ingest.service.js';
 import { BibDeleteService } from './bib-delete.service.js';
+import { BibCoverController } from './bib-cover.controller.js';
 import { MarcBodyMiddleware } from './marc-body.middleware.js';
 
 /**
@@ -23,7 +25,7 @@ import { MarcBodyMiddleware } from './marc-body.middleware.js';
  * and the bytes it came from belong together.
  */
 @Module({
-  imports: [TenantModule],
+  imports: [TenantModule, StorageModule],
   providers: [
     BibWriteService,
     BibLockService,
@@ -34,7 +36,7 @@ import { MarcBodyMiddleware } from './marc-body.middleware.js';
     IdempotencyInterceptor,
     BibDeleteService,
   ],
-  controllers: [BibController],
+  controllers: [BibController, BibCoverController],
   exports: [BibWriteService, BibLockService, BibProjectionService, BibReadService],
 })
 export class BibModule implements NestModule {

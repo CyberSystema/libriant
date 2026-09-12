@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { StorageModule } from '../storage/storage.module.js';
 import { PolicyModule } from '../policy/policy.module.js';
 import { TenantModule } from '../tenancy/tenant.module.js';
 import { PatronBlocksService } from './patron-blocks.service.js';
@@ -6,6 +7,7 @@ import { PatronMergeService } from './patron-merge.service.js';
 import { PatronsController } from './patrons.controller.js';
 import { PatronsService } from './patrons.service.js';
 import { PatronEraseService } from './patron-erase.service.js';
+import { PatronPhotoController } from './patron-photo.controller.js';
 import { PatronSubjectAccessService } from '../privacy/patron-subject-access.service.js';
 
 /**
@@ -21,7 +23,7 @@ import { PatronSubjectAccessService } from '../privacy/patron-subject-access.ser
  * which is the first statement of every circulation transaction.
  */
 @Module({
-  imports: [TenantModule, PolicyModule],
+  imports: [TenantModule, PolicyModule, StorageModule],
   providers: [
     PatronsService,
     PatronMergeService,
@@ -29,7 +31,7 @@ import { PatronSubjectAccessService } from '../privacy/patron-subject-access.ser
     PatronEraseService,
     PatronSubjectAccessService,
   ],
-  controllers: [PatronsController],
+  controllers: [PatronsController, PatronPhotoController],
   exports: [PatronsService, PatronMergeService, PatronBlocksService, PatronEraseService],
 })
 export class PatronsModule {}
