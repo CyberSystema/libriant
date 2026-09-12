@@ -4503,7 +4503,7 @@ not be stopped by `max_books`.
 
 20d measured three defects in 19b's copy-forward and deliberately left them, on
 the grounds that they needed the verifier changed with them. This is that change.
-It comes before 20b-iii because 20b-iii *runs* this code: cutting a library over
+It comes before 20b-iii because 20b-iii _runs_ this code: cutting a library over
 with an upgrade that writes policy snapshots the product then refuses to read is
 not a cutover, it is a data loss with a green light on it.
 
