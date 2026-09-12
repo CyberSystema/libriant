@@ -20,7 +20,7 @@
     "@libriant/marc": "workspace:*",
     "@libriant/shared": "workspace:*",
     "@libriant/site": "workspace:*",
-    "@nestjs/common": "^11.2.1",
+    "@nestjs/common": "^12.0.1",
     "@nestjs/core": "^11.2.1",
     "@nestjs/platform-express": "^11.2.1",
     "archiver": "^8.0.0",
