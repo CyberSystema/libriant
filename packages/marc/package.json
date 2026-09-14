@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@libriant/shared": "workspace:*",
-    "fast-xml-parser": "^5.11.0"
+    "fast-xml-parser": "^5.11.1"
   },
   "devDependencies": {
     "typescript": "^6.0.3"
