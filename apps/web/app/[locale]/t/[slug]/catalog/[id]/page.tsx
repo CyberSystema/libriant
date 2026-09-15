@@ -6,29 +6,31 @@ import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
 import { ApiError, api } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
-import type { FieldDef } from '@/components/DynamicFields';
-import type { BookInitial } from '../new/BookForm';
-import { BookDetail } from './BookDetail';
+import { UNTITLED_TITLE, readDisplayTitle } from '@/lib/marc-simple-fields';
+import {
+  BookDetail,
+  type BibRecordRead,
+  type BranchRow,
+  type ItemRow,
+  type ItemTypeRow,
+  type LocationRow,
+} from './BookDetail';
 
 export const dynamic = 'force-dynamic';
 
-type FieldsResponse = { entityKind: string; fields: FieldDef[] };
+type Page<T> = { items: T[]; nextCursor: string | null };
 
-type BookCopy = {
-  id: string;
-  barcode: string;
-  status: 'available' | 'on_loan' | 'reserved' | 'lost' | 'damaged' | 'withdrawn';
-  shelfLocation: string | null;
-  archivedAt: string | null;
-};
+/**
+ * The copies list is a page, not a list (2.0 phase 20k).
+ *
+ * `LIST_MAX_LIMIT` is 100, so a class set of 120 copies cannot arrive in one
+ * response. Asking for the maximum and TELLING the librarian when there are
+ * more is the honest shape: silently showing 100 of 120 is how a copy that
+ * exists becomes a copy nobody can find.
+ */
+const COPIES_PAGE = 100;
 
-type BookWithCopies = BookInitial & {
-  coverAssetRef: string | null;
-  archivedAt: string | null;
-  copies: BookCopy[];
-};
-
-export default async function BookDetailPage(props: {
+export default async function BibDetailPage(props: {
   params: Promise<{ locale: string; slug: string; id: string }>;
 }) {
   const params = await props.params;
@@ -37,26 +39,21 @@ export default async function BookDetailPage(props: {
   const t = createTranslator(catalog, params.locale);
   const cookie = await requestCookieHeader();
 
-  let book: BookWithCopies | null = null;
+  let record: BibRecordRead | null = null;
   let fetchError: string | null = null;
   try {
-    book = await api<BookWithCopies>(`/t/${params.slug}/catalog/books/${params.id}`, { cookie });
+    record = await api<BibRecordRead>(`/t/${params.slug}/catalog/bib/${params.id}`, { cookie });
   } catch (err) {
+    // A DELETED record 404s here: `BibReadService.read` filters
+    // `deleted_at IS NULL`, and §5's `deletedRecord=persistent` promise is
+    // about OAI-PMH and the database, not about this screen. So there is no
+    // "this record is deleted" state to render — which is also why the delete
+    // action below leaves for the catalogue list rather than staying.
     if (err instanceof ApiError && err.status === 404) notFound();
     fetchError = translateApiError(err, t, t('common.states.error'));
   }
 
-  let customFields: FieldDef[] = [];
-  try {
-    const res = await api<FieldsResponse>(`/t/${params.slug}/data-model/fields/book`, {
-      cookie,
-    });
-    customFields = res.fields;
-  } catch {
-    customFields = [];
-  }
-
-  if (!book) {
+  if (!record) {
     return (
       <>
         <PageHeader title={t('catalog.title')} />
@@ -65,11 +62,33 @@ export default async function BookDetailPage(props: {
     );
   }
 
+  // The copies and the three lookup lists the add-copy form needs. Each
+  // degrades to empty on its own: a catalogue record whose copies failed to
+  // load is still a record worth reading, and the form says what is missing
+  // rather than posting a body the API will refuse.
+  const [copies, branches, itemTypes, locations] = await Promise.all([
+    api<Page<ItemRow>>(`/t/${params.slug}/items?bibId=${params.id}&limit=${COPIES_PAGE}`, {
+      cookie,
+    }).catch(() => ({ items: [], nextCursor: null }) as Page<ItemRow>),
+    api<{ items: BranchRow[] }>(`/t/${params.slug}/org/branches`, { cookie }).catch(() => ({
+      items: [],
+    })),
+    api<{ items: ItemTypeRow[] }>(`/t/${params.slug}/org/item-types`, { cookie }).catch(() => ({
+      items: [],
+    })),
+    api<{ items: LocationRow[] }>(`/t/${params.slug}/org/locations`, { cookie }).catch(() => ({
+      items: [],
+    })),
+  ]);
+
+  // Not translated, on purpose: the catalogue list renders the projector's
+  // stored `[Untitled]` for the same record.
+  const title = readDisplayTitle(record.record) || UNTITLED_TITLE;
+
   return (
     <>
       <PageHeader
-        title={book.title}
-        subtitle={book.subtitle ?? undefined}
+        title={title}
         trail={
           <Link href={`/${params.locale}/t/${params.slug}/catalog`} style={{ color: 'inherit' }}>
             ← {t('catalog.title')}
@@ -80,8 +99,12 @@ export default async function BookDetailPage(props: {
         slug={params.slug}
         catalog={catalog}
         locale={params.locale}
-        initial={book}
-        customFields={customFields}
+        record={record}
+        copies={copies.items}
+        moreCopies={copies.nextCursor !== null}
+        branches={branches.items}
+        itemTypes={itemTypes.items}
+        locations={locations.items}
       />
     </>
   );

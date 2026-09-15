@@ -259,3 +259,70 @@ export function canEdit(record: MarcRecord, field: SimpleField): boolean {
   const fields = record.fields as unknown as unknown[];
   return fields.some((f) => isDataField(f) && (f.t === field.tag || f.t === LEGACY_TAG[field.tag]));
 }
+
+/**
+ * The title to show at the top of a record, and the contributors under it.
+ *
+ * MIRRORS `projectBib` (`packages/marc/src/bib-projection.ts`) rather than
+ * calling it, for the reason {@link MarcRecord} gives: the web app does not
+ * depend on `@libriant/marc` and adding it for two string helpers would also
+ * mean adding it to the web Dockerfile's COPY list.
+ *
+ * The rule being mirrored is exactly two lines of that file and is worth
+ * stating: a MARC record has no `subtitle` field, it has a TITLE STATEMENT, so
+ * `245 $a` and `$b` are joined; and the trailing ISBD punctuation that leads
+ * into the next subfield (`/`, `:`, `;`, `,`, `=`) is dropped, because "Η ΠΟΛΙΣ
+ * ΕΑΛΩ /" is correct on a catalogue card and wrong as a page heading.
+ *
+ * If the two ever disagree the catalogue LIST (which reads the projection) and
+ * this screen would show the same record under two titles — so the unit test
+ * beside this file pins the punctuation rule.
+ *
+ * {@link UNTITLED_TITLE} is the same sentinel and is deliberately NOT
+ * translated: the list renders the projector's stored `[Untitled]`, and a
+ * localised heading here would mean the same record appearing under two names
+ * on two screens for exactly the records that are hardest to identify.
+ */
+export const UNTITLED_TITLE = '[Untitled]';
+
+export function readDisplayTitle(record: MarcRecord): string {
+  const f = (record.fields as unknown[]).find((x) => isDataField(x) && x.t === '245');
+  if (!isDataField(f)) return '';
+  const parts: string[] = [];
+  for (const sub of f.s) {
+    const code = Object.keys(sub)[0];
+    if (code === 'a' || code === 'b') parts.push(sub[code] ?? '');
+  }
+  return tidyIsbd(parts.filter(Boolean).join(' '));
+}
+
+/** The 1XX/7XX name headings, in record order, for display only. */
+export function readContributors(record: MarcRecord): string[] {
+  const out: string[] = [];
+  for (const raw of record.fields as unknown[]) {
+    if (!isDataField(raw)) continue;
+    if (!['100', '110', '111', '700', '710', '711'].includes(raw.t)) continue;
+    // $a is the name; $d the dates, $c a title of nobility, $e the relator.
+    // Joined as the record has them, because a heading read back in a
+    // different order is a different heading — and there is no authority store
+    // to resolve it against until phase 45.
+    const parts: string[] = [];
+    for (const sub of raw.s) {
+      const code = Object.keys(sub)[0];
+      if (code !== undefined && ['a', 'b', 'c', 'd', 'q'].includes(code))
+        parts.push(sub[code] ?? '');
+    }
+    const name = tidyIsbd(parts.filter(Boolean).join(' '));
+    if (name) out.push(name);
+  }
+  return out;
+}
+
+/** Collapse whitespace and drop the ISBD punctuation that leads into a subfield. */
+function tidyIsbd(raw: string): string {
+  return raw
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\s*[/:;,=]$/, '')
+    .trim();
+}

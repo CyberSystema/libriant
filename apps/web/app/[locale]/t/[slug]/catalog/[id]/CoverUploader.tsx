@@ -9,7 +9,7 @@ import { dataPort } from '@/lib/ports';
 
 type Props = {
   slug: string;
-  bookId: string;
+  recordId: string;
   coverAssetRef: string | null;
   catalog: Catalog;
   locale: Locale;
@@ -17,11 +17,18 @@ type Props = {
 };
 
 /**
- * Book-cover upload widget. POSTs multipart to
- * `/t/:slug/catalog/books/:id/cover` and DELETEs to clear. Preview
- * renders the current cover via the storage controller URL.
+ * Cover upload widget. POSTs multipart to `/t/:slug/catalog/bib/:id/cover` and
+ * DELETEs to clear. Preview renders the current cover via the storage
+ * controller URL.
+ *
+ * The 2.0 route (phase 20b-ii) writes `bib_records.cover_asset_ref`, which
+ * `BibProjectionService` explicitly PRESERVES rather than recomputing — a cover
+ * is not in the MARC, it is a thing the library attached — so re-cataloguing a
+ * record does not lose its cover. Reading it back is newer than writing it:
+ * until phase 20k nothing returned the column, so a cover could be uploaded and
+ * then never shown again.
  */
-export function CoverUploader({ slug, bookId, coverAssetRef, catalog, locale, onChange }: Props) {
+export function CoverUploader({ slug, recordId, coverAssetRef, catalog, locale, onChange }: Props) {
   const t = createTranslator(catalog, locale);
   const toast = useToast();
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -35,7 +42,7 @@ export function CoverUploader({ slug, bookId, coverAssetRef, catalog, locale, on
     setUploading(true);
     try {
       const json = await dataPort().upload<{ coverAssetRef: string }>(
-        `/t/${slug}/catalog/books/${bookId}/cover`,
+        `/t/${slug}/catalog/bib/${recordId}/cover`,
         { file: { name: file.name, type: file.type, data: file } },
         { timeoutMs: API_JOB_TIMEOUT_MS },
       );
@@ -54,7 +61,7 @@ export function CoverUploader({ slug, bookId, coverAssetRef, catalog, locale, on
   async function remove() {
     setRemoving(true);
     try {
-      await dataPort().delete(`/t/${slug}/catalog/books/${bookId}/cover`);
+      await dataPort().delete(`/t/${slug}/catalog/bib/${recordId}/cover`);
       onChange(null);
       toast.show({ severity: 'success', title: t('catalog.book.coverRemoved') });
     } catch (err) {

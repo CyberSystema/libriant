@@ -90,6 +90,15 @@ export type BibRecordRead = {
   readonly version: number;
   /** Hex. Echoed back as `expectedContentHash` to edit from this state. */
   readonly contentHash: string;
+  /**
+   * The stored cover, from the projection (2.0 phase 20k).
+   *
+   * The one derived value on this response, and it is here because there is
+   * nowhere else: the cover controller writes `bib_records.cover_asset_ref` and
+   * returns it from its own POST and DELETE, and nothing read it back — so a
+   * screen could upload a cover and never show it again.
+   */
+  readonly coverAssetRef: string | null;
   readonly rowVersion: string;
   readonly record: MarcRecord;
   readonly controlNumber: string | null;
@@ -131,6 +140,8 @@ type Row = {
   source_roundtrips: boolean;
   has_source_blob: boolean;
   anomalies: unknown;
+  /** From the projection, LEFT-joined, so null when the row is missing. */
+  cover_asset_ref: string | null;
 };
 
 const HEX = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
@@ -355,6 +366,19 @@ export class BibReadService {
    */
   async read(tenant: TenantContext, recordId: string): Promise<BibRecordRead> {
     const client = this.tenantPrisma.getClientV2(tenant);
+    // `p.cover_asset_ref` is the one value here that comes from the PROJECTION
+    // rather than the record (2.0 phase 20k). `bib-cover.controller.ts` writes
+    // it and returns it from its own POST and DELETE, and nothing ever read it
+    // back — so a screen could upload a cover and then never show it again.
+    //
+    // A LEFT JOIN, deliberately: the projection is written in the same
+    // transaction as every record write, so the row is there — but a read that
+    // 404ed a record because its derived row was missing would turn a
+    // projection bug into a catalogue nobody can open. `catalog-verify` is what
+    // finds that, and it is not this query's job.
+    //
+    // (The prose is out here rather than in the SQL because a backtick inside
+    // the template literal would end it.)
     const rows = await client.$queryRaw<Row[]>`
       SELECT r.id, r.public_no, r.kind::text AS kind, r.schema::text AS schema,
              r.status::text AS status, r.current_version, r.content_hash, r.row_version,
@@ -362,9 +386,11 @@ export class BibReadService {
              r.created_at, r.updated_at,
              c.content, c.source_format::text AS source_format, c.source_encoding,
              c.source_normalization, c.source_roundtrips, c.anomalies,
-             (c.source_blob IS NOT NULL) AS has_source_blob
+             (c.source_blob IS NOT NULL) AS has_source_blob,
+             p.cover_asset_ref
         FROM marc_records r
         JOIN marc_record_contents c ON c.record_id = r.id
+        LEFT JOIN bib_records p ON p.bib_id = r.id
        WHERE r.id = ${recordId} AND r.deleted_at IS NULL`;
     const row = rows[0];
     if (!row) throw new NotFoundException(`Record ${recordId} does not exist.`);
@@ -384,6 +410,7 @@ export class BibReadService {
       needsReview: row.needs_review,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      coverAssetRef: row.cover_asset_ref ?? null,
       source: {
         format: row.source_format,
         encoding: row.source_encoding,

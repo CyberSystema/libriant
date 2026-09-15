@@ -153,14 +153,48 @@ describe('§1 covers', () => {
     expect(rows[0]!.cover_asset_ref).toBe(ref);
   }, 60_000);
 
-  it('removes it again', async () => {
+  it('and the record read gives it back (phase 20k)', async () => {
+    // THE GAP THIS CLOSES. Until 20k the only route that ever mentioned
+    // `cover_asset_ref` was the one that WROTE it — this POST and its DELETE —
+    // so a screen could attach a cover, be told the reference, and then never
+    // see it again on any subsequent page load. The SQL assertion above passed
+    // the whole time.
+    const read = await api().get(`/t/${slug}/catalog/bib/${id}`).set('Cookie', owner).expect(200);
+    const rows = await sql<{ cover_asset_ref: string | null }>(
+      `SELECT cover_asset_ref FROM lbr2.bib_records WHERE bib_id = $1`,
+      [id],
+    );
+    expect((read.body as { coverAssetRef: string | null }).coverAssetRef).toBe(
+      rows[0]!.cover_asset_ref,
+    );
+  }, 60_000);
+
+  it('removes it again, and the read says so', async () => {
     await api().delete(`/t/${slug}/catalog/bib/${id}/cover`).set('Cookie', owner).expect(200);
     const rows = await sql<{ cover_asset_ref: string | null }>(
       `SELECT cover_asset_ref FROM lbr2.bib_records WHERE bib_id = $1`,
       [id],
     );
     expect(rows[0]!.cover_asset_ref).toBeNull();
+    const read = await api().get(`/t/${slug}/catalog/bib/${id}`).set('Cookie', owner).expect(200);
+    expect((read.body as { coverAssetRef: string | null }).coverAssetRef).toBeNull();
   });
+
+  it('a record with no projection row still READS, rather than 404ing', async () => {
+    // The join added in 20k is a LEFT JOIN on purpose. `bib_records` is written
+    // in the same transaction as every record write, so the row is there — but
+    // an INNER join would turn a projection bug into a catalogue nobody can
+    // open, which is a far worse failure than a missing cover. `catalog-verify`
+    // is what finds a missing projection; this read is not.
+    const orphan = await catalogue('ΧΩΡΙΣ ΠΡΟΒΟΛΗ');
+    await sql(`DELETE FROM lbr2.bib_records WHERE bib_id = $1`, [orphan]);
+    const read = await api()
+      .get(`/t/${slug}/catalog/bib/${orphan}`)
+      .set('Cookie', owner)
+      .expect(200);
+    expect((read.body as { coverAssetRef: string | null }).coverAssetRef).toBeNull();
+    expect((read.body as { id: string }).id).toBe(orphan);
+  }, 60_000);
 
   it('a request with no file is a 400, not an empty upload', async () => {
     await api().post(`/t/${slug}/catalog/bib/${id}/cover`).set('Cookie', owner).expect(400);

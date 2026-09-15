@@ -40,6 +40,19 @@ export class OrgController {
     return this.org.branches(tenant, { includeArchived: q.includeArchived !== undefined });
   }
 
+  /**
+   * `cat.bib.read`, like its two neighbours. A cataloguer who may list the
+   * library's branches may list the kinds of thing it lends, and inventing a
+   * key for it would mean editing all four role templates for a distinction
+   * nobody has asked for.
+   */
+  @RequirePermission('cat.bib.read')
+  @Get('item-types')
+  async itemTypes(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {
+    const q = await validateDto(BranchListQueryDto, rawQuery ?? {});
+    return this.org.itemTypes(tenant, { includeArchived: q.includeArchived !== undefined });
+  }
+
   @RequirePermission('cat.bib.read')
   @Get('locations')
   async locations(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {

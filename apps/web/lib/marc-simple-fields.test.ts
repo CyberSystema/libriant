@@ -15,6 +15,8 @@ import {
   SIMPLE_FIELDS,
   canEdit,
   opsForChanges,
+  readContributors,
+  readDisplayTitle,
   readField,
   readSimpleFields,
 } from '@/lib/marc-simple-fields';
@@ -191,4 +193,35 @@ test('no widget claims a fixed-field position', () => {
 test('readField returns null rather than guessing', () => {
   const r = { leader: '00000nam a2200000 a 4500', fields: [] } as never;
   for (const f of SIMPLE_FIELDS) assert.equal(readField(r, f), null);
+});
+
+test('the display title joins $a and $b and drops the ISBD slash', () => {
+  // The catalogue LIST renders `projectBib`'s `title` for the same record, so a
+  // divergence here shows one book under two names on two screens.
+  assert.equal(readDisplayTitle(record()), 'Η ΠΟΛΙΣ ΕΑΛΩ');
+  const withSubtitle = {
+    leader: '00000nam a2200000 a 4500',
+    fields: [
+      { t: '245', i: '10', s: [{ a: 'Ζορμπάς :' }, { b: 'μυθιστόρημα /' }, { c: 'Ν. Κ.' }] },
+    ],
+  } as never;
+  assert.equal(readDisplayTitle(withSubtitle), 'Ζορμπάς : μυθιστόρημα');
+});
+
+test('a record with no 245 has no title rather than a thrown error', () => {
+  assert.equal(readDisplayTitle({ leader: '00000nam a2200000 a 4500', fields: [] } as never), '');
+});
+
+test('contributors come from 1XX and 7XX, in record order', () => {
+  const r = {
+    leader: '00000nam a2200000 a 4500',
+    fields: [
+      { t: '245', i: '10', s: [{ a: 'Τίτλος' }] },
+      { t: '100', i: '1 ', s: [{ a: 'Καζαντζάκης, Νίκος,' }, { d: '1883-1957' }] },
+      { t: '700', i: '1 ', s: [{ a: 'Μεταφραστής, Τις,' }, { e: 'translator.' }] },
+    ],
+  } as never;
+  // `$e translator.` is NOT part of the heading — the relator says what the
+  // person did, not who they are.
+  assert.deepEqual(readContributors(r), ['Καζαντζάκης, Νίκος, 1883-1957', 'Μεταφραστής, Τις']);
 });

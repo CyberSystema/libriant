@@ -4948,3 +4948,100 @@ soft archive, so the archived-notice vocabulary is wrong rather than just
 mislabelled; and `POST :id/restore` restores a prior VERSION while
 `POST :id/restore-deleted` undoes the delete — confusing them would silently
 roll a record back.
+
+## Phase 20k — the detail screen reads 2.0, and the cover gets a read route
+
+The catalogue record page, its copies table, its cover widget and the spine
+label now read and write the 2.0 surface. `BibSimpleForm` — written in 20j and
+unreachable since — is mounted. Two blockers found in 20j's survey were cleared
+first, and each was a real hole rather than a repoint.
+
+### `item-types` had no list route, so add-a-copy could not exist
+
+`POST /items` requires `itemTypeId`, and 20j recorded that nothing listed item
+types: the only known value was the seeded `itype-book`, which
+`item-defaults.ts` is explicit is a renameable row rather than a default. So a
+screen could not offer the choice and could not safely assume it.
+
+`GET /t/:slug/org/item-types` is added beside the existing `branches` and
+`locations`, with the same shape and the same `cat.bib.read` key — a librarian
+who may read the catalogue may see what kinds of thing are in it, and inventing
+`cat.item.read` would mean editing all four role templates for a distinction
+nobody has asked for.
+
+### The cover could be uploaded and then never seen again
+
+`bib_cover.controller.ts` (20b-ii) writes `bib_records.cover_asset_ref` and
+returns it from its own POST and DELETE. **Nothing ever read it back.**
+`BibReadService.read` selects `FROM marc_records r JOIN marc_record_contents c`
+and never touched the projection, so the column was write-only in practice: a
+screen could attach a cover, be told the reference, and see an empty frame on
+its next load. `media-v2.spec.ts` asserted the column in SQL and passed the
+whole time.
+
+The read gains `LEFT JOIN bib_records p ON p.bib_id = r.id` and one column.
+LEFT, deliberately: the projection is written in the same transaction as every
+record write, so the row is there — but a read that 404ed a record because its
+derived row was missing would turn a projection bug into a catalogue nobody can
+open. `catalog-verify` is what finds a missing projection, and there is now a
+test that deletes a projection row and asserts the record still reads.
+
+### What the screen lost, gained and had to say out loud
+
+- **The summary is read out of `record.fields`.** There is no `title` column on
+  this response. `readDisplayTitle` mirrors `projectBib`'s rule — join 245 `$a`
+  and `$b`, drop the trailing ISBD punctuation — rather than importing
+  `@libriant/marc`, which the web app does not depend on and which would need a
+  Dockerfile COPY entry (`check:docker-workspace-closure`). The unit test pins
+  the punctuation rule, because a divergence would show one record under two
+  titles on the list and the detail page. `UNTITLED_TITLE` is deliberately NOT
+  translated, for the same reason: the list renders the projector's stored
+  `[Untitled]`.
+- **Contributors come from 1XX/7XX, display-only.** No authority store until
+  phase 45, so there is no id to link and no editing.
+- **Copies carry a call number, a branch, a shelving location and an item
+  type** where 1.0 had a free-text shelf string. A barcode is now OPTIONAL — a
+  copy can be catalogued before its label is printed — so the print button is
+  disabled on a copy that has none, and the label route 404s rather than
+  printing a blank Code 128 that scans as nothing.
+- **Delete is a tombstone and LEAVES the screen.** `BibReadService.read` filters
+  `deleted_at IS NULL`, so there is no deleted state to render and the page
+  would 404 on its next refresh; a successful delete navigates to the list. The
+  reason is required (3–500) and asked for in the dialog. The 409 that matters —
+  "this record still has copies" — is rendered inside the dialog, so a per-copy
+  **Withdraw** was added to the table: without it the refusal names an action
+  the product does not offer anywhere.
+- **`POST :id/restore-deleted` has no button.** Undoing a delete needs the id of
+  a record no screen lists, so a button would need something nobody can see. The
+  route exists and is unreachable from the UI until a deleted-records screen
+  does; faking it would be worse.
+- **The copies list is capped at 100** (`LIST_MAX_LIMIT`) and says so when there
+  are more, rather than showing a subset as if it were all of them.
+
+### The label route stopped needing `?book=`
+
+1.0 had no copy-by-id route, so `buildPrintPath` passed the book id in the query
+string and the copy was found inside the book's `copies` array. That would have
+broken silently at the repoint: the table now holds 2.0 item ids, which are not
+in a 1.0 book's copies, so every label would have 404ed. 2.0's `GET /items/:id`
+carries `bibId`, so the record is resolved FROM the copy and the two can no
+longer disagree. The shelf line is the call number now — 2.0 separates the shelf
+(a `shelving_locations` row, a place) from the call number (what is on the
+spine, and what phase 81's inventory wand walks in order).
+
+### Custom fields on a catalogue record have NO 2.0 surface, and the card is gone
+
+`bib_records.custom_fields` exists and `BibProjectionService` lists it in
+`NOT_THE_PROJECTORS`, so it survives re-projection — but nothing writes it, no
+route reads it, and the v2 importer errors on a `book` row that carries one
+(`KINDS_WITH_CUSTOM_FIELDS` is loans, reservations and fees). The
+field-definition controller itself is still on the 1.0 client. Rendering a card
+labelled from a 1.0 definition list, over a column nothing can fill, would be a
+screen showing a thing that cannot exist. Recorded here rather than half-built:
+**custom fields on a bibliographic record have no owning phase.**
+
+### Still 1.0 after this
+
+`catalog/new/BookForm.tsx` (create), and the members / loans+reservations /
+fines families. The four capabilities 20j found with no owning phase are
+unchanged; `itemTypeId` is struck off that list.

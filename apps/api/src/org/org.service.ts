@@ -30,6 +30,23 @@ import type { TenantContext } from '../tenancy/tenant-context.js';
  * to be able to ask for it; a "where should this go?" dropdown must not offer it.
  * Those are different questions and the caller says which one it is asking.
  */
+/**
+ * An item type, for the picker that puts a copy on a shelf (2.0 phase 20k).
+ *
+ * `POST /t/:slug/items` requires `itemTypeId` and nothing listed them, so
+ * add-a-copy could not be repointed at all: the only known value was the seeded
+ * `itype-book`, and `item-defaults.ts` is explicit that a seed is a renameable
+ * row rather than a default. A library that renamed it would have had a screen
+ * that could not add a copy.
+ */
+export type ItemTypeRow = {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+  readonly nameI18n: unknown;
+  readonly archivedAt: Date | null;
+};
+
 export type BranchRow = {
   readonly id: string;
   readonly code: string;
@@ -127,6 +144,26 @@ export class OrgService {
         sortOrder: true,
         archivedAt: true,
       },
+    });
+    return { items: rows };
+  }
+
+  /**
+   * The item types a copy can be given (2.0 phase 20k).
+   *
+   * Short, like the two above and for the same reason: every caller is a
+   * picker. The loan rules that hang off an item type belong to the rules
+   * matrix editor, which is a different screen.
+   */
+  async itemTypes(
+    tenant: TenantContext,
+    opts: { includeArchived?: boolean } = {},
+  ): Promise<{ items: ItemTypeRow[] }> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const rows = await client.itemType.findMany({
+      where: opts.includeArchived === true ? {} : { archivedAt: null },
+      orderBy: [{ code: 'asc' }],
+      select: { id: true, code: true, name: true, nameI18n: true, archivedAt: true },
     });
     return { items: rows };
   }
