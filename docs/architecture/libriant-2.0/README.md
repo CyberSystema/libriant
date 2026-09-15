@@ -5150,3 +5150,51 @@ place to decide what day a library catalogued something. Not done here.
 The members, loans+reservations and fines families. `catalog/new/BookForm.tsx`
 survives only because the onboarding wizard still mounts it, and dies with the
 1.0 modules.
+
+## Reconciliation — the plan read back against this log (through 20l)
+
+Until now the two documents in this directory disagreed. `MASTER-ARCHITECTURE.md`
+was amended opportunistically — some phases folded their corrections back, most
+did not — so a reader could act on a paragraph that a phase had measured wrong
+two months earlier. All 26 phase entries above have now been read back against
+it and the outstanding corrections applied.
+
+**58 corrections applied. 19 proposals rejected.** The rejections are the
+interesting number: they were cases where the plan already reflected the
+correction, and applying it again would have produced a document asserting
+something twice, or contradicting itself in one sentence. That asymmetry set the
+rule for the whole pass — **a stale line costs a reader a trip to this log; a
+wrong correction in the plan of record gets believed** — so every proposal had to
+prove two things before it was applied: that the plan still said the superseded
+thing, and that the text it quoted appeared verbatim exactly once, so the edit
+could be applied mechanically rather than approximately.
+
+Four of the corrections are worth naming, because each is a defect a reader would
+otherwise have implemented:
+
+- **Phase 7's leader regex cannot match a leader.** `^.{10}22.{9}4500$` is 25
+  characters wide for a 24-byte leader. Anyone writing that acceptance test sees
+  a correct writer fail on every record, and the natural response is to weaken
+  the assertion — which then stops catching the wrong `/10-11` or `/20-23` it
+  exists to catch.
+- **§3 said `branches.timezone` is validated in TypeScript.** It is a foreign key
+  to a seeded `iana_timezones` table, because a subquery CHECK is refused
+  outright (`0A000`) and an IMMUTABLE wrapper costs 11.1 ms/row against 8.2 µs
+  for the FK. It has to be in the database: phase 19's copy-forward is PL/pgSQL
+  and never passes through TypeScript, so app-layer validation would have let
+  circ-5 back in through the migration.
+- **Phase 6's acceptance tested only `fetch(`.** That rule exists and passes, and
+  `api()` walks straight past it — which is how phases 20j and 20k shipped six
+  port-boundary violations under a green gate. The criterion now names both.
+- **The four capabilities with no owning phase** — voiding a fee, fulfilling one
+  reservation by id, expiring one reservation, resolving a patron by member
+  number — were recorded only here, in a phase entry. 20b-iii's acceptance says
+  every 1.0 route must have a successor or a written decision, so the cutover
+  could have passed its own criterion with four capabilities silently deleted.
+  They are now in the plan, beside that criterion.
+
+**What this does not mean.** The plan is not now correct. It no longer
+contradicts what has been MEASURED, which stops at phase 20l — everything from
+21 onward is still written by somebody who had not tried it. This log remains
+the newer truth, and the next phase that proves a paragraph wrong should amend
+the plan in the same commit rather than leaving it for another reconciliation.
