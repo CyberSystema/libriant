@@ -4874,3 +4874,77 @@ characters" instead — the affordance `Combobox` already had, using the
 The catalogue DETAIL screen, the book form, and every other screen family. The
 list was repointed on its own because it is independently shippable and because
 it is where the pattern and the locale answer had to be established.
+
+## Phase 20j — the simple editor, and a survey that stopped a screen
+
+### The op builder, proven from both sides
+
+`apps/web/lib/marc-simple-fields.ts` maps the five fields that correspond to ONE
+MARC subfield each — 245 $a, 250 $a, 264 $b, 264 $c, 020 $a — and emits path ops
+only for the widgets a cataloguer actually changed. It is the subset of §6 phase
+29 the cutover cannot do without: 1.0's book form PATCHes scalar fields at a
+route the cutover deletes, so without it a library could create and delete
+records but not correct a typo until M5.
+
+It is tested twice over, and the pair caught a real bug. The unit tests prove
+the SHAPES; three new cases in `bib-write-path.spec.ts` prove the API accepts
+them — and returned a 409 that showed `at` is the ABSOLUTE position in a field's
+subfield array, not the occurrence of that subfield's code. On a 245 holding
+`[$a, $c]`, `$c` is occurrence 0 and position 1. A unit test alone would have
+shipped that.
+
+Three behaviours worth naming: a value for a field the record does not carry is
+NOT invented (creating a 264 is a cataloguing decision — which indicators, which
+of RDA's three functions — so the input is disabled instead); clearing a box
+deletes the subfield rather than setting it empty, because a present-but-blank
+`$a` is a different record; and no widget touches a fixed-field position,
+because 008/35-37 is three bytes inside a positional field and a form that wrote
+them is the one way to corrupt a record silently.
+
+### The locale delta was five keys
+
+Exactly the shape 20i predicted. `titleLabel`, `publisherLabel` and `yearLabel`
+already existed and say the right thing; `editionLabel`, `saved`, `noChanges`,
+`fieldNotOnRecord` and `fixedFieldsLater` were new, in both locales, appended in
+the file's own reading order rather than re-sorted.
+
+### The screen was started on a false premise, and reverted
+
+`BibSimpleForm` is written and is NOT yet reachable: the detail screen still
+reads 1.0. That is deliberate — the repoint was begun and then reverted, because
+a survey landing mid-edit contradicted its central assumption.
+
+**`GET /t/:slug/catalog/bib/:id` does not return the projection.** It returns
+`{id, publicNo, kind, schema, status, version, contentHash, rowVersion, record,
+controlNumber, needsReview, source}` — and no title, no publisher, no ISBN, no
+copies, no `coverAssetRef`. A screen must read 245/264/020 out of `record.fields`
+itself, which is what the op builder already does and what the summary card will
+have to. The half-written `DetailBib` type had invented the projection fields.
+
+### What the survey found that has NO owning phase
+
+The remaining repoint is not four more screens of the same kind. Measured across
+the five families:
+
+- **Void a fee** (1.0 `POST /fines/:id/void`) — §6 phase 18 shipped charge, pay,
+  waive, write-off, refund, drawer and receipts, and named no cancellation. No
+  phase owns it, and the cutover deletes the only implementation.
+- **Fulfil one reservation by id** — no 2.0 route takes a hold id and produces a
+  loan; the 2.0 path is item-keyed `holds/fetch` then `circulation/checkout`.
+- **Expire ONE reservation** — 2.0 has only the two tenant-wide sweeps.
+- **Resolve a patron by MEMBER NUMBER** — the checkout screen's scan-to-find.
+  2.0 resolves a `patron_cards` barcode; nothing resolves `patron_number`.
+- **Per-fine settlement** — 1.0 settles one fine by id with a CAS on its status;
+  2.0 settles a patron's BALANCE by amount. Phase 18 chose that deliberately, so
+  the screen is a rewrite rather than a repoint.
+- **`itemTypeId` has no list route** — `POST /items` requires it, and the only
+  known value is the seeded `itype-book`, which `item-defaults.ts` is explicit
+  is a renameable row rather than a default. Add-a-copy cannot be repointed
+  until something lists item types.
+
+Two more shape traps recorded so the next phase does not rediscover them:
+`DELETE /catalog/bib/:id` is a TOMBSTONE with a required `reason`, not 1.0's
+soft archive, so the archived-notice vocabulary is wrong rather than just
+mislabelled; and `POST :id/restore` restores a prior VERSION while
+`POST :id/restore-deleted` undoes the delete — confusing them would silently
+roll a record back.

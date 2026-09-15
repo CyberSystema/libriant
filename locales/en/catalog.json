@@ -88,5 +88,10 @@
   "help.do2": "Click “Add a book” to enter one by hand or look it up by ISBN.",
   "help.do3": "Click any title to edit, add custom fields, or manage copies.",
   "help.countsTitle": "Counts on the table",
-  "help.countsBody": "The “Available” column shows how many copies aren't currently checked out or reserved. The plan you're on caps the total titles in your catalog — you can see your current usage from the Billing page."
+  "help.countsBody": "The “Available” column shows how many copies aren't currently checked out or reserved. The plan you're on caps the total titles in your catalog — you can see your current usage from the Billing page.",
+  "book.saved": "Saved.",
+  "book.noChanges": "Nothing changed, so nothing was saved.",
+  "book.editionLabel": "Edition",
+  "book.fieldNotOnRecord": "This record has no such field. Adding one is a cataloguing decision — use the full editor when it arrives.",
+  "book.fixedFieldsLater": "Language and the other coded values live at fixed positions inside the record and are edited in the full MARC editor."
 }

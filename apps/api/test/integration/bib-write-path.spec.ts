@@ -690,3 +690,79 @@ describe('two phase-10 defects phase 11b made reachable', () => {
     expect(row!.control_number_source).toBe('GR-AtEKT');
   });
 });
+
+/**
+ * The op shapes the simple form emits (2.0 phase 20j).
+ *
+ * `apps/web/lib/marc-simple-fields.ts` builds ops for the five fields that map
+ * to one MARC subfield each, so a cataloguer can fix a typo between the cutover
+ * and the dual-mode editor in phases 28-29. Its own unit tests prove it emits
+ * these SHAPES; only this file can prove the API accepts them.
+ *
+ * `setValue` is already covered above — it is what `RETITLE` sends. These are
+ * the two the builder reaches for when a value is appearing or disappearing,
+ * and the difference matters: `setValue` resolves a path and FAILS when it
+ * names nothing, so a first value has to be an insert rather than a set.
+ */
+describe('§ the simple form’s ops', () => {
+  it('inserts a subfield that was not there — a first value is not a set', async () => {
+    const created = await createRecord();
+    const res = await request(app.getHttpServer())
+      .patch(`/t/${slug}/catalog/bib/${created.recordId}`)
+      .set('Cookie', owner)
+      .send({
+        expectedContentHash: created.contentHash,
+        ops: [{ op: 'insertSubfield', path: '245[0]', at: 1, subfield: { b: 'a subtitle :' } }],
+      })
+      .expect(200);
+    const f245 = (res.body.record.fields as { t: string; s?: Record<string, string>[] }[]).find(
+      (f) => f.t === '245',
+    )!;
+    expect(f245.s!.some((sub) => sub.b === 'a subtitle :')).toBe(true);
+  });
+
+  it('deletes a subfield when the cataloguer clears the box', async () => {
+    // Clearing a value must REMOVE the subfield, not set it empty: an empty
+    // `$a` serialises as a present-but-blank subfield, which is a different
+    // record from one that does not carry it.
+    const created = await createRecord();
+    const before = (created.record.fields as { t: string; s?: Record<string, string>[] }[]).find(
+      (f) => f.t === '245',
+    )!;
+    const cValue = before.s!.find((sub) => sub.c !== undefined)?.c;
+    if (cValue === undefined) return; // the base record has no $c; nothing to prove here
+    const res = await request(app.getHttpServer())
+      .patch(`/t/${slug}/catalog/bib/${created.recordId}`)
+      .set('Cookie', owner)
+      .send({
+        expectedContentHash: created.contentHash,
+        // `at` is the ABSOLUTE position in the field's subfield array, not the
+        // occurrence of this code — `applyOps` reads `entry.field.s[op.at]` and
+        // refuses when what is there is not what the op expected to remove.
+        // On `245` holding [$a, $c] that is 1, and the builder in
+        // `apps/web/lib/marc-simple-fields.ts` got this wrong until this test
+        // returned a 409 for it.
+        ops: [{ op: 'deleteSubfield', path: '245[0]$c[0]', at: 1, subfield: { c: cValue } }],
+      })
+      .expect(200);
+    const after = (res.body.record.fields as { t: string; s?: Record<string, string>[] }[]).find(
+      (f) => f.t === '245',
+    )!;
+    expect(after.s!.some((sub) => sub.c !== undefined)).toBe(false);
+  });
+
+  it('refuses the batch when `from` does not match — the stale-form guard', async () => {
+    // The precondition the builder carries on every `setValue`. It is what
+    // stops a form opened before somebody else's save from overwriting it,
+    // INSIDE the window the content hash still covers.
+    const created = await createRecord();
+    await request(app.getHttpServer())
+      .patch(`/t/${slug}/catalog/bib/${created.recordId}`)
+      .set('Cookie', owner)
+      .send({
+        expectedContentHash: created.contentHash,
+        ops: [{ op: 'setValue', path: '245[0]$a[0]', from: 'not what is there', to: 'anything' }],
+      })
+      .expect(409);
+  });
+});
