@@ -4810,3 +4810,67 @@ happened, in words.
 The charge runs in its OWN transaction, deliberately: phase 16's rule is that a
 fee the reader disputes must not abort the desk operation. The copy is gone
 either way.
+
+## Phase 20i — the catalogue list reads 2.0, and what that taught about the locales
+
+The first screen repointed, and it was chosen because it is the largest and most
+representative of the 27 web files.
+
+### §6's locale instruction is wrong for most of the keys
+
+The survey's reading — "retiring the namespaces is not a deletion, it is
+authoring ~350 replacement keys × 2 locales first" — assumed the 1.0 namespaces
+belong to 1.0. They do not. Measured, the first keys in `catalog.json` are:
+
+    title            "Catalog"
+    columns.title    "Title"
+    columns.author   "Author"
+    columns.copies   "Copies"
+
+That is CATALOGUE vocabulary, not 1.0 vocabulary, and a 2.0 catalogue screen
+says the same words. Repointing this screen needed **zero new keys in either
+locale** — `columns.copies` was already there, unused by the 1.0 table, and the
+2.0 list has the count to put under it.
+
+So the locale work is a DELTA discovered during each repoint, not a rewrite
+performed before them: the keys that retire are the ones naming a concept 2.0
+drops, and the keys that appear are for concepts it adds. Doing it first would
+have meant authoring 350 guesses about screens nobody had written.
+
+### What actually changed, and why each absence is a decision
+
+`CatalogBook` became `CatalogBib`, and three fields changed shape because the
+2.0 read surface decided they should:
+
+- **no `subtitle`** — the projector joins 245 $a and $b into `title`, because a
+  MARC record does not have a subtitle field, it has a title statement. The row
+  now shows `statementOfResp` (245 $c) underneath instead, which is what the
+  title page says and a different fact from the heading in the author column.
+- **no `authors[]`** — a contributor is a 100 or 700 field and there is no
+  authority store until phase 45, so there is no id to key a row on.
+  `mainEntryDisplay` falling back to `browseAuthor` is what a list can honestly
+  show.
+- **`language` is `languageCode`** — ISO 639-2/B, three characters.
+
+### Two things the repoint had to fix rather than inherit
+
+**The ISBN column would have vanished.** 20a left identifiers off the list and
+named the open question: "phase 20b decides whether a list is the place to show
+one." This is that decision, and it is yes — a librarian matching the copy in
+their hand against the screen reads the ISBN. It is a Prisma RELATION load, so a
+25-row page costs two statements rather than twenty-six, and the keyset
+pagination is untouched. Cancelled and invalid identifiers are excluded: 020 $z
+is where a wrong number belongs and a list is not the place to explain that.
+
+**`DataTable` said "no matches" for a search the server refused to run.** The
+2.0 list has a server-side floor on the term (performance-12: the client used to
+be the only thing between a two-letter term and a scan) and answers a short one
+with an empty page plus `minQueryChars`. The table now shows "type at least N
+characters" instead — the affordance `Combobox` already had, using the
+`common.search.minChars` key that already existed in both locales.
+
+### Still 1.0
+
+The catalogue DETAIL screen, the book form, and every other screen family. The
+list was repointed on its own because it is independently shippable and because
+it is where the pattern and the locale answer had to be established.

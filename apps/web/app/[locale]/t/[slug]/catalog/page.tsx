@@ -6,9 +6,9 @@ import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
 import { api } from '@/lib/api';
 import { translateApiError } from '@/lib/api-errors';
-import { CatalogTable, type CatalogBook } from './CatalogTable';
+import { CatalogTable, type CatalogBib } from './CatalogTable';
 
-type ListResponse<T> = { items: T[]; nextCursor: string | null };
+type ListResponse<T> = { items: T[]; nextCursor: string | null; minQueryChars?: number };
 
 export default async function CatalogPage(props: {
   params: Promise<{ locale: string; slug: string }>;
@@ -26,11 +26,11 @@ export default async function CatalogPage(props: {
   if (q) qs.set('q', q);
   qs.set('limit', '25');
 
-  let initial: ListResponse<CatalogBook>;
+  let initial: ListResponse<CatalogBib>;
   let fetchError: string | null = null;
   try {
-    initial = await api<ListResponse<CatalogBook>>(
-      `/t/${params.slug}/catalog/books?${qs.toString()}`,
+    initial = await api<ListResponse<CatalogBib>>(
+      `/t/${params.slug}/catalog/bib?${qs.toString()}`,
       { cookie },
     );
   } catch (err) {

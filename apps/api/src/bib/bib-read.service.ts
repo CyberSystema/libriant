@@ -67,6 +67,8 @@ export type BibListRow = {
   readonly statementOfResp: string | null;
   readonly mainEntryDisplay: string | null;
   readonly browseAuthor: string | null;
+  /** The first valid ISBN, for the column a librarian matches a copy against. */
+  readonly isbn: string | null;
   readonly edition: string | null;
   readonly publisher: string | null;
   readonly publicationYear: number | null;
@@ -269,6 +271,25 @@ export class BibReadService {
         availableCount: true,
         suppressedFromOpac: true,
         updatedAt: true,
+        // THE ISBN THE LIST SHOWS (2.0 phase 20i).
+        //
+        // 20a left identifiers out and said why: "identifiers are their own
+        // table and a record may carry several — phase 20b decides whether a
+        // list is the place to show one." Repointing the catalogue screen is
+        // where that gets decided, and the answer is yes: a librarian matching
+        // a copy in their hand against the list reads the ISBN, and a catalogue
+        // that dropped the column would be worse than the one it replaces.
+        //
+        // A RELATION LOAD, not a join per row. Prisma issues ONE extra query
+        // for the page's identifiers keyed by `bib_id`, so a 25-row page costs
+        // two statements rather than twenty-six — and the keyset pagination
+        // above is untouched, which is the property that made the list fast.
+        identifiers: {
+          where: { scheme: 'isbn', cancelled: false, valid: true },
+          select: { value: true },
+          orderBy: { id: 'asc' },
+          take: 1,
+        },
       },
     });
 
@@ -289,6 +310,12 @@ export class BibReadService {
         availableCount: r.availableCount,
         suppressedFromOpac: r.suppressedFromOpac,
         updatedAt: r.updatedAt,
+        // The FIRST valid, uncancelled one. A record may carry several — a
+        // reprint, a set and its volumes — and a list has room for one; the
+        // record page shows them all. Cancelled and invalid ones are excluded
+        // rather than shown struck through, because 020 $z is where a wrong
+        // number belongs and a list is not the place to explain that.
+        isbn: r.identifiers[0]?.value ?? null,
       }),
       (r) => keysetCursorValues(r.sortTitle, r.bibId),
     );

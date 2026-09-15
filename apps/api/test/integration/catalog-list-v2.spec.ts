@@ -321,3 +321,64 @@ describe('§4 filters', () => {
     expect(outside.items).toEqual([]);
   });
 });
+
+describe('§5 the ISBN the repointed screen shows (2.0 phase 20i)', () => {
+  /**
+   * 20a left identifiers off the list and said why: "identifiers are their own
+   * table and a record may carry several — phase 20b decides whether a list is
+   * the place to show one." Repointing the catalogue screen is where that got
+   * decided, and the answer is yes: a librarian matching the copy in their hand
+   * against the screen reads the ISBN, and a catalogue that dropped the column
+   * would be worse than the 1.0 one it replaces.
+   */
+  it('a record with an ISBN shows it', async () => {
+    const created = await api()
+      .post(`/t/${slug}/catalog/bib`)
+      .set('Cookie', owner)
+      .send({
+        leader: '00000nam a2200000 a 4500',
+        fields: [
+          { t: '008', v: '260905s2026    gr |||||||||||000 0 gre d' },
+          { t: '020', i: '  ', s: [{ a: '9789600325300' }] },
+          { t: '245', i: '00', s: [{ a: 'ΜΕ ΤΑΥΤΟΤΗΤΑ' }] },
+        ],
+      })
+      .expect(201);
+    const id = (created.body as { recordId: string }).recordId;
+
+    const body = await list({ q: 'ταυτοτητα', limit: 25 });
+    const row = body.items.find((r) => r.id === id);
+    expect(row, 'the record did not come back from the list').toBeTruthy();
+    expect((row as unknown as { isbn: string | null }).isbn).toBe('9789600325300');
+  }, 60_000);
+
+  it('and a record without one says null rather than omitting the field', async () => {
+    // The column renders an em dash for null. A MISSING key would be
+    // `undefined` in the client and read as "not loaded yet", which is a
+    // different thing from "this record has no ISBN".
+    const body = await list({ limit: 25 });
+    for (const row of body.items) {
+      expect(Object.prototype.hasOwnProperty.call(row, 'isbn')).toBe(true);
+    }
+  }, 60_000);
+
+  it('does not show a cancelled ISBN — 020 $z is where a wrong number belongs', async () => {
+    const created = await api()
+      .post(`/t/${slug}/catalog/bib`)
+      .set('Cookie', owner)
+      .send({
+        leader: '00000nam a2200000 a 4500',
+        fields: [
+          { t: '008', v: '260905s2026    gr |||||||||||000 0 gre d' },
+          { t: '020', i: '  ', s: [{ z: '9789600325317' }] },
+          { t: '245', i: '00', s: [{ a: 'ΑΚΥΡΟ ISBN' }] },
+        ],
+      })
+      .expect(201);
+    const id = (created.body as { recordId: string }).recordId;
+    const body = await list({ q: 'ακυρο', limit: 25 });
+    const row = body.items.find((r) => r.id === id);
+    expect(row).toBeTruthy();
+    expect((row as unknown as { isbn: string | null }).isbn).toBeNull();
+  }, 60_000);
+});

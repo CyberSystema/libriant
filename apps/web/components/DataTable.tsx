@@ -20,7 +20,20 @@ export type Column<T> = {
   className?: string;
 };
 
-type ListResponse<T> = { items: T[]; nextCursor: string | null };
+/**
+ * `minQueryChars` arrives only when the server REFUSED to search (2.0 phase
+ * 20i). The 2.0 list surface has a server-side floor on the search term —
+ * performance-12: the client used to be the only thing between a two-letter
+ * term and a scan of the catalogue — and it answers a short term with an empty
+ * page plus the floor, rather than with results.
+ *
+ * Without this the table says "no matches", which is a lie: it did not look.
+ */
+type ListResponse<T> = {
+  items: T[];
+  nextCursor: string | null;
+  minQueryChars?: number;
+};
 
 type DataTableProps<T extends { id: string }> = {
   /** Path on the API (without query string). */
@@ -47,6 +60,12 @@ type DataTableProps<T extends { id: string }> = {
   /** Localized empty state when a search yields nothing. */
   noMatchesTitle?: string;
   noMatchesDescription?: string;
+  /**
+   * Localized "type at least {count} characters", shown when the SERVER refused
+   * a short search term. Required wherever the endpoint has a floor — without
+   * it the table reports "no matches" for a search nobody performed.
+   */
+  minCharsText?: string;
   /** Localized "load more" button. */
   loadMoreLabel?: string;
   /** Optional row → URL function; rows become clickable. */
@@ -73,6 +92,7 @@ export function DataTable<T extends { id: string }>({
   searchLabel = 'Search',
   noMatchesTitle = 'No matches',
   noMatchesDescription,
+  minCharsText,
   loadMoreLabel = 'Load more',
   rowHref,
   toolbar,
@@ -90,6 +110,9 @@ export function DataTable<T extends { id: string }>({
   // server-rendered initial values whenever the URL search params change.
   const [items, setItems] = React.useState<T[]>(initial.items);
   const [nextCursor, setNextCursor] = React.useState<string | null>(initial.nextCursor);
+  const [minQueryChars, setMinQueryChars] = React.useState<number | undefined>(
+    initial.minQueryChars,
+  );
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [searchInput, setSearchInput] = React.useState(currentQ);
@@ -97,6 +120,7 @@ export function DataTable<T extends { id: string }>({
   React.useEffect(() => {
     setItems(initial.items);
     setNextCursor(initial.nextCursor);
+    setMinQueryChars(initial.minQueryChars);
     setError(null);
   }, [initial.items, initial.nextCursor]);
 
@@ -143,7 +167,13 @@ export function DataTable<T extends { id: string }>({
   }
 
   const isEmpty = items.length === 0 && !currentQ;
-  const noMatches = items.length === 0 && !!currentQ;
+  // The floor the SERVER reported, not one the client guessed — so a table
+  // whose endpoint has no floor behaves exactly as it did.
+  const tooShort =
+    minQueryChars !== undefined && !!currentQ && currentQ.trim().length < minQueryChars
+      ? minQueryChars
+      : null;
+  const noMatches = items.length === 0 && !!currentQ && tooShort === null;
 
   return (
     <>
@@ -183,6 +213,18 @@ export function DataTable<T extends { id: string }>({
           illustration={emptyIllustration ?? 'illustrations/empty-catalog'}
           title={emptyTitle}
           description={emptyDescription}
+        />
+      ) : tooShort !== null ? (
+        // THE SERVER DID NOT LOOK, so the table must not say "no matches".
+        // `minCharsText` is the caller's localized sentence — the same one
+        // `Combobox` takes, for the same reason.
+        <EmptyState
+          illustration={emptyIllustration ?? 'illustrations/empty-catalog'}
+          title={noMatchesTitle}
+          description={
+            minCharsText?.replace('{count}', String(tooShort)) ??
+            `Type at least ${tooShort} characters to search.`
+          }
         />
       ) : noMatches ? (
         <EmptyState
