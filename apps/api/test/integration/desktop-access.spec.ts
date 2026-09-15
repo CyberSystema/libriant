@@ -23,14 +23,26 @@ declareBillingPosture(
 
 /**
  * End-to-end check for the desktop download + entitlement endpoints. Boots the
- * real Nest app against the dev Postgres/Redis (so DI wiring, the tenant/role
- * guards, and the GitHub-proxy 404 path are all exercised for real).
+ * real Nest app against the dev Postgres/Redis, so the DI wiring, the
+ * tenant/role guards and the gate in front of the GitHub proxy are exercised
+ * for real.
  *
- * Deterministic regardless of network: no `desktop-v*` release exists, and even
- * if api.github.com is unreachable the proxy degrades to 404. The paid-vs-free
- * entitlement decision table is covered separately + deterministically by the
- * unit spec (src/desktop/desktop-access.spec.ts); here we verify the wiring,
- * the guards, and the free-for-all path that is live today.
+ * DETERMINISTIC BECAUSE IT ASSERTS THE GATE, NOT THE UPSTREAM — and it did not
+ * used to be. This docblock claimed "no `desktop-v*` release exists, and even if
+ * api.github.com is unreachable the proxy degrades to 404", and both halves were
+ * a claim about the outside world: `DesktopReleaseService` asks GitHub live.
+ * Releases v0.1.5 … v0.1.10 do exist and carry installer assets, so on
+ * 2026-09-15 the proxy found one, returned 200, and a green test went red having
+ * found nothing wrong with this repository. Before that it passed as often by
+ * accident — an unauthenticated GitHub call from CI is rate-limited, and the 404
+ * it produces is a failure being read as an empty shelf.
+ *
+ * So the assertions below stop at the gate: 403 when the tenant is not
+ * entitled, anything-but-403-and-under-500 when it is. What GitHub had at that
+ * moment is not this repository's business. The paid-vs-free entitlement
+ * decision table is covered separately and deterministically by the unit spec
+ * (src/desktop/desktop-access.spec.ts); here we verify the wiring, the guards,
+ * and the free-for-all path that is live today.
  *
  * Pre-reqs: `pnpm db:up` (dev Postgres + Redis containers).
  */
@@ -176,7 +188,7 @@ describe('desktop access + download endpoints', () => {
     );
   });
 
-  it('GET /desktop/download honors the gate: entitled → 404 (no release), else 403', async () => {
+  it('GET /desktop/download honors the gate: entitled → past it, else 403', async () => {
     const cookie = sessionCookie(await loginAs(slugA));
     const access = await request(app.getHttpServer())
       .get(`/t/${slugA}/desktop/access`)
@@ -185,10 +197,31 @@ describe('desktop access + download endpoints', () => {
     const res = await request(app.getHttpServer())
       .get(`/t/${slugA}/desktop/download?platform=mac`)
       .set('Cookie', cookie);
-    // Entitled → the gate lets it through and the proxy 404s (no desktop-v*
-    // release published). Not entitled (e.g. free plan while billing is on) →
-    // the gate blocks with 403 BEFORE the proxy. Never a 200 or 5xx.
-    expect(res.status).toBe(access.body.allowed ? 404 : 403);
+
+    // THE GATE IS WHAT THIS TEST IS ABOUT, and it is all this test may assert.
+    //
+    // It used to expect `404` for an entitled tenant, on the reasoning that no
+    // desktop release was published — and `DesktopReleaseService` asks
+    // `api.github.com` for that, live, from CI. So the expectation was a claim
+    // about the OUTSIDE WORLD, and on 2026-09-15 the world changed: releases
+    // v0.1.5 … v0.1.10 exist and carry installer assets, the proxy found one,
+    // and a green test went red having found nothing wrong with this repository.
+    //
+    // Before that it passed for the wrong reason as often as the right one:
+    // an unauthenticated GitHub call from CI is rate-limited, `!res.ok` logs a
+    // warning and reports no release, and the 404 arrives by accident.
+    //
+    // So: not entitled is 403, which is the gate refusing BEFORE the proxy.
+    // Entitled is anything that is not 403 — the gate let it through, and what
+    // GitHub then had is not this repository's business. 5xx is still a failure
+    // either way, because that would be the proxy breaking rather than the
+    // upstream being empty.
+    if (access.body.allowed) {
+      expect(res.status).not.toBe(403);
+      expect(res.status).toBeLessThan(500);
+    } else {
+      expect(res.status).toBe(403);
+    }
   });
 
   it('GET /desktop/download rejects an unknown platform (400 when entitled, 403 otherwise)', async () => {
