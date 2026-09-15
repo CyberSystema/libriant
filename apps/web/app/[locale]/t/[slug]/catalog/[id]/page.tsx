@@ -4,7 +4,8 @@ import { Banner, PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
-import { ApiError, api } from '@/lib/api';
+import { ApiError } from '@/lib/api';
+import { dataPort } from '@/lib/ports';
 import { translateApiError } from '@/lib/api-errors';
 import { UNTITLED_TITLE, readDisplayTitle } from '@/lib/marc-simple-fields';
 import {
@@ -42,7 +43,9 @@ export default async function BibDetailPage(props: {
   let record: BibRecordRead | null = null;
   let fetchError: string | null = null;
   try {
-    record = await api<BibRecordRead>(`/t/${params.slug}/catalog/bib/${params.id}`, { cookie });
+    record = await dataPort().get<BibRecordRead>(`/t/${params.slug}/catalog/bib/${params.id}`, {
+      cookie,
+    });
   } catch (err) {
     // A DELETED record 404s here: `BibReadService.read` filters
     // `deleted_at IS NULL`, and §5's `deletedRecord=persistent` promise is
@@ -67,18 +70,20 @@ export default async function BibDetailPage(props: {
   // load is still a record worth reading, and the form says what is missing
   // rather than posting a body the API will refuse.
   const [copies, branches, itemTypes, locations] = await Promise.all([
-    api<Page<ItemRow>>(`/t/${params.slug}/items?bibId=${params.id}&limit=${COPIES_PAGE}`, {
-      cookie,
-    }).catch(() => ({ items: [], nextCursor: null }) as Page<ItemRow>),
-    api<{ items: BranchRow[] }>(`/t/${params.slug}/org/branches`, { cookie }).catch(() => ({
-      items: [],
-    })),
-    api<{ items: ItemTypeRow[] }>(`/t/${params.slug}/org/item-types`, { cookie }).catch(() => ({
-      items: [],
-    })),
-    api<{ items: LocationRow[] }>(`/t/${params.slug}/org/locations`, { cookie }).catch(() => ({
-      items: [],
-    })),
+    dataPort()
+      .get<Page<ItemRow>>(`/t/${params.slug}/items?bibId=${params.id}&limit=${COPIES_PAGE}`, {
+        cookie,
+      })
+      .catch(() => ({ items: [], nextCursor: null }) as Page<ItemRow>),
+    dataPort()
+      .get<{ items: BranchRow[] }>(`/t/${params.slug}/org/branches`, { cookie })
+      .catch(() => ({ items: [] })),
+    dataPort()
+      .get<{ items: ItemTypeRow[] }>(`/t/${params.slug}/org/item-types`, { cookie })
+      .catch(() => ({ items: [] })),
+    dataPort()
+      .get<{ items: LocationRow[] }>(`/t/${params.slug}/org/locations`, { cookie })
+      .catch(() => ({ items: [] })),
   ]);
 
   // Not translated, on purpose: the catalogue list renders the projector's

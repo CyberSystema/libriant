@@ -322,10 +322,28 @@ export function marcFromBook(
   // -- leader ----------------------------------------------------------------
   // /05 'd' for a deleted (archived) record, 'n' for new. /06 'a' language
   // material, /07 'm' monograph. /09 'a' = UCS/Unicode, from the EXPORT
-  // encoding. /17 'M' minimal level: these were not catalogued, they were
-  // migrated, and claiming full level would be a claim about work nobody did.
+  // encoding.
+  //
+  // /17 '7' MINIMAL LEVEL: these were not catalogued, they were migrated, and
+  // claiming full level would be a claim about work nobody did. Encoding level
+  // is not cosmetic — it is what a receiving system's overlay logic reads to
+  // decide whether an incoming record should replace a held one.
+  //
+  // /18 'a' AACR2. The record below writes ISBD punctuation — 245 $a ends in
+  // " :" when there is a subtitle — so 'c' (ISBD punctuation omitted) would be
+  // a lie about the bytes. 'a' is also what `SHIPPED_TEMPLATES` starts a book
+  // from, so a migrated record and a typed one describe themselves the same way.
+  //
+  // THIS LINE SHIPPED WRONG FROM PHASE 19b UNTIL 20l. It read
+  // `a22000003M 4500`, which puts '3' (abbreviated) at /17 and 'M' at /18 — and
+  // 'M' is not a defined value there, so `validate()` returned
+  // `position-not-allowed` on EVERY migrated record. At warning severity, so
+  // nothing ever stopped. The comment above it named /17 while the byte it
+  // described sat at /18: a leader written as a literal is counted by eye, and
+  // this is the second off-by-one of exactly this kind in the file's history.
+  // Hence the assertions in the test beside it, which now pin both positions.
   const status = book.archivedAt === null ? 'n' : 'd';
-  const leader = `00000${status}am a22000003M 4500`.slice(0, 24).padEnd(24, ' ');
+  const leader = `00000${status}am a22000007a 4500`.slice(0, 24).padEnd(24, ' ');
 
   return { record: { leader, fields }, issues };
 }

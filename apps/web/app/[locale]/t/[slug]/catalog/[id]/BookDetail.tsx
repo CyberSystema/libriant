@@ -14,7 +14,7 @@ import {
 } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { api } from '@/lib/api';
+import { dataPort } from '@/lib/ports';
 import { translateApiError } from '@/lib/api-errors';
 import { printDocument } from '@/lib/print';
 import {
@@ -217,9 +217,9 @@ export function BookDetail({
     setDeleteBusy(true);
     setDeleteError(null);
     try {
-      await api(`/t/${slug}/catalog/bib/${rec.id}?reason=${encodeURIComponent(reason)}`, {
-        method: 'DELETE',
-      });
+      await dataPort().delete(
+        `/t/${slug}/catalog/bib/${rec.id}?reason=${encodeURIComponent(reason)}`,
+      );
       toast.show({ severity: 'success', title: t('catalog.book.deleted') });
       // The record is unreadable from here on, so do not stay on a page that
       // would 404 on its next refresh.
@@ -236,7 +236,7 @@ export function BookDetail({
     setWithdrawBusy(true);
     setWithdrawError(null);
     try {
-      await api(`/t/${slug}/items/${copy.id}`, { method: 'DELETE' });
+      await dataPort().delete(`/t/${slug}/items/${copy.id}`);
       setRows((cs) => cs.filter((c) => c.id !== copy.id));
       toast.show({ severity: 'success', title: t('catalog.book.copyWithdrawn') });
       setWithdrawing(null);
@@ -652,7 +652,7 @@ function AddCopyModal({
       // and a librarian types it that way; prefix and suffix are cataloguing
       // refinements the copy editor can split out later.
       if (callNumber.trim()) body.callNumberBase = callNumber.trim();
-      await api(`/t/${slug}/items`, { method: 'POST', body });
+      await dataPort().post(`/t/${slug}/items`, body);
       toast.show({ severity: 'success', title: t('catalog.book.copyAdded') });
       onCreated();
     } catch (err) {

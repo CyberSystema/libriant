@@ -10,6 +10,7 @@ import { BibReadService } from './bib-read.service.js';
 import { BibIngestService } from './bib-ingest.service.js';
 import { BibDeleteService } from './bib-delete.service.js';
 import { BibCoverController } from './bib-cover.controller.js';
+import { CatalogTemplatesController } from './catalog-templates.controller.js';
 import { MarcBodyMiddleware } from './marc-body.middleware.js';
 import { CustomizationModule } from '../customization/customization.module.js';
 import { PlansModule } from '../plans/plans.module.js';
@@ -38,7 +39,7 @@ import { PlansModule } from '../plans/plans.module.js';
     IdempotencyInterceptor,
     BibDeleteService,
   ],
-  controllers: [BibController, BibCoverController],
+  controllers: [BibController, BibCoverController, CatalogTemplatesController],
   exports: [BibWriteService, BibLockService, BibProjectionService, BibReadService],
 })
 export class BibModule implements NestModule {

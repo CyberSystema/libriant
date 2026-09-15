@@ -5045,3 +5045,108 @@ screen showing a thing that cannot exist. Recorded here rather than half-built:
 `catalog/new/BookForm.tsx` (create), and the members / loans+reservations /
 fines families. The four capabilities 20j found with no owning phase are
 unchanged; `itemTypeId` is struck off that list.
+
+## Phase 20l — the create screen, and the answer the repo already had
+
+The catalogue CREATE screen reads and writes 2.0. Three defects found while
+designing it are fixed in the same commit, because two of them are in the path
+this screen walks.
+
+### The record shape was already decided, and gate-checked
+
+`POST /catalog/bib` takes a whole MARC record — there is no scalar create route,
+deliberately, so that "a record can be posted straight from an import or a
+Z39.50 response without a translation layer that could lose subfield order". So
+a create screen has to know what a new book looks like.
+
+A design pass produced three candidate answers and **all three hand-rolled a
+leader**. All three were wrong in different ways, and the repo already held the
+right one: `SHIPPED_TEMPLATES` in `packages/marc/src/templates.ts` — a `book`
+template with a leader, indicators and a field set, enforced by
+`check:marc-schema`, which refuses a template binding any tag the definition does
+not define. Measured against the real codec: the shipped leader validates with
+zero issues; one candidate selected no rule pack at all, and another required
+336/337/338 and produced three.
+
+`@libriant/marc` is not a web dependency and must not become one — the web
+Dockerfile would need a matching COPY entry, and the codec pulls
+`fast-xml-parser` into a bundle with no use for it. So the template is SERVED:
+`GET /t/:slug/catalog/templates`, its own controller rather than a sibling of
+`@Get(':id')` that declaration order could swallow, `cat.bib.read` like the
+`org/*` pickers. `apps/web/lib/marc-from-template.ts` fills it and never writes
+a leader. §3 gives every library its own `catalog_templates` rows in M5, and
+this route is where those will be served from.
+
+### The leader has been wrong on every migrated record since 19b
+
+`marc-from-book.ts` emitted `00000nam a22000003M 4500`. Its comment says
+"/17 'M' minimal level". Indexed: **'3' is at /17 and 'M' is at /18**, where
+`M` is not a defined value — so `validate()` returned `position-not-allowed` on
+every record the upgrade has ever produced, at warning severity, so nothing
+stopped. Corrected to `/17 '7'` (minimal level, the value the comment intended)
+and `/18 'a'` (AACR2 — the synthesiser writes ISBD punctuation, `245 $a` ending
+in " :", so a code meaning "punctuation omitted" would misdescribe the bytes;
+and it matches what the shipped template starts a book from). Measured before
+and after: 1 issue → 0.
+
+The test beside it now pins /06, /07, /17 and /18 **by index**. That is the only
+form of the assertion that would have failed: the file's existing leader test
+checked `length`, `[5]` and `[9]`, and a 24-character literal is counted by eye.
+
+### `api()` was the other way past the port, and 20j/20k both took it
+
+Phase 6's acceptance criterion is "an ESLint rule fails on `fetch(` inside a
+screen component", and that rule exists and works — so the criterion was met
+while the intent was not. `api()` is not `fetch`, so it walks past every
+selector, and the screens this program repointed in 20j and 20k shipped six such
+calls between them.
+
+All six are now `dataPort()`, and a rule bans the import. Scoped to
+`catalog/**`, not `apps/web/app/**`: **104 files still import `api` and 100 of
+them are 1.0 screens the cutover deletes**, so a repo-wide ban today would need
+104 conversions or 104 exemptions — and the config's own principle is that a
+rule needing `eslint-disable` on day one is a rule nobody believes. This is the
+beachhead, zero exemptions among the files it covers, and it grows one directory
+at a time. It uses `no-restricted-imports` rather than `no-restricted-syntax`
+precisely because the block above it records that a second flat-config entry
+setting the same rule name silently disables the first one's selectors.
+
+### The create form had no idempotency key, and no 001 to catch a duplicate
+
+`POST /catalog/bib` mounts `IdempotencyInterceptor`, and the form emits no 001 —
+so `marc_records_control_number_unique_active`, which only constrains records
+that HAVE a control number, cannot catch a duplicate. A double-click or a retry
+after the 10 s client deadline produced two identical catalogue records with
+nothing to notice. The form now sends a key from `useIdempotencyKey` and rotates
+it after a successful save.
+
+### What the form refuses to offer
+
+One contributor, into 100. The template offers 700 and the form leaves it empty:
+a repeatable heading with its own relator needs phase 29's editor, and there is
+no authority store to resolve a name against until 45. ISBN prefill keeps
+working and fills the FIRST author only, saying so when OpenLibrary listed more
+— a silently dropped contributor is worse than one the cataloguer adds. No
+custom fields, for the reason 20k recorded. No coded values beyond year and
+language, because the rest of the 008 is forty positional bytes.
+
+A bad ISBN check digit is reported and SAVED, not refused: §5 makes no
+identifier a uniqueness constraint, and a set, a reprint and publisher reuse in
+small Greek presses all legitimately share one.
+
+### Found, not fixed: 008/00-05 is authored by the browser's clock
+
+`bib-write.service.ts` writes the `date_entered` COLUMN from the server's clock
+and says it is never rewritten, because every "titles added this year" figure and
+the ISO 2789 return read it. The record's own 008/00-05 is whatever the client
+sent, and **nothing compares the two** — so a cataloguer working at 01:30 in
+Athens can produce a record whose 008 and whose column name different days,
+permanently and undetectably. The fix belongs beside `leaderForWrite`, which
+already overwrites five leader positions on every write; a client is the wrong
+place to decide what day a library catalogued something. Not done here.
+
+### Still 1.0 after this
+
+The members, loans+reservations and fines families. `catalog/new/BookForm.tsx`
+survives only because the onboarding wizard still mounts it, and dies with the
+1.0 modules.

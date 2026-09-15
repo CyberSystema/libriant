@@ -130,5 +130,21 @@
   "book.addCopyNoItemTypes": "Add an item type before adding copies — it is what decides the loan rules.",
   "book.addCopyNoLocations": "Add a shelving location before adding copies — it is where the copy sits.",
   "book.errors.reasonTooShort": "Write a reason of at least three characters.",
-  "book.errors.copyFieldsRequired": "Pick a branch, a shelving location and an item type."
+  "book.errors.copyFieldsRequired": "Pick a branch, a shelving location and an item type.",
+  "book.statementLabel": "Statement of responsibility",
+  "book.statementHint": "As the title page gives it — “by Nikos Kazantzakis”. Transcribed, not a heading.",
+  "book.mainEntryLabel": "Main author",
+  "book.mainEntryHint": "Surname first: “Kazantzakis, Nikos”. One only — see the note below the form.",
+  "book.mainEntryDatesLabel": "Author dates",
+  "book.placeLabel": "Place of publication",
+  "book.extentLabel": "Extent",
+  "book.extentHint": "How much of it there is, in your own words — “320 pages”, “2 volumes”.",
+  "book.language639Hint": "Three letters, ISO 639-2/B. Greek is “gre”, English “eng”, French “fre”.",
+  "book.subjectLabel": "Subject",
+  "book.noteLabel": "Note",
+  "book.pagesExtent": "{count} pages",
+  "book.isbnFoundExtraAuthors": "Found it. {count, plural, one {# more author was} other {# more authors were}} listed — add them once the full editor arrives.",
+  "book.isbnCheckDigit": "Saved, but the ISBN's check digit doesn't add up. Worth a second look.",
+  "book.oneContributorOnly": "One author for now. Extra contributors, subjects and coded values need the full MARC editor.",
+  "book.templateUnavailable": "Couldn't load the record template, so this form can't be shown. Try again in a moment."
 }

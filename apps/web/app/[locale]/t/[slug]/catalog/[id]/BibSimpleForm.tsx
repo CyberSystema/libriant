@@ -3,7 +3,7 @@ import * as React from 'react';
 import { Button, FormError, FormField, Input, useToast } from '@libriant/ui';
 import type { Catalog, Locale } from '@libriant/i18n';
 import { createTranslator } from '@libriant/i18n';
-import { api } from '@/lib/api';
+import { dataPort } from '@/lib/ports';
 import { translateApiError } from '@/lib/api-errors';
 import {
   SIMPLE_FIELDS,
@@ -94,9 +94,9 @@ export function BibSimpleForm({
     setSaving(true);
     setError(null);
     try {
-      const res = await api<{ record: MarcRecordLike; contentHash: string }>(
+      const res = await dataPort().patch<{ record: MarcRecordLike; contentHash: string }>(
         `/t/${slug}/catalog/bib/${recordId}`,
-        { method: 'PATCH', body: { expectedContentHash: contentHash, ops } },
+        { expectedContentHash: contentHash, ops },
       );
       toast.show({ severity: 'success', title: t('catalog.book.saved') });
       onSaved(res);

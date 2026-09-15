@@ -353,6 +353,55 @@ export default tseslint.config(
   },
   {
     /**
+     * `api()` is the OTHER way past the port, and it is how phases 20j and 20k
+     * drifted (2.0 phase 20l).
+     *
+     * Phase 6's acceptance criterion is "an ESLint rule fails on `fetch(`
+     * inside a screen component", and the block above does exactly that — so
+     * the criterion was met while the INTENT was not. `api()` is not `fetch`,
+     * so a screen importing it walks straight past every selector up there, and
+     * the catalogue detail screen shipped three such calls.
+     *
+     * A DIFFERENT RULE NAME, deliberately. The block above notes that a flat
+     * config entry REPLACES a rule's options for every file it matches, so a
+     * second block setting `no-restricted-syntax` over overlapping files would
+     * silently disable the first one's selectors. `no-restricted-imports` does
+     * not collide with it.
+     *
+     * SCOPED TO THE CATALOGUE, not to `apps/web/app/**`, because 104 files
+     * still import `api` and 100 of them are 1.0 screens the cutover deletes.
+     * A repo-wide ban today would need 104 conversions or 104 exemptions, and
+     * the block above is right that a rule needing `eslint-disable` on day one
+     * is a rule nobody believes. This is the beachhead: it covers the screens
+     * phases 20i/20j/20k/20l actually repointed, with ZERO exemptions among
+     * them, and it grows one directory at a time as each family is repointed.
+     */
+    files: ['apps/web/app/**/catalog/**/*.{ts,tsx}'],
+    ignores: [
+      // The 1.0 create form. Nothing in `catalog/` mounts it any more — the
+      // onboarding wizard is its last caller — and it dies with the 1.0
+      // modules. Converting it would mean repointing onboarding too, which is
+      // its own phase.
+      'apps/web/app/**/catalog/new/BookForm.tsx',
+    ],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@/lib/api',
+              importNames: ['api'],
+              message:
+                "A screen must not call api() directly. Use dataPort() from '@/lib/ports' — get/post/patch/put/delete/upload, and `idempotencyKey` for a write — so the same screen runs on the native client (2.0 phase 6). `ApiError`, `translateApiError` and the timeout constants are still fine to import.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    /**
      * The two 2.0 boundaries that apply to essentially all of `apps/api/src`:
      * phase 15's single-status-writer and phase 16's advisory-lock ordering.
      *

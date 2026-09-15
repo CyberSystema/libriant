@@ -4,15 +4,13 @@ import { PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
-import { api } from '@/lib/api';
-import type { FieldDef } from '@/components/DynamicFields';
-import { BookForm } from './BookForm';
+import { dataPort } from '@/lib/ports';
+import type { CatalogTemplate } from '@/lib/marc-from-template';
+import { BibCreateForm } from './BibCreateForm';
 
 export const dynamic = 'force-dynamic';
 
-type FieldsResponse = { entityKind: string; fields: FieldDef[] };
-
-export default async function NewBookPage(props: {
+export default async function NewBibPage(props: {
   params: Promise<{ locale: string; slug: string }>;
 }) {
   const params = await props.params;
@@ -21,13 +19,14 @@ export default async function NewBookPage(props: {
   const t = createTranslator(catalog, params.locale);
   const cookie = await requestCookieHeader();
 
-  let customFields: FieldDef[] = [];
-  try {
-    const res = await api<FieldsResponse>(`/t/${params.slug}/data-model/fields/book`, { cookie });
-    customFields = res.fields;
-  } catch {
-    customFields = [];
-  }
+  // The record a new book starts from — leader, fields and indicators — served
+  // rather than hand-rolled in the browser. `catalog-templates.controller.ts`
+  // says why at length; the short form is that `check:marc-schema` already
+  // gate-checks this answer and a second copy would not be checked by anything.
+  const templates = await dataPort()
+    .get<{ items: CatalogTemplate[] }>(`/t/${params.slug}/catalog/templates`, { cookie })
+    .catch(() => ({ items: [] as CatalogTemplate[] }));
+  const template = templates.items.find((x) => x.id === 'book') ?? null;
 
   return (
     <>
@@ -41,11 +40,11 @@ export default async function NewBookPage(props: {
         }
       />
       <div style={{ maxWidth: 720 }}>
-        <BookForm
+        <BibCreateForm
           slug={params.slug}
           catalog={catalog}
           locale={params.locale}
-          customFields={customFields}
+          template={template}
         />
       </div>
     </>

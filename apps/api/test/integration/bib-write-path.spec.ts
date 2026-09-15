@@ -751,6 +751,77 @@ describe('§ the simple form’s ops', () => {
     expect(after.s!.some((sub) => sub.c !== undefined)).toBe(false);
   });
 
+  /**
+   * The create path the 2.0 form actually walks (phase 20l).
+   *
+   * `POST /catalog/bib` takes a whole record, so the create screen fills a
+   * TEMPLATE served by `GET /catalog/templates` rather than composing a leader
+   * of its own — `marc-from-book.ts` shipped a hand-written one for six phases
+   * with 'M' at Leader/18, where it is not a defined value.
+   *
+   * What this proves is the CONTRACT between the two routes: what the template
+   * route serves is something the create route accepts, and a record built from
+   * it projects the fields a catalogue list renders. The web builder's own
+   * rules are unit-tested in `apps/web/lib/marc-from-template.test.ts`; this is
+   * the half that only a running server can answer.
+   */
+  it('serves a book template whose filled record the create route accepts', async () => {
+    const templates = await request(app.getHttpServer())
+      .get(`/t/${slug}/catalog/templates`)
+      .set('Cookie', owner)
+      .expect(200);
+    const book = (templates.body.items as { id: string; leader: string; fields: unknown[] }[]).find(
+      (x) => x.id === 'book',
+    );
+    expect(book, 'the shipped book template').toBeDefined();
+    expect(book!.leader).toHaveLength(24);
+
+    // Filled the way the form does: the template's leader, verbatim, and only
+    // the fields the cataloguer typed into.
+    const created = await createRecord({
+      leader: book!.leader,
+      fields: [
+        { t: '008', v: '260916s1946    gr |||||||||||000 0 gre d' },
+        { t: '020', i: '  ', s: [{ a: '9789600501926' }] },
+        { t: '100', i: '1 ', s: [{ a: 'Καζαντζάκης, Νίκος,' }, { d: '1883-1957' }] },
+        // ind2 = 2: "Ο " is skipped when filing, which is the value the form
+        // computes with the same shared function the projector uses.
+        { t: '245', i: '12', s: [{ a: 'Ο άνθρωπος' }] },
+        { t: '264', i: ' 1', s: [{ a: 'Αθήνα' }, { b: 'Εστία' }, { c: '1946' }] },
+      ],
+    });
+
+    // NOT needsReview: a record built from the shipped template and validated
+    // against the shipped definition introduces no blocking issue. A template
+    // that produced a flagged record on its first save would teach a cataloguer
+    // on day one that the flag means nothing.
+    const read = await request(app.getHttpServer())
+      .get(`/t/${slug}/catalog/bib/${created.recordId}`)
+      .set('Cookie', owner)
+      .expect(200);
+    expect(read.body.needsReview).toBe(false);
+
+    // And it PROJECTS — the row the catalogue list and the OPAC read.
+    const rows = await sql<{
+      title: string;
+      sort_title: string;
+      publication_year: number | null;
+      language_code: string | null;
+      title_nonfiling_skip: number;
+    }>(
+      `SELECT title, sort_title, publication_year, language_code, title_nonfiling_skip
+         FROM lbr2.bib_records WHERE bib_id = $1`,
+      [created.recordId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.title).toBe('Ο άνθρωπος');
+    expect(rows[0]!.publication_year).toBe(1946);
+    expect(rows[0]!.language_code).toBe('gre');
+    // The filing key drops the article, which is the whole reason ind2 exists.
+    expect(rows[0]!.title_nonfiling_skip).toBe(2);
+    expect(rows[0]!.sort_title.startsWith('ο ')).toBe(false);
+  });
+
   it('refuses the batch when `from` does not match — the stale-form guard', async () => {
     // The precondition the builder carries on every `setValue`. It is what
     // stops a form opened before somebody else's save from overwriting it,

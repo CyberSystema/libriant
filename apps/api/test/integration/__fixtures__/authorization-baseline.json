@@ -48,6 +48,7 @@
     "GET t/:slug/catalog/books/:id": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/catalog/copies/lookup": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/catalog/isbn-lookup/:isbn": ["admin", "librarian", "owner", "volunteer"],
+    "GET t/:slug/catalog/templates": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/circulation/explain": ["admin", "librarian", "owner"],
     "GET t/:slug/circulation/loans": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/circulation/loans/:id": ["admin", "librarian", "owner", "volunteer"],

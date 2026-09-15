@@ -167,6 +167,27 @@ describe('a 1.0 book becomes a MARC record', () => {
     // at the far end.
     assert.equal(marcFromBook(BOOK, [], 'x').record.leader[9], 'a');
   });
+
+  it('pins every leader position the synthesiser CHOOSES, by index', () => {
+    // WRITTEN BECAUSE THE FILE SHIPPED ONE WRONG. From phase 19b until 20l the
+    // literal was `a22000003M 4500`, which put '3' at /17 and 'M' at /18 —
+    // where 'M' is not a defined value, so `validate()` returned
+    // `position-not-allowed` on every migrated record, at warning severity, so
+    // nothing ever stopped. The comment beside it said "/17 'M'", naming one
+    // position while describing the byte at another.
+    //
+    // A 24-character literal is counted by eye, and eyes miscount. Asserting by
+    // INDEX is the only form of this test that would have failed.
+    const { leader } = marcFromBook(BOOK, [], 'x').record;
+    assert.equal(leader[6], 'a', '/06 language material');
+    assert.equal(leader[7], 'm', '/07 monograph');
+    // /17 minimal level: migrated, not catalogued. Encoding level is what a
+    // receiving system reads to decide whether to overlay a held record.
+    assert.equal(leader[17], '7', '/17 encoding level = minimal');
+    // /18 AACR2. 245 $a ends in " :" when there is a subtitle, so a code
+    // meaning "ISBD punctuation omitted" would misdescribe the bytes.
+    assert.equal(leader[18], 'a', '/18 descriptive cataloguing form = AACR2');
+  });
 });
 
 describe('the ISBN check digit', () => {

@@ -4,7 +4,7 @@ import { createTranslator, isLocale } from '@libriant/i18n';
 import { notFound } from 'next/navigation';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
-import { api } from '@/lib/api';
+import { dataPort } from '@/lib/ports';
 import { translateApiError } from '@/lib/api-errors';
 import { CatalogTable, type CatalogBib } from './CatalogTable';
 
@@ -29,7 +29,7 @@ export default async function CatalogPage(props: {
   let initial: ListResponse<CatalogBib>;
   let fetchError: string | null = null;
   try {
-    initial = await api<ListResponse<CatalogBib>>(
+    initial = await dataPort().get<ListResponse<CatalogBib>>(
       `/t/${params.slug}/catalog/bib?${qs.toString()}`,
       { cookie },
     );
