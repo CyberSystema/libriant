@@ -5,6 +5,8 @@ import { PatronsModule } from '../patrons/patrons.module.js';
 import { PolicyModule } from '../policy/policy.module.js';
 import { TenantModule } from '../tenancy/tenant.module.js';
 import { CheckinService } from './checkin.service.js';
+import { DeclareLostService } from './declare-lost.service.js';
+import { FeesModule } from '../fees/fees.module.js';
 import { CheckoutService } from './checkout.service.js';
 import { CirculationController } from './circulation.controller.js';
 import { LoanReadService } from './loan-read.service.js';
@@ -45,8 +47,19 @@ import { RenewService } from './renew.service.js';
  * them. An export added speculatively is a boundary nobody has tested.
  */
 @Module({
-  imports: [TenantModule, PolicyModule, ItemsModule, PatronsModule, HoldArrivalModule],
-  providers: [CheckoutService, CheckinService, RenewService, LoanReadService],
+  imports: [
+    TenantModule,
+    PolicyModule,
+    ItemsModule,
+    PatronsModule,
+    HoldArrivalModule,
+    // 2.0 phase 20h: declare-lost raises a replacement charge through the real
+    // ledger, so the desk now depends on the fee module. It is the first edge
+    // from circulation to fees, and it runs in its OWN transaction — see
+    // `DeclareLostService` for why a disputed fee must not abort the desk.
+    FeesModule,
+  ],
+  providers: [CheckoutService, CheckinService, RenewService, LoanReadService, DeclareLostService],
   controllers: [CirculationController],
 })
 export class CirculationModule {}

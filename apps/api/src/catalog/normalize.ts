@@ -112,8 +112,12 @@ export function classifySearchTerm(q: string | null | undefined): SearchTerm {
 }
 
 /** Strip everything that's not a digit (or X for ISBN-10). */
-export function digitsOnly(input: string | null | undefined): string | null {
-  if (!input) return null;
-  const cleaned = input.replace(/[^0-9Xx]/g, '');
-  return cleaned.length ? cleaned : null;
-}
+/**
+ * RE-EXPORTED, not defined here (2.0 phase 20h).
+ *
+ * The definition moved to `isbn/identifier.ts`, which survives the cutover;
+ * this line keeps the two other callers in this tree working until their own
+ * directories are dealt with, without a second copy of five lines that must
+ * agree.
+ */
+export { digitsOnly } from '../isbn/identifier.js';

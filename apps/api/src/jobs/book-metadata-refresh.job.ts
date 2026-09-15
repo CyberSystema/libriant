@@ -8,7 +8,7 @@ import {
   readSchemaMajors,
 } from '../tenancy/tenant-db-url.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
-import { fetchOpenLibraryBook } from '../catalog/openlibrary.js';
+import { fetchOpenLibraryBook } from '../isbn/openlibrary.js';
 import { describeError } from './job-error.js';
 import type { JobResult } from './jobs.types.js';
 

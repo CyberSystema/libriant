@@ -172,6 +172,56 @@ export class BibReadService {
    * reader typing `%` would otherwise get a wildcard. They are escaped here. The
    * backslash is doubled first, or escaping the others would be undone by it.
    */
+  /**
+   * The contributor names this library has already used, for a typeahead.
+   *
+   * ## What this is INSTEAD of
+   *
+   * 1.0 has an `authors` table, an `AuthorPicker` that searches it by id, and a
+   * "+ Add new author" button that POSTs a row. 2.0 has none of those and will
+   * not until phase 45: a contributor is a 100 or 700 field INSIDE the MARC
+   * record, and `bib_records.browse_author` is the normalised main-entry form
+   * the projector already writes for browsing.
+   *
+   * So the search half of that picker has an honest 2.0 answer and the create
+   * half does not — there is no entity to create. A cataloguer types a name and
+   * it goes into the record; this endpoint only stops them retyping, and
+   * re-spelling, a name the library already uses.
+   *
+   * ## Distinct headings, not records
+   *
+   * `distinct` on a projection column rather than `groupBy` with a count: the
+   * caller is filling an input, so the useful answer is the twenty names that
+   * match, each once. The count of records per heading is a browse-list
+   * question and belongs to phase 42, which owns `browse_terms`.
+   *
+   * Folded before comparison, like every other search in this product — a
+   * library that catalogued `ΚΑΖΑΝΤΖΑΚΗΣ` and one that catalogued
+   * `Καζαντζάκης` mean the same author, and §9's whole point is that the final
+   * sigma must not decide otherwise.
+   */
+  async suggestContributors(
+    tenant: TenantContext,
+    q: string | undefined,
+    limit = 20,
+  ): Promise<{ items: string[]; minQueryChars?: number }> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const term = classifySearchTerm(q, foldGreek);
+    if (term.kind === 'short') return { items: [], minQueryChars: term.minChars };
+
+    const rows = await client.bibRecord.findMany({
+      where:
+        term.kind === 'none'
+          ? { browseAuthor: { not: null } }
+          : { browseAuthor: { contains: term.value, mode: 'insensitive' } },
+      select: { browseAuthor: true },
+      distinct: ['browseAuthor'],
+      orderBy: { browseAuthor: 'asc' },
+      take: Math.max(1, Math.min(50, limit)),
+    });
+    return { items: rows.map((r) => r.browseAuthor).filter((v): v is string => v !== null) };
+  }
+
   async list(tenant: TenantContext, opts: BibListOptions = {}): Promise<BibListPage> {
     const client = this.tenantPrisma.getClientV2(tenant);
     const limit = clampLimit(opts.limit);

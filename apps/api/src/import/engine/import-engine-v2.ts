@@ -14,6 +14,7 @@ import { TenantPrismaService } from '../../tenancy/tenant-prisma.service.js';
 import { ItemStatusService } from '../../items/item-status.service.js';
 import { postJournalWithin, type Leg } from '../../fees/ledger.js';
 import { acquireLocks, lockKey } from '../../platform/locks.js';
+import { digitsOnly } from '../../isbn/identifier.js';
 // THE canonical one, not a private copy. A later phase teaching allocation to
 // respect `priority` would reach the desk and both sweeps and leave a private
 // max+1 behind, putting imported readers in front of people who should precede
@@ -1419,7 +1420,7 @@ export class ImportEngineV2 {
     const isbn = this.str(refs['bookIsbn13']);
     if (isbn !== null) {
       const byIsbn = await client.bibIdentifier.findFirst({
-        where: { valueNorm: isbn.replace(/[^0-9Xx]/g, '').toUpperCase() },
+        where: { valueNorm: (digitsOnly(isbn) ?? isbn).toUpperCase() },
         select: { bibId: true },
         orderBy: { bibId: 'asc' },
       });

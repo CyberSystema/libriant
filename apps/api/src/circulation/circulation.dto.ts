@@ -2,12 +2,13 @@ import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsISO8601,
   IsIn,
   IsInt,
-  IsISO8601,
   IsOptional,
   IsString,
   Length,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { LOAN_STATUS_VALUES, type LoanStatusValue } from './loan-read.service.js';
@@ -140,4 +141,26 @@ export class LoanListQueryDto {
   @IsOptional() @IsString() @Length(1, 512) after?: string;
 
   @IsOptional() @toInt() @IsInt() @Min(1) limit?: number;
+}
+
+/**
+ * Declaring a copy lost (2.0 phase 20h).
+ *
+ * `amountCents` is OPTIONAL and there is no default. 1.0 falls back to a single
+ * library-wide replacement fee; 2.0's answer is a resolution from
+ * `lost_item_fee_policies` through the loan's pinned snapshot, which is phase
+ * 21. Inventing a cheaper fallback here would put a number nobody chose onto a
+ * reader's account, so until then the amount is the library's to name and the
+ * response says plainly when nothing was charged.
+ */
+export class DeclareLostDto {
+  @IsOptional()
+  @IsInt({ message: 'A replacement charge is a whole number of cents.' })
+  @Min(1, { message: 'A replacement charge must be a positive amount.' })
+  amountCents?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
 }

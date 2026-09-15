@@ -443,7 +443,12 @@ export type LoanDetail = {
 
 export type LoanEventRow = {
   readonly id: string;
-  readonly kind: 'checked_out' | 'renewed' | 'returned' | 'anonymised';
+  /**
+   * Spelled out rather than imported: an inferred return type naming a
+   * generated Prisma enum across a module boundary is TS2883. `declared_lost`
+   * joined it in 2.0 phase 20h.
+   */
+  readonly kind: 'checked_out' | 'renewed' | 'returned' | 'anonymised' | 'declared_lost';
   /** When Postgres learned. */
   readonly occurredAt: Date;
   /** When it happened, at a desk, in the world. */

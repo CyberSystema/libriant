@@ -1,4 +1,4 @@
-import { digitsOnly } from './normalize.js';
+import { digitsOnly } from './identifier.js';
 
 /**
  * Shape returned to the UI. Normalized across the various OpenLibrary

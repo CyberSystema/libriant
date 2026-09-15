@@ -10,19 +10,11 @@ import { BooksService } from './books.service.js';
 import { CopiesController } from './copies.controller.js';
 import { CopiesService } from './copies.service.js';
 import { CoversController } from './covers.controller.js';
-import { IsbnController } from './isbn.controller.js';
-import { IsbnLookupService } from './isbn.service.js';
 
 @Module({
   imports: [TenantModule, PlansModule, CustomizationModule, StorageModule],
-  providers: [AuthorsService, BooksService, CopiesService, IsbnLookupService],
-  controllers: [
-    AuthorsController,
-    BooksController,
-    CopiesController,
-    CoversController,
-    IsbnController,
-  ],
-  exports: [AuthorsService, BooksService, CopiesService, IsbnLookupService],
+  providers: [AuthorsService, BooksService, CopiesService],
+  controllers: [AuthorsController, BooksController, CopiesController, CoversController],
+  exports: [AuthorsService, BooksService, CopiesService],
 })
 export class CatalogModule {}

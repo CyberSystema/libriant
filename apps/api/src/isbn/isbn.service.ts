@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { RedisService } from '../platform/redis.service.js';
-import { digitsOnly } from './normalize.js';
+import { digitsOnly } from './identifier.js';
 import { fetchOpenLibraryBook, isValidIsbnShape, type IsbnLookupResult } from './openlibrary.js';
 
 export type { IsbnLookupResult };

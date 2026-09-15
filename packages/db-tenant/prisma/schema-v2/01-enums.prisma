@@ -606,6 +606,13 @@ enum LoanEventKind {
   /// carries no patron id either, so the record of the erasure is not itself a
   /// re-identification.
   anonymised
+  /// The copy is gone and the library has said so (2.0 phase 20h).
+  ///
+  /// The FIFTH, and the docblock above this enum explains why there were four:
+  /// phase 16 declared what it WROTE. This is what phase 20h writes, because the
+  /// cutover removes 1.0's `mark-lost` and a library that cannot record a lost
+  /// book has lost a circulation capability rather than a screen.
+  declared_lost
 
   @@map("loan_event_kind")
 }

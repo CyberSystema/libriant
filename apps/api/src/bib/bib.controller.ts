@@ -194,6 +194,32 @@ export class BibController {
     return this.reads.list(tenant, q);
   }
 
+  /**
+   * Contributor names already in use, for the book form's typeahead (20h).
+   *
+   * DECLARED BEFORE `@Get(':id')`, and here that is necessity rather than
+   * convention: `contributors` would otherwise be captured as a record id and
+   * answer 404 for a name nobody can look up.
+   *
+   * `cat.bib.read` — the same key the rest of the read surface uses. A
+   * cataloguer who may list records may see which names those records already
+   * carry; it is the same data, grouped.
+   */
+  @RequirePermission('cat.bib.read')
+  @Get('contributors')
+  async contributors(
+    @TenantCtx() tenant: TenantContext,
+    @Query('q') q?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const n = Number(limit);
+    return this.reads.suggestContributors(
+      tenant,
+      q,
+      Number.isFinite(n) && n > 0 ? Math.trunc(n) : undefined,
+    );
+  }
+
   @RequirePermission('cat.bib.read')
   @Get(':id.mrc')
   async readMrc(

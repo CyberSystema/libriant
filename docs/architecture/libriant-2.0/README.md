@@ -4739,3 +4739,74 @@ repointed without them. They are feature ports with phase-boundary questions
 attached (an authority store is phase 45, copy cataloguing is phase 30,
 declare-lost with its fee is phase 21), and they are not the same kind of work as
 closing a hole in the billing surface.
+
+## Phase 20h — three of the four routes the cutover would have lost
+
+The survey found four endpoints with no 2.0 equivalent, blocking three staff
+screens. Measured individually, they turned out to be three different kinds of
+problem and only one of them was a missing feature.
+
+### ISBN lookup did not need porting — it needed moving
+
+`isbn.controller.ts` and `isbn.service.ts` have **no schema dependency**, in
+either datamodel: `lookup` validates an ISBN's shape and asks OpenLibrary. They
+lived in `apps/api/src/catalog/` because that is where the screen is, and §6's
+cutover deletes that directory.
+
+So they moved to `apps/api/src/isbn/`, with the URL unchanged — it is the
+catalogue's route by meaning, and the staff form, the permission key
+`cat.isbn.lookup` and the `isbn_lookup_enabled` feature all name it as it is.
+`digitsOnly` went with them as `isbn/identifier.ts`, and `catalog/normalize.ts`
+now re-exports it so its two other callers keep working; 20c's `resolveBib` had
+open-coded the same regex and now calls the one definition.
+
+### Author search has a 2.0 answer; author CREATE does not, and cannot
+
+`GET /catalog/bib/contributors?q=` returns the distinct `browse_author` values
+this library has already used, folded before comparison like every other search
+here.
+
+The create half has no equivalent and this phase does not invent one. 1.0's
+`AuthorPicker` searches an `authors` table by id and POSTs a row; 2.0 has no such
+entity and will not until phase 45 — a contributor is a 100 or 700 field inside
+the record. The picker's whole model is wrong for 2.0, so repointing it is a UI
+change that belongs with the web work, and what it will consume is a name
+typeahead, not an entity picker. The endpoint stops a cataloguer retyping — and
+re-spelling — a name the library already has.
+
+### Declare-lost WAS a missing feature, and is built
+
+§6 assigns it to phase 21, which is in M3 — after the cutover that deletes
+`POST /loans/:id/mark-lost`. A library that upgrades and can no longer record a
+lost book has lost a circulation capability, not a screen.
+
+`POST /t/:slug/circulation/loans/:id/declare-lost`, on the key 1.0 already used
+(`circ.loan.mark_lost`, so no role template changes and the key stops being
+orphaned). It does what 1.0 does, through 2.0's machinery:
+
+- **the loan closes without a return.** `loans_closed_consistency` makes a `lost`
+  loan a closed one, and §3's split of `closed_at` from `returned_at` is what
+  lets it close without pinning the copy out of circulation for ever — 1.0's
+  dead end, where a lost-then-found book could never be returned.
+- **the reader keeps their link.** Anonymisation belongs to the return; the
+  library is still trying to get this book back, and severing it would leave
+  nobody to ask. `CheckinService` draws the line in the same place.
+- **the copy moves to `missing`** through phase 15's single status writer —
+  `item_status` has six values and `lost` is not one of them.
+- **the replacement charge goes through the real ledger**, linked to the loan AND
+  the copy, which 1.0's fine could not be and 20d's imported ones cannot be
+  either.
+
+`LoanEventKind` gained a fifth value, `declared_lost`, in its own migration —
+`ALTER TYPE … ADD VALUE` may run in a transaction but the label cannot be used
+until it commits, which is the trap 19a recorded.
+
+**What stays phase 21:** pricing the fee from `lost_item_fee_policies` through
+the loan's pinned snapshot. 1.0 falls back to one library-wide default; inventing
+a cheaper fallback would put a number nobody chose onto a reader's account, so
+the amount is explicit or there is no charge — and the response says which
+happened, in words.
+
+The charge runs in its OWN transaction, deliberately: phase 16's rule is that a
+fee the reader disputes must not abort the desk operation. The copy is gone
+either way.

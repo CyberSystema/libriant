@@ -32,7 +32,7 @@ vi.mock('../tenancy/tenant-prisma.service.js', () => ({
     return { getClient: tenantGetClient, onModuleDestroy: tenantDestroy };
   }),
 }));
-vi.mock('../catalog/openlibrary.js', () => ({ fetchOpenLibraryBook }));
+vi.mock('../isbn/openlibrary.js', () => ({ fetchOpenLibraryBook }));
 import {
   TEST_TENANT_DB_ENV,
   testSealedCredential,

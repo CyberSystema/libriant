@@ -1,0 +1,13 @@
+-- A loan's own history can say it was declared lost (2.0 phase 20h).
+--
+-- `LoanEventKind` was `checked_out | renewed | returned | anonymised` — the
+-- four things phase 16 wrote, and its enum comment says exactly that: "declare
+-- what this phase WRITES, not what a later one might." Phase 20h writes a
+-- fifth, because the cutover deletes 1.0's `mark-lost` and a library that can
+-- no longer record a lost book has lost a circulation capability, not a screen.
+--
+-- ADDED IN ITS OWN MIGRATION, and used only at runtime. `ALTER TYPE … ADD
+-- VALUE` may run inside a transaction in PG 12+, but the new label cannot be
+-- USED until that transaction commits — which is the trap phase 19a hit with
+-- two values and recorded. Nothing in this file references the label it adds.
+ALTER TYPE loan_event_kind ADD VALUE IF NOT EXISTS 'declared_lost';

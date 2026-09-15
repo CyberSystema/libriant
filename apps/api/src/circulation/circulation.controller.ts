@@ -20,12 +20,14 @@ import type { TenantContext } from '../tenancy/tenant-context.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { TenantClockService } from '../policy/tenant-clock.service.js';
 import { CheckinService } from './checkin.service.js';
+import { DeclareLostService } from './declare-lost.service.js';
 import { CheckoutService } from './checkout.service.js';
 import { LoanReadService } from './loan-read.service.js';
 import { RenewService } from './renew.service.js';
 import {
   CheckinDto,
   CheckoutDto,
+  DeclareLostDto,
   LoanListQueryDto,
   RenewDto,
   RenewManyDto,
@@ -61,6 +63,7 @@ export class CirculationController {
     @Inject(RenewService) private readonly renewals: RenewService,
     @Inject(LoanReadService) private readonly loans: LoanReadService,
     @Inject(TenantClockService) private readonly clock: TenantClockService,
+    @Inject(DeclareLostService) private readonly declareLostService: DeclareLostService,
   ) {}
 
   @RequirePermission('circ.loan.checkout')
@@ -136,6 +139,25 @@ export class CirculationController {
       refused: results.filter((r) => !r.ok).length,
       results,
     };
+  }
+
+  /**
+   * The copy is gone, and the library says so (2.0 phase 20h).
+   *
+   * `circ.loan.mark_lost` — the key 1.0's route already used, so the four role
+   * templates need no edit and a librarian who could do this yesterday can do
+   * it today. The cutover would otherwise orphan the key along with the route.
+   */
+  @RequirePermission('circ.loan.mark_lost')
+  @Post('loans/:id/declare-lost')
+  async declareLost(
+    @TenantCtx() tenant: TenantContext,
+    @TenantActorParam() actor: TenantActor,
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ) {
+    const dto = await validateDto(DeclareLostDto, body ?? {});
+    return this.declareLostService.declareLost(tenant, actor, id, dto);
   }
 
   @RequirePermission('circ.loan.renew')

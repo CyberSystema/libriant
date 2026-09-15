@@ -16,6 +16,7 @@ import { RequestSanityMiddleware } from './platform/request-sanity.middleware.js
 import { LOG_REDACT_CENSOR, logRedactPaths, serializeRes } from './platform/log-redaction.js';
 import { BillingModule } from './billing/billing.module.js';
 import { CatalogModule } from './catalog/catalog.module.js';
+import { IsbnModule } from './isbn/isbn.module.js';
 import { CustomizationModule } from './customization/customization.module.js';
 import { DesktopModule } from './desktop/desktop.module.js';
 import { EmailModule } from './email/email.module.js';
@@ -84,6 +85,7 @@ import { ApplicationsModule } from './applications/applications.module.js';
     CustomizationModule,
     StorageModule,
     CatalogModule,
+    IsbnModule,
     MembersModule,
     PrivacyModule,
     LoansModule,
