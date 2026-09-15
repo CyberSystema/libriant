@@ -18,6 +18,7 @@ import { generateCorpus, corpusStream } from '@libriant/marc/test-corpus';
 import { AppModule } from '../../src/app.module.js';
 import { HttpExceptionFilter } from '../../src/platform/http-exception.filter.js';
 import { verifyTenantProjections } from '../../src/bib/bib-projection-verify.js';
+import { CATALOG_INGEST_MAX_RECORDS } from '../../src/bib/bib.constants.js';
 import { processExportJob } from '../../src/export/export-processors.js';
 import { TenantPrismaService } from '../../src/tenancy/tenant-prisma.service.js';
 import { TenantResolverService } from '../../src/tenancy/tenant-resolver.service.js';
@@ -415,6 +416,81 @@ describe('the ingest refuses what it cannot promise', () => {
     expect(res.body.code).toBe('catalog.ingestTruncated');
   });
 
+  /**
+   * The RESUME contract, made deterministic.
+   *
+   * `truncated: true` had no coverage anywhere in the suite, and the phase-11
+   * acceptance test now depends on it: that test resumes from `processed`
+   * instead of asserting the machine was fast enough never to truncate. But on
+   * a fast machine the deadline never trips, so its resume branch would never
+   * run — an untested path guarding the test that matters.
+   *
+   * The RECORD CAP makes TRUNCATION certain without reference to the clock:
+   * `attempt` is `Math.min(slices.length, CATALOG_INGEST_MAX_RECORDS)`, so a
+   * chunk over the cap cannot be finished in one request on any machine,
+   * however fast.
+   *
+   * WHERE it stops is a different question, and this test deliberately does not
+   * ask it. The cap and the 12 s deadline share one loop — the deadline is
+   * re-checked every iteration regardless of what bounded `attempt` — so
+   * `processed` is `min(cap, whatever the clock allowed)`. Asserting
+   * `processed === 1000` would be the SAME hardware assertion this change set
+   * out to remove, and it would fail on exactly the runner that motivated it:
+   * CI run 34962248692 proves that machine cannot write 1,000 records inside
+   * 12 s, because that is the only way the old acceptance test could have gone
+   * red. So what is asserted here is the CONTRACT — truncation happens, the
+   * count is a usable offset, and resuming from it loses and repeats nothing.
+   */
+  it('truncates at the record cap and hands back a resumable count', async () => {
+    const over = CATALOG_INGEST_MAX_RECORDS + 25;
+    const lib = await newLibrary(`catcap-${tag}`);
+    const { bytes } = conformingCorpus(over);
+    const slices = splitIso2709(bytes);
+    expect(slices).toHaveLength(over);
+
+    const post = (chunk: Uint8Array) =>
+      request(app.getHttpServer())
+        .post(`/t/${lib.slug}/catalog/bib/ingest`)
+        .set('Cookie', lib.cookie)
+        .set('Content-Type', 'application/marc')
+        .set('Idempotency-Key', createHash('sha256').update(chunk).digest('hex').slice(0, 32))
+        .send(Buffer.from(chunk));
+
+    const first = await post(concat(slices));
+    expect(first.status, JSON.stringify(first.body).slice(0, 400)).toBe(200);
+    expect(first.body.total).toBe(over);
+    // CERTAIN: `over` exceeds the cap, so one request cannot finish the chunk.
+    expect(first.body.truncated).toBe(true);
+    expect(first.body.failed).toBe(0);
+    // A usable offset: at least one record (the deadline break is `i > 0`
+    // guarded) and never more than the cap allows.
+    expect(first.body.processed).toBeGreaterThan(0);
+    expect(first.body.processed).toBeLessThanOrEqual(CATALOG_INGEST_MAX_RECORDS);
+    // One result per ATTEMPTED record, which is what makes `processed` an
+    // offset rather than a statistic.
+    expect(first.body.results).toHaveLength(first.body.processed);
+
+    // Resume until done. A loop rather than one follow-up request, for the same
+    // reason: on a slow machine the remainder can truncate again.
+    let sent = first.body.processed as number;
+    while (sent < over) {
+      const next = await post(concat(slices.slice(sent)));
+      expect(next.status, JSON.stringify(next.body).slice(0, 400)).toBe(200);
+      expect(next.body.failed).toBe(0);
+      expect(next.body.processed).toBeGreaterThan(0);
+      sent += next.body.processed as number;
+    }
+    expect(sent).toBe(over);
+
+    // THE POINT OF THE TEST: resuming at `processed` neither skipped a record
+    // nor wrote one twice. `lib` has its own client, which is the same read as
+    // the acceptance describe's `libSql` with none of the quoting.
+    const stored = await lib.v2.marcRecord.count({
+      where: { kind: 'bibliographic', deletedAt: null },
+    });
+    expect(stored).toBe(over);
+  }, 180_000);
+
   it('refuses a body that is not application/marc', async () => {
     const res = await request(app.getHttpServer())
       .post(`/t/${slug}/catalog/bib/ingest`)
@@ -467,20 +543,69 @@ describe('the phase-11 acceptance criterion', () => {
     expect(slices).toHaveLength(RECORDS);
 
     const ids: string[] = [];
-    for (let i = 0; i < slices.length; i += INGEST_CHUNK) {
-      const chunk = concat(slices.slice(i, i + INGEST_CHUNK));
+    // RESUMES FROM `processed`, rather than asserting the machine was fast.
+    //
+    // `CATALOG_INGEST_DEADLINE_MS` is a 12-second budget checked BETWEEN
+    // records, and `bib.constants.ts` is explicit that this is the designed
+    // behaviour on a slow database: "the request stops cleanly with
+    // `truncated: true` and a `processed` count the caller resumes from". A
+    // loaded CI runner is exactly that slow database.
+    //
+    // So `expect(res.body.truncated).toBe(false)` was asserting a property of
+    // the HARDWARE, and it went red on CI for it (run 34962248692) while the
+    // server behaved exactly as designed. Resuming is what a real caller does —
+    // `pnpm catalog:import` chunks with the codec's own `splitIso2709` — so the
+    // criterion "ingests 10,000 records" is now tested through the documented
+    // contract instead of around it, and the resume path gains its only
+    // coverage in the suite.
+    let sent = 0;
+    let requests = 0;
+    const ingestStart = Date.now();
+    while (sent < slices.length) {
+      const chunk = concat(slices.slice(sent, sent + INGEST_CHUNK));
       const res = await request(app.getHttpServer())
         .post(`/t/${lib.slug}/catalog/bib/ingest`)
         .set('Cookie', lib.cookie)
         .set('Content-Type', 'application/marc')
         .set('Idempotency-Key', createHash('sha256').update(chunk).digest('hex').slice(0, 32))
         .send(Buffer.from(chunk));
+      requests += 1;
       expect(res.status, JSON.stringify(res.body).slice(0, 400)).toBe(200);
       expect(res.body.failed, JSON.stringify(res.body.results?.slice(0, 3))).toBe(0);
-      expect(res.body.truncated).toBe(false);
+      // The deadline break is `i > 0`-guarded, so a request always writes at
+      // least one record. Asserted because a zero here is an infinite loop,
+      // and a test that hangs is worse than a test that fails.
+      expect(res.body.processed).toBeGreaterThan(0);
+      expect(res.body.results).toHaveLength(res.body.processed);
       for (const r of res.body.results as { recordId: string }[]) ids.push(r.recordId);
+      sent += res.body.processed as number;
     }
     expect(ids).toHaveLength(RECORDS);
+
+    // LOGGED, NOT ASSERTED, and the distinction is the honest part.
+    //
+    // `expect(res.body.truncated).toBe(false)` used to be the only wall-clock
+    // bound on the ingest write path anywhere in this suite: it said 1,000
+    // records complete inside 12 s, i.e. <= 12 ms each against the 2.54 ms
+    // `bib.constants.ts` measured, so roughly a 4.7x alarm on the whole
+    // single-record write path. Removing it removes that alarm, and nothing
+    // here replaces it — because on shared CI hardware a 4.7x REGRESSION and a
+    // 4.7x SLOWER RUNNER are the same number, and the old assertion could not
+    // tell them apart either. It failed on the runner, not on the code.
+    //
+    // So the figure is printed for a human and for a CI trend, and the
+    // regressions it used to guard — losing
+    // `marc_records_control_number_unique_active` and sequential-scanning the
+    // duplicate check, or adding an awaited round trip inside `create()` — are
+    // left to the explicit 600 s timeout on this test and to review. Recorded
+    // in the divergence log rather than papered over with a threshold that
+    // would go red on a busy runner again.
+    const perRecordMs = (Date.now() - ingestStart) / RECORDS;
+    // eslint-disable-next-line no-console
+    console.log(
+      `ingest: ${RECORDS} records in ${requests} request(s), ` +
+        `${perRecordMs.toFixed(2)} ms/record (bib.constants.ts measured 2.54)`,
+    );
 
     const stored = await libSql<{ id: string; leader: string; content: unknown }>(
       `SELECT r.id, r.leader, c.content

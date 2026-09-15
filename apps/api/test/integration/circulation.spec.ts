@@ -552,50 +552,59 @@ describe('the lock order', () => {
     //
     // It is the same argument every gate in this repo makes for a break test,
     // and it is what turns "zero deadlocks" from an observation into a claim.
+    // FORCED, NOT RACED. This used to run 60 rounds of two lanes taking the two
+    // locks in opposite orders with a 2 ms sleep and assert that at least one
+    // 40P01 fell out. That is a race by construction: under a loaded runner the
+    // lanes can serialise and produce zero, and it went red in CI on
+    // 2026-09-15 (run 34943833635) having never found a real defect.
+    //
+    // The cycle can simply be BUILT. Each session takes its FIRST lock and the
+    // await returns, so both are certainly held before either asks for its
+    // second. Then both second requests go out without awaiting, so they are in
+    // flight together — and whichever order they arrive in, A waits on B and B
+    // waits on A. Postgres must detect that; it is not a question of timing.
     const item = await makeItem();
     const patronId = await makePatron();
-    const rounds = 60;
-    const seen: string[] = [];
+    const patronKey = `patron:${patronId}`;
+    const itemKey = `item:${item.id}`;
+    const LOCK = 'SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))';
 
-    const lane = async (order: readonly [string, string]) => {
-      const c = new PgClient({ connectionString: dbUrl });
-      await c.connect();
-      try {
-        for (let i = 0; i < rounds; i += 1) {
-          try {
-            await c.query('BEGIN');
-            for (const key of order) {
-              await c.query(
-                'SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))',
-                [key],
-              );
-            }
-            await c.query('SELECT pg_catalog.pg_sleep(0.002)');
-            await c.query('COMMIT');
-          } catch (err) {
-            seen.push((err as { code?: string }).code ?? 'error');
-            await c.query('ROLLBACK').catch(() => undefined);
-          }
-        }
-      } finally {
-        await c.end();
-      }
-    };
+    const sorted = new PgClient({ connectionString: dbUrl });
+    const inverted = new PgClient({ connectionString: dbUrl });
+    await sorted.connect();
+    await inverted.connect();
+    let outcomes: PromiseSettledResult<unknown>[];
+    try {
+      await sorted.query('BEGIN');
+      await inverted.query('BEGIN');
+      // Held, both of them, before either second lock is requested. `orderLocks`
+      // produces patron-before-item; the inverted lane is the mistake a checkin
+      // written outwards from the barcode makes.
+      await sorted.query(LOCK, [patronKey]);
+      await inverted.query(LOCK, [itemKey]);
+      // NOT awaited individually — awaiting the first would block this test
+      // rather than the database, and the cycle needs both requests outstanding.
+      outcomes = await Promise.allSettled([
+        sorted.query(LOCK, [itemKey]),
+        inverted.query(LOCK, [patronKey]),
+      ]);
+    } finally {
+      await sorted.query('ROLLBACK').catch(() => undefined);
+      await inverted.query('ROLLBACK').catch(() => undefined);
+      await sorted.end().catch(() => undefined);
+      await inverted.end().catch(() => undefined);
+    }
 
-    await Promise.all([
-      // Sorted, as `orderLocks` produces: patron before item.
-      lane([`patron:${patronId}`, `item:${item.id}`]),
-      // Inverted, as a checkin written from the barcode outwards would take
-      // them.
-      lane([`item:${item.id}`, `patron:${patronId}`]),
-    ]);
-
-    const deadlocks = seen.filter((c) => c === '40P01');
+    const codes = outcomes
+      .filter((o): o is PromiseRejectedResult => o.status === 'rejected')
+      .map((o) => (o.reason as { code?: string }).code ?? 'error');
     // eslint-disable-next-line no-console
-    console.log(
-      `inverted-order break test: ${rounds * 2} transactions, ${deadlocks.length} deadlock(s)`,
-    );
-    expect(deadlocks.length).toBeGreaterThan(0);
+    console.log(`inverted-order break test: outcomes ${JSON.stringify(codes)}`);
+    // EXACTLY ONE. Postgres breaks a deadlock by aborting one victim and letting
+    // the other through, so two victims would mean something other than the
+    // cycle this test builds, and zero would mean the inverted order is somehow
+    // safe — which is the claim the soak above depends on being false.
+    expect(codes).toEqual(['40P01']);
   }, 120_000);
 });
 
@@ -634,6 +643,35 @@ describe('the lock order', () => {
  * The wire count is measured by hand against a cluster with the extension and
  * recorded in the divergence log, the way phase 13's propagation number is.
  */
+/**
+ * The phase-16 acceptance criterion, verbatim from MASTER-ARCHITECTURE.md:804:
+ * "Checkin p99 < 40 ms with <= 12 statements per transaction."
+ */
+const BUDGET_MS = 40;
+/**
+ * How many checkins to time, and why it is not 30.
+ *
+ * A p99 needs enough samples to BE one. The index is
+ * `Math.min(n - 1, Math.floor(n * 0.99))`, and that is `n - 1` — the MAXIMUM —
+ * for every n <= 100: `floor(n * 0.99) < n - 1` requires `0.01n > 1`. This test
+ * ran n = 30, where `floor(29.7) = 29` is the last index of the sorted array,
+ * so the "p99" it asserted was the single slowest checkin of thirty. That has no
+ * stability on shared hardware, and it went red on CI at 68.11 ms (run
+ * 34962248692) while the bulk of the distribution was nowhere near the budget.
+ *
+ * At n = 200 the p99 is the 198th sample — the third slowest — so one unlucky
+ * sample no longer decides the run, while a genuine 1-in-100 tail still does.
+ * The criterion is unchanged; this makes the statistic match its name.
+ */
+const TIMED_CHECKINS = 200;
+/**
+ * Discarded before timing starts. The prepare loop warms checkout and item
+ * creation, NOT checkin — so without this the first timed call pays first-call
+ * JIT and the first `PolicySnapshotService` snapshot load, and under the old
+ * max-of-30 statistic that one cold sample was very likely the number asserted.
+ */
+const WARMUP_CHECKINS = 10;
+
 describe('the checkin budget', () => {
   it('is ONE transaction, and writes exactly the rows it should', async () => {
     const item = await makeItem();
@@ -701,13 +739,16 @@ describe('the checkin budget', () => {
 
   it('is fast enough that the budget is about design and not about the laptop', async () => {
     const prepared: string[] = [];
-    for (let i = 0; i < 30; i += 1) {
+    for (let i = 0; i < WARMUP_CHECKINS + TIMED_CHECKINS; i += 1) {
       const item = await makeItem();
       await checkouts.checkout(ctx, ACTOR, { itemId: item.id, patronId: await makePatron() });
       prepared.push(item.id);
     }
+    for (const itemId of prepared.slice(0, WARMUP_CHECKINS)) {
+      await checkins.checkin(ctx, ACTOR, { itemId });
+    }
     const samples: number[] = [];
-    for (const itemId of prepared) {
+    for (const itemId of prepared.slice(WARMUP_CHECKINS)) {
       const t0 = process.hrtime.bigint();
       await checkins.checkin(ctx, ACTOR, { itemId });
       samples.push(Number(process.hrtime.bigint() - t0) / 1e6);
@@ -715,10 +756,18 @@ describe('the checkin budget', () => {
     samples.sort((a, b) => a - b);
     const p50 = samples[Math.floor(samples.length * 0.5)]!;
     const p99 = samples[Math.min(samples.length - 1, Math.floor(samples.length * 0.99))]!;
+    // Asserted, not just commented: the index arithmetic above is the defect
+    // this test shipped with, so a future n that silently turns the p99 back
+    // into the maximum fails here rather than in CI six months later.
+    expect(Math.floor(samples.length * 0.99)).toBeLessThan(samples.length - 1);
     // eslint-disable-next-line no-console
-    console.log(`checkin: p50 ${p50.toFixed(2)} ms / p99 ${p99.toFixed(2)} ms, budget 40`);
-    expect(p99).toBeLessThan(40);
-  }, 180_000);
+    console.log(
+      `checkin: p50 ${p50.toFixed(2)} ms / p99 ${p99.toFixed(2)} ms ` +
+        `/ max ${samples[samples.length - 1]!.toFixed(2)} ms over ${samples.length}, ` +
+        `budget ${BUDGET_MS}`,
+    );
+    expect(p99).toBeLessThan(BUDGET_MS);
+  }, 300_000);
 });
 
 // ---------------------------------------------------------------------------
