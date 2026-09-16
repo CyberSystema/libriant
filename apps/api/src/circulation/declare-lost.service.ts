@@ -191,10 +191,17 @@ export class DeclareLostService {
 
     await this.audit.record(tenant, actor, {
       action: 'circulation.loan.declared_lost',
-      entityKind: 'loan',
-      entityId: loanId,
-      detail: { itemId: loan.itemId, feeId, amountCents } as never,
-    } as never);
+      // `targetType`/`targetId`, NOT `entityKind`/`entityId`. Those are the 2.0
+      // COLUMN names; `AuditEntry` is the service's own contract and
+      // `TenantAuditService` maps it onto whichever schema is live. Phase 20h
+      // wrote the column names here and reached for `as never` when the type
+      // disagreed — so only `action` survived, this row lost the loan id, and
+      // `target_type` went in NULL. Nothing noticed, because the audit writer
+      // swallows its own failures by design.
+      targetType: 'loan',
+      targetId: loanId,
+      after: { itemId: loan.itemId, feeId, amountCents },
+    });
 
     return {
       loanId,

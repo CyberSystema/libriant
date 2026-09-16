@@ -525,7 +525,20 @@ SELECT
   CAST(a."actorType"::text AS lbr2.audit_actor_kind),
   a."actorId",
   a.action,
-  a."targetType",
+  -- COALESCE, because `entity_kind` is NOT NULL here and `targetType` is
+  -- nullable in 1.0 — so one audit row with no target aborts the whole
+  -- copy-forward and the library cannot be migrated at all. That is not
+  -- hypothetical: phase 20h's declare-lost wrote exactly such a row for four
+  -- phases (it passed the 2.0 COLUMN names to `AuditEntry`, silenced the type
+  -- error with `as never`, and only `action` survived), and the audit writer
+  -- swallows its own failures, so nothing said so.
+  --
+  -- 'unknown' rather than a guess parsed out of the action's namespace: the
+  -- row genuinely does not record what it acted on, and inventing a plausible
+  -- entity kind would put a fact into an audit log that nobody established.
+  -- BARE coalesce — it is one of the constructs Postgres refuses to
+  -- schema-qualify, as the note further up this file records.
+  coalesce(a."targetType", 'unknown'),
   a."targetId",
   a.ip,
   a."userAgent",

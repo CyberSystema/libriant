@@ -5615,3 +5615,90 @@ rather than discover it later.
 4. **A decision** on the three served from compat twins.
 5. **A gate**, so this cannot regress: nothing today prevents a new `getClient`
    call from being added outside the doomed modules.
+
+## The audit repoint CANNOT precede the cutover — an attempt, and why it was reverted
+
+The blocker list above names the audit path as the thing to fix first: two of
+its three failures are silent, and all three are `audit_log`. That was tried and
+**most of it was reverted**, because the upgrade's own verifier forbids it. This
+records the attempt so the next person does not repeat it.
+
+### What stops it: assertion A11
+
+`prisma/upgrade/03-verify.sql:94-99`:
+
+```sql
+SELECT 'A11', 'every audit row survived',
+       (SELECT count(*) FROM v1_archive.audit_log) =
+       (SELECT count(*) FROM lbr2.audit_log)
+```
+
+The copy-forward proves no audit row was lost by comparing counts EXACTLY. So
+the moment `TenantAuditService` starts writing into `lbr2.audit_log`, that table
+is non-empty before the upgrade runs, the equality fails, and **the upgrade
+aborts for that library**. Repointing the writer early does not close the
+blocker — it makes every tenant un-upgradeable, which is strictly worse than the
+problem it was trying to solve.
+
+The audit path therefore belongs INSIDE the cutover (20b-iii), in the same
+commit that runs the promotion — or A11 has to become an inequality that
+accounts for rows written before it, which weakens a check that exists to prove
+nothing was lost. The first is cleaner. Either way it is a cutover step, not a
+preparatory one.
+
+### What the attempt found on the way, and what was kept
+
+Three things are real, independent of the sequencing, and are KEPT:
+
+**1. Phase 20h wrote a malformed audit row for four phases.**
+`declare-lost.service.ts` passed the 2.0 COLUMN names (`entityKind`, `entityId`,
+`detail`) to `AuditEntry`, which is the service's own 1.0-shaped contract
+(`targetType`, `targetId`, `before`, `after`) — and silenced the type error with
+two `as never` casts. Only `action` survived: every declare-lost row lost the
+loan id and went in with `target_type` NULL. It typechecks cleanly WITHOUT the
+casts, which is the proof they were hiding a real mismatch. Two things hid it:
+the casts, and the fact that `TenantAuditService` swallows its own write
+failures by design.
+
+**2. That NULL would have aborted the upgrade.**
+`02-post-catalog.sql` selects `a."targetType"` straight into `entity_kind`,
+which is NOT NULL in 2.0, with no WHERE and no COALESCE. One audit row with no
+target — which every library that has declared an item lost now has — fails the
+copy-forward. Hardened with `coalesce(a."targetType", 'unknown')`: the row
+genuinely does not record what it acted on, and a kind parsed out of the
+action's namespace would put a fact into an audit log nobody established.
+
+**3. The `anonymise` limb of erasure has never run.**
+`patron-data-map.ts:187` marks `audit_log` as `onErase: 'anonymise'`, with the
+reasoning spelled out — the record of what STAFF did is what a library needs in
+order to SHOW an erasure happened, so the rows stay and the patron-identifying
+payload inside them goes. But `PatronEraseService` filters on
+`onErase === 'delete'`, so the anonymise limb was never implemented, while the
+upgrade has been copying 1.0 audit rows — `before`/`after` snapshots and all —
+into `lbr2.audit_log` since 19b. **An erased patron's details survived inside
+the migrated audit trail.** Now implemented: `detail` is redacted in place for
+that patron's rows, `patron.erase` itself excepted, and the count is reported in
+the erasure's own audit row.
+
+### The other thing the attempt measured
+
+`TenantAuditService` is NOT the only tenant-side audit writer.
+`export/export-consent.ts:141` writes directly through `getClient`, and two more
+`tx.auditEvent.create` calls turned out to be `controlDb` transactions — control
+plane, correctly out of scope. So the cutover step has to move BOTH tenant
+writers together or it splits the log: the existing tests catch this
+immediately, which is how it was found.
+
+`export-consent.ts` has a second problem waiting for whoever does that work: it
+holds a `TenantRuntimeRow`, which carries `id` and `dbUrl` and **no
+`schemaMajor`**, so it cannot build a correctly-bound 2.0 client without reading
+`tenant_schema_state` itself. `v2SchemaFor` defaults a missing value to
+UNPROMOTED — the safe direction in general, and the wrong answer there.
+
+And one measurement for the reader's eventual repoint: `audit.service.ts`'s
+keyset pager carries an EXPLAIN in its comments measured against 1.0's
+`audit_log_occurredAt_id_idx`. **The 2.0 table has no such index** — it indexes
+`occurred_at DESC` alone plus the composite primary key. The ORDER BY prefix
+still matches, so the range scan and early stop survive and only the `id`
+tiebreak within one millisecond is unindexed; it has NOT been re-measured at
+200k rows.

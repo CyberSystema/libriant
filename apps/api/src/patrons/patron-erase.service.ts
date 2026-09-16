@@ -52,6 +52,13 @@ import { PATRON_DATA_TABLES } from './patron-data-map.js';
  * patron column has to be given a verdict, and the verdict decides what an
  * erase does to it. Nobody has to remember twice.
  */
+/**
+ * What replaces an erased patron's payload inside a retained audit row. The
+ * same shape 1.0's `members.service.ts` uses, so a row redacted before the
+ * cutover and one redacted after look the same to whoever reads them.
+ */
+const AUDIT_REDACTION = JSON.stringify({ redacted: 'patron.erased' });
+
 @Injectable()
 export class PatronEraseService {
   constructor(@Inject(TenantPrismaService) private readonly tenantPrisma: TenantPrismaService) {}
@@ -125,6 +132,35 @@ export class PatronEraseService {
       );
       // 5. THE PROOF, written INSIDE the transaction.
       //
+      // 3b. THE `anonymise` LIMB, which the data map has declared since phase 14
+      //     and nothing implemented (2.0 phase 20q).
+      //
+      //     `patron-data-map.ts` marks `audit_log` as `onErase: 'anonymise'`
+      //     with the reason spelled out: the record of what STAFF did is what a
+      //     library needs in order to SHOW an erasure was carried out, so the
+      //     rows stay and the patron-identifying payload inside them goes. But
+      //     the loop above filters on `onErase === 'delete'`, so the anonymise
+      //     limb has never run — while the upgrade has been copying 1.0 audit
+      //     rows, `before`/`after` snapshots and all, into this table since 19b.
+      //     So an erased patron's details survived inside the audit trail.
+      //
+      //     `detail` is where all of it lives in 2.0 — the upgrade folds 1.0's
+      //     `beforeJson`/`afterJson` into it — so redacting the column is the
+      //     whole job, and it is a REPLACEMENT rather than a delete for the
+      //     reason the map gives: erasing the evidence of an erasure is the one
+      //     deletion Article 17 cannot mean.
+      const auditRedacted = await tx.$executeRawUnsafe(
+        `UPDATE audit_log
+            SET detail = $2::jsonb
+          WHERE entity_kind = 'patron'
+            AND entity_id = $1
+            AND action <> 'patron.erase'
+            AND detail IS NOT NULL
+            AND detail <> $2::jsonb`,
+        patronId,
+        AUDIT_REDACTION,
+      );
+
       // Article 17 does not require forgetting that a request was made and
       // honoured — a library asked to demonstrate compliance has nothing else to
       // show. So the audit row is part of the erasure rather than a follow-up:
@@ -145,7 +181,12 @@ export class PatronEraseService {
         actor.actorId,
         patronId,
         `erased under Article 17: ${reason}`,
-        JSON.stringify({ reason, tablesCleared: deleteTables.length, loansAnonymised: loans }),
+        JSON.stringify({
+          reason,
+          tablesCleared: deleteTables.length,
+          loansAnonymised: loans,
+          auditRowsRedacted: auditRedacted,
+        }),
       );
       return loans;
     });
