@@ -81,5 +81,14 @@
   "detail.erasedNotice": "This record was erased",
   "detail.erasedHint": "Their personal details were overwritten under GDPR Article 17. What remains is kept for the library's accounts.",
   "detail.editHint": "Name and contact details. The rest of the record is edited where it is set.",
-  "detail.editScopeNote": "Card, category, home branch and expiry are set when enrolling, and are not editable here yet."
+  "detail.editScopeNote": "Card, category, home branch and expiry are set when enrolling, and are not editable here yet.",
+  "form.homeBranch": "Home branch",
+  "form.numberMintedHint": "Leave empty and we'll assign one. Fill it in only if your library runs its own numbering.",
+  "form.expiresHint": "Leave empty for a card that never expires.",
+  "form.cardBarcode": "Card barcode",
+  "form.cardBarcodeHint": "The number on the physical card, if you're issuing one now. Separate from the member number — a card can be replaced without the member changing.",
+  "form.cardScanTitle": "Scan the new card",
+  "form.noCategories": "No member categories have been set up yet. You can still enrol people — add categories later and assign them then.",
+  "form.noCategoriesHint": "Add categories in settings to use them here.",
+  "form.belowMinAge": "{category} is for members aged {min} and over. You can still save this — it's a note, not a block."
 }

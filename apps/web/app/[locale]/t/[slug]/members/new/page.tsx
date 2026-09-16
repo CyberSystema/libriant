@@ -4,15 +4,12 @@ import { PageHeader } from '@libriant/ui';
 import { createTranslator, isLocale } from '@libriant/i18n';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
-import { api } from '@/lib/api';
-import type { FieldDef } from '@/components/DynamicFields';
-import { MemberForm } from './MemberForm';
+import { dataPort } from '@/lib/ports';
+import { PatronEnrolForm, type Branch, type PatronCategory } from './PatronEnrolForm';
 
 export const dynamic = 'force-dynamic';
 
-type FieldsResponse = { entityKind: string; fields: FieldDef[] };
-
-export default async function NewMemberPage(props: {
+export default async function NewPatronPage(props: {
   params: Promise<{ locale: string; slug: string }>;
 }) {
   const params = await props.params;
@@ -20,19 +17,34 @@ export default async function NewMemberPage(props: {
   const catalog = await loadCatalog(params.locale);
   const t = createTranslator(catalog, params.locale);
   const cookie = await requestCookieHeader();
+  const port = dataPort();
 
-  // Pull active custom fields server-side so the form renders without a
-  // hydration flash. Failure is non-fatal — we still let the librarian add
-  // the basic fields.
-  let customFields: FieldDef[] = [];
-  try {
-    const res = await api<FieldsResponse>(`/t/${params.slug}/data-model/fields/member`, {
-      cookie,
-    });
-    customFields = res.fields;
-  } catch {
-    customFields = [];
-  }
+  /**
+   * The two reference lists an enrolment needs, server-rendered so the selects
+   * do not flash empty.
+   *
+   * Each degrades to `[]` on its own, and an empty CATEGORY list is a real
+   * state rather than a failure: 20m measured that a freshly provisioned tenant
+   * has none at all — `pcat-general` comes from the upgrade and nothing else,
+   * while provisioning seeds a branch, a shelving location and an item type.
+   * The field is optional and the column nullable, so the form enrols without
+   * one and says so.
+   *
+   * NO CUSTOM FIELDS. 1.0 fetched the member field definitions here and the form
+   * wrote values through them; `lbr2.patrons.custom_fields` exists and the
+   * upgrade fills it (20n added it to the record read), but no 2.0 route WRITES
+   * it, so a form offering the inputs would collect what it cannot save.
+   */
+  const [categories, branches] = await Promise.all([
+    port
+      .get<{ items: PatronCategory[] }>(`/t/${params.slug}/org/patron-categories`, { cookie })
+      .then((r) => r.items)
+      .catch(() => []),
+    port
+      .get<{ items: Branch[] }>(`/t/${params.slug}/org/branches`, { cookie })
+      .then((r) => r.items)
+      .catch(() => []),
+  ]);
 
   return (
     <>
@@ -46,11 +58,12 @@ export default async function NewMemberPage(props: {
         }
       />
       <div style={{ maxWidth: 720 }}>
-        <MemberForm
+        <PatronEnrolForm
           slug={params.slug}
           catalog={catalog}
           locale={params.locale}
-          customFields={customFields}
+          categories={categories}
+          branches={branches}
         />
       </div>
     </>

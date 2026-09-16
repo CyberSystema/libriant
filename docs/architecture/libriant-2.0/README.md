@@ -5422,3 +5422,69 @@ to the family that owns its screen, and several are one line of `select` once
 that screen exists. The reason to write them down now is the cutover: the 1.0
 screens are currently the only way to see some of this data, and deleting them
 before the 2.0 read exists turns a gap into a loss.
+
+## Phase 20p — enrolment, and the members family is done
+
+The member CREATE screen reads and writes 2.0. `MemberForm.tsx` survives only
+because the onboarding wizard still mounts it, and dies with the 1.0 modules.
+
+### `POST /patrons` had no idempotency, and it needed it more than the catalogue
+
+20l gave `POST /catalog/bib` an `Idempotency-Key` because the form emits no 001,
+so `marc_records_control_number_unique_active` could not catch a duplicate. The
+enrolment route had none at all, and the argument is stronger: a catalogue record
+at least HAS a uniqueness constraint when it carries a control number, whereas
+**nothing about a person is unique**. Two clicks on a slow connection enrol the
+same human twice, under two different minted numbers, and the second row looks
+exactly like a legitimate second member of a family.
+
+The interceptor is OPT-IN — no header, no dedup, no error — so mounting it
+changed nothing for the importer or any existing caller. Both halves are now
+asserted: the same key replays the first result (same id, same minted number, one
+row), and no key still enrols two people.
+
+### What 2.0 can express that 1.0 could not
+
+A FIRST CARD, separate from the number. In 1.0 the member number WAS the card
+number; 2.0 makes cards a table so a found card still resolves — "a found card
+should be recognised as the one that was reported lost on the 3rd, not rejected
+as an unknown number". Also a CATEGORY (what the circulation rules match on), a
+HOME BRANCH, and a CARD EXPIRY, none of which 1.0 had.
+
+The number itself stays MINTED. The field is offered because a library running
+its own numbering must be able to say so, and it carries the server's own
+uppercase regex — `text_pattern_ops` cannot index a case-insensitive column at
+all.
+
+### The category warning is shown before the API refuses
+
+A category may carry a minimum age. The form has the category and the date of
+birth in front of it, so it says so — as a note, not a block, because the API
+does not refuse on it either and a form that invented a refusal would be
+stricter than the product.
+
+### An empty category list is a real state
+
+20m measured that a freshly provisioned tenant has NO patron categories:
+`pcat-general` comes from the upgrade and nothing else, while provisioning seeds
+a branch, a shelving location and an item type. The field is optional and the
+column nullable, so the form enrols without one and says what is missing rather
+than rendering an empty select as a failure. **The decision 20m deferred here is
+therefore: no, provisioning is not changed.** Seeding a category would mean
+choosing names — "Adult", "Child" — for every library in every market, where
+`item-defaults.ts` could choose "Main library" because a branch must exist for a
+copy to exist at all. A patron can be enrolled without a category; a copy cannot
+be shelved without a branch.
+
+### No custom fields on the form, and the reason is now the opposite of 20k's
+
+`lbr2.patrons.custom_fields` EXISTS and the upgrade fills it, and 20n added it to
+the record read — so the detail screen shows what a library migrated. But no 2.0
+route WRITES it, so a form offering the inputs would collect what it cannot save.
+The catalogue's omission was "there is nothing there"; this one is "there is
+something there and no way to add to it".
+
+### Still 1.0 after this
+
+The loans+reservations and fines families, then module deletion and the
+`apps/site` claims. The members family is complete.

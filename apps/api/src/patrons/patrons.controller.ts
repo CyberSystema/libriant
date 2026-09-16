@@ -11,6 +11,7 @@ import {
   Put,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { validateDto } from '../auth/validate-dto.js';
 import { RequirePermission } from '../authz/permission.decorator.js';
@@ -19,6 +20,7 @@ import { TenantActor as TenantActorParam } from '../tenancy/tenant-actor.js';
 import type { TenantActor } from '../tenancy/tenant-actor.js';
 import { TenantCtx } from '../tenancy/tenant-context.js';
 import type { TenantContext } from '../tenancy/tenant-context.js';
+import { IdempotencyInterceptor } from '../platform/idempotency.interceptor.js';
 import { TenantGuard } from '../tenancy/tenant.guard.js';
 import { TenantClockService } from '../policy/tenant-clock.service.js';
 import { PATRON_DATA_TABLES } from './patron-data-map.js';
@@ -102,9 +104,24 @@ export class PatronsController {
     });
   }
 
+  /**
+   * ENROL, with idempotency (2.0 phase 20p).
+   *
+   * The interceptor is OPT-IN — no header, no dedup, no error — so this changes
+   * nothing for the importer or any existing caller, and gives the enrolment
+   * form a way to make a double-click safe.
+   *
+   * It matters more here than it did on `POST /catalog/bib`, which got the same
+   * treatment in 20l: a catalogue record at least has
+   * `marc_records_control_number_unique_active` when it carries an 001, whereas
+   * nothing about a person is unique. Two clicks on a slow connection enrol the
+   * same human twice, under two different minted numbers, and the second row
+   * looks exactly like a legitimate second member of a family.
+   */
   @RequirePermission('patron.write')
   @Post()
   @HttpCode(201)
+  @UseInterceptors(IdempotencyInterceptor)
   async create(
     @TenantCtx() tenant: TenantContext,
     @TenantActorParam() actor: TenantActor,

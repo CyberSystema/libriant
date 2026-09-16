@@ -289,6 +289,57 @@ describe('custom fields survive into the record read', () => {
   }, 60_000);
 });
 
+/**
+ * Enrolling twice by accident (2.0 phase 20p).
+ *
+ * `POST /patrons` now mounts `IdempotencyInterceptor`. It matters more here than
+ * on `POST /catalog/bib`, which got the same treatment in 20l: a catalogue
+ * record at least has `marc_records_control_number_unique_active` when it
+ * carries an 001, whereas NOTHING about a person is unique. Two clicks on a slow
+ * connection enrol the same human twice under two different minted numbers, and
+ * the second row looks exactly like a legitimate second member of a family.
+ *
+ * The interceptor is OPT-IN — no header, no dedup, no error — so this changed
+ * nothing for the importer or any existing caller.
+ */
+describe('a double-submitted enrolment', () => {
+  it('replays the first result instead of enrolling twice', async () => {
+    const key = `enrol-${tag}`;
+    const body = { fullName: `Διπλή ${tag}`, email: `double.${tag}@patron.test` };
+
+    const first = await api()
+      .post(`/t/${slug}/patrons`)
+      .set('Cookie', owner)
+      .set('Idempotency-Key', key)
+      .send(body)
+      .expect(201);
+    const second = await api()
+      .post(`/t/${slug}/patrons`)
+      .set('Cookie', owner)
+      .set('Idempotency-Key', key)
+      .send(body)
+      .expect(201);
+
+    // THE SAME PERSON, not two. Same id and the same minted number — a second
+    // enrolment would have burned the next number in the sequence.
+    expect(second.body.id).toBe(first.body.id);
+    expect(second.body.patronNumber).toBe(first.body.patronNumber);
+
+    const rows = await v2.patron.count({ where: { email: body.email } });
+    expect(rows, 'two rows would be one human enrolled twice').toBe(1);
+  }, 60_000);
+
+  it('without a key it stays opt-in, and two posts are two people', async () => {
+    // The other half, asserted so the interceptor cannot quietly become
+    // mandatory: the importer and every existing caller send no key, and must
+    // keep working exactly as before.
+    const body = { fullName: `Χωρίς κλειδί ${tag}` };
+    const a = await api().post(`/t/${slug}/patrons`).set('Cookie', owner).send(body).expect(201);
+    const b = await api().post(`/t/${slug}/patrons`).set('Cookie', owner).send(body).expect(201);
+    expect(b.body.id).not.toBe(a.body.id);
+  }, 60_000);
+});
+
 describe('enrolment', () => {
   it('mints M-YYYY-NNNNNN and issues a card', async () => {
     const res = await api()
