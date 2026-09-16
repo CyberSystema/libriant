@@ -5198,3 +5198,69 @@ contradicts what has been MEASURED, which stops at phase 20l — everything from
 21 onward is still written by somebody who had not tried it. This log remains
 the newer truth, and the next phase that proves a paragraph wrong should amend
 the plan in the same commit rather than leaving it for another reconciliation.
+
+## Phase 20m — the roster reads 2.0, and two premises the survey corrected
+
+The members LIST reads `GET /t/:slug/patrons`, and `GET /t/:slug/org/patron-categories`
+lands beside the three `org/*` pickers. Two things I believed when the phase
+started were wrong, and a survey caught both before any code was written.
+
+### `patrons.custom_fields` exists, and the upgrade fills it
+
+The phase brief said the 2.0 `patrons` table has no `custom_fields` column, so
+member custom fields were a capability the cutover would lose — the same finding
+20k recorded for bibliographic records. **That was a bad grep**, over a filename
+pattern that does not match the file patrons are defined in. The column is
+`40-circulation.prisma:76`, and `prisma/upgrade/01-pre-catalog.sql:101` copies
+every 1.0 member's custom fields into it. So the data is stored AND migrated;
+what is missing is only the field-DEFINITION route that labels it, which is the
+customization family's to repoint. Members are not the bib case.
+
+### Member ids survive the upgrade, so the screens are not coupled
+
+`01-pre-catalog.sql` reads `INSERT INTO lbr2.patrons (id, …) SELECT m.id` — a
+1.0 member id IS the 2.0 patron id. That matters for sequencing: 20i shipped the
+catalogue list while the detail screen was still 1.0, and every row click
+resolved only by luck. Here the roster can be repointed alone with no broken
+click, and the detail and enrolment screens can follow independently.
+
+### A freshly provisioned tenant has NO patron categories
+
+Measured while writing the test, which failed on `expected 0 to be greater than
+0`. `pcat-general` is created by the UPGRADE and by nothing else — provisioning
+seeds a branch, a shelving location and an item type (`item-defaults.ts` exists
+because "the very first `POST /items` a library could make was a foreign-key
+error") and no patron category at all. So an upgraded library has one and a new
+library has none.
+
+It is not the blocker `itemTypeId` was: `patronCategoryId` is `@IsOptional()`
+and the column is nullable, so enrolment works without one and the patron simply
+matches no category selector. But the enrolment form must render an empty list
+as a real state, and whether provisioning should seed a category is a decision
+for the phase that builds that form. A test now asserts the zero, so it cannot
+change silently.
+
+### What the roster had to change rather than relabel
+
+- **`memberNumber` → `patronNumber`, and nullable** — "a patron created by a
+  bulk import may not have one yet and a fast-add at the desk should not block
+  on minting". It dashes like every other nullable column in that table, which
+  it did not before: TypeScript cannot catch this, because `string | null` is a
+  valid `ReactNode` and renders an empty cell.
+- **`archived` is a TIMESTAMP, not a status**, and the enum gained `closed` in
+  its place. A row can be `active` and archived at once, so the two are read
+  separately; `expired` is DERIVED by the server with the same comparison the
+  checkout gate makes, and the roster must not recompute it — "a status column
+  that has to be swept nightly to stay true is a column that is wrong every
+  night until the sweep runs".
+- **A stale `?status=archived` is now a 400**, because `validateDto` runs
+  `forbidNonWhitelisted`. The page filters the parameter against the 2.0 enum
+  and drops an unknown value, so a bookmarked link shows the unfiltered roster
+  rather than an error banner.
+- **The 3-character search floor** is the 20i finding again, already handled by
+  `DataTable`'s `minQueryChars`.
+
+### Still 1.0 after this
+
+The member detail and enrolment screens, and the loans+reservations and fines
+families. The four capabilities with no owning phase are unchanged.

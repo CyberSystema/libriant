@@ -4,11 +4,17 @@ import { createTranslator, isLocale } from '@libriant/i18n';
 import { notFound } from 'next/navigation';
 import { loadCatalog } from '@/lib/locale-loader';
 import { requestCookieHeader } from '@/lib/session';
-import { api } from '@/lib/api';
+import { dataPort } from '@/lib/ports';
 import { translateApiError } from '@/lib/api-errors';
-import { MembersTable, type MemberRow } from './MembersTable';
+import { MembersTable, type PatronRow } from './MembersTable';
 
-type ListResponse<T> = { items: T[]; nextCursor: string | null };
+type ListResponse<T> = { items: T[]; nextCursor: string | null; minQueryChars?: number };
+
+/**
+ * The statuses `ListPatronsQueryDto` will accept. Mirrored here rather than
+ * imported: the DTO lives in the API and the web app does not depend on it.
+ */
+const ROSTER_STATUSES = ['active', 'suspended', 'closed'];
 
 export default async function MembersPage(props: {
   params: Promise<{ locale: string; slug: string }>;
@@ -22,18 +28,31 @@ export default async function MembersPage(props: {
   const cookie = await requestCookieHeader();
 
   const q = searchParams.q?.trim();
-  const status = searchParams.status;
+  /**
+   * FILTERED against the 2.0 enum before it is forwarded.
+   *
+   * 1.0 accepted `archived` as a status and passed whatever arrived straight
+   * through. 2.0's roster statuses are `active | suspended | closed` — archived
+   * became a timestamp — and `validateDto` runs `forbidNonWhitelisted`, so a
+   * bookmarked or hand-typed `?status=archived` that worked yesterday is a 400
+   * and an error banner today. Dropping an unknown value shows the unfiltered
+   * roster instead, which is the answer a stale link should get.
+   */
+  const status = ROSTER_STATUSES.includes(searchParams.status ?? '')
+    ? searchParams.status
+    : undefined;
   const qs = new URLSearchParams();
   if (q) qs.set('q', q);
   if (status) qs.set('status', status);
   qs.set('limit', '25');
 
-  let initial: ListResponse<MemberRow>;
+  let initial: ListResponse<PatronRow>;
   let fetchError: string | null = null;
   try {
-    initial = await api<ListResponse<MemberRow>>(`/t/${params.slug}/members?${qs.toString()}`, {
-      cookie,
-    });
+    initial = await dataPort().get<ListResponse<PatronRow>>(
+      `/t/${params.slug}/patrons?${qs.toString()}`,
+      { cookie },
+    );
   } catch (err) {
     initial = { items: [], nextCursor: null };
     fetchError = translateApiError(err, t, t('common.states.error'));

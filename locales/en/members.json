@@ -61,5 +61,8 @@
   "form.customFields": "Library-specific details",
   "form.submit": "Add member",
   "errors.fullNameRequired": "Please tell us their full name.",
-  "errors.checkFields": "Some fields need a closer look — see the messages below."
+  "errors.checkFields": "Some fields need a closer look — see the messages below.",
+  "columns.phone": "Phone",
+  "status.closed": "Closed",
+  "status.expired": "Card expired"
 }

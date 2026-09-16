@@ -109,6 +109,7 @@
     "GET t/:slug/org/branches": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/org/item-types": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/org/locations": ["admin", "librarian", "owner", "volunteer"],
+    "GET t/:slug/org/patron-categories": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/patrons": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/patrons/:id": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/patrons/:id/addresses": ["admin", "librarian", "owner", "volunteer"],

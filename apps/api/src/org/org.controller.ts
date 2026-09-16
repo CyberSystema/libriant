@@ -53,6 +53,23 @@ export class OrgController {
     return this.org.itemTypes(tenant, { includeArchived: q.includeArchived !== undefined });
   }
 
+  /**
+   * `patron.read`, NOT `cat.bib.read` like its three neighbours.
+   *
+   * The others list things — branches, shelves, kinds of object — that a
+   * cataloguer needs and that say nothing about people. A patron CATEGORY is
+   * part of the patron record: it carries a minimum age and a proxy-borrowing
+   * flag, and the set of categories a library uses ("staff", "housebound",
+   * "under-16") describes its membership. The key that guards reading a patron
+   * is the key that should guard reading how patrons are classified.
+   */
+  @RequirePermission('patron.read')
+  @Get('patron-categories')
+  async patronCategories(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {
+    const q = await validateDto(BranchListQueryDto, rawQuery ?? {});
+    return this.org.patronCategories(tenant, { includeArchived: q.includeArchived !== undefined });
+  }
+
   @RequirePermission('cat.bib.read')
   @Get('locations')
   async locations(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {

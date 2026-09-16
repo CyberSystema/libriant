@@ -61,5 +61,8 @@
   "form.customFields": "Στοιχεία που σας αφορούν",
   "form.submit": "Προσθήκη μέλους",
   "errors.fullNameRequired": "Συμπληρώστε το πλήρες όνομα.",
-  "errors.checkFields": "Κάποια πεδία θέλουν διόρθωση — δείτε τα μηνύματα παρακάτω."
+  "errors.checkFields": "Κάποια πεδία θέλουν διόρθωση — δείτε τα μηνύματα παρακάτω.",
+  "columns.phone": "Τηλέφωνο",
+  "status.closed": "Κλειστό",
+  "status.expired": "Η κάρτα έληξε"
 }

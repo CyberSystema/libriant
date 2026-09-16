@@ -113,6 +113,134 @@ afterAll(async () => {
 // 1. Enrolment and the number
 // ---------------------------------------------------------------------------
 
+/**
+ * The category list an enrolment form needs (2.0 phase 20m).
+ *
+ * `POST /patrons` takes a `patronCategoryId` and nothing listed the categories,
+ * so a form could not offer the choice — the same shape as 20k's `itemTypeId`
+ * blocker, one domain over, though a softer one: the field is `@IsOptional()`
+ * and the column is nullable, so enrolment works without a category and the
+ * patron simply matches no category selector in the rules.
+ *
+ * ## The two tenant populations differ here, which this test had to learn
+ *
+ * MEASURED: a freshly provisioned tenant has **zero** patron categories.
+ * `pcat-general` is created only by `prisma/upgrade/01-pre-catalog.sql`, so an
+ * UPGRADED library has one and a NEW library has none — the mirror image of
+ * `item-defaults.ts`, which seeds a branch, a location and an item type at
+ * provisioning precisely because "the very first `POST /items` a library could
+ * make was a foreign-key error". Nothing does that for patron categories.
+ *
+ * So this test creates its own rather than assuming a seed, and the enrolment
+ * form must render an empty list as a real state rather than a loading one.
+ * Recorded in the divergence log; whether provisioning should seed a category
+ * is a decision for the phase that builds that form.
+ */
+describe('the patron categories an enrolment form can offer', () => {
+  beforeAll(async () => {
+    // Out of alphabetical order on purpose: `sort_order` must beat `code`.
+    await v2.patronCategory.createMany({
+      data: [
+        {
+          id: `pc-adult-${tag}`,
+          code: 'ADULT',
+          name: 'Adult',
+          sortOrder: 1,
+          updatedAt: new Date(),
+        },
+        {
+          id: `pc-child-${tag}`,
+          code: 'CHILD',
+          name: 'Child',
+          minAgeYears: null,
+          sortOrder: 2,
+          updatedAt: new Date(),
+        },
+        {
+          id: `pc-staff-${tag}`,
+          code: 'AAA-STAFF',
+          name: 'Staff',
+          canBeProxy: true,
+          sortOrder: 3,
+          updatedAt: new Date(),
+        },
+      ],
+    });
+  }, 60_000);
+
+  it('a freshly provisioned tenant has none until somebody makes one', async () => {
+    // The measured fact in the docblock, asserted so it cannot quietly change:
+    // nothing in provisioning seeds a patron category, and the three above were
+    // made by this test. If provisioning ever starts seeding one, this fails and
+    // the enrolment form's empty-state handling can be revisited deliberately.
+    const seeded = await v2.patronCategory.count({ where: { id: 'pcat-general' } });
+    expect(seeded).toBe(0);
+  });
+
+  it('lists them in the order the library chose', async () => {
+    const res = await api()
+      .get(`/t/${slug}/org/patron-categories`)
+      .set('Cookie', owner)
+      .expect(200);
+    const items = res.body.items as {
+      id: string;
+      code: string;
+      name: string;
+      minAgeYears: number | null;
+      canBeProxy: boolean;
+      sortOrder: number;
+    }[];
+    expect(items.length).toBeGreaterThanOrEqual(3);
+    // AAA-STAFF sorts first by code and last by sortOrder — so this proves the
+    // order is by sortOrder, not alphabetical.
+    expect(items.map((c) => c.code).slice(0, 3)).toEqual(['ADULT', 'CHILD', 'AAA-STAFF']);
+    expect(items.find((c) => c.code === 'AAA-STAFF')!.canBeProxy).toBe(true);
+
+    // sort_order FIRST, code as the tiebreak, so the order is total — a list
+    // shown to a librarian enrolling somebody is ordered by how often each is
+    // chosen, not alphabetically.
+    const keys = items.map((c) => [c.sortOrder, c.code] as const);
+    const sorted = [...keys].sort((a, b) => a[0] - b[0] || a[1].localeCompare(b[1]));
+    expect(keys).toEqual(sorted);
+
+    // The two fields an enrolment form needs BEFORE the API refuses a row: a
+    // minimum age it can warn about, and whether the category may proxy-borrow.
+    for (const c of items) {
+      expect(c.minAgeYears === null || typeof c.minAgeYears === 'number').toBe(true);
+      expect(typeof c.canBeProxy).toBe('boolean');
+    }
+  });
+
+  it('hides archived categories unless asked', async () => {
+    await v2.patronCategory.create({
+      data: {
+        id: `pcat-gone-${tag}`,
+        code: `ZZ-${tag}`,
+        name: 'Retired category',
+        sortOrder: 999,
+        updatedAt: new Date(),
+        archivedAt: new Date(),
+      },
+    });
+    const live = await api()
+      .get(`/t/${slug}/org/patron-categories`)
+      .set('Cookie', owner)
+      .expect(200);
+    expect((live.body.items as { id: string }[]).some((c) => c.id === `pcat-gone-${tag}`)).toBe(
+      false,
+    );
+
+    const all = await api()
+      .get(`/t/${slug}/org/patron-categories`)
+      .query({ includeArchived: '1' })
+      .set('Cookie', owner)
+      .expect(200);
+    expect((all.body.items as { id: string }[]).some((c) => c.id === `pcat-gone-${tag}`)).toBe(
+      true,
+    );
+  });
+});
+
 describe('enrolment', () => {
   it('mints M-YYYY-NNNNNN and issues a card', async () => {
     const res = await api()

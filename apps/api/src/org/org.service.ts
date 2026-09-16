@@ -39,6 +39,18 @@ import type { TenantContext } from '../tenancy/tenant-context.js';
  * row rather than a default. A library that renamed it would have had a screen
  * that could not add a copy.
  */
+export type PatronCategoryRow = {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+  readonly nameI18n: unknown;
+  /** NULL is "no minimum", not zero. */
+  readonly minAgeYears: number | null;
+  readonly canBeProxy: boolean;
+  readonly sortOrder: number;
+  readonly archivedAt: Date | null;
+};
+
 export type ItemTypeRow = {
   readonly id: string;
   readonly code: string;
@@ -141,6 +153,48 @@ export class OrgService {
         opacName: true,
         browsable: true,
         opacVisible: true,
+        sortOrder: true,
+        archivedAt: true,
+      },
+    });
+    return { items: rows };
+  }
+
+  /**
+   * The categories a patron can be enrolled under (2.0 phase 20m).
+   *
+   * The counterpart of {@link itemTypes}, and it exists for the same reason:
+   * `POST /t/:slug/patrons` takes a `patronCategoryId` and nothing listed the
+   * categories, so an enrolment form could not offer the choice and could not
+   * safely assume one. `pcat-general` is what the upgrade assigns every migrated
+   * member and what the defaults seed, but `item-defaults.ts` makes the same
+   * point about `itype-book` that applies here: it is a renameable row, not a
+   * constant, so a screen must not hard-code it.
+   *
+   * ORDERED BY `sort_order` FIRST, unlike the item types. A category list is
+   * shown to a librarian enrolling somebody, and the order a library puts its
+   * categories in — adult, child, staff, institution — is a statement about how
+   * often each is chosen. `code` is the tiebreak so the order is total.
+   *
+   * `min_age_years` and `can_be_proxy` ride along because an enrolment form is
+   * exactly where they matter: a category with a minimum age is one a form can
+   * warn about before the API refuses the row.
+   */
+  async patronCategories(
+    tenant: TenantContext,
+    opts: { includeArchived?: boolean } = {},
+  ): Promise<{ items: PatronCategoryRow[] }> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const rows = await client.patronCategory.findMany({
+      where: opts.includeArchived === true ? {} : { archivedAt: null },
+      orderBy: [{ sortOrder: 'asc' }, { code: 'asc' }],
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        nameI18n: true,
+        minAgeYears: true,
+        canBeProxy: true,
         sortOrder: true,
         archivedAt: true,
       },
