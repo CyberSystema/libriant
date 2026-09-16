@@ -84,6 +84,26 @@ export type PatronRecord = {
   archivedAt: Date | null;
   mergedIntoId: string | null;
   updatedAt: Date;
+  /**
+   * The tenant-defined fields, as stored (2.0 phase 20n).
+   *
+   * MIGRATED SINCE 19b AND UNREADABLE UNTIL NOW.
+   * `prisma/upgrade/01-pre-catalog.sql` copies every 1.0 member's
+   * `custom_fields` into this column, so for an upgraded library it holds real
+   * data a librarian typed — and no route returned it, which made the cutover a
+   * silent data loss rather than a deliberate one. The same shape as the book
+   * cover 20k found, and worse for being full rather than empty.
+   *
+   * On the RECORD read only, never on the roster: it is a JSONB blob, and a
+   * list that selects one pays a TOAST read per row for something no column
+   * renders.
+   *
+   * Returned RAW. The definitions that give each key a label and a type come
+   * from the customization controller, which is still on the 1.0 client — so a
+   * screen can show what is stored but cannot yet say what it means. Naming that
+   * limit is the point; the alternative was to leave the data invisible.
+   */
+  customFields: unknown;
   category: { id: string; code: string; name: string } | null;
   cards: readonly {
     id: string;
@@ -518,6 +538,7 @@ export class PatronsService {
         archivedAt: true,
         mergedIntoId: true,
         updatedAt: true,
+        customFields: true,
         category: { select: { id: true, code: true, name: true } },
         cards: {
           where: { retiredAt: null },

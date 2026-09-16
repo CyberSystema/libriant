@@ -9,7 +9,7 @@ import { dataPort } from '@/lib/ports';
 
 type Props = {
   slug: string;
-  memberId: string;
+  patronId: string;
   photoAssetRef: string | null;
   catalog: Catalog;
   locale: Locale;
@@ -18,11 +18,17 @@ type Props = {
 
 /**
  * Photo upload widget. POSTs a multipart form to
- * `/t/:slug/members/:id/photo` (the existing MemberPhotosController) and
- * DELETEs to clear. Previews the current photo via the `<Asset>` slot
- * URL pattern when one is set.
+ * `/t/:slug/patrons/:id/photo` (`PatronPhotoController`, 2.0 phase 20b-ii) and
+ * DELETEs to clear. Previews the current photo via the `<Asset>` slot URL
+ * pattern when one is set.
+ *
+ * The stored file keeps the `members` resource type, so the `<img>` URL is
+ * unchanged by the repoint — and that type is in `RESTRICTED_RESOURCE_TYPES`,
+ * so a volunteer who may read the roster is refused the image itself. Reading
+ * the photo is a stricter act than reading the row, which is the right way
+ * round for a picture of a person.
  */
-export function PhotoUploader({ slug, memberId, photoAssetRef, catalog, locale, onChange }: Props) {
+export function PhotoUploader({ slug, patronId, photoAssetRef, catalog, locale, onChange }: Props) {
   const t = createTranslator(catalog, locale);
   const toast = useToast();
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -36,7 +42,7 @@ export function PhotoUploader({ slug, memberId, photoAssetRef, catalog, locale, 
     setUploading(true);
     try {
       const json = await dataPort().upload<{ photoAssetRef: string }>(
-        `/t/${slug}/members/${memberId}/photo`,
+        `/t/${slug}/patrons/${patronId}/photo`,
         { file: { name: file.name, type: file.type, data: file } },
         { timeoutMs: API_JOB_TIMEOUT_MS },
       );
@@ -55,7 +61,7 @@ export function PhotoUploader({ slug, memberId, photoAssetRef, catalog, locale, 
   async function remove() {
     setRemoving(true);
     try {
-      await dataPort().delete(`/t/${slug}/members/${memberId}/photo`);
+      await dataPort().delete(`/t/${slug}/patrons/${patronId}/photo`);
       onChange(null);
       toast.show({ severity: 'success', title: t('members.detail.photoRemoved') });
     } catch (err) {

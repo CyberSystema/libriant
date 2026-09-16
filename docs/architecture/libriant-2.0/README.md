@@ -5264,3 +5264,83 @@ change silently.
 
 The member detail and enrolment screens, and the loans+reservations and fines
 families. The four capabilities with no owning phase are unchanged.
+
+## Phase 20n — the patron record, and a second write-only column
+
+The member DETAIL screen reads and writes 2.0. Its shape changed more than the
+roster's did, and one finding is the same defect 20k found in the catalogue,
+one domain over and worse.
+
+### `custom_fields` was migrated since 19b and returned by nothing
+
+`prisma/upgrade/01-pre-catalog.sql` copies every 1.0 member's `custom_fields`
+into `lbr2.patrons.custom_fields`. For an upgraded library that column holds
+real data a librarian typed — and **no route returned it**. Exactly the book
+cover's shape (20k), except the cover column was empty on every record and this
+one is full, which would have made the cutover a silent data LOSS rather than a
+deliberate omission.
+
+Added to `PatronRecord` and the `get()` select only. Not to the roster: it is a
+JSONB blob and a list that selects one pays a TOAST read per row for something
+no column renders. A test asserts both halves — returned by the record, absent
+from the row.
+
+The VALUES are now readable; the DEFINITIONS that label them still come from the
+customization controller, which is not one of the five modules the cutover
+deletes and is still on the 1.0 client. So the card renders raw keys when the
+definitions do not resolve, and says so. That is the honest half-state: the
+alternative was to leave migrated data invisible.
+
+### The archive dialog was about to go silent
+
+1.0 refused an archive with `activeLoans` / `activeReservations` in the error
+body, and the dialog read those names to show the counts where the librarian is
+standing. 2.0 refuses with `code: 'patron.hasOpenBusiness'` and **`openLoans` /
+`openHolds` / `owedCents`**. A repoint that kept the old test would have found
+`activeLoans === undefined` on every refusal and fallen back to the generic
+message — the dialog going quiet on the one thing it exists to say, with nothing
+failing. 2.0 also refuses for MONEY OWED, which 1.0 never did, so there is a
+third line.
+
+### Money is per-currency, and arrives as strings
+
+Two traps in one card. `fees.owed_cents` is a `bigint` serialised with
+`String(...)`, and `formatMoney` takes a `number` — so passing it straight
+through compiles and renders `NaN`, because `string` satisfies nothing that
+complains. One `money()` helper does the conversion in one place.
+
+And 1.0 summed a single `outstandingFinesCents` and labelled it in euros.
+`GET /fees/balances/:patronId` returns a ROW PER CURRENCY, because a patron who
+owes EUR 4 and USD 3 has no single number. Summing them would be arithmetic on
+two different units.
+
+### Settling is deferred, and the buttons are not drawn
+
+1.0 settled one fine by id. 2.0 settles a patron's BALANCE by amount through
+`POST /fees/payments`, with a cash drawer, a receipt and an allocation order
+behind it — phase 18 chose that deliberately, so this is a rewrite rather than a
+repoint and belongs with the fees family. The card reads. The write buttons are
+absent rather than present-and-broken, and the permission props are threaded
+through ready for them.
+
+### Editing is a small inline form, for the reason 20j had
+
+1.0's `MemberForm` is one component serving create AND edit, and it writes 1.0
+scalars to a route the cutover deletes — so a detail screen that mounted it
+would READ `patrons` and WRITE `members`. The catalogue hit this in 20k and
+solved it the same way: a small editor over `PATCH /patrons/:id` for the scalars
+a librarian corrects, leaving the enrolment form to the phase that has to decide
+about the first card, the category, the home branch and the expiry date. The
+form says which fields it does not own.
+
+### Counts are measured, and an unknown count is not zero
+
+There is no count route, and inventing one for a summary card would be a route
+to maintain for a number. The card asks for a page of open loans and holds and
+reports `25+` when there is a next cursor. Each read degrades to `—` on failure
+rather than to `0`: "no loans" and "we could not ask" are different answers, and
+only one of them means this patron can be archived.
+
+### Still 1.0 after this
+
+The enrolment form, and the loans+reservations and fines families.

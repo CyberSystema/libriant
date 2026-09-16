@@ -241,6 +241,54 @@ describe('the patron categories an enrolment form can offer', () => {
   });
 });
 
+/**
+ * The custom fields the upgrade has been migrating since 19b (2.0 phase 20n).
+ *
+ * `prisma/upgrade/01-pre-catalog.sql` copies every 1.0 member's `custom_fields`
+ * into `lbr2.patrons.custom_fields`, so for an upgraded library the column holds
+ * real data a librarian typed. Until 20n NO ROUTE RETURNED IT — the same shape
+ * as the book cover 20k found, and worse for being full rather than empty: the
+ * cutover would have been a silent data loss rather than a deliberate one.
+ *
+ * On the RECORD read only. The roster must not select it: it is a JSONB blob,
+ * and a list that pulls one pays a TOAST read per row for something no column
+ * renders.
+ */
+describe('custom fields survive into the record read', () => {
+  it('returns what is stored, and keeps it off the roster row', async () => {
+    const res = await api()
+      .post(`/t/${slug}/patrons`)
+      .set('Cookie', owner)
+      .send({ fullName: `Custom ${tag}` })
+      .expect(201);
+    const id = res.body.id as string;
+
+    // Written straight to the column, the way the upgrade does — there is no
+    // route that sets custom fields on a patron, which is itself the gap this
+    // test documents.
+    await v2.patron.update({
+      where: { id },
+      data: { customFields: { membershipType: 'Φοιτητής', roomKey: 'B-12' } },
+    });
+
+    const read = await api().get(`/t/${slug}/patrons/${id}`).set('Cookie', owner).expect(200);
+    expect(read.body.customFields).toEqual({ membershipType: 'Φοιτητής', roomKey: 'B-12' });
+
+    // And NOT on the list, which is a different decision rather than an
+    // oversight: a roster row renders no custom field.
+    const roster = await api()
+      .get(`/t/${slug}/patrons`)
+      .query({ q: `Custom ${tag}` })
+      .set('Cookie', owner)
+      .expect(200);
+    const row = (roster.body.items as { id: string; customFields?: unknown }[]).find(
+      (r) => r.id === id,
+    );
+    expect(row).toBeDefined();
+    expect(row!.customFields).toBeUndefined();
+  }, 60_000);
+});
+
 describe('enrolment', () => {
   it('mints M-YYYY-NNNNNN and issues a card', async () => {
     const res = await api()
