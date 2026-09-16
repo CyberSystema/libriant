@@ -5702,3 +5702,149 @@ keyset pager carries an EXPLAIN in its comments measured against 1.0's
 still matches, so the range scan and early stop survive and only the `id`
 tiebreak within one millisecond is unindexed; it has NOT been re-measured at
 200k rows.
+
+## The circulation family is three phases, and a survey said why
+
+§6 phase 20 says "repoint the staff UI at the 2.0 read models" as one clause.
+The catalogue took four phases and the members family took three; circulation is
+the largest of the three families, and a survey of all twelve screens against the
+2.0 surface split it into **20q (the loans list + scan-to-return)**, **20r (loan
+detail, checkout, and the print receipt)** and **20s (reservations → holds)**.
+
+### The three capabilities with no owning phase — all three are COMPOSABLE
+
+The cutover blocker list named three things 1.0 can do that no 2.0 phase claimed.
+None of them needs a new route:
+
+- **Fulfil one reservation by id.** 1.0's `POST /reservations/:id/fulfill` is
+  itself a wrapper that forwards the reservation's copy and member to
+  `loans.checkout`. 2.0's `POST /circulation/checkout {itemId, patronId}` does the
+  whole fulfilment inline — it finds the reader's own hold on that bib, stamps
+  `fulfilled_at` and `fulfilled_by_loan_id`, closes the queue gap, releases a
+  second set-aside copy and resolves group siblings.
+- **Expire one reservation.** No web screen calls it, and 1.0's own cron does not
+  either — `reservation-expiry.job.ts` re-implements the logic inline because the
+  worker skips Nest DI. 1.0's expire is `cancel` with a different terminal column.
+  The widget is omitted rather than reproduced.
+- **Resolve a patron by member number.** Two routes where 1.0 had one, and better:
+  `GET /patrons/by-card?barcode=` for the scan — the upgrade mints every 1.0
+  member number as an ACTIVE `patron_cards` row whose barcode IS that number — and
+  `GET /patrons?q=` for the typed picker, whose `search_text` is name, number,
+  email and phone folded together.
+
+### The title gap, which was real and is now closed
+
+**No 2.0 route joined a loan or a hold to a bib title.** `bib_records.title` was
+reached by exactly one route in the entire surface (`GET /items/by-barcode`), and
+that one takes a single barcode. The loans list, the loan detail, the holds list
+and the fee list all carry a `bib_id` and no title, so the column a librarian
+actually reads had no source.
+
+It is **not** a new route and **not** 25 per-row GETs. `bibTitlesFor` is one
+`WHERE bib_id IN (…)` over the page, selecting two columns, resolved after the
+page is cut. Three shapes were measured and rejected:
+
+- a per-row `GET` — 25 round trips, and `GET /catalog/bib/:id` returns no title
+  anyway (20j: the record read is the MARC, the projection is a different route);
+- `BibListQueryDto` with a set of ids — it takes no id-set filter and refuses an
+  unknown param;
+- the relation hop `item.bib.bib.title` — three `WHERE id IN (…)` queries where
+  this is one, and it reads the item's CURRENT bib, which answers the wrong
+  question the day a bib merge (M5) moves a copy. **A loan names the bib that was
+  lent**, which is the loan's own `bib_id`.
+
+### `?open=1`, because the open set is four statuses
+
+`loans_closed_consistency` makes `(closed_at IS NULL)` equal to `status IN
+('active','claims_returned','claims_never_borrowed','recalled')`. 1.0's
+scan-to-return asked `?status=active&limit=1` to find the loan to close, and the
+straight translation of that would answer **"no open loan for that barcode —
+nothing to return"** for a recalled copy or one whose reader claims to have
+brought it back: the wrong answer, said confidently, with the book in the
+librarian's hand.
+
+`?open=1` is also the only form that uses the index the schema already built for
+it — `loans_one_open_per_item` is UNIQUE `(item_id) WHERE closed_at IS NULL`, so
+`?itemId=&open=1` is a single-row unique lookup where `?itemId=` alone is a range
+scan of that copy's whole loan history.
+
+### Three things 2.0 cannot express, omitted rather than faked
+
+- **Return condition (ok / damaged).** `damaged` is not an `ItemStatus` at all
+  (`available | on_loan | in_transit | awaiting_pickup | in_process | missing`);
+  `POST /items/:id/status` accepts only `available | missing | in_process`; and
+  `items.damaged_code` is a condition code settable only through `PUT /items/:id`.
+  The widget goes; phase 21 owns the desk that replaces it.
+- **Renewal periods.** `RenewDto` is `{branchId?, effectiveAt?}` — one call renews
+  by exactly one resolved policy period against the loan's pinned snapshot. The
+  RenewModal's whole content is the periods input, so the dialog becomes a plain
+  confirm. (20r.)
+- **`loans.notes` and the return note.** A fourth instance of 20o's write-only
+  column class, in this family: the column exists, the upgrade fills it, no 2.0
+  route writes it.
+
+### Corrections to the survey, checked before acting on them
+
+The survey ran with verifiers, and three of its verdicts were wrong in both
+directions. Recorded because the lesson is that a verifier's `confirmed=false` is
+evidence, not a finding:
+
+- It reported the holds title/name gap as having "no composable source — 50
+  per-row GETs". **False**: `Hold.bib → MarcRecord.bib → BibRecord` and
+  `Hold.patron` are both plain relations. The fix it proposed (widen the summary)
+  is right; the reason it gave is not.
+- It reported that `LoanListRow` carries no reader. **False**: it selects
+  `patron: {id, fullName, patronNumber}`.
+- It marked the `Combobox` finding REFUTED. **True as written**:
+  `Combobox.tsx:129` calls `api()` directly, outside the port. Its only live
+  mounts are `CheckoutForm` and `PlaceHoldForm`; the third (`AuthorPicker` ←
+  `BookForm`) went dead when 20l routed `catalog/new` to `BibCreateForm`. 20r
+  converts it.
+- It marked the anonymised-patron trap CONFIRMED with the claim that "no setting
+  can change it". **Half true**: `reading_history_policy` seeds `anonymised` and
+  check-in nulls `patron_id` in the same transaction, so the Member column IS
+  empty for every returned loan on a default tenant — but `mode='kept'` exists,
+  and phase 32 owns the asking.
+
+## Phase 20q — the loans list reads 2.0
+
+`GET /t/:slug/circulation/loans`, with the title join and `?open=1` above, plus:
+
+- **Six statuses where 1.0 had three**, all six in the filter toolbar. The three
+  new ones are not obscure — `recalled` is what a librarian does when someone else
+  needs the book now, and the two `claims_*` states are a dispute the desk has to
+  be able to find again tomorrow. Leaving them out would have made them
+  unreachable through the UI while the table still rendered them.
+- **An "Out now" pill**, which is the filter 1.0's `status=active` was pretending
+  to be.
+- **The anonymised reader says so.** An empty Member cell reads as a bug; it is a
+  promise the library made, and `anonymisedAt` is what tells "erased on return"
+  apart from "never recorded".
+- **`?overdue=1` paired with a contradictory `?status=` is resolved in the page,
+  not sent.** The controller 400s that pair and is right to — but `LoanFilters`
+  already clears one when it sets the other, so the only way to arrive with both
+  is a bookmark, and a red banner is the wrong answer to a stale link. The overdue
+  queue is the more specific intent, so it wins.
+- **`item.barcode` is nullable** — a copy catalogued before its label is printed,
+  which fast-add creates.
+- **`renewedCount` → `renewalCount`.**
+
+### The loan list had no test at all
+
+Phase 20a shipped `GET /circulation/loans` untested. `loan-list-v2.spec.ts` is
+nine integration tests against a real database covering exactly the three things
+that fail while rendering perfectly: a missing title, a copy reported as not out
+while a reader has it, and the anonymised reader.
+
+### A stale docblock, corrected
+
+`LoanReadService.list` still said "THE DEFAULT ORDER HAS NO INDEX TODAY" and
+listed the three indexes it needed. All three landed in
+`20260919090000_list_keyset_indexes` — `loans_loaned_at_id_idx`,
+`loans_patron_loaned_idx`, `loans_item_loaned_idx`, measured at 4 buffers for a
+deep page against 1,339 with none of them.
+
+### Still 1.0 after this phase
+
+`loans/[id]/**`, `loans/new/**`, `print/[slug]/receipt/[loanId]` (20r), and
+`reservations/**` (20s).

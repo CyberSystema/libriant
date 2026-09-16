@@ -137,6 +137,25 @@ export class LoanListQueryDto {
    */
   @IsOptional() @IsIn(['1', 'true']) overdue?: '1' | 'true';
 
+  /**
+   * Open loans only — the four statuses `closed_at IS NULL` means (2.0 phase 20q).
+   *
+   * NOT expressible as `?status=`, and that is the whole reason it exists.
+   * `loans_closed_consistency` makes the open set `('active', 'claims_returned',
+   * 'claims_never_borrowed', 'recalled')`, so the desk question "is this copy
+   * out?" asked as `?status=active` answers NO for a recalled copy sitting in a
+   * reader's bag and for one whose reader claims to have brought it back —
+   * which at a return desk is the wrong answer said confidently.
+   *
+   * Paired with `?itemId=` it is also the only form that uses the index the
+   * schema already built for it: `loans_one_open_per_item` is UNIQUE `(item_id)
+   * WHERE closed_at IS NULL`, so the pair is a single-row unique lookup, where
+   * `?itemId=` alone is a range scan of that copy's whole loan history.
+   *
+   * Same string-boolean spelling as `overdue` above, for the same reason.
+   */
+  @IsOptional() @IsIn(['1', 'true']) open?: '1' | 'true';
+
   /** An opaque token from a previous page, or (still) a bare loan id. */
   @IsOptional() @IsString() @Length(1, 512) after?: string;
 

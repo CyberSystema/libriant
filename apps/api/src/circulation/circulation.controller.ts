@@ -232,6 +232,12 @@ export class CirculationController {
       ...(q.after === undefined ? {} : { after: q.after }),
       ...(q.limit === undefined ? {} : { limit: q.limit }),
       overdue,
+      // Absent is false, and it composes with everything: `?open=1` alone is the
+      // whole library's open loans, and with `?itemId=` it is the one question a
+      // return desk asks. It is NOT refused alongside `?overdue=1` the way a
+      // conflicting `?status=` is — the overdue queue is a subset of the open
+      // set, so the pair is redundant rather than contradictory.
+      open: q.open !== undefined,
       // Read ONCE, here, and passed down — the same seam `overdue()` below
       // uses. A cut-off re-read inside the query could move between the keyset
       // boundary and the page, which shows a loan on two consecutive pages.

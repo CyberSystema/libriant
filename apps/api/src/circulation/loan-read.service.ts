@@ -11,6 +11,7 @@ import {
   type ListResult,
 } from '../platform/list.js';
 import { readPinnedPolicy, type PinnedPolicySnapshot } from '@libriant/circ-policy';
+import { bibTitlesFor } from '../bib/bib-titles.js';
 
 /**
  * Reading loans — the three questions a desk asks and the one a dispute asks.
@@ -54,17 +55,15 @@ export class LoanReadService {
    * index applies — the mistake 1.0's `loans_active_dueAt_idx` made and this
    * schema un-made.
    *
-   * THE DEFAULT ORDER HAS NO INDEX TODAY. `lbr2.loans` carries
-   * `loans_status_due_id_idx`, `loans_bib_id_idx`, and two PARTIAL indexes on
-   * `patron_id` and `item_id` that are `WHERE closed_at IS NULL` and carry no
-   * sort column — so an unfiltered first page is a sort over every loan the
-   * library has ever made, and `?patronId=` is a sort over that reader's whole
-   * history rather than a scan of the newest 25. `loans` is the table that grows
-   * fastest in a working library (one row per checkout, kept for ever), so this
-   * is the read that degrades first. It needs
-   * `@@index([loanedAt, id], map: "loans_loaned_at_id_idx")` plus the three
-   * filtered variants, and the migration is NOT written here — phase 20a owns
-   * no schema file. See the report handed to the operator with this phase.
+   * The default order had NO index when phase 20a wrote this list, and the three
+   * it asked for landed in `20260919090000_list_keyset_indexes`:
+   * `loans_loaned_at_id_idx`, `loans_patron_loaned_idx` and
+   * `loans_item_loaned_idx`, measured at 4 buffers for a deep page against 1,339
+   * with none of them. They are ASCENDING though this list sorts descending,
+   * because a btree is scanned backwards just as cheaply.
+   *
+   * `?open=1` is the one filter that walks a different index on purpose — see
+   * the `where` clause below.
    *
    * ## The clock belongs to the caller
    *
@@ -97,6 +96,13 @@ export class LoanReadService {
     if (opts.itemId !== undefined) where['itemId'] = opts.itemId;
     if (opts.bibId !== undefined) where['bibId'] = opts.bibId;
     if (opts.status !== undefined) where['status'] = opts.status;
+    // `closed_at IS NULL` rather than a status list, because that column IS the
+    // open set: `loans_closed_consistency` keeps the two in lockstep, and the
+    // two partial indexes a desk read wants — `loans_one_open_per_item` and
+    // `loans_patron_open_idx` — are both predicated on this exact expression.
+    // Spelling it as `status: { in: [...] }` would answer the same rows and use
+    // neither index.
+    if (opts.open === true) where['closedAt'] = null;
     if (workQueue) {
       // The queue defines its own status, and the controller has already
       // refused a request that asked for a different one — a silent override
@@ -140,12 +146,31 @@ export class LoanReadService {
       },
     });
 
+    // THE TITLE, in ONE query for the page (2.0 phase 20q).
+    //
+    // Resolved AFTER the page is cut rather than as a relation hop, and against
+    // the LOAN's own `bib_id` rather than the item's, for the three reasons
+    // {@link bibTitlesFor} sets out. `rows` is `limit + 1` here, so this asks
+    // for at most one id more than the page returns — a page boundary is not
+    // worth a second pass over the array.
+    const titles = await bibTitlesFor(
+      client,
+      rows.map((r) => r.bibId),
+    );
+
     return pageOf(
       rows,
       limit,
       (r) => ({
         id: r.id,
         item: r.item,
+        /**
+         * NULL when the projection row is missing, which is a drift the nightly
+         * `catalog-verify` job owns — not a state the desk can create. A client
+         * renders it as an unknown title; it must not render an empty cell,
+         * which reads as "this loan has no book".
+         */
+        title: titles.get(r.bibId) ?? null,
         // NULL on every anonymised loan, which is the DEFAULT for a closed one:
         // `patron_id` is nulled and `anonymised_at` stamped in the same
         // transaction as the return. `anonymisedAt` travels beside it so a
@@ -475,6 +500,11 @@ export type LoanListOptions = {
   /** Active AND past due. Pins the status and flips the sort — see {@link LoanReadService.list}. */
   readonly overdue?: boolean;
   /**
+   * Open only: `closed_at IS NULL`, which is the FOUR-status open set and not
+   * `status = 'active'`. See `LoanListQueryDto.open`.
+   */
+  readonly open?: boolean;
+  /**
    * The instant "overdue" is measured against, read ONCE by the caller.
    * Required even when `overdue` is false, so that a list cannot acquire a
    * clock read of its own the day somebody adds a second time-dependent filter.
@@ -502,6 +532,15 @@ export type LoanListOptions = {
 export type LoanListRow = {
   readonly id: string;
   readonly item: { readonly id: string; readonly barcode: string | null };
+  /**
+   * The title of the bib that was LENT, from the projection (2.0 phase 20q).
+   *
+   * Nullable, and the null means one thing only: `bib_records` has no row for
+   * this loan's `bib_id`. That is projection drift, which `catalog-verify`
+   * owns — a desk cannot produce it, and neither can an anonymised loan, which
+   * erases the reader and keeps the book.
+   */
+  readonly title: string | null;
   /** NULL once the loan has been anonymised — see {@link LoanListRow.anonymisedAt}. */
   readonly patron: {
     readonly id: string;
