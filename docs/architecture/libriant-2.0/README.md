@@ -5488,3 +5488,130 @@ something there and no way to add to it".
 
 The loans+reservations and fines families, then module deletion and the
 `apps/site` claims. The members family is complete.
+
+## The cutover blocker list — 22 files that outlive the module deletion
+
+**This section is the deliverable of a survey, not of a phase. Nothing here is
+fixed.** It exists because the thing it describes is easy to lose and expensive
+to rediscover, and because the cutover must not run until each line has an
+answer.
+
+### The mechanism, in one paragraph
+
+Promotion is two renames (`scripts/tenant-upgrade-v2.ts:20,41`):
+
+```sql
+ALTER SCHEMA public RENAME TO v1_archive;
+ALTER SCHEMA lbr2   RENAME TO public;
+```
+
+`TenantPrismaService` holds two clients per tenant. `getClientV2` is built with
+an explicit `v2Schema` and follows the promotion — that is phase 20f's whole
+point. **`getClient`, the 1.0 client, is given no schema override at all**
+(`tenant-prisma.service.ts:209-212`), so it always resolves against `public` —
+which after promotion IS the 2.0 schema. Every 1.0 table it wants is now in
+`v1_archive`, where it will not look.
+
+31 files call `getClient`. Nine are inside the five modules the cutover deletes
+and go away with them. **Twenty-two survive `rm -rf` and keep querying a schema
+that has moved.**
+
+The divergence log already recorded this class ONCE, for the DSAR route:
+"mounted from `privacy/`, OUTSIDE the five directories, so `rm -rf` leaves it
+live and serving from 1.0 models." That observation was correct. Its scope was
+underestimated by a factor of 22.
+
+### The two that fail SILENTLY, which is the whole reason this list exists
+
+**`tenancy/tenant-audit.service.ts`** — writes `audit_events` through the 1.0
+client. The 2.0 schema has no `audit_events` and no compat twin for it, so every
+write fails after promotion. `record()` wraps the write in try/catch and answers
+a failure with `logger.warn` — **by design**, and the docblock says why: "losing
+an audit row must never turn a successful checkout/return into a 500." That
+reasoning is right for a transient blip and catastrophic for a permanent schema
+mismatch. From the moment a tenant is promoted, nothing that happens in the
+library is recorded — checkouts, returns, patron merges, policy changes, and the
+proof that a GDPR Article 17 erasure was carried out — while every mutation still
+succeeds. The only trace is one warn line per action in a pod log.
+
+**`import/engine/import-engine-v2.wiring.ts`** — subtler, and the one a reading
+of the file alone would miss. The import worker opens TWO clients
+(`import-worker.ts:110-119`). The 2.0 one passes
+`v2Schema: v2SchemaFor(schemaState?.schemaMajor)` — the 20f binding — and **the
+1.0 one does not**, so the data half follows the promotion and the audit half
+does not. A 250,000-row import completes, reports a clean tally, and leaves
+nothing saying who ran it or what it created.
+
+### The ten that block the cutover
+
+Ranked by what a library loses. The blocking judgement is MINE, applied over the
+survey: the classifying agents marked `import-engine-v2.wiring.ts` and
+`subject-access.service.ts` non-blocking and I disagree with both — the first is
+silent data loss, and the second was only cleared because the agent believed it
+died with a module, which its own verifier corrected.
+
+| file                                         | table(s)                                 | after promotion | what breaks                                       |
+| -------------------------------------------- | ---------------------------------------- | --------------- | ------------------------------------------------- |
+| `tenancy/tenant-audit.service.ts`            | `audit_events`                           | **silent**      | all auditing, incl. Art. 17 proof                 |
+| `import/engine/import-engine-v2.wiring.ts`   | `audit_events`                           | **silent**      | import provenance                                 |
+| `privacy/subject-access.service.ts`          | 7 tables                                 | throws          | the GDPR Art. 15/20 bundle                        |
+| `audit/audit.service.ts`                     | `audit_log`                              | throws          | the owner's Activity screen, 500 on promotion day |
+| `dashboard/dashboard.service.ts`             | `books` `members` `loans` `reservations` | throws          | the tenant home page                              |
+| `tenant-settings/tenant-settings.service.ts` | `tenant_settings` `audit_log`            | throws          | every library setting                             |
+| `export/export-consent.ts`                   | `audit_log`                              | throws          | export consent capture                            |
+| `jobs/fine-accrual.job.ts`                   | `tenant_settings` `fines` `loans`        | throws          | nightly fine accrual                              |
+| `jobs/member-notifications.job.ts`           | 5 tables                                 | throws          | every patron notice                               |
+| `jobs/reservation-expiry.job.ts`             | `reservations` `book_copies`             | throws          | hold expiry                                       |
+
+The four jobs deserve their own note: they run **unattended**, so "throws
+loudly" means a stack trace in a log nobody is reading, not a librarian seeing
+an error. `jobs/retention.job.ts` (GDPR retention, `audit_log`) is on the same
+footing and I would block on it too, against the survey's own flag.
+
+`jobs/reservation-expiry.job.ts` is on this list only because the verifier
+caught it: the classifying agent had it dying with the reservations module, and
+it does not — it lives in `jobs/`.
+
+### The seven that keep working, and why that is the plan succeeding
+
+`authz/permissions.service.ts`, `plans/quota.interceptor.ts`,
+`plans/plan-usage.controller.ts`, `plans/plan-usage-admin.controller.ts`,
+`customization/{collections,collection-records,field-definitions}.service.ts`.
+
+These hit the compat twins in `70-upgrade-surface.prisma`, which exist precisely
+to keep their 1.0 physical shape — quoted camelCase columns, `TIMESTAMP(3)`
+without a zone, the 1.0 enum names — through the rename. The two on the hot path
+of every tenant request, permissions and the quota interceptor, are both in this
+group. That is phase 19a's compat-twin decision paying off exactly as designed,
+and it is worth stating as loudly as the failures.
+
+**One correction to record**: `field-definitions.service.ts` was first classified
+as returning _wrong-but-plausible data_ — the most dangerous category there is,
+since nothing fails. The verifier read the schema and corrected it to
+_keeps-working_. **After that correction the wrong-but-plausible category is
+empty**, and every one of the 22 either works or fails. That is a materially
+better position than the survey started from, and it is only knowable because
+the check was made.
+
+### Three marked "keeps working" AND blocking, which is not a contradiction
+
+`customization/collections.service.ts`, `collection-records.service.ts` and
+`tenancy/tenant-prisma.service.ts` work through the twins but were flagged
+blocking anyway. The twins are a MIGRATION surface, not a destination: they
+exist so the upgrade can read 1.0 shapes, and a product feature still served
+from them after the cutover is a feature with no 2.0 owner. Decide deliberately
+rather than discover it later.
+
+### What has to happen before the cutover runs
+
+1. **The audit path**, which is the common thread — two silent failures and the
+   loudest broken route are all `audit_log`, written by two paths, read by one,
+   migrated by the upgrade and reshaped between versions. `audit/audit.service.ts`
+   would be the 2.0 audit log's only reader; `grep -rn auditLogEntry` currently
+   returns zero hits, and the keyset index it was tuned against does not exist in
+   2.0 either.
+2. **The DSAR bundle**, which the log has flagged once already.
+3. **The four jobs**, because unattended failure is not loud.
+4. **A decision** on the three served from compat twins.
+5. **A gate**, so this cannot regress: nothing today prevents a new `getClient`
+   call from being added outside the doomed modules.
