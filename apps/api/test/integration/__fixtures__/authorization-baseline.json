@@ -71,6 +71,7 @@
     "GET t/:slug/fees": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/fees/:id": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/fees/balances/:patronId": ["admin", "librarian", "owner", "volunteer"],
+    "GET t/:slug/fees/payment-methods": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/fees/receipts/:id": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/fines": ["admin", "librarian", "owner", "volunteer"],
     "GET t/:slug/fines/:id": ["admin", "librarian", "owner", "volunteer"],

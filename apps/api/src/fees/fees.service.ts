@@ -724,6 +724,45 @@ export class FeesService {
   }
 
   /** Which asset account money moves through, from the named method. */
+  /**
+   * The payment methods a desk can settle with (2.0 phase 20o).
+   *
+   * WITHOUT THIS THE DESK CANNOT TAKE MONEY. `settlementAccountFor` below
+   * refuses a payment with "Money that moved needs a payment method" when
+   * `paymentMethodId` is null, then looks the id up and 404s an unknown or
+   * archived one — and nothing listed the methods, so a caller had to already
+   * know an id it had no way to obtain. The third instance of that shape in this
+   * programme after `itemTypeId` (20k) and `patronCategoryId` (20m), and the
+   * only one that stops money rather than hiding a field.
+   *
+   * `requiresDrawer` rides along because it decides whether the caller must
+   * open a drawer session first: the desk needs it to know which methods it can
+   * offer before one is open, rather than discovering it from a refusal.
+   *
+   * `settlementAccount` deliberately does NOT: which ledger account cash lands
+   * in is the ledger's business, and a screen that displayed it would be
+   * offering a cataloguer a choice about double-entry bookkeeping.
+   */
+  async paymentMethods(
+    tenant: TenantContext,
+    opts: { includeArchived?: boolean } = {},
+  ): Promise<{ items: PaymentMethodRow[] }> {
+    const client = this.tenantPrisma.getClientV2(tenant);
+    const rows = await client.paymentMethod.findMany({
+      where: opts.includeArchived === true ? {} : { archivedAt: null },
+      orderBy: [{ code: 'asc' }],
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        kind: true,
+        requiresDrawer: true,
+        archivedAt: true,
+      },
+    });
+    return { items: rows.map((r) => ({ ...r, kind: String(r.kind) })) };
+  }
+
   private async settlementAccountFor(
     tx: TxV2,
     input: { readonly kind?: string; readonly paymentMethodId?: string | null },
@@ -822,3 +861,14 @@ export class FeesService {
     }
   }
 }
+
+/** One row of `GET /t/:slug/fees/payment-methods`. */
+export type PaymentMethodRow = {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+  readonly kind: string;
+  /** Whether a drawer session must be open before this method can settle. */
+  readonly requiresDrawer: boolean;
+  readonly archivedAt: Date | null;
+};

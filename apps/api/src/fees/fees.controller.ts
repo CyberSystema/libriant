@@ -27,6 +27,7 @@ import {
   OpenDrawerDto,
   RefundFeesDto,
   SettleFeesDto,
+  IncludeArchivedQueryDto,
 } from './fees.dto.js';
 
 /**
@@ -276,6 +277,24 @@ export class FeesController {
   }
 
   /** The reprint. Re-serves stored bytes; renders nothing. */
+  /**
+   * The payment methods this library settles with.
+   *
+   * DECLARED ABOVE `@Get(':id')`, which the docblock down there explains is the
+   * last route in this controller on purpose: a one-segment literal GET added
+   * below it would be swallowed whole.
+   *
+   * `circ.fee.read`, like `balances` — seeing which methods exist is reading the
+   * fee surface. Whether the caller may USE one is decided at the payment route
+   * by `circ.fee.pay`, which is where that decision belongs.
+   */
+  @RequirePermission('circ.fee.read')
+  @Get('payment-methods')
+  async paymentMethods(@TenantCtx() tenant: TenantContext, @Query() rawQuery: unknown) {
+    const q = await validateDto(IncludeArchivedQueryDto, rawQuery ?? {});
+    return this.fees.paymentMethods(tenant, { includeArchived: q.includeArchived !== undefined });
+  }
+
   @RequirePermission('circ.fee.read')
   @Get('receipts/:id')
   async reprint(@TenantCtx() tenant: TenantContext, @Param('id') receiptId: string) {

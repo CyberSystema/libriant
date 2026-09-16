@@ -1,3 +1,4 @@
+import { TRUTHY } from '../org/org.dto.js';
 import { Transform } from 'class-transformer';
 import {
   IsOptional,
@@ -165,4 +166,16 @@ export class FeeListQueryDto {
   @IsOptional() @IsString() @Length(1, 512) after?: string;
 
   @IsOptional() @toInt() @IsInt() @Min(1) limit?: number;
+}
+
+/**
+ * `?includeArchived=1|true`, for the payment-method list (2.0 phase 20o).
+ *
+ * Reuses `TRUTHY` from the org DTOs rather than restating it — a query string
+ * has no types, and class-transformer coerces the STRING "false" to boolean
+ * true, so `@IsBoolean` here would make `?includeArchived=false` mean the
+ * opposite of what it says.
+ */
+export class IncludeArchivedQueryDto {
+  @IsOptional() @IsIn(TRUTHY) includeArchived?: string;
 }

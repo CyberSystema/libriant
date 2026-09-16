@@ -5344,3 +5344,81 @@ only one of them means this patron can be archived.
 ### Still 1.0 after this
 
 The enrolment form, and the loans+reservations and fines families.
+
+## Phase 20o — the write-only column sweep, and the one that stopped money
+
+Phases 20k and 20n each found, by accident, a column the product WRITES and no
+route RETURNS: `bib_records.cover_asset_ref` and `patrons.custom_fields`. Two
+instances of one defect class, found two phases apart, is a reason to go
+looking rather than wait for the third. All 82 models of the 2.0 tenant schema
+were swept.
+
+**22 confirmed, 18 refuted.** The refutations are what make the number worth
+anything — the sweep's first pass proposed 40, and a second agent per candidate
+was told to go and FIND a read that returns it, searching the services, the raw
+SQL, the DTOs, and the serialisation paths that are easy to forget: MARC export,
+the DSAR bundle, CSV export, receipts. Nearly half died there. The exclusion
+list was written before the sweep ran: internal bookkeeping (`row_version`,
+`search_text`, sort keys, normalised forms), columns doing their job in a WHERE
+or ORDER BY, columns consumed between services, and append-only history read by
+a different route than the one that writes it.
+
+### One finding stops money, and is fixed here
+
+`POST /t/:slug/fees/payments` refuses with "Money that moved needs a payment
+method" when `paymentMethodId` is null, then 404s an unknown or archived one —
+and **no route listed the payment methods**. A caller had to already know an id
+it had no way to obtain. The evidence was sitting in `fees.spec.ts`, where every
+settlement test hard-codes `paymentMethodId: 'paymethod_cash'`: that is exactly
+the workaround a caller invents when there is nothing to ask.
+
+`GET /t/:slug/fees/payment-methods` fixes it — the THIRD instance of this shape
+after `itemTypeId` (20k) and `patronCategoryId` (20m), and the only one that
+stopped a desk taking money rather than hiding a field. It returns
+`requiresDrawer`, because a desk needs to know whether a drawer session must be
+open BEFORE it offers a method rather than discovering it from a refusal; and it
+deliberately does NOT return `settlement_account`, because which asset account
+cash lands in is the ledger's business and a screen showing it would be offering
+a librarian a choice about double-entry bookkeeping.
+
+Declared ABOVE `@Get(':id')`, whose own docblock warns that it is the last route
+in that controller on purpose and a one-segment literal GET added below it would
+be swallowed whole.
+
+### The rest, ranked by whether real data is stranded
+
+**Migrated from 1.0 and invisible** — these hold what a librarian actually
+typed, so they are data loss rather than an unbuilt feature:
+`items.custom_fields` (the upgrade maps `book_copies.customFields` deliberately,
+per `routing.json`, and the whole items module contains no reference to it),
+`loans.custom_fields` (the exact twin of the `patrons` instance one table over),
+`items.acquired_at` (every copy's accession date — and no 2.0 route can set it
+either), `upgrade_exceptions.value` (which carries the library's own 1.0 notice
+template bodies), and `branches.default_locale`.
+
+**Regressions of something 1.0 showed** — `account_transactions.actor_user_id`
+(1.0's desk rendered "resolved by"), and the whole of `audit_log`: the activity
+screen still reads the 1.0 table, so nothing written to the 2.0 log is visible
+anywhere, including the proof that an Article 17 erasure was carried out.
+
+**The librarian's own words, written and swallowed** —
+`cash_drawer_sessions.close_note` and `variance_cents` (stored as snapshots
+specifically so an investigated variance stays answerable),
+`circulation_rules.notes`, `account_transactions.note`,
+`patron_blocks.cleared_reason`, and `ledger_discrepancies.detail` — a table
+whose stated purpose is that "a row here is a question for a human", with no
+human surface to receive it. Plus `circulation_statistics`, recomputed hourly on
+every tenant and read by nobody, and `bib_records.projection_anomalies`, the
+queue the schema docblock says exists "so a human can act on" it.
+
+**Not reported as findings:** 107 columns nothing writes yet. That is a weaker
+signal — most are phases that have not landed — and mixing them in would have
+buried the 22.
+
+### What this does not do
+
+It fixes one. The other 21 are recorded here and not built, because each belongs
+to the family that owns its screen, and several are one line of `select` once
+that screen exists. The reason to write them down now is the cutover: the 1.0
+screens are currently the only way to see some of this data, and deleting them
+before the 2.0 read exists turns a gap into a loss.

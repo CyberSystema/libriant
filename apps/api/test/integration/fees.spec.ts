@@ -49,6 +49,13 @@ declareBillingPosture(
 let app: NestExpressApplication;
 const tag = randomBytes(4).toString('hex');
 let slug = '';
+/**
+ * The owner session. This file drives the SERVICES directly for the ledger
+ * invariants — that is the level those are true at — but the payment-method
+ * list is a ROUTE, and whether it is reachable and what it hands back is only
+ * answerable over HTTP.
+ */
+let owner = '';
 let dbUrl = '';
 let v2: TenantPrismaClientV2;
 let ctx: TenantContext;
@@ -151,7 +158,7 @@ beforeAll(async () => {
       addressCountry: 'GR',
     })
     .expect(201);
-  cookieFrom(res, SESSION_RE);
+  owner = cookieFrom(res, SESSION_RE);
   const t = await controlDb.tenant.findUnique({ where: { slug } });
   dbUrl = t!.dbUrl;
 
@@ -488,6 +495,75 @@ describe('a receipt', () => {
 // ---------------------------------------------------------------------------
 // 4. Settlement, and the arithmetic that has no residue
 // ---------------------------------------------------------------------------
+
+/**
+ * The payment methods a desk can settle with (2.0 phase 20o).
+ *
+ * FOUND BY THE WRITE-ONLY-COLUMN SWEEP, and the only one of its findings that
+ * stopped money rather than hiding a field: `settlementAccountFor` refuses a
+ * payment with "Money that moved needs a payment method" when `paymentMethodId`
+ * is null and 404s an unknown or archived one — and NO ROUTE LISTED THEM. A
+ * caller had to already know an id it had no way to obtain.
+ *
+ * The evidence was in this file: every settlement test above hard-codes
+ * `paymentMethodId: 'paymethod_cash'`, which is precisely the workaround a
+ * caller invents when there is nothing to ask. Third instance of the shape after
+ * `itemTypeId` (20k) and `patronCategoryId` (20m).
+ */
+describe('the payment methods a desk can settle with', () => {
+  it('lists them, and the seeded cash method is among them', async () => {
+    const res = await api().get(`/t/${slug}/fees/payment-methods`).set('Cookie', owner).expect(200);
+    const items = res.body.items as {
+      id: string;
+      code: string;
+      name: string;
+      kind: string;
+      requiresDrawer: boolean;
+    }[];
+    expect(items.length).toBeGreaterThan(0);
+    const cash = items.find((m) => m.id === 'paymethod_cash');
+    expect(cash, 'the id every settlement test in this file hard-codes').toBeDefined();
+    // The flag a desk needs BEFORE it offers a method: whether a drawer session
+    // has to be open first. Discovering that from a refusal is the failure this
+    // route exists to prevent.
+    expect(typeof cash!.requiresDrawer).toBe('boolean');
+  });
+
+  it('does not hand out the ledger account behind each method', async () => {
+    // Which asset account cash lands in is the ledger's business. A screen that
+    // showed it would be offering a librarian a choice about double-entry
+    // bookkeeping.
+    const res = await api().get(`/t/${slug}/fees/payment-methods`).set('Cookie', owner).expect(200);
+    for (const m of res.body.items as Record<string, unknown>[]) {
+      expect(m.settlementAccount).toBeUndefined();
+    }
+  });
+
+  it('is the list that makes a payment possible at all', async () => {
+    // THE BLOCKER, at the level it lives. The refusal is a SERVICE check that
+    // runs after DTO validation, so it is unreachable over HTTP without an
+    // otherwise-valid body — asserting it here is what actually pins it.
+    const patronId = await makePatron();
+    const base = {
+      patronId,
+      kind: 'payment' as const,
+      currency: 'EUR',
+      branchId: BRANCH,
+      // Non-zero: "A settlement must move money" is checked first, and a zero
+      // would never reach the payment-method check this test is about.
+      amountCents: 100n,
+    };
+    await expect(fees.settle(ctx, ACTOR, base)).rejects.toThrow(/payment method/i);
+
+    // And an id FROM THE LIST gets past that check — which is the whole reason
+    // the route exists.
+    const res = await api().get(`/t/${slug}/fees/payment-methods`).set('Cookie', owner).expect(200);
+    const methodId = (res.body.items as { id: string }[])[0]!.id;
+    await expect(
+      fees.settle(ctx, ACTOR, { ...base, paymentMethodId: methodId }),
+    ).resolves.toBeDefined();
+  });
+});
 
 describe('settling charges', () => {
   it('spreads a payment oldest-first and leaves the remainder as a credit', async () => {
