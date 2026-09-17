@@ -138,11 +138,10 @@ describe('§1 editing a record', () => {
     expect((res.body as { phone: string | null }).phone).toBeNull();
   });
 
-  it('RECOMPUTES the fold when the name changes, rather than trusting the client', async () => {
-    // sortName and searchText are the roster's sort key and its search column,
-    // both Greek-folded. A client that computed them itself would fold with
-    // whatever it had — which is the phase-1 defect coming back through the
-    // front door. The DTO does not accept them at all.
+  it('RECOMPUTES the fold server-side, rather than trusting the client', async () => {
+    // searchText is the roster's search column, Greek-folded. A client that
+    // computed it itself would fold with whatever it had — which is the phase-1
+    // defect coming back through the front door. The DTO does not accept it.
     await api()
       .patch(`/t/${slug}/patrons/${id}`)
       .set('Cookie', owner)
@@ -153,9 +152,15 @@ describe('§1 editing a record', () => {
       [id],
     );
     // Folded: lowercase, and the final letter is U+03C3, not the U+03C2 that
-    // `toLowerCase()` would have produced.
-    expect(rows[0]!.sort_name).toBe('πολισ εαλω');
+    // `toLowerCase()` would have produced. This fixture has no patron number,
+    // and the test above cleared its phone, so the name is all there is to fold
+    // — §4 below is where the composition is actually pinned down.
     expect(rows[0]!.search_text).toBe('πολισ εαλω');
+    // AND THE FILING NAME SURVIVES. `makePatron` files 'Γιώργος Δήμου' under
+    // 'δημου γιωργος' — surname first, which is not the fold of the full name
+    // and therefore a choice a librarian made. `UpdatePatronDto` cannot express
+    // that choice, so a rename must not overwrite it (2.0 phase 20q).
+    expect(rows[0]!.sort_name).toBe('δημου γιωργος');
   });
 
   it('rejects a field the DTO does not declare', async () => {
@@ -276,4 +281,109 @@ describe('§3 archiving refuses while there is open business', () => {
       .send({ status: 'suspended' })
       .expect(400);
   });
+});
+
+/**
+ * §4 THE SEARCH HAYSTACK SURVIVES AN EDIT (2.0 phase 20q).
+ *
+ * `patrons.search_text` is the only thing `GET /t/:slug/patrons?q=` matches, and
+ * it is the only HTTP route in the 2.0 surface that resolves a TYPED patron
+ * number to a patron — the desk scan (`/patrons/by-card`) reads a card barcode,
+ * which is a different string.
+ *
+ * Every test here uses the roster search rather than reading the column, because
+ * the column being wrong is not the defect: the defect is a librarian typing the
+ * number printed on the card in the reader's hand and being told "No matches."
+ *
+ * The patron is created THROUGH THE API so the server mints a real patron number
+ * — the raw-insert fixtures above have none, which is precisely why the §1
+ * assertion could not tell a correct rebuild from the broken one.
+ */
+describe('§4 the search haystack survives an edit', () => {
+  let id = '';
+  let number = '';
+
+  async function foundBy(q: string): Promise<boolean> {
+    const res = await api()
+      .get(`/t/${slug}/patrons?q=${encodeURIComponent(q)}&limit=25`)
+      .set('Cookie', owner)
+      .expect(200);
+    return (res.body as { items: Array<{ id: string }> }).items.some((p) => p.id === id);
+  }
+
+  beforeAll(async () => {
+    const res = await api()
+      .post(`/t/${slug}/patrons`)
+      .set('Cookie', owner)
+      .send({
+        fullName: 'Ελένη Παπαδοπούλου',
+        email: 'eleni@example.test',
+        phone: '+302109998877',
+      })
+      .expect(201);
+    const body = res.body as { id: string; patronNumber: string | null };
+    id = body.id;
+    number = body.patronNumber ?? '';
+    expect(number, 'the server should mint a number when the library gives none').not.toBe('');
+  }, 60_000);
+
+  it('finds a new patron by name, number, email and phone', async () => {
+    expect(await foundBy('Παπαδοπούλου')).toBe(true);
+    expect(await foundBy(number)).toBe(true);
+    expect(await foundBy('eleni@example.test')).toBe(true);
+    expect(await foundBy('+302109998877')).toBe(true);
+  }, 60_000);
+
+  it('STILL finds them by number, email and phone after the name is corrected', async () => {
+    // THE DEFECT, in one call. `update()` rebuilt `search_text` as the folded
+    // full name ALONE, so this PATCH deleted the number, the email and the
+    // phone from the haystack — and the members editor sends `fullName` on
+    // every save, so the first correction to ANY field did it.
+    await api()
+      .patch(`/t/${slug}/patrons/${id}`)
+      .set('Cookie', owner)
+      .send({ fullName: 'Ελένη Παπαδοπούλου-Νικολάου' })
+      .expect(200);
+
+    expect(await foundBy('Νικολάου'), 'the new name').toBe(true);
+    expect(await foundBy(number), 'the number printed on the card in their hand').toBe(true);
+    expect(await foundBy('eleni@example.test'), 'the email').toBe(true);
+    expect(await foundBy('+302109998877'), 'the phone').toBe(true);
+  }, 60_000);
+
+  it('finds a NEW phone number written by a patch that carries no name', async () => {
+    // The other half: a PATCH without `fullName` never rewrote the column at
+    // all, so a number the librarian had just typed in was unsearchable.
+    await api()
+      .patch(`/t/${slug}/patrons/${id}`)
+      .set('Cookie', owner)
+      .send({ phone: '+302105554433' })
+      .expect(200);
+    expect(await foundBy('+302105554433'), 'the number just collected').toBe(true);
+    expect(await foundBy('+302109998877'), 'the one it replaced').toBe(false);
+  }, 60_000);
+
+  it('stops finding a contact detail the librarian CLEARED', async () => {
+    // A stale haystack is a privacy question as well as a correctness one: an
+    // address a reader asked to have removed must stop being a way to find them.
+    await api()
+      .patch(`/t/${slug}/patrons/${id}`)
+      .set('Cookie', owner)
+      .send({ email: null })
+      .expect(200);
+    expect(await foundBy('eleni@example.test')).toBe(false);
+    expect(await foundBy('Νικολάου'), 'and the rest of the haystack is intact').toBe(true);
+    expect(await foundBy(number)).toBe(true);
+  }, 60_000);
+
+  it('recomputes a DERIVED filing name on a rename, where a curated one survives', async () => {
+    // This patron was enrolled without a `sortName`, so the stored value is the
+    // fold of the name it was enrolled under — derived, and therefore the
+    // server's to maintain. §1 covers the curated case.
+    const rows = await sql<{ sort_name: string }>(
+      `SELECT sort_name FROM lbr2.patrons WHERE id = $1`,
+      [id],
+    );
+    expect(rows[0]!.sort_name).toBe('ελενη παπαδοπουλου-νικολαου');
+  }, 60_000);
 });

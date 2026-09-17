@@ -189,7 +189,12 @@ export class PatronsService {
               patronNumber,
               fullName: input.fullName,
               sortName: foldGreek(input.sortName ?? input.fullName),
-              searchText: searchTextFor(input, patronNumber),
+              searchText: searchTextFor({
+                fullName: input.fullName,
+                patronNumber,
+                email: input.email ?? null,
+                phone: input.phone ?? null,
+              }),
               email: input.email ?? null,
               phone: input.phone ?? null,
               dateOfBirth: input.dateOfBirth ?? null,
@@ -599,9 +604,20 @@ export class PatronsService {
     },
   ): Promise<PatronRecord> {
     const client = this.tenantPrisma.getClientV2(tenant);
+    // THE CONTRIBUTING FIELDS COME BACK WITH THE EXISTENCE CHECK, because the
+    // haystack below is composed from the row as it will be AFTER this write,
+    // and a PATCH carries only what changed.
     const existing = await client.patron.findUnique({
       where: { id: patronId },
-      select: { id: true, erasedAt: true },
+      select: {
+        id: true,
+        erasedAt: true,
+        fullName: true,
+        sortName: true,
+        patronNumber: true,
+        email: true,
+        phone: true,
+      },
     });
     if (existing === null) throw new NotFoundException(`No patron with id ${patronId}.`);
     // An erased record is a tombstone. Editing it would put identifying data
@@ -627,10 +643,58 @@ export class PatronsService {
     }
     if (input.fullName !== undefined) {
       data['fullName'] = input.fullName;
-      data['sortName'] = foldGreek(input.fullName);
-      data['searchText'] = foldGreek(input.fullName);
+      /**
+       * A CURATED FILING NAME SURVIVES A RENAME; a derived one is recomputed.
+       *
+       * `create` accepts `sortName` and stores `foldGreek(sortName ?? fullName)`
+       * — a Greek library files «Νίκος Καζαντζάκης» under «ΚΑΖΑΝΤΖΑΚΗΣ ΝΙΚΟΣ»,
+       * and the roster is ordered by this column (`patrons_sort_name_id_idx`).
+       * `UpdatePatronDto` does not accept it, so recomputing unconditionally
+       * destroyed that choice on the first spelling correction, re-filed the
+       * reader under the wrong letter, and left no way to put it back.
+       *
+       * Whether it was curated is DECIDABLE rather than guessed: a derived
+       * `sort_name` is exactly `foldGreek(the previous full name)`. Anything
+       * else was chosen by a librarian and is left alone.
+       */
+      const wasDerived = existing.sortName === foldGreek(existing.fullName);
+      if (wasDerived) data['sortName'] = foldGreek(input.fullName);
     }
+
+    /**
+     * THE HAYSTACK, REBUILT FROM THE ROW AS IT WILL BE — not from the patch.
+     *
+     * Every one of the four contributing fields is independently patchable, and
+     * `undefined` (absent) is distinguished from `null` (the librarian cleared
+     * it), which is why this is a ternary per field and not `??`. Two defects
+     * lived in the one line this replaces:
+     *
+     *   - a PATCH carrying `fullName` rewrote the haystack to the folded NAME
+     *     ALONE, deleting the number, email and phone that `create` had put
+     *     there — and the members editor sends `fullName` on every save, so the
+     *     first correction to any field took the reader out of number, email
+     *     and phone search for good;
+     *   - a PATCH without `fullName` never rewrote it at all, so a new phone
+     *     number was unsearchable and a CLEARED one stayed searchable.
+     *
+     * Recomputed on every update rather than only when a contributing field
+     * changes: it is one fold over four short strings, and a conditional here
+     * is the thing that rots. It also silently repairs a row damaged by the
+     * defect above the next time anyone edits it.
+     *
+     * Last-writer-wins against a concurrent edit to the same patron, the same
+     * as the scalar columns themselves — this method is not transactional and
+     * 1.0's counterpart was not either. The outcome is a haystack matching one
+     * of the two writes rather than a blend, and the next edit reconciles it.
+     */
     if (Object.keys(data).length === 0) return this.get(tenant, patronId);
+
+    data['searchText'] = searchTextFor({
+      fullName: input.fullName ?? existing.fullName,
+      patronNumber: input.patronNumber === undefined ? existing.patronNumber : input.patronNumber,
+      email: input.email === undefined ? existing.email : input.email,
+      phone: input.phone === undefined ? existing.phone : input.phone,
+    });
 
     data['updatedAt'] = new Date();
     await client.patron.update({ where: { id: patronId }, data: data as never });
@@ -983,9 +1047,29 @@ export function normaliseBarcode(raw: string): string {
   return raw.trim().replace(/\s+/g, '').toUpperCase();
 }
 
-function searchTextFor(input: CreatePatronInput, patronNumber: string | null): string {
+/**
+ * THE HAYSTACK `GET /t/:slug/patrons?q=` matches, and the ONE place that knows
+ * the recipe.
+ *
+ * Takes the four RESOLVED values rather than a create input, so that `update()`
+ * composes it from the row as it will be AFTER the write rather than from the
+ * fields the caller happened to send. That is the whole defect this signature
+ * exists to make unrepresentable: while this took a `CreatePatronInput`, the
+ * update path could not call it, hand-rolled `foldGreek(fullName)` instead, and
+ * silently deleted the number, the email and the phone from the haystack on
+ * every save.
+ *
+ * Empty parts are dropped rather than joined as blanks — two adjacent spaces
+ * would make `contains` fail on a term that spans the gap.
+ */
+function searchTextFor(parts: {
+  fullName: string;
+  patronNumber: string | null;
+  email: string | null;
+  phone: string | null;
+}): string {
   return foldGreek(
-    [input.fullName, patronNumber ?? '', input.email ?? '', input.phone ?? '']
+    [parts.fullName, parts.patronNumber ?? '', parts.email ?? '', parts.phone ?? '']
       .filter((p) => p.length > 0)
       .join(' '),
   );

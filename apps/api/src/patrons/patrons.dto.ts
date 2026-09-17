@@ -175,9 +175,17 @@ export class ErasePatronDto {
  *
  * Every field optional: absent means "leave it", and only an explicit `null`
  * clears. `sortName` and `searchText` are deliberately NOT accepted — they are
- * recomputed from `fullName` through `foldGreek`, because a client folding them
- * itself would fold with whatever it had, which is the phase-1 defect returning
+ * derived server-side through `foldGreek`, because a client folding them itself
+ * would fold with whatever it had, which is the phase-1 defect returning
  * through the front door.
+ *
+ * "Derived" is not the same for the two of them, and 20q had to separate them:
+ * `search_text` is recomputed from all four contributing fields on every write,
+ * while `sort_name` is recomputed from `fullName` ONLY when the stored value is
+ * still the fold of the previous name. `CreatePatronDto` accepts a `sortName`,
+ * so a library that files «Νίκος Καζαντζάκης» under «ΚΑΖΑΝΤΖΑΚΗΣ ΝΙΚΟΣ» has
+ * made a choice this patch route cannot express and therefore must not
+ * overwrite.
  */
 export class UpdatePatronDto {
   @IsOptional() @trim() @IsString() @Length(1, 64) patronNumber?: string;
