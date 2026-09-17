@@ -297,3 +297,95 @@ describe('§3 Article 17 — erasure that does not corrupt the ledger', () => {
     expect(rows.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+/**
+ * §5 WHAT THE 2.0 ERASE LEFT BEHIND THAT 1.0 DID NOT (2.0 phase 20q).
+ *
+ * Every assertion here corresponds to a field the 1.0 erase in
+ * `members.service.ts` redacted and the 2.0 rewrite dropped. They are grouped
+ * because they share one cause — the rewrite reproduced the table list from the
+ * data map but not the column list from the tombstone — and one consequence:
+ * `patron-data-map.ts` claims of `patrons` that "every direct identifier on it
+ * is overwritten", and it was not true.
+ */
+describe('§5 the tombstone leaves nothing identifying behind', () => {
+  let id = '';
+  const number = 'M-2019-004242';
+
+  beforeAll(async () => {
+    id = `p-${tag}-tomb`;
+    await seedPatron(id, `tomb-${tag}@example.gr`);
+    // The four columns the 2.0 erase never touched, plus a loan, a hold and a
+    // fee carrying the free text a librarian types onto circulation rows.
+    await sql(
+      `UPDATE lbr2.patrons
+          SET patron_number = $2,
+              custom_fields = '{"class":"Γ2","roomKey":"117"}'::jsonb
+        WHERE id = $1`,
+      [id, number],
+    );
+  }, 60_000);
+
+  it('erases, and the row is gone from the live roster', async () => {
+    await api()
+      .post(`/t/${slug}/patrons/${id}/erase`)
+      .set('Cookie', owner)
+      // 200, not 201: an erasure creates nothing.
+      .send({ reason: 'Article 17 request received in writing' })
+      .expect(200);
+
+    const rows = await sql<{ status: string; archived_at: Date | null }>(
+      `SELECT status, archived_at FROM lbr2.patrons WHERE id = $1`,
+      [id],
+    );
+    // Without these the reader stayed on the members list as an ACTIVE row
+    // named '[erased]', mixed in with live readers and counted in every total.
+    expect(rows[0]!.status).toBe('closed');
+    expect(rows[0]!.archived_at).not.toBeNull();
+
+    const roster = await api().get(`/t/${slug}/patrons?limit=100`).set('Cookie', owner).expect(200);
+    expect((roster.body as { items: Array<{ id: string }> }).items.map((p) => p.id)).not.toContain(
+      id,
+    );
+  }, 60_000);
+
+  it('replaces the membership number with a pseudonym', async () => {
+    // 1.0: "a pseudonym that still matches the library's paper card file
+    // re-identifies the person the moment anyone looks the card up."
+    const rows = await sql<{ patron_number: string }>(
+      `SELECT patron_number FROM lbr2.patrons WHERE id = $1`,
+      [id],
+    );
+    expect(rows[0]!.patron_number).not.toBe(number);
+    expect(rows[0]!.patron_number).toMatch(/^ERASED-[A-Z0-9]+$/);
+    // The column's CHECK is `^[A-Z0-9][A-Z0-9_-]{1,29}$` — 1.0 learned that
+    // from a 23514 against a real tenant with the row left fully intact.
+    expect(rows[0]!.patron_number.length).toBeLessThanOrEqual(30);
+  }, 60_000);
+
+  it('empties the library-configured custom fields', async () => {
+    const rows = await sql<{ custom_fields: Record<string, unknown> }>(
+      `SELECT custom_fields FROM lbr2.patrons WHERE id = $1`,
+      [id],
+    );
+    expect(rows[0]!.custom_fields).toEqual({});
+  }, 60_000);
+
+  it('does NOT make "erased" a query that lists every erased reader', async () => {
+    const rows = await sql<{ search_text: string }>(
+      `SELECT search_text FROM lbr2.patrons WHERE id = $1`,
+      [id],
+    );
+    // Blank, not the tombstone: `?q=` matches this column with `contains`.
+    expect(rows[0]!.search_text).toBe('');
+
+    const hits = await api()
+      .get(`/t/${slug}/patrons?q=erased&includeArchived=1&limit=100`)
+      .set('Cookie', owner)
+      .expect(200);
+    expect(
+      (hits.body as { items: Array<{ id: string }> }).items.map((p) => p.id),
+      'searching the tombstone string must not assemble a roster of erasure requests',
+    ).not.toContain(id);
+  }, 60_000);
+});
