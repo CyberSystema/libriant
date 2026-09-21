@@ -77,7 +77,7 @@ RUN pnpm --filter @libriant/site build
 # supply-chain-05: the edge binary itself, pinned by digest. This one terminates
 # TLS for every request, so "whatever the tag pointed at that minute" is the
 # least acceptable place for a floating reference.
-FROM caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+FROM caddy:2-alpine@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a2a2fe9d355e
 
 # supply-chain-07: THIS IMAGE RUNS AS uid 1000, gid 0. It ran as uid 0 until
 # now, inheriting the upstream default, under a comment that explained why the
